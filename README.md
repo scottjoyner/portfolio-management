@@ -53,3 +53,23 @@ Optional (or place in `.env` and use `python-dotenv`):
 - Public/private candles + granularity enums
 - WebSocket endpoints for market/user streams
 
+
+
+## New: Risk/Reward Setups + Brackets (synthetic OCO)
+This adds two low-risk/high-R strategies and manages protective stops & targets:
+
+- **Donchian Breakout**: close > 20D high → stop = entry − k·ATR, target = entry + m·ATR.
+- **Trend RSI Pullback**: Uptrend + RSI<35 pullback → stop = entry − k·ATR, target = 20D high (fallback 2·ATR).
+
+**Commands**
+```bash
+# Scan universe, place bracketed entries that pass RR filter (min 2.0 by default)
+python -m src.run_trader --rr-trades
+
+# Continuously manage synthetic OCO exits (move to breakeven after +1R; optional ATR trailing)
+python -m src.run_trader --manage-brackets
+```
+
+**Config**
+See `.env.example` for:
+`MIN_RR, STOP_ATR_MULT, TARGET_ATR_MULT, TRAIL_ATR_MULT, BREAK_EVEN_AFTER_R, MANAGER_POLL_SECS`.

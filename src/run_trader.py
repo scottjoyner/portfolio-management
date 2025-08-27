@@ -7,6 +7,10 @@ from .data import fetch_candles_df
 from .strategy import trend_signal, target_weight
 from .portfolio import rebalance_plan
 from .risk import apply_risk_checks, RiskState
+from .alpha.alpha import donchian_breakout_setup, trend_rsi_pullback_setup
+from .data import compute_atr
+from .execution import place_bracket_long, manage_brackets
+from .config import BRACKETS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -105,8 +109,74 @@ if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--rebalance", action="store_true", help="Run a one-shot rebalance now")
+    ap.add_argument("--rr-trades", action="store_true", help="Scan & place Risk-Reward bracket trades")
+    ap.add_argument("--manage-brackets", action="store_true", help="Run bracket manager loop (synthetic OCO)")
     args = ap.parse_args()
     if args.rebalance:
         rebalance()
+    elif args.rr_trades:
+        place_rr_trades()
+    elif args.manage_brackets:
+        run_manager_loop()
     else:
-        print("Nothing to do. Use --rebalance")
+        print("Nothing to do. Use --rebalance | --rr-trades | --manage-brackets")
+
+
+def signal_brackets(cb: CBClient, products: list[str], granularity: str, lookback_days: int, min_rr: float, stop_k: float, target_k: float):
+    ideas = {}
+    for p in products:
+        df = fetch_candles_df(cb, p, lookback_days=lookback_days, granularity=granularity)
+        if df.empty:
+            continue
+        # Try multiple setups; pick the best RR
+        candidates = []
+        s1 = donchian_breakout_setup(df, stop_atr_mult=stop_k, target_atr_mult=target_k)
+        if s1: candidates.append(s1)
+        s2 = trend_rsi_pullback_setup(df, stop_atr_mult=stop_k)
+        if s2: candidates.append(s2)
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda x: x["rr"])
+        if best["rr"] >= min_rr:
+            ideas[p] = best
+    return ideas
+
+def place_rr_trades():
+    cb = CBClient()
+    settings = SETTINGS
+    # Equity & prices
+    equity, holdings, prices = get_portfolio_value_and_holdings(cb, settings.products, settings.cash_ccy)
+    logging.info(f"[RR] Equity ~ ${equity:,.2f}")
+    # Find bracket ideas
+    ideas = signal_brackets(cb, settings.products, settings.bar_granularity, settings.lookback_days,
+                            BRACKETS.min_rr, BRACKETS.stop_atr_mult, BRACKETS.target_atr_mult)
+    if not ideas:
+        logging.info("[RR] No qualifying setups (min RR filter).")
+        return
+    # Risk budget per trade (R-units): risk_per_trade * equity = $risk; size = $risk / $risk_per_unit
+    results = []
+    for pid, idea in ideas.items():
+        mid = prices.get(pid)
+        if not mid or mid <= 0:
+            continue
+        risk_per_unit = idea["entry"] - idea["stop"]
+        if risk_per_unit <= 0:
+            continue
+        risk_budget_usd = SETTINGS.risk_per_trade * equity
+        base_size = max(0.0, risk_budget_usd / risk_per_unit)
+        notional = base_size * mid
+        if notional < SETTINGS.min_notional:
+            logging.info(f"[RR] Skip {pid}, notional too small: ${notional:.2f}")
+            continue
+        logging.info(f"[RR] {pid} {idea['name']} RR={idea['rr']:.2f} entry={idea['entry']:.2f} stop={idea['stop']:.2f} target={idea['target']:.2f} size={base_size:.6f}")
+        res = place_bracket_long(cb, pid, base_size, idea["entry"], idea["stop"], idea["target"], settings.dry_run)
+        res["idea"] = idea
+        results.append(res)
+    for r in results:
+        logging.info(str(r))
+
+def run_manager_loop():
+    cb = CBClient()
+    manage_brackets(cb, poll_secs=BRACKETS.manager_poll_secs, trail_atr_mult=BRACKETS.trail_atr_mult,
+                    break_even_after_r=BRACKETS.break_even_after_r, dry_run=SETTINGS.dry_run)
+

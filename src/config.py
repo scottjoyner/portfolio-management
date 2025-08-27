@@ -19,3 +19,16 @@ class Settings(BaseModel):
     portfolio_name: str = os.getenv("PORTFOLIO_NAME", "quant-bot")
 
 SETTINGS = Settings()
+
+
+# --- Bracket & Risk/Reward ---
+class BracketSettings(BaseModel):
+    min_rr: float = float(os.getenv("MIN_RR", "2.0"))  # minimum Reward:Risk to accept a setup
+    stop_atr_mult: float = float(os.getenv("STOP_ATR_MULT", "2.0"))
+    target_atr_mult: float = float(os.getenv("TARGET_ATR_MULT", "3.0"))
+    trail_atr_mult: float = float(os.getenv("TRAIL_ATR_MULT", "0.0"))  # 0 disables trailing
+    break_even_after_r: float = float(os.getenv("BREAK_EVEN_AFTER_R", "1.0"))
+    manager_poll_secs: int = int(os.getenv("MANAGER_POLL_SECS", "5"))
+    max_open_brackets: int = int(os.getenv("MAX_OPEN_BRACKETS", "10"))
+
+BRACKETS = BracketSettings()
