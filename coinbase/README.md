@@ -1,136 +1,63 @@
-# Coinbase Quant Bot (Advanced Trade API)
+# Coinbase Quant Bot — Full Suite
 
-A minimal, event-driven trading scaffold that connects to Coinbase **Advanced Trade API** and implements a robust,
-risk-managed momentum strategy with volatility targeting and portfolio rebalancing.
+Event‑driven crypto trading scaffold for **Coinbase Advanced Trade API** with:
+- Vol‑targeted **portfolio rebalance**
+- **Risk/Reward** gated setups (long & short) with **synthetic brackets** (stop/target, breakeven, ATR‑trail)
+- **Kelly‑capped** sizing + **bandit allocator** (UCB1/Thompson)
+- **Transaction cost** model (fees, spread, impact)
+- **Paper trading simulator** (replays candles using same bracket logic)
+- **Dashboard** (Streamlit)
+- **Alt metadata ingestion** (CoinGecko + Token Lists + Chainlist + CoinPaprika fallback) into **Neo4j**
 
-> **Use at your own risk. Not financial advice.** Start in `DRY_RUN=true` and test against the Coinbase **Advanced Trade Sandbox**.
-
-## Features
-- Official SDK: [`coinbase-advanced-py`](https://github.com/coinbase/coinbase-advanced-py)
-- Pulls candles via REST, prices via Best Bid/Ask, and places/preview orders
-- Cross-asset trend following (SMA-50 > SMA-200) with **volatility targeting**
-- Idempotent orders with `client_order_id`
-- Drawdown kill-switch, per-trade and per-day risk caps
-- Dry-run mode with **order preview** (no execution)
-- Simple backtest (vectorized, daily candles)
-- Logging + configurable universe
+> **Use at your own risk. Not financial advice.** Start with `DRY_RUN=true`. For shorts, spot accounts cannot go net short without margin/derivatives.
 
 ## Quickstart
-
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env  # then edit keys and toggles
+```
 
-# Copy and edit environment
-cp .env.example .env
-
-# Dry run (no real orders)
+### Dry‑run trading examples
+```bash
+# Vol-target rebalance
 python -m src.run_trader --rebalance
-```
 
-## Environment
-Set API creds as **CDP Advanced Trade** keys (SDK reads them from env):
-
-```bash
-export COINBASE_API_KEY="organizations/{org_id}/apiKeys/{key_id}"
-export COINBASE_API_SECRET=$'-----BEGIN EC PRIVATE KEY-----\n...\n-----END EC PRIVATE KEY-----\n'
-```
-
-Optional (or place in `.env` and use `python-dotenv`):
-- `DRY_RUN=true` (preview only)
-- `PRODUCTS=BTC-USD,ETH-USD,SOL-USD`
-- `CASH=USD`
-- `BAR_GRANULARITY=ONE_HOUR` (ONE_MINUTE, FIVE_MINUTE, ... , ONE_DAY)
-- `LOOKBACK_DAYS=240`
-- `REBALANCE_FREQ=1d` (used by scheduler/cron)
-- `TARGET_VOL=0.10` (annualized)
-- `RISK_PER_TRADE=0.01`
-- `MAX_DD=0.15` (kill-switch)
-- `MIN_NOTIONAL=50`
-
-## References
-- Advanced Trade REST endpoints & portfolios: see docs
-- Public/private candles + granularity enums
-- WebSocket endpoints for market/user streams
-
-
-
-## New: Risk/Reward Setups + Brackets (synthetic OCO)
-This adds two low-risk/high-R strategies and manages protective stops & targets:
-
-- **Donchian Breakout**: close > 20D high → stop = entry − k·ATR, target = entry + m·ATR.
-- **Trend RSI Pullback**: Uptrend + RSI<35 pullback → stop = entry − k·ATR, target = 20D high (fallback 2·ATR).
-
-**Commands**
-```bash
-# Scan universe, place bracketed entries that pass RR filter (min 2.0 by default)
+# Scan & place RR‑gated bracket trades (long/short, Kelly-scaled, bandit-ranked)
 python -m src.run_trader --rr-trades
 
-# Continuously manage synthetic OCO exits (move to breakeven after +1R; optional ATR trailing)
+# Manage exits (synthetic OCO, +1R breakeven, optional ATR trail)
 python -m src.run_trader --manage-brackets
 ```
 
-**Config**
-See `.env.example` for:
-`MIN_RR, STOP_ATR_MULT, TARGET_ATR_MULT, TRAIL_ATR_MULT, BREAK_EVEN_AFTER_R, MANAGER_POLL_SECS`.
-
-
-## New: Shorts, Kelly sizing, Bandit allocator
-- **Short entries** (Donchian breakdown, Trend RSI rip). *Note:* true net shorts require margin/derivatives; on spot-only accounts we only sell existing holdings. Disable via `ENABLE_SHORTS=false` (default).
-- **Kelly-capped sizing** using rolling trade outcomes per setup (`trades.csv`). Env: `ENABLE_KELLY`, `KELLY_CAP`, `KELLY_FLOOR`.
-- **Bandit allocator** to prioritize setups with higher expectancy: `BANDIT_MODE=ucb1|thompson|none`, `UCB_C` for exploration.
-- **Trade logging** to `state/trades.csv` with realized R-multiples and PnL.
-
-**Flow**
-1. `--rr-trades` proposes bracketed entries (long/short) that pass `MIN_RR`.
-
-2. Bandit ranks setups; Kelly scales per-trade risk.
-
-3. `--manage-brackets` executes stops/targets, moves to breakeven after +1R, optional ATR trailing.
-
-
-
-
-## Transaction Costs & Slippage
-Configurable bps knobs applied when sizing/gating R:R:
-- `TAKER_FEE_BPS` (default **8** bps)
-- `SLIPPAGE_BPS` (extra safety margin)
-- `IMPACT_COEFF` (bps × sqrt($notional/10k))
-
-We estimate **effective fill** from mid using half-spread + fees + impact.
-
-## Per-Product / Per-Setup Kelly Caps
-Use JSON env vars to restrict aggressiveness:
+### Paper Trading
 ```bash
-export KELLY_CAPS_PRODUCT_JSON='{"BTC-USD":0.6,"ETH-USD":0.5,"SOL-USD":0.4}'
-export KELLY_CAPS_SETUP_JSON='{"donchian_breakout":0.5,"trend_rsi_pullback":0.4,"donchian_breakdown":0.5,"trend_rsi_rip":0.4}'
+python -m src.run_paper --products BTC-USD,ETH-USD --granularity ONE_HOUR --lookback-days 240   --initial-cash 20000 --risk-per-trade 0.01 --min-rr 2.0
+# Outputs: state/paper_equity.csv ; trades appended to state/trades.csv
 ```
 
-## Live Dashboard
-Install `streamlit`, then run:
+### Dashboard
 ```bash
 PYTHONPATH=. streamlit run src/dashboard_app.py
 ```
-Shows recent trades, equity, setup stats, bandit scores, open brackets, and Kelly caps.
 
-
-## Paper Trading (Bracket Logic)
-Run a historical simulation of the bracket strategy (long/short) with risk-per-trade sizing and simple transaction costs:
+### Alternative Metadata → Neo4j
 ```bash
-python -m src.run_paper --products BTC-USD,ETH-USD --granularity ONE_HOUR --lookback-days 240 --initial-cash 20000 --risk-per-trade 0.01 --min-rr 2.0
-```
-Results are written to `state/paper_equity.csv` and trades to `state/trades.csv`.
+# Fetch caches (watch rate limits)
+python -c "from src.alt.fetch_assets_alt import fetch_top_by_marketcap, fetch_assets_meta; top=fetch_top_by_marketcap(5000); ids=[r['id'] for r in top]; fetch_assets_meta(ids[:1000])"
+python -c "from src.alt.fetch_assets_alt import fetch_tokenlists_and_chains; fetch_tokenlists_and_chains()"
+python -c "from src.alt.fetch_assets_alt import fetch_paprika_basics; fetch_paprika_basics()"
 
-## CoinMarketCap → Neo4j
-Fetch top-5000 listings + detailed info, cache JSON, then ingest to Neo4j:
-```bash
-# 1) Fetch (requires CMC_API_KEY)
-python -m src.fetch_cmc
-
-# 2) Ingest
-python -c "from src.neo4j_cmc import ingest_from_files; ingest_from_files('data/cmc/json')"
+# Ingest to Neo4j
+python -c "from src.alt.neo4j_alt_ingest import ingest_assets_markets; ingest_assets_markets('data/alt/json/coingecko_markets_top_5000.json')"
+python -c "from src.alt.neo4j_alt_ingest import ingest_assets_meta; ingest_assets_meta('data/alt/json/coingecko_assets_meta.json')"
+python -c "from src.alt.neo4j_alt_ingest import ingest_tokenlists; ingest_tokenlists('data/alt/json/tokenlists.json')"
 ```
-Schema uses nodes: `:Asset(cmc_id)`, `:Network(name)`, `:Category(name)`, `:Tag(name)` with relationships:
-- `(:Asset)-[:ON_NETWORK]->(:Network)`
-- `(:Asset)-[:HAS_CATEGORY]->(:Category)`
-- `(:Asset)-[:HAS_TAG]->(:Tag)`
+
+## Env (.env.example)
+Trading: `DRY_RUN, PRODUCTS, CASH, BAR_GRANULARITY, LOOKBACK_DAYS, TARGET_VOL, RISK_PER_TRADE, MAX_DD, MIN_NOTIONAL`  
+Brackets: `MIN_RR, STOP_ATR_MULT, TARGET_ATR_MULT, TRAIL_ATR_MULT, BREAK_EVEN_AFTER_R, MANAGER_POLL_SECS, MAX_OPEN_BRACKETS, ENABLE_SHORTS`  
+Kelly & Bandit: `ENABLE_KELLY, KELLY_CAP, KELLY_FLOOR, DEFAULT_RR, BANDIT_MODE, UCB_C, KELLY_CAPS_PRODUCT_JSON, KELLY_CAPS_SETUP_JSON`  
+Costs: `TAKER_FEE_BPS, SLIPPAGE_BPS, IMPACT_COEFF`  
+Alt metadata: `COINGECKO_API_KEY, TOKENLIST_URLS, CHAINLIST_URL`  
+Neo4j: `NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE`

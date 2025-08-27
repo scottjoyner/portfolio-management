@@ -8,9 +8,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 def main():
     ap = argparse.ArgumentParser(description="Paper Trading Simulator")
-    ap.add_argument("--products", type=str, default=None, help="Comma-separated products. Defaults to env PRODUCTS")
-    ap.add_argument("--granularity", type=str, default=None, help="ONE_HOUR, ONE_DAY, etc. Defaults to env BAR_GRANULARITY")
-    ap.add_argument("--lookback-days", type=int, default=None, help="Days of history to simulate (default env LOOKBACK_DAYS)")
+    ap.add_argument("--products", type=str, default=None)
+    ap.add_argument("--granularity", type=str, default=None)
+    ap.add_argument("--lookback-days", type=int, default=None)
     ap.add_argument("--initial-cash", type=float, default=10000.0)
     ap.add_argument("--risk-per-trade", type=float, default=None)
     ap.add_argument("--min-rr", type=float, default=2.0)
@@ -25,7 +25,7 @@ def main():
 
     cfg = SimConfig(initial_cash=args.initial_cash, risk_per_trade=rpt, min_rr=args.min_rr, stop_k=args.stop_k, target_k=args.target_k)
     cb = CBClient()
-    eq = simulate(cb, products, start_days=days, end_now=True, granularity=gran, cfg=cfg)
+    eq = simulate(cb, products, start_days=days, granularity=gran, cfg=cfg)
     print(eq.tail())
     out = "state/paper_equity.csv"
     from pathlib import Path

@@ -1,6 +1,6 @@
 from __future__ import annotations
-import json, os, time
-from typing import Dict, Any, List
+import json, os
+from typing import Dict, Any
 
 STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "state", "brackets.json")
 

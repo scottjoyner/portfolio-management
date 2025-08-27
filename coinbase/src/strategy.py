@@ -18,4 +18,4 @@ def target_weight(prices: pd.Series, target_ann_vol: float, bars_per_year: int) 
     if cur_vol <= 1e-9:
         return 0.0
     raw = target_ann_vol / cur_vol
-    return float(np.clip(raw, 0.0, 1.5))  # cap leverage at 1.5x
+    return float(np.clip(raw, 0.0, 1.5))

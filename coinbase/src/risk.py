@@ -1,23 +1,16 @@
 from __future__ import annotations
-import time, typing as t
-
 class RiskState:
     def __init__(self):
-        self.day_start = int(time.time()) // 86400 * 86400
         self.daily_pnl = 0.0
         self.peak_equity = None
 
 def apply_risk_checks(intents: list[dict], equity_usd: float, risk_per_trade: float = 0.01, max_drawdown: float = 0.15, state: RiskState | None = None) -> list[dict]:
-    """
-    - Cap per-trade notional to risk_per_trade * equity
-    - If drawdown from peak exceeds max_drawdown, return empty (kill-switch)
-    """
     if state is None:
         state = RiskState()
     if state.peak_equity is None or equity_usd > state.peak_equity:
         state.peak_equity = equity_usd
     if state.peak_equity and equity_usd < (1.0 - max_drawdown) * state.peak_equity:
-        return []  # de-risk entirely
+        return []
     cap = risk_per_trade * equity_usd
     trimmed = []
     for it in intents:
