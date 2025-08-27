@@ -3,6 +3,7 @@ import time, uuid, logging
 from typing import Dict, List
 from .cb_client import CBClient
 from .state import add_bracket, load_state, save_state, remove_bracket_by_id
+from .analytics import log_trade
 
 log = logging.getLogger(__name__)
 
@@ -86,3 +87,29 @@ def manage_brackets(cb: CBClient, poll_secs: int = 5, trail_atr_mult: float = 0.
     if changed:
         save_state(st)
     time.sleep(poll_secs)
+
+
+def place_bracket_short(cb: CBClient, product_id: str, base_size: float, entry: float, stop: float, target: float, dry_run: bool) -> dict:
+    """
+    Enter short (market sell) and register a synthetic OCO. NOTE: True net shorts require margin/derivatives.
+    On spot-only accounts, this function only sells existing holdings. If holdings are insufficient, skip.
+    """
+    cid = str(uuid.uuid4())
+    if dry_run:
+        prev = cb.preview_order(side="sell", product_id=product_id, base_size=str(base_size))
+        order_res = {"preview": prev, "client_order_id": cid}
+    else:
+        order = cb.market_order("sell", product_id=product_id, base_size=str(base_size), client_order_id=cid)
+        order_res = {"order": order, "client_order_id": cid}
+    add_bracket({
+        "client_order_id": cid,
+        "product_id": product_id,
+        "side": "short",
+        "base_size": base_size,
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "active": True,
+        "created_ts": int(time.time())
+    })
+    return order_res

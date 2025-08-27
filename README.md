@@ -73,3 +73,19 @@ python -m src.run_trader --manage-brackets
 **Config**
 See `.env.example` for:
 `MIN_RR, STOP_ATR_MULT, TARGET_ATR_MULT, TRAIL_ATR_MULT, BREAK_EVEN_AFTER_R, MANAGER_POLL_SECS`.
+
+
+## New: Shorts, Kelly sizing, Bandit allocator
+- **Short entries** (Donchian breakdown, Trend RSI rip). *Note:* true net shorts require margin/derivatives; on spot-only accounts we only sell existing holdings. Disable via `ENABLE_SHORTS=false` (default).
+- **Kelly-capped sizing** using rolling trade outcomes per setup (`trades.csv`). Env: `ENABLE_KELLY`, `KELLY_CAP`, `KELLY_FLOOR`.
+- **Bandit allocator** to prioritize setups with higher expectancy: `BANDIT_MODE=ucb1|thompson|none`, `UCB_C` for exploration.
+- **Trade logging** to `state/trades.csv` with realized R-multiples and PnL.
+
+**Flow**
+1. `--rr-trades` proposes bracketed entries (long/short) that pass `MIN_RR`.
+
+2. Bandit ranks setups; Kelly scales per-trade risk.
+
+3. `--manage-brackets` executes stops/targets, moves to breakeven after +1R, optional ATR trailing.
+
+

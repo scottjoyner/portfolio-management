@@ -55,3 +55,46 @@ def trend_rsi_pullback_setup(df: pd.DataFrame, stop_atr_mult: float = 2.0, targe
         target = entry + 2.0 * atr
     rr = rr_ratio(entry, stop, target, "long")
     return {"side": "buy", "entry": entry, "stop": stop, "target": target, "atr": float(atr), "rr": float(rr), "name": "trend_rsi_pullback"}
+
+
+def donchian_breakdown_setup(df: pd.DataFrame, stop_atr_mult: float = 2.0, target_atr_mult: float = 3.0, lookback: int = 20) -> Optional[Dict]:
+    """
+    Short-only: if close pierces the 20-day low, set stop = entry + k*ATR, target = entry - m*ATR.
+    """
+    if len(df) < max(lookback, 50):
+        return None
+    atr = compute_atr(df).iloc[-1]
+    entry = float(df["close"].iloc[-1])
+    breakdown = float(df["low"].rolling(lookback).min().iloc[-2])
+    if entry >= breakdown:
+        return None
+    stop = entry + stop_atr_mult * atr
+    target = entry - target_atr_mult * atr
+    rr = rr_ratio(entry, stop, target, "short")
+    return {"side": "sell", "entry": entry, "stop": stop, "target": target, "atr": float(atr), "rr": float(rr), "name": "donchian_breakdown"}
+
+def trend_rsi_rip_setup(df: pd.DataFrame, stop_atr_mult: float = 2.0, target_low_lookback: int = 20) -> Optional[Dict]:
+    """
+    Downtrend (SMA200 down, close < SMA50); RSI>65 signals rip to sell. Stop = entry + k*ATR, target = 20D low.
+    """
+    if len(df) < 220:
+        return None
+    cl = df["close"]
+    sma50 = cl.rolling(50).mean().iloc[-1]
+    sma200_series = cl.rolling(200).mean()
+    sma200 = sma200_series.iloc[-1]
+    sma200_prev = sma200_series.iloc[-5]
+    if not (cl.iloc[-1] < sma50 and sma200 < sma200_prev):
+        return None
+    from .data import rsi  # local import
+    r = rsi(cl).iloc[-1]
+    if r <= 65:
+        return None
+    atr = compute_atr(df).iloc[-1]
+    entry = float(cl.iloc[-1])
+    stop = entry + stop_atr_mult * atr
+    target = float(df["low"].rolling(target_low_lookback).min().iloc[-2])
+    if target >= entry:
+        target = entry - 2.0 * atr
+    rr = rr_ratio(entry, stop, target, "short")
+    return {"side": "sell", "entry": entry, "stop": stop, "target": target, "atr": float(atr), "rr": float(rr), "name": "trend_rsi_rip"}

@@ -1,3 +1,5 @@
+from .bandit import ucb1_scores, thompson_scores
+from .analytics import rolling_stats, kelly_from_history
 from __future__ import annotations
 import os, time, uuid, logging
 import pandas as pd
@@ -7,10 +9,10 @@ from .data import fetch_candles_df
 from .strategy import trend_signal, target_weight
 from .portfolio import rebalance_plan
 from .risk import apply_risk_checks, RiskState
-from .alpha.alpha import donchian_breakout_setup, trend_rsi_pullback_setup
+from .alpha.alpha import donchian_breakout_setup, trend_rsi_pullback_setup, donchian_breakdown_setup, trend_rsi_rip_setup
 from .data import compute_atr
-from .execution import place_bracket_long, manage_brackets
-from .config import BRACKETS
+from .execution import place_bracket_long, place_bracket_short, manage_brackets
+from .config import BRACKETS, KELLY, BANDIT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -180,3 +182,14 @@ def run_manager_loop():
     manage_brackets(cb, poll_secs=BRACKETS.manager_poll_secs, trail_atr_mult=BRACKETS.trail_atr_mult,
                     break_even_after_r=BRACKETS.break_even_after_r, dry_run=SETTINGS.dry_run)
 
+
+
+def can_short_spot(holdings: dict, product_id: str, base_size: float) -> bool:
+    \"\"\"On spot-only accounts, we can't go net short. Allow 'short' only if we already hold enough base to sell.\"\"\"
+    base = product_id.split("-")[0]
+    have = 0.0
+    for p, amt in holdings.items():
+        if p.split("-")[0] == base:
+            have = amt
+            break
+    return have >= base_size - 1e-12

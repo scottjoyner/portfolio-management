@@ -32,3 +32,19 @@ class BracketSettings(BaseModel):
     max_open_brackets: int = int(os.getenv("MAX_OPEN_BRACKETS", "10"))
 
 BRACKETS = BracketSettings()
+
+
+# --- Kelly sizing & Bandit ---
+class KellySettings(BaseModel):
+    enable: bool = os.getenv("ENABLE_KELLY", "true").lower() == "true"
+    cap: float = float(os.getenv("KELLY_CAP", "0.5"))   # maximum Kelly fraction
+    floor: float = float(os.getenv("KELLY_FLOOR", "0.1"))  # minimum when enabled but unknown
+    default_rr: float = float(os.getenv("DEFAULT_RR", "2.0"))
+
+KELLY = KellySettings()
+
+class BanditSettings(BaseModel):
+    mode: str = os.getenv("BANDIT_MODE", "ucb1")  # none|ucb1|thompson
+    ucb_c: float = float(os.getenv("UCB_C", "0.8"))
+
+BANDIT = BanditSettings()
