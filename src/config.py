@@ -1,0 +1,21 @@
+from __future__ import annotations
+import os
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
+
+class Settings(BaseModel):
+    dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
+    products: list[str] = os.getenv("PRODUCTS", "BTC-USD,ETH-USD,SOL-USD").split(",")
+    cash_ccy: str = os.getenv("CASH", "USD")
+    bar_granularity: str = os.getenv("BAR_GRANULARITY", "ONE_HOUR")
+    lookback_days: int = int(os.getenv("LOOKBACK_DAYS", "240"))
+    target_vol: float = float(os.getenv("TARGET_VOL", "0.10"))  # annualized
+    risk_per_trade: float = float(os.getenv("RISK_PER_TRADE", "0.01"))
+    max_drawdown: float = float(os.getenv("MAX_DD", "0.15"))
+    min_notional: float = float(os.getenv("MIN_NOTIONAL", "50"))
+    # Optional: portfolio name
+    portfolio_name: str = os.getenv("PORTFOLIO_NAME", "quant-bot")
+
+SETTINGS = Settings()
