@@ -89,3 +89,48 @@ See `.env.example` for:
 3. `--manage-brackets` executes stops/targets, moves to breakeven after +1R, optional ATR trailing.
 
 
+
+
+## Transaction Costs & Slippage
+Configurable bps knobs applied when sizing/gating R:R:
+- `TAKER_FEE_BPS` (default **8** bps)
+- `SLIPPAGE_BPS` (extra safety margin)
+- `IMPACT_COEFF` (bps × sqrt($notional/10k))
+
+We estimate **effective fill** from mid using half-spread + fees + impact.
+
+## Per-Product / Per-Setup Kelly Caps
+Use JSON env vars to restrict aggressiveness:
+```bash
+export KELLY_CAPS_PRODUCT_JSON='{"BTC-USD":0.6,"ETH-USD":0.5,"SOL-USD":0.4}'
+export KELLY_CAPS_SETUP_JSON='{"donchian_breakout":0.5,"trend_rsi_pullback":0.4,"donchian_breakdown":0.5,"trend_rsi_rip":0.4}'
+```
+
+## Live Dashboard
+Install `streamlit`, then run:
+```bash
+PYTHONPATH=. streamlit run src/dashboard_app.py
+```
+Shows recent trades, equity, setup stats, bandit scores, open brackets, and Kelly caps.
+
+
+## Paper Trading (Bracket Logic)
+Run a historical simulation of the bracket strategy (long/short) with risk-per-trade sizing and simple transaction costs:
+```bash
+python -m src.run_paper --products BTC-USD,ETH-USD --granularity ONE_HOUR --lookback-days 240 --initial-cash 20000 --risk-per-trade 0.01 --min-rr 2.0
+```
+Results are written to `state/paper_equity.csv` and trades to `state/trades.csv`.
+
+## CoinMarketCap → Neo4j
+Fetch top-5000 listings + detailed info, cache JSON, then ingest to Neo4j:
+```bash
+# 1) Fetch (requires CMC_API_KEY)
+python -m src.fetch_cmc
+
+# 2) Ingest
+python -c "from src.neo4j_cmc import ingest_from_files; ingest_from_files('data/cmc/json')"
+```
+Schema uses nodes: `:Asset(cmc_id)`, `:Network(name)`, `:Category(name)`, `:Tag(name)` with relationships:
+- `(:Asset)-[:ON_NETWORK]->(:Network)`
+- `(:Asset)-[:HAS_CATEGORY]->(:Category)`
+- `(:Asset)-[:HAS_TAG]->(:Tag)`

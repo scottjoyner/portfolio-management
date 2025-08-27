@@ -1,3 +1,4 @@
+from .tcost import effective_fill_price
 from .bandit import ucb1_scores, thompson_scores
 from .analytics import rolling_stats, kelly_from_history
 from __future__ import annotations
@@ -12,7 +13,7 @@ from .risk import apply_risk_checks, RiskState
 from .alpha.alpha import donchian_breakout_setup, trend_rsi_pullback_setup, donchian_breakdown_setup, trend_rsi_rip_setup
 from .data import compute_atr
 from .execution import place_bracket_long, place_bracket_short, manage_brackets
-from .config import BRACKETS, KELLY, BANDIT
+from .config import BRACKETS, KELLY, BANDIT, KELLY_CAPS, TCOST
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -37,15 +38,16 @@ def get_portfolio_value_and_holdings(cb: CBClient, products: list[str], cash_ccy
                 if base == ccy:
                     base_holdings[p] = avail
     # Get prices to compute marked-to-market
-    prices = {}
+    prices, bids, asks = {}, {}, {}
     best = cb.best_bid_ask(products)
     for bidask in best.get("pricebooks", best if isinstance(best, list) else []):
         pid = bidask.get("product_id")
         ask = float(bidask.get("asks", [{}])[0].get("price", 0)) if bidask.get("asks") else 0.0
         bid = float(bidask.get("bids", [{}])[0].get("price", 0)) if bidask.get("bids") else 0.0
+        bids[pid], asks[pid] = bid, ask
         prices[pid] = (ask + bid)/2 if ask and bid else max(ask, bid, 0.0)
     equity = cash_value + sum(base_holdings[p]*prices.get(p, 0.0) for p in products)
-    return equity, base_holdings, prices
+    return equity, base_holdings, prices, bids, asks
 
 def compute_target_weights(cb: CBClient, products: list[str], granularity: str, lookback_days: int, target_ann_vol: float) -> dict[str, float]:
     weights = {}
@@ -93,7 +95,7 @@ def place_or_preview(cb: CBClient, intents: list[dict], dry_run: bool):
 def rebalance():
     cb = CBClient()
     settings = SETTINGS
-    equity, holdings, prices = get_portfolio_value_and_holdings(cb, settings.products, settings.cash_ccy)
+    equity, holdings, prices, bids, asks = get_portfolio_value_and_holdings(cb, settings.products, settings.cash_ccy)
     logging.info(f"Equity ~ ${equity:,.2f}; holdings: {holdings}")
     weights = compute_target_weights(cb, settings.products, settings.bar_granularity, settings.lookback_days, settings.target_vol)
     logging.info(f"Target weights: {weights}")
@@ -147,7 +149,7 @@ def place_rr_trades():
     cb = CBClient()
     settings = SETTINGS
     # Equity & prices
-    equity, holdings, prices = get_portfolio_value_and_holdings(cb, settings.products, settings.cash_ccy)
+    equity, holdings, prices, bids, asks = get_portfolio_value_and_holdings(cb, settings.products, settings.cash_ccy)
     logging.info(f"[RR] Equity ~ ${equity:,.2f}")
     # Find bracket ideas
     ideas = signal_brackets(cb, settings.products, settings.bar_granularity, settings.lookback_days,
@@ -167,6 +169,10 @@ def place_rr_trades():
         risk_budget_usd = SETTINGS.risk_per_trade * equity
         base_size = max(0.0, risk_budget_usd / risk_per_unit)
         notional = base_size * mid
+        # Apply transaction costs & impact to expected entry
+        bid, ask = bids.get(pid, 0.0), asks.get(pid, 0.0)
+        e_entry = effective_fill_price('buy' if idea['side']=='buy' else 'sell', mid, bid, ask, notional,
+                                       taker_fee_bps=TCOST.taker_fee_bps, slippage_bps=TCOST.slippage_bps, impact_coeff=TCOST.impact_coeff)
         if notional < SETTINGS.min_notional:
             logging.info(f"[RR] Skip {pid}, notional too small: ${notional:.2f}")
             continue

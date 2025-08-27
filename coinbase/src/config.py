@@ -48,3 +48,33 @@ class BanditSettings(BaseModel):
     ucb_c: float = float(os.getenv("UCB_C", "0.8"))
 
 BANDIT = BanditSettings()
+
+
+class KellyCaps(BaseModel):
+    product_caps_json: str = os.getenv("KELLY_CAPS_PRODUCT_JSON", "{}")
+    setup_caps_json: str = os.getenv("KELLY_CAPS_SETUP_JSON", "{}")
+
+    @property
+    def product_caps(self) -> dict:
+        import json
+        try:
+            return json.loads(self.product_caps_json or "{}")
+        except Exception:
+            return {}
+
+    @property
+    def setup_caps(self) -> dict:
+        import json
+        try:
+            return json.loads(self.setup_caps_json or "{}")
+        except Exception:
+            return {}
+
+KELLY_CAPS = KellyCaps()
+
+class TCostSettings(BaseModel):
+    taker_fee_bps: float = float(os.getenv("TAKER_FEE_BPS", "8.0"))
+    slippage_bps: float = float(os.getenv("SLIPPAGE_BPS", "0.0"))
+    impact_coeff: float = float(os.getenv("IMPACT_COEFF", "1.5"))
+
+TCOST = TCostSettings()
