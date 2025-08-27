@@ -1,1 +1,7 @@
 .venv/*
+graph-alpha-bot/.env
+graph-alpha-bot/app/__pycache__/*
+graph-alpha-bot/app/data/__pycache__/*
+coinbase/.env
+coinbase/src/alt/__pycache__/*
+coinbase/src/__pycache__/*
