@@ -1,0 +1,32 @@
+{
+  "brackets": [
+    {
+      "client_order_id": "TEST-EXIT-1",
+      "product_id": "BTC-USD",
+      "side": "long",
+      "base_size": 0.0001,
+      "entry": 9000000000.0,
+      "stop": 8000000000.0,
+      "target": 10000000000.0,
+      "active": false,
+      "created_ts": 1756321862,
+      "setup": "test",
+      "closed_ts": 1756321878,
+      "exit_reason": "stop"
+    },
+    {
+      "client_order_id": "TEST-EXIT-1",
+      "product_id": "BTC-USD",
+      "side": "long",
+      "base_size": 0.0001,
+      "entry": 9000000000.0,
+      "stop": 8000000000.0,
+      "target": 10000000000.0,
+      "active": false,
+      "created_ts": 1756334310,
+      "setup": "test",
+      "closed_ts": 1756334339,
+      "exit_reason": "stop"
+    }
+  ]
+}

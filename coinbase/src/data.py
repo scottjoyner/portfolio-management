@@ -1,33 +1,73 @@
 from __future__ import annotations
 import time
+import math
 import pandas as pd
 from .cb_client import CBClient
 
-def fetch_candles_df(client: CBClient, product_id: str, lookback_days: int = 240, granularity: str = "ONE_DAY") -> pd.DataFrame:
+_SEC_PER = {
+    "ONE_MINUTE":60, "FIVE_MINUTE":300, "FIFTEEN_MINUTE":900, "THIRTY_MINUTE":1800,
+    "ONE_HOUR":3600, "TWO_HOUR":7200, "FOUR_HOUR":14400, "SIX_HOUR":21600, "ONE_DAY":86400
+}
+
+def fetch_candles_df(
+    client: CBClient,
+    product_id: str,
+    lookback_days: int = 240,
+    granularity: str = "ONE_DAY",
+    *,
+    chunk_bars: int = 200,        # smaller than 300 to reduce payload
+    max_retries: int = 6,
+    backoff_base_s: float = 1.5,
+    backoff_cap_s: float = 30.0
+) -> pd.DataFrame:
     end = int(time.time())
-    start = end - lookback_days * 86400
-    step = 300
-    sec_per_bar = {"ONE_MINUTE":60,"FIVE_MINUTE":300,"FIFTEEN_MINUTE":900,"THIRTY_MINUTE":1800,
-                   "ONE_HOUR":3600,"TWO_HOUR":7200,"FOUR_HOUR":14400,"SIX_HOUR":21600,"ONE_DAY":86400}[granularity]
+    start = end - int(lookback_days) * 86400
+    spb = _SEC_PER[granularity]
+
     frames = []
     cursor = start
     while cursor < end:
-        chunk_end = min(end, cursor + step*sec_per_bar)
-        raw = client.public_candles(product_id, start_unix=cursor, end_unix=chunk_end, granularity=granularity, limit=300)
-        rows = []
-        for c in raw.get("candles", raw if isinstance(raw, list) else []):
-            if isinstance(c, dict):
-                ts = int(c.get("start", c.get("start_time", 0)))
-                rows.append([ts, float(c.get("open", 0)), float(c.get("high", 0)), float(c.get("low", 0)), float(c.get("close", 0)), float(c.get("volume", 0))])
-            else:
-                ts, lo, hi, op, cl, vol = c
-                rows.append([int(ts), float(op), float(hi), float(lo), float(cl), float(vol)])
-        if rows:
-            df = pd.DataFrame(rows, columns=["ts","open","high","low","close","volume"])
-            frames.append(df)
+        chunk_end = min(end, cursor + chunk_bars * spb)
+
+        raw = None
+        for att in range(max_retries):
+            try:
+                raw = client.public_candles(
+                    product_id,
+                    start_unix=cursor,
+                    end_unix=chunk_end,
+                    granularity=granularity,
+                    limit=chunk_bars
+                )
+                break  # success
+            except Exception as e:
+                # exponential backoff with cap
+                wait = min(backoff_cap_s, backoff_base_s * (2 ** att))
+                time.sleep(wait)
+                if att == max_retries - 1:
+                    # give up on this window, move on so the run can continue
+                    print(f"[candles] skip {product_id} {cursor}->{chunk_end} after retries: {e}")
+        if raw:
+            rows = []
+            payload = raw.get("candles", raw if isinstance(raw, list) else [])
+            for c in payload:
+                if isinstance(c, dict):
+                    ts = int(c.get("start", c.get("start_time", 0)))
+                    rows.append([ts, float(c.get("open", 0)), float(c.get("high", 0)),
+                                 float(c.get("low", 0)), float(c.get("close", 0)), float(c.get("volume", 0))])
+                else:
+                    # tuple/list form: [ts, low, high, open, close, volume] → normalize to o,h,l,c
+                    ts, lo, hi, op, cl, vol = c
+                    rows.append([int(ts), float(op), float(hi), float(lo), float(cl), float(vol)])
+            if rows:
+                df = pd.DataFrame(rows, columns=["ts","open","high","low","close","volume"])
+                frames.append(df)
+
         cursor = chunk_end
+
     if not frames:
-        return pd.DataFrame(columns=["ts","open","high","low","close","volume"])
+        return pd.DataFrame(columns=["open","high","low","close","volume"])
+
     out = pd.concat(frames, ignore_index=True).drop_duplicates("ts").sort_values("ts")
     out["datetime"] = pd.to_datetime(out["ts"], unit="s", utc=True)
     out.set_index("datetime", inplace=True)

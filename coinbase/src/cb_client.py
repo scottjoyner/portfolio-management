@@ -1,4 +1,3 @@
-# src/cb_client.py
 from __future__ import annotations
 import os
 from dotenv import load_dotenv
@@ -7,11 +6,13 @@ from coinbase.rest import RESTClient
 load_dotenv(override=False)
 
 class CBClient:
-    def __init__(self, api_key: str | None = None, api_secret: str | None = None, timeout: int = 10):
+    def __init__(self, api_key: str | None = None, api_secret: str | None = None, timeout: int | None = None):
         api_key = api_key or os.getenv("COINBASE_API_KEY")
         api_secret = api_secret or os.getenv("COINBASE_API_SECRET")
+        # allow override via env; default to 30s
+        timeout = timeout or int(float(os.getenv("CB_TIMEOUT_S", "30")))
         self.client = RESTClient(api_key=api_key, api_secret=api_secret, timeout=timeout)
-
+        
     def list_accounts(self) -> dict:
         resp = self.client.get_accounts()
         return resp.to_dict() if hasattr(resp, "to_dict") else resp
