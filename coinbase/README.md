@@ -61,3 +61,18 @@ Kelly & Bandit: `ENABLE_KELLY, KELLY_CAP, KELLY_FLOOR, DEFAULT_RR, BANDIT_MODE, 
 Costs: `TAKER_FEE_BPS, SLIPPAGE_BPS, IMPACT_COEFF`  
 Alt metadata: `COINGECKO_API_KEY, TOKENLIST_URLS, CHAINLIST_URL`  
 Neo4j: `NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE`
+
+
+# A) Run your original strategy pack bar-by-bar + monthly portfolio overlay
+python -m src.run_backtest \
+  --products BTC-USD,ETH-USD,SOL-USD,LINK-USD,MATIC-USD \
+  --granularity ONE_HOUR \
+  --lookback-days 365 \
+  --adapters suite,pm \
+  --initial-cash 20000 --risk-per-trade 0.01 --fee-bps 8 --slip-bps 1.5 --fill-when next
+
+# B) Pure portfolio (monthly rebalance only)
+python -m src.run_backtest --adapters pm
+
+# C) Blend: triple-MA + Donchian + monthly portfolio
+python -m src.run_backtest --adapters ma,donch,pm

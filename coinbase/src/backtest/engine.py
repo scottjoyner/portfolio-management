@@ -35,9 +35,9 @@ class ExecModel:
 @dataclass
 class RiskModel:
     initial_cash: float = 10_000.0
-    risk_per_trade: float = 0.01           # fraction of equity at risk per trade
-    max_leverage: float = 1.0              # portfolio-level gross cap
-    max_positions: int = 12
+    risk_per_trade: float = 0.01           # fraction of equity at risk per bracket trade
+    max_leverage: float = 1.0              # not used yet; long-only cash cap
+    max_positions: int = 12                # bracket positions cap
     min_notional: float = 25.0
 
 @dataclass
@@ -45,14 +45,14 @@ class BTConfig:
     products: List[str]
     granularity: str = os.getenv("BAR_GRANULARITY", "ONE_HOUR")
     lookback_days: int = 240
-    start: Optional[str] = None            # ISO date (UTC) optional cut
+    start: Optional[str] = None
     end: Optional[str] = None
     exec_model: ExecModel = dataclasses.field(default_factory=ExecModel)
     risk_model: RiskModel = dataclasses.field(default_factory=RiskModel)
-    # trailing/management
+    # trailing/management for bracket positions
     enable_trailing: bool = True
     trail_atr_mult: float = 1.0
-    breakeven_after_R: float = 1.0         # move stop to BE after +1R
+    breakeven_after_R: float = 1.0
 
 # -------------------- Data Portal --------------------
 class DataPortal:
@@ -68,13 +68,10 @@ class DataPortal:
             df = fetch_candles_df(self.cb, p, self.cfg.lookback_days, self.cfg.granularity)
             if df is None or df.empty:
                 continue
-            # normalize columns
-            df = df.copy()
-            df = df[["open","high","low","close","volume"]]
+            df = df[["open","high","low","close","volume"]].copy()
             dfs[p] = df
         if not dfs:
             raise RuntimeError("No price series loaded.")
-        # align on intersection to avoid lookahead; then slice date range
         idx = None
         for d in dfs.values():
             idx = d.index if idx is None else idx.intersection(d.index)
@@ -89,30 +86,19 @@ class DataPortal:
         return dfs
 
     def time_index(self) -> pd.DatetimeIndex:
-        # All dfs share same index now
         return next(iter(self.dfs.values())).index
 
     def window(self, product: str, t_idx: int) -> pd.DataFrame:
-        df = self.dfs[product]
-        return df.iloc[: t_idx + 1]
+        return self.dfs[product].iloc[: t_idx + 1]
 
-# -------------------- Strategy Adapters --------------------
-# Each adapter must implement .on_bar(t_idx) and return a list of signals (entry/stop/target)
-# Signal schema:
-#  {"name": "...","type":"entry","product_id":"BTC-USD","side":"buy|sell",
-#   "entry":float,"stop":float,"target":float,
-#   "atr":float,"rr":float,"confidence":0..1, ...}
-
+# -------------------- Strategy Adapters (examples) --------------------
 class BaseAdapter:
     def __init__(self, portal: DataPortal, cfg: BTConfig, name: str):
         self.portal = portal
         self.cfg = cfg
         self.name = name
-
     def on_bar(self, t_idx: int) -> List[Dict[str,Any]]:
         return []
-
-# --- Example adapters covering your earlier strategies (vectorized-ish) ---
 
 class TripleMAAdapter(BaseAdapter):
     """20/50/100 MA crossovers; long on 20>50 and price>100."""
@@ -134,20 +120,16 @@ class TripleMAAdapter(BaseAdapter):
             bull = (m20.iloc[-2] <= m50.iloc[-2] and m20.iloc[-1] > m50.iloc[-1]) and (price > m100.iloc[-1])
             if bull:
                 stop = price - 2.0*atr; target = price + 3.0*atr
-                out.append(self._sig(p, "buy", price, stop, target, atr, 0.6))
+                out.append({"name": self.name, "type":"entry","product_id":p,"side":"buy",
+                            "entry":price,"stop":stop,"target":target,
+                            "atr":float(atr),"rr": float((target-price)/max(1e-9, price-stop)),
+                            "confidence":0.6})
         return out
-
-    def _sig(self, p, side, entry, stop, target, atr, conf):
-        return {"name": self.name, "type":"entry","product_id":p,"side":side,
-                "entry":float(entry),"stop":float(stop),"target":float(target),
-                "atr":float(atr),"rr":float(max(0.0,(target-entry)/(entry-stop))) if side=="buy" else 0.0,
-                "confidence":float(conf)}
 
 class DonchianAdapter(BaseAdapter):
     def __init__(self, portal, cfg, lookback: int = 20):
         super().__init__(portal, cfg, "donchian_breakout")
         self.lookback = lookback
-
     def on_bar(self, t_idx):
         out=[]
         for p in self.portal.cfg.products:
@@ -157,10 +139,9 @@ class DonchianAdapter(BaseAdapter):
             entry = float(w["close"].iloc[-1])
             breakout = float(rolling_high(w, self.lookback).iloc[-2])
             if entry > breakout:
-                stop = entry - 2.0*atr; target = entry + 3.0*atr
                 out.append({"name": self.name,"type":"entry","product_id":p,"side":"buy",
-                            "entry":entry,"stop":stop,"target":target,"atr":float(atr),
-                            "rr": float((target-entry)/max(1e-9, entry-stop)),"confidence":0.6})
+                            "entry":entry,"stop":entry-2.0*atr,"target":entry+3.0*atr,
+                            "atr":float(atr),"rr": float(3.0/2.0),"confidence":0.6})
         return out
 
 class AggressiveMomoAdapter(BaseAdapter):
@@ -168,7 +149,6 @@ class AggressiveMomoAdapter(BaseAdapter):
     def __init__(self, portal, cfg, topk:int=4):
         super().__init__(portal, cfg, "aggressive_momo")
         self.topk = topk
-
     def on_bar(self, t_idx):
         scans=[]
         for p in self.portal.cfg.products:
@@ -190,17 +170,17 @@ class AggressiveMomoAdapter(BaseAdapter):
                         "breakeven_after_R":0.5,"trail_atr_mult":1.0})
         return out
 
-# -------------------- Execution & Portfolio --------------------
+# -------------------- Positions & Portfolio --------------------
 @dataclass
 class Position:
     product: str
-    side: str                 # "long" only in these adapters
+    side: str                 # "long"
     qty: float
     entry_px: float
     stop_px: float
     target_px: float
     atr: float
-    name: str
+    name: str                 # "pm_rebalance" are persistent PM holdings
     opened_ts: pd.Timestamp
 
 class Portfolio:
@@ -208,7 +188,6 @@ class Portfolio:
         self.cash = risk.initial_cash
         self.equity = risk.initial_cash
         self.positions: Dict[str, Position] = {}  # by product
-        self.gross = 0.0
         self.turnover = 0.0
 
     def valuation(self, prices: Dict[str,float]) -> float:
@@ -228,7 +207,6 @@ def _drawdown_curve(series: pd.Series) -> Tuple[pd.Series, float, float]:
     return dd, max_dd, calmar
 
 def compute_metrics(equity_curve: pd.Series, daily_curve: pd.Series) -> Dict[str,float]:
-    # annualization assumes 365d for daily
     ret = equity_curve.iloc[-1]/equity_curve.iloc[0]-1.0
     years = max(1e-9, (equity_curve.index[-1]-equity_curve.index[0]).days/365.25)
     cagr = (equity_curve.iloc[-1]/equity_curve.iloc[0])**(1/years)-1 if years>0 else 0.0
@@ -236,17 +214,12 @@ def compute_metrics(equity_curve: pd.Series, daily_curve: pd.Series) -> Dict[str
     d_rets = daily_curve.pct_change().dropna()
     ann = math.sqrt(365.0)
     mu, sd = float(d_rets.mean()), float(d_rets.std(ddof=0))
-    sharpe = (mu*365.0)/(sd*ann) if sd>0 else np.nan  # same as sqrt(365)*mu/sd
+    sharpe = (mu*365.0)/(sd*ann) if sd>0 else np.nan
     downside = float(d_rets[d_rets<0].std(ddof=0))
     sortino = (mu*365.0)/(downside*ann) if downside>0 else np.nan
-    return {
-        "CAGR": round(cagr,4),
-        "TotalReturn": round(ret,4),
-        "MaxDrawdown": round(max_dd,4),
-        "Calmar": round(calmar,3) if np.isfinite(calmar) else np.nan,
-        "Sharpe": round(sharpe,3),
-        "Sortino": round(sortino,3),
-    }
+    return {"CAGR": round(cagr,4), "TotalReturn": round(ret,4), "MaxDrawdown": round(max_dd,4),
+            "Calmar": round(calmar,3) if np.isfinite(calmar) else np.nan,
+            "Sharpe": round(sharpe,3), "Sortino": round(sortino,3)}
 
 # -------------------- Backtest Engine --------------------
 class BacktestEngine:
@@ -269,7 +242,6 @@ class BacktestEngine:
         return float(w[field].iloc[-1])
 
     def _apply_fees_slippage(self, px: float, side: str) -> float:
-        # simple bps on price + slippage
         bps = (self.cfg.exec_model.fee_bps + self.cfg.exec_model.slippage_bps)/10_000.0
         return px * (1 + bps) if side=="buy" else px * (1 - bps)
 
@@ -280,42 +252,109 @@ class BacktestEngine:
         return max(0.0, units)
 
     def _update_trailing(self, pos: Position, px: float):
+        if pos.name == "pm_rebalance":  # PM holdings are not bracket-managed
+            return pos
         if not self.cfg.enable_trailing: return pos
-        # move stop up if price advanced; ATR trail
         trail = self.cfg.trail_atr_mult * pos.atr
         new_stop = max(pos.stop_px, px - trail)
-        # optional breakeven
         r_gain = (px - pos.entry_px) / max(1e-9, pos.entry_px - pos.stop_px)
         if r_gain >= self.cfg.breakeven_after_R:
             new_stop = max(new_stop, pos.entry_px)
         pos.stop_px = new_stop
         return pos
 
+    def _apply_rebalance_signal(self, signal: Dict[str,Any], t_idx: int):
+        """Execute a cash-aware monthly rebalance into persistent PM holdings."""
+        if signal.get("type") != "rebalance": return
+        tw: Dict[str,float] = signal.get("target_weights", {}) or {}
+        idx = self.portal.time_index()
+        ts = idx[t_idx]
+        # current marks
+        prices_now = {p: float(self.portal.window(p, t_idx)["close"].iloc[-1]) for p in self.cfg.products}
+        equity = self.port.valuation(prices_now)
+
+        # compute current PM notionals
+        pm_qty = {p: 0.0 for p in self.cfg.products}
+        for p, pos in self.port.positions.items():
+            if pos.name == "pm_rebalance":
+                pm_qty[p] += pos.qty
+        pm_notional = {p: pm_qty[p]*prices_now[p] for p in pm_qty}
+        # target notionals
+        target_notional = {p: equity*float(w) for p, w in tw.items() if p in prices_now}
+
+        # Sell assets not in target
+        for p in list(pm_qty.keys()):
+            if p not in target_notional and pm_qty.get(p, 0.0) > 0:
+                # sell entire pm position
+                pos = self.port.positions.get(p)
+                if pos and pos.name == "pm_rebalance":
+                    fill_px = self._apply_fees_slippage(self._price_at(p, t_idx, "entry"), "sell")
+                    notional = pos.qty * fill_px
+                    self.port.cash += notional
+                    self.port.turnover += abs(notional)
+                    self.trades.append({"ts": ts.isoformat(), "product": p, "side":"REBAL_SELL_ALL",
+                                        "qty": -pos.qty, "price": fill_px, "name":"pm_rebalance"})
+                    del self.port.positions[p]
+                    pm_qty[p] = 0.0
+                    pm_notional[p] = 0.0
+
+        # Adjust positions towards target
+        for p, targ in target_notional.items():
+            cur = pm_notional.get(p, 0.0)
+            diff = targ - cur
+            if abs(diff) < self.cfg.risk_model.min_notional:
+                continue
+            if diff > 0:
+                # buy
+                fill_px = self._apply_fees_slippage(self._price_at(p, t_idx, "entry"), "buy")
+                qty = diff / fill_px
+                max_cash = self.port.cash / fill_px
+                qty = max(0.0, min(qty, max_cash))
+                if qty * fill_px < self.cfg.risk_model.min_notional or qty <= 0:
+                    continue
+                self.port.cash -= qty * fill_px
+                self.port.turnover += abs(qty * fill_px)
+                if p in self.port.positions and self.port.positions[p].name == "pm_rebalance":
+                    self.port.positions[p].qty += qty
+                else:
+                    self.port.positions[p] = Position(
+                        product=p, side="long", qty=qty, entry_px=fill_px,
+                        stop_px=0.0, target_px=1e12, atr=0.0, name="pm_rebalance", opened_ts=ts
+                    )
+                self.trades.append({"ts": ts.isoformat(), "product": p, "side":"REBAL_BUY",
+                                    "qty": qty, "price": fill_px, "name":"pm_rebalance"})
+            else:
+                # sell
+                qty_have = self.port.positions.get(p).qty if (p in self.port.positions and self.port.positions[p].name=="pm_rebalance") else 0.0
+                if qty_have <= 0: continue
+                fill_px = self._apply_fees_slippage(self._price_at(p, t_idx, "entry"), "sell")
+                qty = min(qty_have, abs(diff) / fill_px)
+                if qty * fill_px < self.cfg.risk_model.min_notional or qty <= 0:
+                    continue
+                self.port.cash += qty * fill_px
+                self.port.turnover += abs(qty * fill_px)
+                self.port.positions[p].qty -= qty
+                if self.port.positions[p].qty <= 1e-12:
+                    del self.port.positions[p]
+                self.trades.append({"ts": ts.isoformat(), "product": p, "side":"REBAL_SELL",
+                                    "qty": -qty, "price": fill_px, "name":"pm_rebalance"})
+
     # --- core loop ---
     def run(self) -> Dict[str,Any]:
         idx = self.portal.time_index()
         daily_marks: Dict[pd.Timestamp, float] = {}
         for t_idx, ts in enumerate(idx):
-            # 1) strategy signals at this bar
-            signals: List[Dict[str,Any]] = []
-            for ad in self.adapters:
-                try:
-                    signals.extend(ad.on_bar(t_idx) or [])
-                except Exception as e:
-                    signals.append({"type":"error","name":ad.name,"error":str(e)})
-
-            # 2) close/target/stop checks for open positions
+            # 1) exits/management for bracket positions
             prices_now = {p: float(self.portal.window(p, t_idx)["close"].iloc[-1]) for p in self.cfg.products}
             to_close = []
             for p, pos in self.port.positions.items():
                 px = prices_now[p]
-                # trailing
                 self._update_trailing(pos, px)
-                # exits
-                if px <= pos.stop_px:
-                    to_close.append((p, pos.stop_px, "stop"))
-                elif px >= pos.target_px:
-                    to_close.append((p, pos.target_px, "target"))
+                if pos.name != "pm_rebalance":
+                    if px <= pos.stop_px:
+                        to_close.append((p, pos.stop_px, "stop"))
+                    elif px >= pos.target_px:
+                        to_close.append((p, pos.target_px, "target"))
             for p, fill_px, reason in to_close:
                 pos = self.port.positions.pop(p, None)
                 if pos is None: continue
@@ -323,27 +362,39 @@ class BacktestEngine:
                 notional = pos.qty * px_eff
                 self.port.cash += notional
                 self.port.turnover += abs(notional)
-                self.trades.append({
-                    "ts": ts.isoformat(), "product": p, "side": "EXIT", "reason": reason,
-                    "qty": -pos.qty, "price": px_eff, "name": pos.name
-                })
+                self.trades.append({"ts": ts.isoformat(), "product": p, "side":"EXIT", "reason":reason,
+                                    "qty": -pos.qty, "price": px_eff, "name": pos.name})
 
-            # 3) new entries
+            # 2) gather signals (can include 'rebalance')
+            signals: List[Dict[str,Any]] = []
+            for ad in self.adapters:
+                try:
+                    signals.extend(ad.on_bar(t_idx) or [])
+                except Exception as e:
+                    signals.append({"type":"error","name":ad.name,"error":str(e)})
+
+            # 3) apply any 'rebalance' signals first (portfolio overlay)
+            for s in signals:
+                if s.get("type") == "rebalance":
+                    self._apply_rebalance_signal(s, t_idx)
+
+            # 4) then apply entry signals (bracket trades)
             for s in signals:
                 if s.get("type") != "entry": continue
-                p = s["product_id"]; side = s["side"]
-                if side != "buy": continue  # long-only in this engine
-                if p in self.port.positions: continue
-                if len(self.port.positions) >= self.cfg.risk_model.max_positions: continue
+                if s.get("side") != "buy": continue  # long-only for now
+                p = s["product_id"]
+                if p in self.port.positions and self.port.positions[p].name != "pm_rebalance":
+                    continue
                 # execution price
-                fill_px = self._price_at(p, t_idx, field="entry")
+                fill_px = self._price_at(p, t_idx, "entry")
                 fill_px = self._apply_fees_slippage(fill_px, "buy")
                 # sizing
                 eq_now = self.port.valuation(prices_now)
                 qty = self._size_position(eq_now, fill_px, s["stop"])
                 notional = qty * fill_px
-                if notional < self.cfg.risk_model.min_notional or qty <= 0: continue
-                if notional > self.port.cash:  # cash cap (no leverage unless enabled later)
+                if notional < self.cfg.risk_model.min_notional or qty <= 0:
+                    continue
+                if notional > self.port.cash:
                     continue
                 # place
                 self.port.cash -= notional
@@ -352,20 +403,15 @@ class BacktestEngine:
                     product=p, side="long", qty=qty, entry_px=fill_px, stop_px=float(s["stop"]),
                     target_px=float(s["target"]), atr=float(s.get("atr",0.0)), name=s["name"], opened_ts=ts
                 )
-                self.trades.append({
-                    "ts": ts.isoformat(), "product": p, "side": "BUY", "qty": qty,
-                    "price": fill_px, "name": s["name"]
-                })
+                self.trades.append({"ts": ts.isoformat(), "product": p, "side":"BUY", "qty": qty,
+                                    "price": fill_px, "name": s["name"]})
 
-            # 4) mark equity
+            # 5) mark equity
             eq = self.port.valuation(prices_now)
             self.eq_curve.loc[ts] = eq
-            if ts.normalize() not in daily_marks:
-                daily_marks[ts.normalize()] = eq
-            else:
-                daily_marks[ts.normalize()] = eq
+            daily_marks[ts.normalize()] = eq
 
-        # close all positions at last close
+        # final liquidation of bracket positions only (keep PM? -> liquidate for clean metrics)
         last_ts = idx[-1]
         prices_now = {p: float(self.portal.window(p, len(idx)-1)["close"].iloc[-1]) for p in self.cfg.products}
         for p, pos in list(self.port.positions.items()):
@@ -373,46 +419,37 @@ class BacktestEngine:
             notional = pos.qty * px_eff
             self.port.cash += notional
             self.port.turnover += abs(notional)
-            self.trades.append({
-                "ts": last_ts.isoformat(), "product": p, "side":"EXIT", "reason":"final",
-                "qty": -pos.qty, "price": px_eff, "name": pos.name
-            })
+            self.trades.append({"ts": last_ts.isoformat(), "product": p, "side":"EXIT", "reason":"final",
+                                "qty": -pos.qty, "price": px_eff, "name": pos.name})
             self.port.positions.pop(p, None)
         eq = self.port.valuation(prices_now)
         self.eq_curve.loc[last_ts] = eq
         daily_series = pd.Series(daily_marks).sort_index()
         self.eq_daily = daily_series
 
-        # compute metrics & benchmarks
-        bench = self._benchmarks(self.portal, self.cfg, self.eq_curve.index, self.port.cash)
+        # metrics & benchmarks
+        bench = self._benchmarks(self.portal, self.cfg, self.eq_curve.index, self.eq_curve.iloc[0])
         metrics = compute_metrics(self.eq_curve, self.eq_daily)
-        result = {
-            "metrics": metrics,
-            "benchmarks": bench["metrics"],
-        }
-        # write csvs
         trades_df = pd.DataFrame(self.trades)
         trades_fp = STATE_DIR/"bt_trades.csv"; trades_df.to_csv(trades_fp, index=False)
         equity_fp = STATE_DIR/"bt_equity.csv"; self.eq_curve.rename("equity").to_csv(equity_fp)
         daily_fp = STATE_DIR/"bt_daily.csv"; self.eq_daily.rename("equity").to_csv(daily_fp)
-        result["files"] = {"trades": str(trades_fp), "equity": str(equity_fp), "daily": str(daily_fp)}
-        return result
+        return {"metrics": metrics, "benchmarks": bench["metrics"],
+                "files": {"trades": str(trades_fp), "equity": str(equity_fp), "daily": str(daily_fp)}}
 
-    # --- simple benchmarks ---
+    # --- benchmarks ---
     def _benchmarks(self, portal: DataPortal, cfg: BTConfig, idx: pd.DatetimeIndex, cash0: float):
-        # BTC HODL
         if "BTC-USD" in cfg.products:
             px = portal.dfs["BTC-USD"]["close"]
         else:
             px = next(iter(portal.dfs.values()))["close"]
         px = px.reindex(idx).dropna()
-        units = cash0 / float(px.iloc[0])
-        eq = units * px
+        units = cash0 / float(px.iloc[0]); eq = units * px
         met = compute_metrics(eq, eq.resample("1D").last().dropna())
-        # Equal-weight HODL
         eqw = None
+        n = len(cfg.products)
         for p, df in portal.dfs.items():
-            s = (cash0/len(cfg.products)) * df["close"] / float(df["close"].iloc[0])
+            s = (cash0/n) * df["close"] / float(df["close"].iloc[0])
             eqw = s if eqw is None else eqw.add(s, fill_value=0.0)
         met2 = compute_metrics(eqw.reindex(idx).dropna(), eqw.resample("1D").last().dropna())
         return {"metrics":{"HODL_BTC":met, "HODL_EW":met2}}
