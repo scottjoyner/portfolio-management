@@ -1,0 +1,1 @@
+{"hedge_mode":"DELTA_NEUTRAL","base_asset":"ETH","quote_asset":"USD","target_delta_usd":"4600","hedge_notional_usd":"-4580","max_slippage_bps":"15","urgency_score":"0.62","cooldown_seconds":30}

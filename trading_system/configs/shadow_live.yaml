@@ -1,0 +1,5 @@
+app_env: prod
+trading_mode: SHADOW
+require_approvals: true
+live_trading_enabled: false
+canary_rollout_pct: 0

@@ -1,0 +1,11 @@
+{
+  "scenario": "hybrid_quote_decay",
+  "description": "CEX-DEX arb with delayed approval and quote decay",
+  "steps": [
+    {"t": 0, "event": "opportunity_detected", "gross_edge": 24.0},
+    {"t": 2, "event": "approval_requested"},
+    {"t": 8, "event": "approval_granted"},
+    {"t": 9, "event": "resimulate", "net_edge": 4.1},
+    {"t": 9, "event": "abandon", "reason": "net_edge_below_threshold"}
+  ]
+}

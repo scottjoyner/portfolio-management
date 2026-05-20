@@ -1,0 +1,1 @@
+{"action":"rebalance_position","steps":[{"venue":"uniswapv3","contract":"0xpool","method":"decreaseLiquidity"},{"venue":"uniswapv3","contract":"0xpool","method":"collect"},{"venue":"uniswapv3","contract":"0xpool","method":"mint"}],"estimated_gas":365000,"net_change_usd":"38"}

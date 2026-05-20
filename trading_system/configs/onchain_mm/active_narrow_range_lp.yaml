@@ -1,0 +1,8 @@
+strategy: volatility_width_rotation
+pool_allowlist: ["base:uniswapv3:eth-usdc-5"]
+rebalance_distance_bps: 35
+width_policy: fixed
+width_bps: 80
+target_utilization: 0.8
+hedge_mode: PARTIAL_HEDGE
+hedge_band_width_usd: 1200

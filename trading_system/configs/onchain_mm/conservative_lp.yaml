@@ -1,0 +1,11 @@
+strategy: concentrated_liquidity_mm
+pool_allowlist: ["base:uniswapv3:eth-usdc-5"]
+rebalance_distance_bps: 20
+width_policy: volatility_scaled
+target_utilization: 0.6
+hedge_mode: BAND_HEDGE
+hedge_band_width_usd: 2500
+gas_threshold_usd: 25
+slippage_threshold_bps: 15
+min_net_benefit_usd: 15
+profit_sweep_threshold_usd: 500

@@ -1,0 +1,23 @@
+{
+  "config": "configs/backtest_demo.yaml",
+  "latency_injection_ms": 25.0,
+  "metrics": {
+    "return": 0.014012695716559831,
+    "sharpe": 8.69039160498653,
+    "max_drawdown": -0.0040000000000000036
+  },
+  "queue_model": {
+    "fill_probability": 0.42307692299556215,
+    "expected_queue_time_ms": 1363.6363636363635,
+    "expected_fill_size": 0.42307692299556215,
+    "adverse_selection_bps": 3.9423076925110943,
+    "stale_quote_decay": 0.0
+  },
+  "maker_taker_participation": {
+    "maker": 0.62,
+    "taker": 0.38
+  },
+  "fragility_score": 0.3334,
+  "live_portability_score": 0.6665,
+  "strategy_count": 50
+}

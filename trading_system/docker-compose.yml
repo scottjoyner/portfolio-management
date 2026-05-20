@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      POSTGRES_DB: trading
+    ports: ["5432:5432"]
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+  api:
+    build: .
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    volumes: [".:/app"]
+    working_dir: /app
+    ports: ["8000:8000"]
+    depends_on: [postgres, redis]

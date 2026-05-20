@@ -1,0 +1,2 @@
+mode: PAPER
+enabled_strategies: [StairStepMarketMakerStrategy, AdaptiveSpreadMMStrategy]

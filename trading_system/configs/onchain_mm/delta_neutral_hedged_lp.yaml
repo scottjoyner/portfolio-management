@@ -1,0 +1,5 @@
+strategy: delta_neutral_lp_hedged
+hedge_mode: DELTA_NEUTRAL
+hedge_band_width_usd: 800
+max_hedge_turnover_usd_daily: 150000
+approval_threshold_usd: 50000

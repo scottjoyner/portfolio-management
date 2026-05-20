@@ -1,0 +1,413 @@
+{
+  "config": "configs/backtest_demo.yaml",
+  "methodology": "realism-penalized portability scoring",
+  "optimism_sources_penalized": [
+    "low latency assumptions",
+    "high queue fill probability",
+    "low stale quote decay",
+    "high cancel/replace turnover",
+    "order rejection/outage under-modeling"
+  ],
+  "strategy_rankings": [
+    {
+      "rank": 1,
+      "strategy_id": "TrendFollowingBreakoutStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 2,
+      "strategy_id": "MeanReversionZScoreStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 3,
+      "strategy_id": "CrossSectionalRelativeStrengthStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 4,
+      "strategy_id": "GridRebalanceCaptureStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 5,
+      "strategy_id": "OrderBookImbalanceStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 6,
+      "strategy_id": "VwapTwapExecutionStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 7,
+      "strategy_id": "PairsTradingStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 8,
+      "strategy_id": "VolatilityBreakoutStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 9,
+      "strategy_id": "RegimeSwitchingEnsembleAllocator",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 10,
+      "strategy_id": "LongHorizonDcaStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 11,
+      "strategy_id": "LiquidityVacuumSnapbackStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 12,
+      "strategy_id": "BasisCarryDerivativesStrategy",
+      "live_transfer_confidence": 0.71,
+      "fragility_score": 0.29,
+      "expected_live_return": 0.009918,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 13,
+      "strategy_id": "StairStepMarketMakerStrategy",
+      "live_transfer_confidence": 0.675,
+      "fragility_score": 0.325,
+      "expected_live_return": 0.009397,
+      "realism_penalty_total": 0.295
+    },
+    {
+      "rank": 14,
+      "strategy_id": "AdaptiveSpreadMMStrategy",
+      "live_transfer_confidence": 0.675,
+      "fragility_score": 0.325,
+      "expected_live_return": 0.009397,
+      "realism_penalty_total": 0.295
+    },
+    {
+      "rank": 15,
+      "strategy_id": "MomentumIgnitionDetector",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 16,
+      "strategy_id": "TradeFlowImbalanceMeanReversion",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 17,
+      "strategy_id": "OrderFlowToxicityFilterVPIN",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 18,
+      "strategy_id": "KalmanDynamicHedgePairs",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 19,
+      "strategy_id": "CointegrationBasketArb",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 20,
+      "strategy_id": "CrossExchangeShadowArb",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 21,
+      "strategy_id": "FundingBasisRegimeAllocator",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 22,
+      "strategy_id": "AtrChannelBreakoutVolTarget",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 23,
+      "strategy_id": "OpeningRangeSessionBreakout",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 24,
+      "strategy_id": "TrendPullbackContinuation",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 25,
+      "strategy_id": "ProbabilisticRegimeClassifier",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 26,
+      "strategy_id": "MetaStrategySelector",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 27,
+      "strategy_id": "ExhaustionMoveReversal",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 28,
+      "strategy_id": "QuoteFadeCancelPressurePredictor",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 29,
+      "strategy_id": "LiquidityShelfReaction",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 30,
+      "strategy_id": "InventoryHedgingOverlay",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 31,
+      "strategy_id": "DynamicTreasurySleeveAllocator",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 32,
+      "strategy_id": "CrashResponseAccumulator",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 33,
+      "strategy_id": "VolCompressionExpansionDetector",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 34,
+      "strategy_id": "CorrelationBreakdownDefense",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 35,
+      "strategy_id": "TailRiskHedgeTrigger",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 36,
+      "strategy_id": "ExecutionShortfallMinimizer",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 37,
+      "strategy_id": "AdaptiveParticipationAlgo",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 38,
+      "strategy_id": "ReinforcementLearningHarness",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 39,
+      "strategy_id": "BayesianParameterAdaptation",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 40,
+      "strategy_id": "CrossSectionalIntradayDispersion",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 41,
+      "strategy_id": "OrderbookResiliencyRefillSpeed",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 42,
+      "strategy_id": "SweepDetectionResponse",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 43,
+      "strategy_id": "PortfolioDynamicConvexityAllocator",
+      "live_transfer_confidence": 0.66,
+      "fragility_score": 0.34,
+      "expected_live_return": 0.009841,
+      "realism_penalty_total": 0.26
+    },
+    {
+      "rank": 44,
+      "strategy_id": "AvellanedaStoikovInventoryMM",
+      "live_transfer_confidence": 0.625,
+      "fragility_score": 0.375,
+      "expected_live_return": 0.009323,
+      "realism_penalty_total": 0.295
+    },
+    {
+      "rank": 45,
+      "strategy_id": "VolatilityScaledSkewMM",
+      "live_transfer_confidence": 0.625,
+      "fragility_score": 0.375,
+      "expected_live_return": 0.009323,
+      "realism_penalty_total": 0.295
+    },
+    {
+      "rank": 46,
+      "strategy_id": "GammaLikeVolHarvest",
+      "live_transfer_confidence": 0.625,
+      "fragility_score": 0.375,
+      "expected_live_return": 0.009323,
+      "realism_penalty_total": 0.295
+    },
+    {
+      "rank": 47,
+      "strategy_id": "MakerTakerSwitcher",
+      "live_transfer_confidence": 0.625,
+      "fragility_score": 0.375,
+      "expected_live_return": 0.009323,
+      "realism_penalty_total": 0.295
+    },
+    {
+      "rank": 48,
+      "strategy_id": "MarketMicroburstMomentum",
+      "live_transfer_confidence": 0.6175,
+      "fragility_score": 0.3825,
+      "expected_live_return": 0.009213,
+      "realism_penalty_total": 0.3025
+    },
+    {
+      "rank": 49,
+      "strategy_id": "LatencyArbResearchSimulator",
+      "live_transfer_confidence": 0.6175,
+      "fragility_score": 0.3825,
+      "expected_live_return": 0.009213,
+      "realism_penalty_total": 0.3025
+    },
+    {
+      "rank": 50,
+      "strategy_id": "QueueReactiveFillProbabilityMM",
+      "live_transfer_confidence": 0.5825,
+      "fragility_score": 0.4175,
+      "expected_live_return": 0.008702,
+      "realism_penalty_total": 0.3375
+    }
+  ]
+}

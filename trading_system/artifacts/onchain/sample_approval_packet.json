@@ -1,0 +1,15 @@
+{
+  "opportunity_id": "base-arb-0001",
+  "strategy_name": "cex_dex_arb",
+  "action_type": "swap",
+  "chain": "base",
+  "protocol": "uniswap_v3",
+  "expected_gross_pnl": 22.3,
+  "expected_net_pnl": 17.8,
+  "gas_estimate": 1.9,
+  "slippage_estimate": 2.1,
+  "capital_at_risk": 2500,
+  "route_trust_score": 0.82,
+  "revert_risk": 0.17,
+  "reason": "cross_venue_dislocation"
+}

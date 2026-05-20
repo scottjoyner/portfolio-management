@@ -1,0 +1,4 @@
+app_env: research
+trading_mode: SIMULATION
+gpu_enabled: true
+low_latency_mode: false

@@ -1,0 +1,5 @@
+app_env: replay
+trading_mode: SIMULATION
+low_latency_mode: true
+gpu_enabled: true
+queue_model: simple

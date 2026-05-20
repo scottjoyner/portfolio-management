@@ -1,0 +1,6 @@
+app_env: prod
+trading_mode: LIVE_APPROVAL_REQUIRED
+require_approvals: true
+live_trading_enabled: false
+low_latency_mode: true
+gpu_enabled: false

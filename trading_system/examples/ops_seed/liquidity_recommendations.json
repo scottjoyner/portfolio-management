@@ -1,0 +1,16 @@
+[
+  {
+    "recommendation_id": "liq-001",
+    "action": "Move 120k USDC from cb-core-mm to cb-hedge delta sleeve",
+    "expected_efficiency_delta": 0.07,
+    "expected_liquidity_score_delta": 0.05,
+    "confidence": 0.82
+  },
+  {
+    "recommendation_id": "liq-002",
+    "action": "Cancel stale BTC-USD maker inventory and recycle 80k capital",
+    "expected_efficiency_delta": 0.04,
+    "expected_liquidity_score_delta": 0.03,
+    "confidence": 0.76
+  }
+]

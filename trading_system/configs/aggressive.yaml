@@ -1,0 +1,5 @@
+app_env: dev
+trading_mode: PAPER
+require_approvals: true
+low_latency_mode: true
+canary_rollout_pct: 0

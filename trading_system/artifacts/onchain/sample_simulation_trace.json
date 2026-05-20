@@ -1,0 +1,9 @@
+{
+  "opportunity_id": "base-arb-0001",
+  "simulation_hash": "9f2de9f8b6d5f6c4d64d286f",
+  "chain": "base",
+  "protocol": "uniswap_v3",
+  "gas_used": 141000,
+  "min_out_respected": true,
+  "result": "success"
+}

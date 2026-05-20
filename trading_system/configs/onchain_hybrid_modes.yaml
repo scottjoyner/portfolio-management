@@ -1,0 +1,55 @@
+profiles:
+  base_paper_mode:
+    chain_enablement: [base]
+    protected_tx_required: false
+    min_net_edge: 2.0
+    max_slippage_bps: 40
+    max_gas_usd: 15
+    approvals:
+      required_for_new_contract: true
+  onchain_replay_lab:
+    chain_enablement: [base, ethereum]
+    mode: replay
+    mainnet_fork:
+      enabled: true
+      block_tag: latest
+  hybrid_cex_dex_arb:
+    chain_enablement: [base]
+    hedge:
+      venue: coinbase
+      max_unsafe_sequential: false
+      min_hedge_confidence: 0.7
+    trust_threshold: 0.68
+  lp_with_coinbase_hedge:
+    strategy: clmm_delta_neutral
+    fee_harvest_policy:
+      min_harvest_usd: 20
+      sweep_to: CASH_BUFFER
+    hedge_bands:
+      rebalance_delta: 0.12
+  aggressive_onchain_expert_mode:
+    chain_enablement: [base, ethereum]
+    max_slippage_bps: 75
+    approvals:
+      required_for_bridge: true
+      required_for_flash_loan: true
+  protected_execution_mode:
+    public_vs_private_compare: true
+    max_reorder_risk: 0.35
+    resimulate_before_send_ms: 1000
+  bridge_enabled_expert_mode:
+    bridges_allowlist: [across, cctp]
+    bridge_risk_threshold: 0.3
+    bridge_daily_limit: 50000
+  research_only_flash_loan_mode:
+    flash_loan:
+      enabled: true
+      live_enabled: false
+      approval_required: true
+  shadow_live_onchain_mode:
+    mode: shadow
+    broadcast_enabled: false
+  canary_live_hybrid_mode:
+    mode: canary_live
+    per_trade_capital_usd: 2000
+    auto_profit_sweep: true

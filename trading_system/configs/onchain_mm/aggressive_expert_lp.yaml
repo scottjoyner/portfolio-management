@@ -1,0 +1,8 @@
+strategy: inventory_aware_lp
+pool_allowlist: ["base:uniswapv3:eth-usdc-30", "base:aerodrome:cbeth-eth"]
+rebalance_distance_bps: 60
+width_policy: fee_density_optimizer
+target_utilization: 0.9
+hedge_mode: DIRECTIONAL_BIAS
+gas_threshold_usd: 90
+slippage_threshold_bps: 35

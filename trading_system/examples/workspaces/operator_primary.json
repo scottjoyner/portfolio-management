@@ -1,0 +1,14 @@
+{
+  "workspace_id": "operator-primary",
+  "role": "senior_operator",
+  "layout": {
+    "top": ["dashboard_kpis", "risk_state_banner", "approval_queue"],
+    "left": ["watchlist", "portfolio_selector", "strategy_status"],
+    "center": ["complex_trading_view", "execution_chart"],
+    "right": ["order_ticket", "order_preview", "liquidity_diagnostics"],
+    "bottom_tabs": ["open_orders", "fills", "positions", "alerts", "audit"]
+  },
+  "pinned_portfolios": ["cb-core-mm", "cb-hedge"],
+  "pinned_products": ["BTC-USD", "ETH-USD"],
+  "filter_presets": ["maker_only", "risk_flagged", "approval_pending"]
+}

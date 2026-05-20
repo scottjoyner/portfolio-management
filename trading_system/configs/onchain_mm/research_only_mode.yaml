@@ -1,0 +1,3 @@
+strategy: concentrated_liquidity_mm
+execution_enabled: false
+record_signals_only: true

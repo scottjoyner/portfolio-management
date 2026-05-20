@@ -1,0 +1,2 @@
+{"run_id": "9362283cd8383d74", "strategy_id": "portfolio", "config_hash": "9362283cd8383d74", "metrics": {"return": 0.014012695716559831, "sharpe": 8.69039160498653, "max_drawdown": -0.0040000000000000036}, "recorded_at": "2026-03-10T16:51:22.042289+00:00"}
+{"run_id": "9362283cd8383d74", "strategy_id": "portfolio", "config_hash": "9362283cd8383d74", "metrics": {"return": 0.014012695716559831, "sharpe": 8.69039160498653, "max_drawdown": -0.0040000000000000036}, "recorded_at": "2026-03-10T16:51:22.468084+00:00"}

@@ -1,0 +1,11 @@
+{
+  "route_id": "route-42",
+  "gross_edge": 35.2,
+  "gas_drag": 3.1,
+  "slippage_drag": 4.2,
+  "hedge_drag": 2.0,
+  "bridge_drag": 0.0,
+  "net_edge": 25.9,
+  "break_even_slippage_bps": 93.8,
+  "break_even_gas": 31.0
+}

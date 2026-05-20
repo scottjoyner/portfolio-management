@@ -1,0 +1,2 @@
+dataset: demo
+strategy: TrendFollowingBreakoutStrategy

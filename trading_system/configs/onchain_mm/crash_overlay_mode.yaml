@@ -1,0 +1,6 @@
+strategy: crash_liquidity_overlay
+crash_deployment_cap_usd: 75000
+retreat_triggers:
+  vol_spike: 2.2
+  liquidity_drop_pct: 35
+approval_required: true

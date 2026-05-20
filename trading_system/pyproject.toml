@@ -1,0 +1,33 @@
+[project]
+name = "trading-system"
+version = "0.1.0"
+description = "Modular algorithmic trading platform scaffold for Coinbase Advanced Trade"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.2",
+  "sqlalchemy>=2.0",
+  "alembic>=1.13",
+  "redis>=5.0",
+  "httpx>=0.27",
+  "websockets>=12.0",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "polars>=0.20",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.1", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
+
+[tool.pytest.ini_options]
+pythonpath=["."]
+testpaths=["tests"]
+
+
+[tool.mypy]
+python_version = "3.12"
+explicit_package_bases = true
+ignore_missing_imports = true
