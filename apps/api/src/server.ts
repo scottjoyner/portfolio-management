@@ -1,0 +1,1 @@
+import Fastify from "fastify"; export async function buildServer(){const app=Fastify(); app.get("/health",async()=>({ok:true})); return app;}

@@ -1,0 +1,1 @@
+import {env} from "@pkg/config"; const cmd=process.argv[2]||"doctor"; if(cmd==="doctor"){console.log(JSON.stringify({ok:true,paper:env.PAPER_TRADING,live:env.LIVE_TRADING},null,2));} else {console.log(`command ${cmd} not yet wired; safe noop`);} 

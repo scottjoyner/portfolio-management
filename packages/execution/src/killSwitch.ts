@@ -1,0 +1,1 @@
+export const killSwitchOn=(v:boolean)=>v;

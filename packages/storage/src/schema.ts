@@ -1,0 +1,1 @@
+export const tables=["venues","markets","market_pairs","orders","fills","positions","balances","audit_logs"];

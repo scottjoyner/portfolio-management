@@ -1,0 +1,1 @@
+export const USD=1_000_000; export const centsToMicros=(c:number)=>Math.round(c*10_000); export const probToMicros=(p:number)=>Math.round(p*USD);
