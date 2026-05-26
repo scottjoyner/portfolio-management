@@ -1,0 +1,1 @@
+export const settlementRiskBufferBps=(sameSource:boolean)=> sameSource?10:200;

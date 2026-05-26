@@ -1,0 +1,1 @@
+import {OrderBook} from "./types.js"; export function bestAsk(book:OrderBook, side:"yes"|"no"){const lvls=side==="yes"?book.yesAsks:book.noAsks; return lvls[0];}

@@ -1,0 +1,2 @@
+import {describe,it,expect} from "vitest";import {calcArb,preTradeRisk} from "@pkg/core";
+describe("arb",()=>{it("finds edge",()=>{const a={marketId:"1",venue:"kalshi",yesAsks:[{priceMicros:400000,size:10}],noAsks:[],ts:Date.now()} as any; const b={marketId:"2",venue:"polymarket",yesAsks:[],noAsks:[{priceMicros:500000,size:8}],ts:Date.now()} as any; const o=calcArb("p",a,b,5,5); expect(o?.edgeBps).toBeGreaterThan(0);}); it("risk blocks",()=>{const d=preTradeRisk(10,20_000_000,{minEdgeBps:100,maxNotional:10_000_000,killSwitch:false}); expect(d.approved).toBe(false);});});
