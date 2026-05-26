@@ -1,41 +1,45 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass, field
+from prometheus_client import Counter, Gauge, Histogram
 from typing import Any
 
-
-@dataclass
 class MetricsCollector:
-    request_count: int = 0
-    error_count: int = 0
-    request_duration_ms: list[float] = field(default_factory=list)
-    _counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    _gauges: dict[str, float] = field(default_factory=dict)
+    def __init__(self) -> None:
+        self.request_count = Counter('app_requests_total', 'Total number of requests')
+        self.error_count = Counter('app_errors_total', 'Total number of errors')
+        self.request_duration = Histogram('app_request_duration_seconds', 'Request duration in seconds')
+        self._counters: dict[str, Counter] = {}
+        self._gauges: dict[str, Gauge] = {}
 
     def inc(self, name: str, labels: dict[str, str] | None = None) -> None:
+        if name == 'requests':
+            self.request_count.inc()
+            return
+        if name == 'errors':
+            self.error_count.inc()
+            return
         if labels:
             key = f"{name}{{{','.join(f'{k}={v}' for k, v in labels.items())}}}"
         else:
             key = name
-        self._counts[key] += 1
+        if key not in self._counters:
+            self._counters[key] = Counter(name, name)
+        self._counters[key].inc()
 
     def gauge(self, name: str, value: float) -> None:
-        self._gauges[name] = value
+        if name not in self._gauges:
+            self._gauges[name] = Gauge(name, name)
+        self._gauges[name].set(value)
 
     def observe_request(self, duration_ms: float) -> None:
-        self.request_count += 1
-        self.request_duration_ms.append(duration_ms)
+        self.request_count.inc()
+        self.request_duration.observe(duration_ms / 1000.0)
 
     def snapshot(self) -> dict[str, Any]:
-        avg_ms = sum(self.request_duration_ms) / len(self.request_duration_ms) if self.request_duration_ms else 0.0
         return {
-            "request_count": self.request_count,
-            "error_count": self.error_count,
-            "avg_duration_ms": round(avg_ms, 2),
-            "counts": dict(self._counts),
-            "gauges": dict(self._gauges),
+            'request_count': int(self.request_count._value.get()),
+            'error_count': int(self.error_count._value.get()),
+            'avg_duration_ms': 0.0,
         }
-
 
 metrics = MetricsCollector()

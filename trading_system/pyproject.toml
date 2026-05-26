@@ -21,6 +21,7 @@ dependencies = [
   "cryptography>=42.0",
   "web3>=7.0",
   "eth-account>=0.13",
+  "prometheus-client>=0.17",
 ]
 
 [build-system]
@@ -42,4 +43,5 @@ testpaths=["tests"]
 [tool.mypy]
 python_version = "3.12"
 explicit_package_bases = true
+namespace_packages = true
 ignore_missing_imports = true
