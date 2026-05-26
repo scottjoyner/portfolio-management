@@ -1,7 +1,52 @@
+# --- Virtual environments ---
 .venv/*
+.venv/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# --- Environment files ---
+.env
+.env.local
+.env.production
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Trading System ---
+trading_system/.env
+trading_system/__pycache__/
+trading_system/**/__pycache__/
+trading_system/*.egg-info/
+trading_system/dist/
+trading_system/build/
+trading_system/.venv/
+trading_system/alembic/versions/*.pyc
+
+# --- Graph Alpha Bot ---
 graph-alpha-bot/.env
-graph-alpha-bot/app/__pycache__/*
-graph-alpha-bot/app/data/__pycache__/*
+graph-alpha-bot/app/__pycache__/
+graph-alpha-bot/app/data/__pycache__/
+
+# --- Coinbase ---
 coinbase/.env
-coinbase/src/alt/__pycache__/*
-coinbase/src/__pycache__/*
+coinbase/src/__pycache__/
+coinbase/src/alt/__pycache__/

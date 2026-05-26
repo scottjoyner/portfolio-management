@@ -1,0 +1,95 @@
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: trading-redis
+spec:
+  serviceName: trading-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trading-system
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: trading-system
+        component: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-redis
+spec:
+  selector:
+    app: trading-system
+    component: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: trading-postgres
+spec:
+  serviceName: trading-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trading-system
+      component: postgres
+  template:
+    metadata:
+      labels:
+        app: trading-system
+        component: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_USER
+          value: "trader"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: trading-db
+              key: password
+        - name: POSTGRES_DB
+          value: "trading"
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 2
+            memory: 4Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-postgres
+spec:
+  selector:
+    app: trading-system
+    component: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+```

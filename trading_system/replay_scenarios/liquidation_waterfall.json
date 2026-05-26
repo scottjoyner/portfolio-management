@@ -1,0 +1,16 @@
+{
+  "scenario": "liquidation_waterfall",
+  "description": "Cascading liquidations across leveraged positions",
+  "steps": [
+    {"t": 0, "event": "price_update", "price": 100.0, "product": "ETH-USD"},
+    {"t": 2, "event": "price_update", "price": 97.0, "product": "ETH-USD"},
+    {"t": 4, "event": "liquidation_alert", "size": 500000, "product": "ETH-USD"},
+    {"t": 6, "event": "price_update", "price": 91.0, "product": "ETH-USD"},
+    {"t": 8, "event": "liquidation_alert", "size": 1200000, "product": "ETH-USD"},
+    {"t": 10, "event": "price_update", "price": 82.0, "product": "ETH-USD"},
+    {"t": 12, "event": "price_update", "price": 78.0, "product": "ETH-USD"},
+    {"t": 15, "event": "opportunity_detected", "gross_edge": 80.0, "type": "liquidation_arb"},
+    {"t": 20, "event": "price_update", "price": 85.0, "product": "ETH-USD"},
+    {"t": 30, "event": "stabilization", "price": 90.0}
+  ]
+}

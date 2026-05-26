@@ -17,10 +17,22 @@ dependencies = [
   "pandas>=2.2",
   "polars>=0.20",
   "pyyaml>=6.0",
+  "psycopg2-binary>=2.9",
+  "cryptography>=42.0",
+  "web3>=7.0",
+  "eth-account>=0.13",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apps*", "core*", "risk*", "execution*", "exchange*", "market_data*", "onchain*", "portfolio*", "strategies*", "storage*", "compute*", "analytics*", "notifications*"]
+
 [project.optional-dependencies]
-dev = ["pytest>=8.1", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
+dev = ["pytest>=8.1", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10", "build>=1.0"]
 
 [tool.pytest.ini_options]
 pythonpath=["."]

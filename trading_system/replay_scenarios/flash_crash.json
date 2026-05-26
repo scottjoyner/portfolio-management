@@ -1,0 +1,15 @@
+{
+  "scenario": "flash_crash",
+  "description": "Sudden market crash with rapid price decline and liquidity vacuum",
+  "steps": [
+    {"t": 0, "event": "price_update", "price": 50000.0, "product": "BTC-USD"},
+    {"t": 5, "event": "price_update", "price": 48000.0, "product": "BTC-USD"},
+    {"t": 10, "event": "price_update", "price": 42000.0, "product": "BTC-USD"},
+    {"t": 12, "event": "price_update", "price": 38000.0, "product": "BTC-USD"},
+    {"t": 15, "event": "opportunity_detected", "gross_edge": 45.0},
+    {"t": 16, "event": "liquidity_warning", "depth_usd": 500000},
+    {"t": 20, "event": "price_update", "price": 41000.0, "product": "BTC-USD"},
+    {"t": 30, "event": "price_update", "price": 46000.0, "product": "BTC-USD"},
+    {"t": 60, "event": "recovery", "price": 49000.0}
+  ]
+}

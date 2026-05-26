@@ -1,0 +1,14 @@
+{
+  "scenario": "volatility_event",
+  "description": "High volatility regime with rapid price swings and MEV activity",
+  "steps": [
+    {"t": 0, "event": "volatility_update", "realized_vol_bps": 120, "product": "ETH-USD"},
+    {"t": 3, "event": "price_update", "price": 3200.0, "product": "ETH-USD"},
+    {"t": 6, "event": "mev_alert", "sandwich_risk": 0.85},
+    {"t": 8, "event": "price_update", "price": 3400.0, "product": "ETH-USD"},
+    {"t": 10, "event": "price_update", "price": 3100.0, "product": "ETH-USD"},
+    {"t": 12, "event": "opportunity_detected", "gross_edge": 55.0, "mev_risk": 0.75},
+    {"t": 14, "event": "opportunity_abandoned", "reason": "mev_risk_too_high"},
+    {"t": 20, "event": "price_update", "price": 3300.0, "product": "ETH-USD"}
+  ]
+}
