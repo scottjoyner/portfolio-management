@@ -2,35 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from core.events.ws_hub import hub
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-class PubSubHub:
-    def __init__(self) -> None:
-        self._channels: dict[str, set[WebSocket]] = {}
-
-    async def subscribe(self, channel: str, ws: WebSocket) -> None:
-        self._channels.setdefault(channel, set()).add(ws)
-
-    async def unsubscribe(self, channel: str, ws: WebSocket) -> None:
-        self._channels.get(channel, set()).discard(ws)
-
-    async def publish(self, channel: str, message: dict[str, Any]) -> None:
-        payload = json.dumps(message, default=str)
-        for ws in list(self._channels.get(channel, set())):
-            try:
-                await ws.send_text(payload)
-            except Exception:
-                self._channels.get(channel, set()).discard(ws)
-
-
-hub = PubSubHub()
 
 
 @router.websocket("/ws/orders")
@@ -42,7 +21,8 @@ async def ws_orders(websocket: WebSocket) -> None:
         while True:
             msg = await websocket.receive_text()
             data = json.loads(msg)
-            await hub.publish("orders", {"event": "client_message", "data": data, "client_id": id(websocket)})
+            from core.events.ws_hub import hub as h
+            await h.publish("orders", {"event": "client_message", "data": data, "client_id": id(websocket)})
     except WebSocketDisconnect:
         pass
     except Exception:
