@@ -1,0 +1,21 @@
+{
+  "pass": true,
+  "checks": {
+    "loadFixtures": true,
+    "safePairProposed": true,
+    "unsafeRejected": true,
+    "riskApproved": true,
+    "reconciliationClean": true,
+    "noLiveCalls": true
+  },
+  "risk": {
+    "approved": true,
+    "reasons": []
+  },
+  "recon": {
+    "ok": true,
+    "issues": [],
+    "requiresBlock": false
+  },
+  "liveTradingCertified": false
+}

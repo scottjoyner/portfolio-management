@@ -1,0 +1,1 @@
+export class KalshiClient { constructor(public readonly env:"demo"|"prod"="demo"){} async listMarkets(){return [];} }

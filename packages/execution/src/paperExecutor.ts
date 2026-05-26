@@ -1,0 +1,1 @@
+export const paperExecute=async()=>({ok:true,mode:"paper" as const});
