@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from execution.queue_model.models import SimpleQueueModel
+from core.events.ws_hub import hub
 
 
 @dataclass
@@ -101,6 +102,16 @@ class PaperExchangeEngine:
         else:
             self._queue_limit(order)
 
+        hub.publish_sync("orders", {
+            "event": "order_placed",
+            "order_id": order.order_id,
+            "product_id": product_id,
+            "side": side,
+            "order_type": order_type,
+            "size": str(size),
+            "strategy_id": strategy_id,
+        })
+
         return order
 
     def _fill_market(self, order: PaperOrder) -> None:
@@ -181,6 +192,18 @@ class PaperExchangeEngine:
             created_at=time.time(),
         )
         self.fills.append(fill)
+
+        hub.publish_sync("orders", {
+            "event": "order_filled",
+            "order_id": order.order_id,
+            "fill_id": fill.fill_id,
+            "product_id": order.product_id,
+            "side": order.side,
+            "size": str(fill_qty),
+            "price": str(price),
+            "liquidity": liquidity,
+            "fee": str(order.fee),
+        })
 
     def cancel_order(self, order_id: str) -> bool:
         order = self.orders.get(order_id)
