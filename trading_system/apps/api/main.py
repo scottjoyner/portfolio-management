@@ -1,4 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from __future__ import annotations
+
+import time
+import uuid
+from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.config.settings import Settings
 from core.models.domain import ExchangeTrustScore, OrderIntent, RiskMode
@@ -15,9 +23,51 @@ from onchain.strategies.hedging.hybrid_hedge import HybridHedgeLinker
 from onchain.strategies.treasury.profit_sweep import ProfitCaptureEngine
 from risk.engine import RiskEngine, RiskPolicy
 from strategies.registry.registry import load_strategies
+from apps.api.metrics import metrics
 from apps.api.ops_layer import router as ops_router
+from apps.api.ws_routes import router as ws_router
+from storage.postgres.session import init_db, get_db, _SessionLocal
 
-app = FastAPI(title="Trading System Control API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = Settings.from_env()
+    if settings.database_url:
+        init_db(settings.database_url)
+        from storage.postgres.repository import OpsRepository
+        db = next(get_db())
+        try:
+            repo = OpsRepository(db)
+            repo.seed_default_portfolios()
+        finally:
+            db.close()
+    yield
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Any) -> Any:
+        request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex[:12])
+        start = time.time()
+        try:
+            response = await call_next(request)
+        except Exception:
+            metrics.error_count += 1
+            raise
+        finally:
+            elapsed_ms = (time.time() - start) * 1000
+            metrics.observe_request(elapsed_ms)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app = FastAPI(
+    title="Trading System Control API",
+    description="Modular algorithmic trading platform API for Coinbase Advanced Trade and onchain DEX management.",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+app.add_middleware(RequestIDMiddleware)
+
 settings = Settings.from_env()
 risk_engine = RiskEngine(RiskPolicy())
 reconciler = ExchangeStateReconciler()
@@ -35,7 +85,18 @@ profit_capture = ProfitCaptureEngine()
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "app_env": settings.app_env}
+
+
+@app.get("/ready")
+def readiness() -> dict:
+    db_ok = _SessionLocal is not None
+    return {"status": "ready" if db_ok else "degraded", "database": db_ok}
+
+
+@app.get("/metrics")
+def prometheus_metrics() -> dict:
+    return metrics.snapshot()
 
 
 @app.get("/mode")
@@ -176,3 +237,4 @@ def bootstrap_base_examples() -> dict:
 
 
 app.include_router(ops_router)
+app.include_router(ws_router)

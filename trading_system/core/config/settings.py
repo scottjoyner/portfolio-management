@@ -1,7 +1,10 @@
+import logging
 import os
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+log = logging.getLogger(__name__)
 
 
 class TradingMode(str, Enum):
@@ -45,6 +48,9 @@ class Settings(BaseModel):
     gpu_enabled: bool = False
     queue_model: str = "simple"
     canary_rollout_pct: float = Field(default=0.0, ge=0, le=100)
+    ethereum_rpc_url: str = ""
+    base_rpc_url: str = ""
+    evm_private_key: str = ""
 
     @field_validator("queue_model")
     @classmethod
@@ -72,6 +78,9 @@ class Settings(BaseModel):
             gpu_enabled=_parse_bool_env("GPU_ENABLED", False),
             queue_model=os.getenv("QUEUE_MODEL", "simple"),
             canary_rollout_pct=float(os.getenv("CANARY_ROLLOUT_PCT", "0")),
+            ethereum_rpc_url=os.getenv("ETHEREUM_RPC_URL", ""),
+            base_rpc_url=os.getenv("BASE_RPC_URL", ""),
+            evm_private_key=os.getenv("EVM_PRIVATE_KEY", ""),
         )
 
     @model_validator(mode="after")
@@ -84,4 +93,6 @@ class Settings(BaseModel):
             raise ValueError("CANARY mode requires CANARY_ROLLOUT_PCT > 0")
         if self.trading_mode is not TradingMode.CANARY and self.canary_rollout_pct > 0:
             raise ValueError("CANARY_ROLLOUT_PCT can only be set when TRADING_MODE=CANARY")
+        if self.evm_private_key and self.app_env not in ("dev", "test"):
+            log.warning("EVM_PRIVATE_KEY is set in a non-dev environment — ensure you are using an HSM or vault in production")
         return self

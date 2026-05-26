@@ -1,0 +1,12 @@
+{
+  "scenario": "liquidity_crisis",
+  "description": "Low liquidity regime with wide spreads and high slippage",
+  "steps": [
+    {"t": 0, "event": "liquidity_update", "pool_depth_usd": 200000, "spread_bps": 15},
+    {"t": 5, "event": "opportunity_detected", "gross_edge": 30.0, "capital_required": 100000},
+    {"t": 7, "event": "slippage_estimate", "slippage_bps": 85},
+    {"t": 9, "event": "opportunity_detected", "gross_edge": 20.0, "capital_required": 50000},
+    {"t": 10, "event": "liquidity_update", "pool_depth_usd": 150000, "spread_bps": 22},
+    {"t": 15, "event": "opportunity_abandoned", "reason": "slippage_exceeds_edge"}
+  ]
+}

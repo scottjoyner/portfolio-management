@@ -7,7 +7,7 @@ def test_backtester_writes_deterministic_summary_and_validation(tmp_path: Path):
     output = tmp_path / "summary.json"
     validation = tmp_path / "validation.json"
     cmd = [
-        "python",
+        "python3",
         "apps/backtester/runner.py",
         "--config",
         "configs/backtest_demo.yaml",
