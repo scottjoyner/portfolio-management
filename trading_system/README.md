@@ -1,33 +1,43 @@
 # Trading System (Coinbase Advanced Trade)
 
-Production-oriented modular scaffold for a Coinbase-focused algorithmic trading and research platform with explicit risk and approvals.
+Production-oriented modular scaffold for a Coinbase-focused algorithmic trading and research platform with explicit risk gates, approvals, paper-first execution, and onchain route-analysis support.
 
 ## Highlights
+
 - Modular runtime apps: API, worker, backtester, replay engine, and paper exchange runners.
 - Risk engine with explicit mode gating and exchange trust state integration.
+- Ops API, PostgreSQL model layer, Alembic wiring, and deployment assets.
+- Coinbase Advanced Trade connector modules plus paper/shadow-first execution posture.
 - Onchain route analysis + approval packet generation path.
 - Strategy registry with broad catalog and replay/backtest utilities.
 - Test suite spanning unit, integration, replay/sim, and performance-smoke checks.
 
 ## Repository layout
-- `apps/`: runtime entrypoints.
-- `core/`, `risk/`, `execution/`, `exchange/`, `portfolio/`: core trading subsystems.
-- `onchain/`: onchain simulation/security/strategy modules.
-- `tests/`: automated test suites.
-- `docs/`: architecture, operations, and audit/testing evidence.
+
+- `apps/`: runtime entrypoints for API, worker, paper exchange, backtester, and replay engine.
+- `core/`, `risk/`, `execution`, `exchange/`, `portfolio/`: core trading subsystems.
+- `market_data/`: candles, order book, trades, indicators, features, and storage services.
+- `onchain/`: chain adapters, wallets, DEX/bridge/MEV, safety, simulation, and strategy modules.
+- `storage/`: PostgreSQL, Redis, and Parquet-oriented storage layers.
+- `tests/`: automated unit, integration, replay/sim, and performance-smoke suites.
+- `docs/`: architecture, migration, operations, repo audit, and testing evidence.
+- `deploy/`: production-style Docker Compose, systemd, environment, and bootstrap assets.
 
 ## Local setup
+
 ```bash
 cd trading_system
 pip install -e .[dev]
 ```
 
 Optional local infra for API dependencies:
+
 ```bash
 docker compose up -d postgres redis
 ```
 
 ## Run services
+
 ```bash
 # API
 uvicorn apps.api.main:app --reload --host 0.0.0.0 --port 8000
@@ -43,7 +53,9 @@ python -m apps.replay_engine.runner --fixture apps/replay_engine/fixtures/maker_
 ```
 
 ## Deployment
+
 For production deployment, use the `trading_system/deploy/` assets:
+
 - `trading_system/deploy/docker-compose.prod.yml` for a Docker stack.
 - `trading_system/deploy/systemd/portfolio.service` as a sample systemd unit.
 - `trading_system/deploy/.env.example` for runtime configuration.
@@ -51,7 +63,16 @@ For production deployment, use the `trading_system/deploy/` assets:
 
 Copy `trading_system/deploy/.env.example` to `trading_system/deploy/.env`, then update settings and secrets before launching.
 
+## Migration and implementation docs
+
+- `docs/MIGRATION_GUIDE.md` — database migration workflow, safety gates, rollback posture, and validation checklist.
+- `PLAN.md` — current implementation plan and staged roadmap.
+- `TODO.md` — current prioritized backlog.
+- `docs/testing/TEST_PLAN.md` — test layers and canonical local commands.
+- `docs/testing/TEST_RUN_RESULTS.md` — latest documented verification pass.
+
 ## Testing and checks
+
 ```bash
 # Full local quality gate
 make ci
@@ -62,15 +83,18 @@ ruff check .
 mypy .
 ```
 
-See `docs/testing/TEST_PLAN.md` and `docs/testing/TEST_RUN_RESULTS.md` for tested commands, scope, and caveats.
-
 ## Safety defaults
+
 - Live trading disabled by default.
 - Live modes require explicit `LIVE_TRADING_ENABLED=true`.
 - `TRADING_MODE=CANARY` requires non-zero `CANARY_ROLLOUT_PCT`.
 - `QUEUE_MODEL` constrained to `simple`, `priority`, or `pro_rata`.
+- Migration validation should run in paper mode with approvals required.
 
-## Known limitations
-- Ops API state is in-memory only (non-persistent).
-- No repository CI workflow is currently defined.
-- Alembic migration scaffolding is partial (`alembic/env.py` missing).
+## Known limitations / next work
+
+- A reviewed baseline Alembic revision should be committed and validated if `alembic/versions/` only contains package markers.
+- DB-backed integration tests need to prove migrations, repository persistence, and restart behavior against a real Postgres database.
+- WebSocket routes exist, but worker/paper/market-data producers still need full event publishing coverage.
+- Coinbase live order placement should remain disabled until read-only sync, shadow-mode preview, reconciliation, and approval gates are proven.
+- In-memory WebSocket fanout should be replaced or augmented with Redis pub/sub before multi-worker production deployment.
