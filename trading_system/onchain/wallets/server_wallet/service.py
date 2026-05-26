@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
+from web3.types import HexStr
 from onchain.chains.evm_generic.base import EVMChainAdapter
 from onchain.wallets.nonce_manager.service import NonceManager
 from onchain.wallets.signing.service import SigningService
@@ -33,7 +34,7 @@ class ServerWallet:
     def register_adapter(self, chain: str, adapter: EVMChainAdapter) -> None:
         self.chain_adapters[chain] = adapter
 
-    def send(self, chain: str, to: str, value: int = 0, data: str = "", gas: int | None = None, gas_price: int | None = None) -> str | None:
+    def send(self, chain: str, to: str, value: int = 0, data: str | bytes | HexStr = "", gas: int | None = None, gas_price: int | None = None) -> str | None:
         if self.signing_service is None or not self.signing_service.is_initialized:
             raise RuntimeError(f"wallet {self.name} has no signing service")
 
@@ -41,7 +42,7 @@ class ServerWallet:
         if adapter is None:
             raise ValueError(f"no adapter for chain {chain}")
 
-        tx = adapter.build_transaction(to, value, data, gas, gas_price)
+        tx = cast(dict[str, Any], adapter.build_transaction(to, value, data, gas, gas_price))
 
         if self.nonce_manager is not None:
             tx["nonce"] = self.nonce_manager.consume_nonce(chain, self.signing_service.address)
@@ -60,7 +61,7 @@ class ServerWallet:
         if adapter is None:
             return None
 
-        return adapter.wait_for_receipt(tx_hash, timeout=timeout)
+        return adapter.wait_for_receipt(cast(HexStr, tx_hash), timeout=timeout)
 
     def get_balance(self, chain: str) -> int | None:
         adapter = self.chain_adapters.get(chain)

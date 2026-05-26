@@ -42,6 +42,15 @@ python -m apps.backtester.runner --config configs/backtest_demo.yaml
 python -m apps.replay_engine.runner --fixture apps/replay_engine/fixtures/maker_toxic_flow.jsonl
 ```
 
+## Deployment
+For production deployment, use the `trading_system/deploy/` assets:
+- `trading_system/deploy/docker-compose.prod.yml` for a Docker stack.
+- `trading_system/deploy/systemd/portfolio.service` as a sample systemd unit.
+- `trading_system/deploy/.env.example` for runtime configuration.
+- `trading_system/deploy/bootstrap.sh` to bootstrap a Python 3.12 virtual environment and install dependencies.
+
+Copy `trading_system/deploy/.env.example` to `trading_system/deploy/.env`, then update settings and secrets before launching.
+
 ## Testing and checks
 ```bash
 # Full local quality gate

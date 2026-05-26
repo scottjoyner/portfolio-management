@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from web3 import Web3
-from web3.types import BlockIdentifier, TxParams, Wei
+from web3.types import BlockIdentifier, FilterParams, HexStr, TxParams, Wei
 
 log = logging.getLogger(__name__)
 
@@ -41,23 +41,24 @@ class EVMChainAdapter:
         return fn(*args).call(block_identifier=block)
 
     def get_logs(self, from_block: int, to_block: int, address: str | None = None, topics: list[str] | None = None) -> list[dict[str, Any]]:
-        filter_params: dict[str, Any] = {"fromBlock": from_block, "toBlock": to_block}
+        filter_params: FilterParams = {"fromBlock": from_block, "toBlock": to_block}
         if address:
             filter_params["address"] = Web3.to_checksum_address(address)
         if topics:
             filter_params["topics"] = topics
         return [dict(log) for log in self.w3.eth.get_logs(filter_params)]
 
-    def build_transaction(self, to: str, value: int = 0, data: str = "", gas: int | None = None, gas_price: int | None = None) -> TxParams:
+    def build_transaction(self, to: str, value: int = 0, data: str | bytes | HexStr = "", gas: int | None = None, gas_price: int | None = None) -> TxParams:
+        tx_data = cast(bytes | HexStr, data)
         tx: TxParams = {
             "to": Web3.to_checksum_address(to),
             "value": Wei(value),
-            "data": data,
+            "data": tx_data,
             "chainId": self.chain_id,
         }
         addr = Web3.to_checksum_address(to)
         if gas is None:
-            gas = self.w3.eth.estimate_gas({"to": addr, "value": Wei(value), "data": data})
+            gas = self.w3.eth.estimate_gas({"to": addr, "value": Wei(value), "data": cast(bytes | HexStr, data)})
         tx["gas"] = Wei(gas)
         if gas_price is None:
             gas_price = self.w3.eth.gas_price
@@ -68,12 +69,12 @@ class EVMChainAdapter:
         tx_hash = self.w3.eth.send_raw_transaction(signed_tx)
         return tx_hash.hex()
 
-    def wait_for_receipt(self, tx_hash: str, timeout: int = 120, poll_latency: float = 0.5) -> dict[str, Any]:
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout, poll_latency=poll_latency)
+    def wait_for_receipt(self, tx_hash: str | HexStr, timeout: int = 120, poll_latency: float = 0.5) -> dict[str, Any]:
+        receipt = self.w3.eth.wait_for_transaction_receipt(cast(HexStr, tx_hash), timeout=timeout, poll_latency=poll_latency)
         return dict(receipt)
 
-    def estimate_gas(self, to: str, value: int = 0, data: str = "") -> int:
-        return self.w3.eth.estimate_gas({"to": Web3.to_checksum_address(to), "value": Wei(value), "data": data})
+    def estimate_gas(self, to: str, value: int = 0, data: str | bytes | HexStr = "") -> int:
+        return self.w3.eth.estimate_gas({"to": Web3.to_checksum_address(to), "value": Wei(value), "data": cast(bytes | HexStr, data)})
 
     def gas_price(self) -> int:
         return self.w3.eth.gas_price

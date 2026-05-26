@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from web3 import Web3
 from onchain.chains.evm_generic.base import EVMChainAdapter
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class NonceManager:
         if adapter is None:
             return 0
         try:
-            return adapter.w3.eth.get_transaction_count(address)
+            return adapter.w3.eth.get_transaction_count(Web3.to_checksum_address(address))
         except Exception:
             log.exception("failed to fetch onchain nonce for %s/%s", chain, address)
             return 0

@@ -5,8 +5,8 @@ import json
 import logging
 from typing import Any, Callable, Coroutine
 
+from websockets import WebSocketClientProtocol
 import websockets
-import websockets.asyncio.connection
 
 from exchange.coinbase.auth.jwt import build_jwt_token
 
@@ -21,7 +21,7 @@ class CoinbaseWebSocketClient:
     def __init__(self, api_key: str, api_secret: str) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
-        self._ws: websockets.asyncio.connection.Connection | None = None
+        self._ws: WebSocketClientProtocol | None = None
         self._handlers: dict[str, list[MessageHandler]] = {}
         self._running = False
         self._subscribed_channels: list[dict[str, Any]] = []

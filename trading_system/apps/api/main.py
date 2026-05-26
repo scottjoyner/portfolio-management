@@ -51,7 +51,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
         except Exception:
-            metrics.error_count += 1
+            metrics.inc("errors")
             raise
         finally:
             elapsed_ms = (time.time() - start) * 1000
@@ -95,8 +95,10 @@ def readiness() -> dict:
 
 
 @app.get("/metrics")
-def prometheus_metrics() -> dict:
-    return metrics.snapshot()
+def prometheus_metrics() -> Any:
+    from fastapi import Response
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/mode")
