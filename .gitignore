@@ -22,6 +22,9 @@ coverage.xml
 .env
 .env.local
 .env.production
+.venv/
+venv/
+.env/
 
 # --- IDE / Editor ---
 .vscode/
