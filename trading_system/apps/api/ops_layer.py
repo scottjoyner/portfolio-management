@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+<<<<<<< HEAD
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
@@ -737,3 +738,188 @@ def audit_events(db: Session = Depends(get_db)) -> list[dict]:
         }
         for e in repo.list_audit_events()
     ]
+=======
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict
+
+from fastapi import APIRouter, HTTPException, Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+log = logging.getLogger(__name__)
+
+
+router = APIRouter(prefix="/exchange")
+
+
+@router.get("/health")
+async def exchange_health() -> dict[str, Any]:
+    """Health check for Coinbase integration."""
+    from core.config.settings import Settings
+    
+    settings = Settings.from_env()
+    
+    return {
+        "status": "ok",
+        "coinbase_configured": bool(settings.coinbase_api_key and settings.coinbase_api_secret),
+        "live_enabled": settings.live_trading_enabled if settings else False,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.get("/accounts")
+async def list_accounts() -> dict[str, Any]:
+    """Fetch Coinbase brokerage accounts (read-only)."""
+    from core.config.settings import Settings
+    from exchange.coinbase.rest.client import CoinbaseRestClient
+    
+    settings = Settings.from_env()
+    
+    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
+        return {
+            "status": "not_configured",
+            "accounts": [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    
+    client = CoinbaseRestClient(
+        api_key=settings.coinbase_api_key,
+        api_secret=settings.coinbase_api_secret
+    )
+    
+    try:
+        accounts_data = await client.list_accounts()
+        
+        return {
+            "status": "ok",
+            "accounts": [
+                {
+                    "id": a.get("id"),
+                    "name": a.get("name"),
+                    "type": a.get("type"),
+                    "currency": a.get("currency")
+                } for a in accounts_data
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        log.exception("List accounts error")
+        raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.get("/portfolios")
+async def list_portfolios() -> dict[str, Any]:
+    """Fetch Coinbase brokerage portfolios (read-only)."""
+    from core.config.settings import Settings
+    from exchange.coinbase.rest.client import CoinbaseRestClient
+    
+    settings = Settings.from_env()
+    
+    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
+        return {
+            "status": "not_configured",
+            "portfolios": [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    
+    client = CoinbaseRestClient(
+        api_key=settings.coinbase_api_key,
+        api_secret=settings.coinbase_api_secret
+    )
+    
+    try:
+        portfolios_data = await client.list_portfolios()
+        
+        return {
+            "status": "ok",
+            "portfolios": [
+                {
+                    "id": p.get("id"),
+                    "primary": p.get("primary", False),
+                    "asset_type": p.get("asset_type")
+                } for p in portfolios_data
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        log.exception("List portfolios error")
+        raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.get("/products")
+async def list_products(limit: int = 10) -> dict[str, Any]:
+    """Fetch Coinbase available trading products."""
+    from core.config.settings import Settings
+    from exchange.coinbase.rest.client import CoinbaseRestClient
+    
+    settings = Settings.from_env()
+    
+    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
+        return {
+            "status": "not_configured",
+            "products": [],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    
+    client = CoinbaseRestClient(
+        api_key=settings.coinbase_api_key,
+        api_secret=settings.coinbase_api_secret
+    )
+    
+    try:
+        products_data = await client.list_products()
+        
+        return {
+            "status": "ok",
+            "products": products_data[:limit],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        log.exception("List products error")
+        raise HTTPException(status_code=503, detail=str(e))
+    finally:
+        await client.close()
+
+
+@router.get("/credentials/validate")
+async def validate_credentials() -> dict[str, Any]:
+    """Validate Coinbase API credentials."""
+    from core.config.settings import Settings
+    
+    settings = Settings.from_env()
+    
+    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
+        return {
+            "valid": False,
+            "reason": "No credentials configured",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    
+    client = CoinbaseRestClient(
+        api_key=settings.coinbase_api_key,
+        api_secret=settings.coinbase_api_secret
+    )
+    
+    try:
+        # Validate by fetching accounts (read-only operation)
+        await client.list_accounts()
+        
+        return {
+            "valid": True,
+            "reason": "Credentials validated successfully",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        log.exception("Credential validation error")
+        return {
+            "valid": False,
+            "reason": f"Authentication failed: {str(e)}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        await client.close()
+>>>>>>> b5e23b51 (Added falcon updates)

@@ -22,9 +22,12 @@ coverage.xml
 .env
 .env.local
 .env.production
+<<<<<<< HEAD
 .venv/
 venv/
 .env/
+=======
+>>>>>>> b5e23b51 (Added falcon updates)
 
 # --- IDE / Editor ---
 .vscode/
@@ -53,6 +56,7 @@ graph-alpha-bot/app/data/__pycache__/
 coinbase/.env
 coinbase/src/__pycache__/
 coinbase/src/alt/__pycache__/
+<<<<<<< HEAD
 coinbase/state/
 
 # --- Artifacts (runtime output, not source) ---
@@ -99,3 +103,5 @@ packages/*/node_modules/
 *~
 .DS_Store
 Thumbs.db
+=======
+>>>>>>> b5e23b51 (Added falcon updates)
