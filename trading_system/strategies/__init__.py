@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """
 Strategies Package (trading_system.strategies)
 
@@ -77,3 +78,6 @@ __all__ = [
     "compute_z_score",
     "EMACrossoverStrategy",
 ]
+=======
+# Package marker for strategies namespace
+>>>>>>> b5e23b51 (Added falcon updates)

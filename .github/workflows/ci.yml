@@ -38,11 +38,14 @@ jobs:
         run: mypy .
 
 <<<<<<< HEAD
+<<<<<<< HEAD
       - name: Test
         run: pytest -q --tb=short
 
       - name: Build check
 =======
+=======
+>>>>>>> b5e23b51 (Added falcon updates)
       - name: E2E Coinbase sync harness tests
         run: pytest trading_system/tests/e2e/test_coinbase_sync.py -q --tb=short
         
@@ -60,5 +63,8 @@ jobs:
         
       - name: Onchain runtime health check
         run: curl -sf http://localhost:8000/onchain/health || echo "Onchain tests skipped"
+<<<<<<< HEAD
+>>>>>>> b5e23b51 (Added falcon updates)
+=======
 >>>>>>> b5e23b51 (Added falcon updates)
         run: python -m build --wheel
