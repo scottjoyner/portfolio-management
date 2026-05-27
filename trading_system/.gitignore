@@ -1,0 +1,88 @@
+# Python environment
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+.hints
+
+# Local secrets and config
+.env
+.env.*
+!.env.example
+local_settings.py
+settings.local.py
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Database files (if using SQLite for local dev)
+*.db
+*.sqlite
+*.sqlite3
+trading_system.db
+
+# IDE project
+.project
+.settings/
+.classpath
+
+# Logs
+logs/
+*.log
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Jupyter notebooks outputs
+.ipynb_checkpoints
+outputs/
+
+# Alembic migrations (if you want to track them, see docs/MIGRATION_GUIDE.md)
+alembic/version*
+
+# Temporary files
+*.tmp
+*.bak
+temp/
+
+# Docker volumes data (not the Dockerfile itself)
+.docker/data/
+postgres/*.db
+
+# Generated test artifacts
+tests/test_output/
+artifacts/demo_*  # Move to docs/evidence or tests/fixtures/
+tests/integration/test_data/
+tests/sim/results/
+
+# Large JSON dumps
+*.json.gz
+data/raw/
+
+# Pycache in source directories
+onchain/*/__pycache__/
+apps/*/__pycache__/
+storage/*/__pycache__/

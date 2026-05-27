@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """E2E test fixtures for signal-to-fill workflow.
 
 Provides deterministic fixtures for testing the full paper trading lifecycle:
@@ -125,15 +124,3 @@ def seed_portfolios():
         engine.dispose()
         os.unlink(path)
     return True
-=======
-"""Conftest for E2E Coinbase sync tests."""
-
-import pytest
-import requests
-
-# Test client for API running on http://localhost:8001
-@pytest.fixture
-def app_client() -> requests.Session:
-    """Create test client for Coinbase read-only sync API."""
-    return requests.Session()
->>>>>>> b5e23b51 (Added falcon updates)
