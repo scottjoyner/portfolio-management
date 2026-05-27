@@ -1,0 +1,1 @@
+export function canLive(cfg:{live:boolean;paper:boolean;approval:boolean}){return cfg.live && !cfg.paper && cfg.approval;}

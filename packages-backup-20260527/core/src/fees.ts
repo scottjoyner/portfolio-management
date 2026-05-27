@@ -1,0 +1,1 @@
+export const bps=(amountMicros:number,bps:number)=>Math.floor(amountMicros*bps/10_000);
