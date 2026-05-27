@@ -1,0 +1,1 @@
+export const manualApproval=(approved:boolean)=>approved;

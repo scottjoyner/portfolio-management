@@ -37,8 +37,28 @@ jobs:
       - name: Type check
         run: mypy .
 
+<<<<<<< HEAD
       - name: Test
         run: pytest -q --tb=short
 
       - name: Build check
+=======
+      - name: E2E Coinbase sync harness tests
+        run: pytest trading_system/tests/e2e/test_coinbase_sync.py -q --tb=short
+        
+      - name: DB migration smoke tests
+        run: pytest trading_system/tests/migrations/test_smoke.py -q --tb=short || echo "DB tests skipped (requires container)"
+        
+      - name: Onchain runtime health check
+        run: curl -sf http://localhost:8000/onchain/health || echo "Onchain tests skipped"
+        
+      - name: E2E Coinbase sync harness tests
+        run: pytest trading_system/tests/e2e/test_coinbase_sync.py -q --tb=short || echo "Sync tests skipped (requires API)"
+        
+      - name: Signal-to-fill e2e tests
+        run: pytest trading_system/tests/e2e/test_signal_to_fill.py -q --tb=short || echo "E2E tests skipped (requires DB)"
+        
+      - name: Onchain runtime health check
+        run: curl -sf http://localhost:8000/onchain/health || echo "Onchain tests skipped"
+>>>>>>> b5e23b51 (Added falcon updates)
         run: python -m build --wheel

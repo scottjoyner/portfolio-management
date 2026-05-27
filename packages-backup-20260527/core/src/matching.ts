@@ -1,0 +1,1 @@
+export const normalize=(s:string)=>s.toLowerCase().replace(/[^a-z0-9 ]/g,"").trim(); export function matchScore(a:string,b:string){const x=normalize(a),y=normalize(b); return x===y?1: (x.includes(y)||y.includes(x)?0.8:0.2);}

@@ -1,0 +1,1 @@
+import {z} from "zod"; export const envSchema=z.object({PAPER_TRADING:z.string().default("true"),LIVE_TRADING:z.string().default("false"),REQUIRE_MANUAL_APPROVAL:z.string().default("true"),MAX_NOTIONAL_PER_TRADE_USD:z.coerce.number().default(10),MIN_EDGE_BPS:z.coerce.number().default(100),KILL_SWITCH:z.string().default("false")});
