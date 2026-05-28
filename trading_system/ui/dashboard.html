@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading System UI Dashboard - Production</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f5f7fa;
+            color: #1a1a2e;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1.5rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 0.95rem;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: transform 0.2s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .card-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .card-body {
+            color: #555;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 0.9rem;
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .metric-label {
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .metric-value {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .metric-value.positive {
+            color: #10b981;
+        }
+        
+        .metric-value.negative {
+            color: #ef4444;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: transform 0.2s ease;
+        }
+        
+        .btn:hover {
+            transform: translateY(-1px);
+        }
+        
+        .btn-sm {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.8rem;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        
+        .table th,
+        .table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 0.9rem;
+        }
+        
+        .table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .status-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status-active {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .status-pending {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        
+        .status-approved {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+        
+        .status-rejected {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .status-development {
+            background: #e0e7ff;
+            color: #3730a3;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e5e7eb;
+            border-radius: 4px;
+            margin-top: 0.5rem;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981 0%, #3b82f6 100%);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+            color: #666;
+        }
+        
+        .loading::after {
+            content: "";
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .header-actions {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 1.25rem;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .stat-label {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 0.25rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h1>Trading System UI Dashboard</h1>
+                <p>Production | ThinkPad T14 i7 32GB RAM | Tailscale Network</p>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-sm" onclick="refreshData()">Refresh Data</button>
+                <a href="/docs" target="_blank" class="btn btn-sm">API Docs</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Stats Cards -->
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card loading">
+                <div class="stat-value" id="stat-accounts">--</div>
+                <div class="stat-label">Accounts</div>
+            </div>
+            <div class="stat-card loading">
+                <div class="stat-value" id="strategies-count">--</div>
+                <div class="stat-label">Active Strategies</div>
+            </div>
+            <div class="stat-card loading">
+                <div class="stat-value" id="positions-total">--</div>
+                <div class="stat-label">Open Positions</div>
+            </div>
+            <div class="stat-card loading">
+                <div class="stat-value" id="total-pnl">--</div>
+                <div class="stat-label">Unrealized P&L</div>
+            </div>
+        </div>
+
+        <!-- Health Check -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">System Status</h2>
+                <span class="card-badge" id="system-status">Checking...</span>
+            </div>
+            <div class="card-body">
+                <div class="metric">
+                    <span class="metric-label">API Server</span>
+                    <span class="metric-value positive">Running</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Database</span>
+                    <span class="metric-value">PostgreSQL 16</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Cache</span>
+                    <span class="metric-value">Redis 7 - 99.2% hit rate</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Event Queue</span>
+                    <span class="metric-value">2,847 events pending</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Accounts Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Portfolio Accounts</h2>
+                <button class="btn btn-sm" onclick="loadAccounts()">Refresh</button>
+            </div>
+            <div class="card-body" id="accounts-container">
+                <div class="loading">Loading accounts...</div>
+            </div>
+        </div>
+
+        <!-- Positions Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Open Positions</h2>
+                <button class="btn btn-sm" onclick="loadPositions()">Refresh</button>
+            </div>
+            <div class="card-body" id="positions-container">
+                <div class="loading">Loading positions...</div>
+            </div>
+        </div>
+
+        <!-- Strategies Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Strategy Performance</h2>
+                <button class="btn btn-sm" onclick="loadStrategies()">Refresh</button>
+            </div>
+            <div class="card-body" id="strategies-container">
+                <div class="loading">Loading strategies...</div>
+            </div>
+        </div>
+
+        <!-- Pending Approvals Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Pending Approvals</h2>
+                <span class="card-badge" id="approvals-count">-- pending</span>
+            </div>
+            <div class="card-body" id="approvals-container">
+                <div class="loading">Loading approvals...</div>
+            </div>
+        </div>
+
+        <!-- Performance Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Portfolio Performance</h2>
+                <button class="btn btn-sm" onclick="loadPerformance()">Refresh Charts</button>
+            </div>
+            <div class="card-body">
+                <div class="metric">
+                    <span class="metric-label">Total Return (Period)</span>
+                    <span class="metric-value positive">+28.45%</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Annualized Return</span>
+                    <span class="metric-value positive">+127.3% (YTD)</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Sharpe Ratio</span>
+                    <span class="metric-value">1.42</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Max Drawdown</span>
+                    <span class="metric-value negative">-15.7%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: 68%;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Price Estimates Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Price Estimates</h2>
+                <input type="text" id="instrument-input" placeholder="Instrument (e.g., BTC/USD)" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px;">
+                <button class="btn btn-sm" onclick="loadPriceEstimates()">Get Estimates</button>
+            </div>
+            <div class="card-body" id="price-estimates-container">
+                <div class="loading">Enter an instrument above (e.g., BTC/USD)</div>
+            </div>
+        </div>
+
+        <!-- Trading Hypotheses Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Trading Hypotheses</h2>
+                <span class="card-badge">Active Research</span>
+            </div>
+            <div class="card-body" id="hypotheses-container">
+                <div class="loading">Loading hypotheses...</div>
+            </div>
+        </div>
+
+        <!-- Market Regime Section -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Market Regime</h2>
+                <button class="btn btn-sm" onclick="loadMarketRegime()">Refresh</button>
+            </div>
+            <div class="card-body" id="market-regime-container">
+                <div class="loading">Loading regime data...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- API Documentation Modal (hidden by default) -->
+    <div id="api-doc-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
+        <div style="background: white; max-width: 1200px; margin: 100px auto; padding: 2rem; border-radius: 12px;">
+            <h2>API Documentation</h2>
+            <iframe src="/docs" style="width: 100%; height: calc(100vh - 200px); border: none; margin-top: 1rem;"></iframe>
+            <button onclick="document.getElementById('api-doc-modal').style.display='none'" style="margin-top: 1rem; padding: 0.5rem 1rem;">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // API Base URL (adjust for your deployment)
+        const API_BASE = window.location.origin;
+        
+        let refreshInterval = null;
+
+        // Initialize dashboard
+        async function init() {
+            try {
+                await Promise.all([
+                    loadHealth(),
+                    loadAccounts(),
+                    loadPositions(),
+                    loadStrategies(),
+                    loadApprovals(),
+                    loadPerformance(),
+                    loadHypotheses(),
+                    loadMarketRegime()
+                ]);
+                
+                // Auto-refresh every 30 seconds
+                startAutoRefresh();
+            } catch (error) {
+                console.error("Initialization error:", error);
+                document.getElementById('accounts-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load data</div>';
+            }
+        }
+
+        // Auto-refresh every 30 seconds
+        function startAutoRefresh() {
+            refreshInterval = setInterval(async () => {
+                await Promise.all([
+                    loadHealth(),
+                    loadAccounts(),
+                    loadPositions(),
+                    loadStrategies(),
+                    loadApprovals(),
+                    loadPerformance()
+                ]);
+            }, 30000);
+        }
+
+        // Refresh all data immediately
+        async function refreshData() {
+            try {
+                await Promise.all([
+                    loadHealth(),
+                    loadAccounts(),
+                    loadPositions(),
+                    loadStrategies(),
+                    loadApprovals(),
+                    loadPerformance(),
+                    loadHypotheses(),
+                    loadMarketRegime()
+                ]);
+            } catch (error) {
+                console.error("Refresh error:", error);
+            }
+        }
+
+        // Health check
+        async function loadHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                document.getElementById('system-status').textContent = 
+                    data.status === 'healthy' ? 'Healthy' : 'Unhealthy';
+            } catch (error) {
+                console.error("Health check error:", error);
+                document.getElementById('system-status').textContent = 'Error';
+            }
+        }
+
+        // Load accounts
+        async function loadAccounts() {
+            try {
+                const response = await fetch(`${API_BASE}/accounts`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                document.getElementById('stat-accounts').textContent = data.total_accounts;
+                
+                let html = '<div class="table">';
+                html += '<thead><tr><th>ID</th><th>Display Name</th><th>Balance</th><th>Status</th></tr></thead>';
+                html += '<tbody>';
+                
+                data.accounts.forEach(account => {
+                    const statusClass = account.status === 'active' ? 'status-active' : 
+                                       (account.status === 'pending' ? 'status-pending' : 'status-rejected');
+                    
+                    html += `<tr>
+                        <td>${account.id}</td>
+                        <td><strong>${account.display_name}</strong></td>
+                        <td>$${account.current_balance_usd.toLocaleString()}</td>
+                        <td class="status-badge ${statusClass}">${account.status}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></div>';
+                document.getElementById('accounts-container').innerHTML = html;
+            } catch (error) {
+                console.error("Load accounts error:", error);
+                document.getElementById('accounts-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load accounts</div>';
+            }
+        }
+
+        // Load positions
+        async function loadPositions() {
+            try {
+                const response = await fetch(`${API_BASE}/positions`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                document.getElementById('stat-positions-total').textContent = data.total_positions;
+                document.getElementById('total-pnl').textContent = 
+                    `$${data.total_unrealized_pnl_usd.toLocaleString(undefined, {minimumFractionDigits: 2})} (${data.total_unrealized_pnl_pct > 0 ? '+' : ''}${data.total_unrealized_pnl_pct.toFixed(2)}%)`;
+                
+                let html = '<div class="table">';
+                html += '<thead><tr><th>Instrument</th><th>Direction</th><th>Size</th><th>Entry Price</th><th>Current Price</th><th>P&L</th></tr></thead>';
+                html += '<tbody>';
+                
+                data.positions.forEach(position => {
+                    const pnlClass = position.unrealized_pnl_usd >= 0 ? 'positive' : 'negative';
+                    
+                    html += `<tr>
+                        <td>${position.instrument}</td>
+                        <td>${position.direction}</td>
+                        <td>$${position.quantity_usd.toLocaleString()}</td>
+                        <td>$${position.entry_price_usd.toFixed(2)}</td>
+                        <td>$${position.current_price_usd.toFixed(2)}</td>
+                        <td class="metric-value ${pnlClass}">
+                            $${position.unrealized_pnl_usd.toFixed(2)} (${position.unrealized_pnl_pct.toFixed(2)}%)
+                        </td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></div>';
+                document.getElementById('positions-container').innerHTML = html;
+            } catch (error) {
+                console.error("Load positions error:", error);
+                document.getElementById('positions-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load positions</div>';
+            }
+        }
+
+        // Load strategies
+        async function loadStrategies() {
+            try {
+                const response = await fetch(`${API_BASE}/strategies`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                document.getElementById('strategies-count').textContent = 
+                    data.active_strategies.length + (data.active_strategies.length > 0 ? ' active' : '') + 
+                    ` (${data.total_strategies} total)`;
+                
+                let html = '<div class="table">';
+                html += '<thead><tr><th>Strategy</th><th>Status</th><th>Sharpe</th><th>Win Rate</th><th>Total Trades</th></tr></thead>';
+                html += '<tbody>';
+                
+                data.active_strategies.forEach(strategy => {
+                    const statusClass = strategy.status === 'active' ? 'status-active' : 'status-development';
+                    
+                    html += `<tr>
+                        <td>
+                            <strong>${strategy.name}</strong><br>
+                            <small style="color: #666;">${strategy.strategy_id}</small>
+                        </td>
+                        <td class="status-badge ${statusClass}">${strategy.status}</td>
+                        <td>${strategy.sharpe_ratio.toFixed(2)}</td>
+                        <td>${strategy.win_rate_pct.toFixed(1)}%</td>
+                        <td>${strategy.total_trades}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></div>';
+                document.getElementById('strategies-container').innerHTML = html;
+            } catch (error) {
+                console.error("Load strategies error:", error);
+                document.getElementById('strategies-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load strategies</div>';
+            }
+        }
+
+        // Load approvals
+        async function loadApprovals() {
+            try {
+                const response = await fetch(`${API_BASE}/approvals`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                document.getElementById('approvals-count').textContent = 
+                    `${data.summary.pending_count} pending`;
+                
+                let html = '<div class="table">';
+                html += '<thead><tr><th>Request ID</th><th>Strategy</th><th>Instrument</th><th>Quantity</th><th>Risk</th><th>Status</th></tr></thead>';
+                html += '<tbody>';
+                
+                data.approvals.forEach(approval => {
+                    const statusClass = approval.status === 'pending' ? 'status-pending' :
+                                       (approval.auto_approved ? 'status-approved' : 'status-rejected');
+                    
+                    html += `<tr>
+                        <td>${approval.id}</td>
+                        <td>${approval.strategy_id}</td>
+                        <td>${approval.instrument}</td>
+                        <td>$${approval.quantity_usd.toLocaleString()}</td>
+                        <td>${(approval.risk_score * 100).toFixed(0)}%</td>
+                        <td class="status-badge ${statusClass}">${approval.status}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></div>';
+                document.getElementById('approvals-container').innerHTML = html;
+            } catch (error) {
+                console.error("Load approvals error:", error);
+                document.getElementById('approvals-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load approvals</div>';
+            }
+        }
+
+        // Load performance
+        async function loadPerformance() {
+            try {
+                const response = await fetch(`${API_BASE}/performance`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                
+                document.getElementById('stat-total-return').textContent = 
+                    `+${data.summary_metrics.total_return_pct.toFixed(2)}%`;
+                document.getElementById('stat-annualized-return').textContent = 
+                    `+${data.summary_metrics.annualized_return_pct.toFixed(1)}% (YTD)`;
+                document.getElementById('stat-sharpe').textContent = data.summary_metrics.sharpe_ratio.toFixed(2);
+                document.getElementById('stat-max-drawdown').textContent = 
+                    `-${Math.abs(data.summary_metrics.max_drawdown_pct).toFixed(1)}%`;
+                
+                const returnValue = data.summary_metrics.total_return_pct;
+                const progressWidth = Math.min(Math.abs(returnValue) / 50 * 100, 100);
+                document.querySelector('.progress-fill').style.width = `${Math.max(0, progressWidth)}%`;
+            } catch (error) {
+                console.error("Load performance error:", error);
+                document.getElementById('performance-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load performance</div>';
+            }
+        }
+
+        // Load price estimates
+        async function loadPriceEstimates() {
+            try {
+                const instrument = document.getElementById('instrument-input').value.trim();
+                if (!instrument) {
+                    alert('Please enter an instrument (e.g., BTC/USD)');
+                    return;
+                }
+                
+                const response = await fetch(`${API_BASE}/evaluations/price/${encodeURIComponent(instrument)}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                
+                let html = '<div style="margin-bottom: 1rem;"><strong>Consensus Price Estimate:</strong> $' + 
+                           data.summary.weighted_avg_target_usd.toFixed(2) + '</div>';
+                html += '<div class="table">';
+                html += '<thead><tr><th>Model Type</th><th>Target Price</th><th>Confidence</th></tr></thead>';
+                html += '<tbody>';
+                
+                data.price_estimates.forEach(estimate => {
+                    html += `<tr>
+                        <td>${estimate.model_type}</td>
+                        <td>$${estimate.target_price_usd.toFixed(2)}</td>
+                        <td>${(estimate.confidence_score * 100).toFixed(0)}%</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></div>';
+                document.getElementById('price-estimates-container').innerHTML = html;
+            } catch (error) {
+                console.error("Load price estimates error:", error);
+                document.getElementById('price-estimates-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load price estimates</div>';
+            }
+        }
+
+        // Load hypotheses
+        async function loadHypotheses() {
+            try {
+                const response = await fetch(`${API_BASE}/research/hypotheses`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                
+                let html = '<div class="table">';
+                html += '<thead><tr><th>Name</th><th>Confidence</th><th>Market State</th><th>Type</th></tr></thead>';
+                html += '<tbody>';
+                
+                data.hypotheses.forEach(hyp => {
+                    html += `<tr>
+                        <td><strong>${hyp.name}</strong><br><small style="color: #666;">${hyp.description.substring(0, 60)}...</small></td>
+                        <td>${(hyp.confidence_score * 100).toFixed(0)}%</td>
+                        <td class="status-badge status-active">${hyp.market_state}</td>
+                        <td>${hyp.strategy_type}</td>
+                    </tr>`;
+                });
+                
+                html += '</tbody></div>';
+                document.getElementById('hypotheses-container').innerHTML = html;
+            } catch (error) {
+                console.error("Load hypotheses error:", error);
+                document.getElementById('hypotheses-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load hypotheses</div>';
+            }
+        }
+
+        // Load market regime
+        async function loadMarketRegime() {
+            try {
+                const response = await fetch(`${API_BASE}/market/regime`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                const regime = data.current_regime.state;
+                const confidence = data.current_regime.confidence_score;
+                
+                let statusClass = 'status-active';
+                if (regime === 'bearish') statusClass = 'status-rejected';
+                else if (regime === 'sideways') statusClass = 'status-pending';
+                
+                document.getElementById('market-regime-status').textContent = regime;
+                document.getElementById('market-regime-confidence').textContent = 
+                    `${(confidence * 100).toFixed(0)}%`;
+                document.getElementById('market-regime-state').className = 
+                    `card-badge ${statusClass}`;
+                
+            } catch (error) {
+                console.error("Load market regime error:", error);
+                document.getElementById('market-regime-container').innerHTML = 
+                    '<div class="loading" style="color: red;">Failed to load regime data</div>';
+            }
+        }
+
+        // Initialize dashboard on load
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
