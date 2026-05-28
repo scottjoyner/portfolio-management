@@ -4,7 +4,7 @@ import asyncio
 import sys
 sys.path.insert(0, '/home/falcon/git/portfolio-management/trading_system')
 
-from onchain.runtime.service import OnchainRuntimeService, TokenMetadataService, SafetyScoringEngine
+from onchain.runtime.service import OnchainRuntimeService, SafetyScoringEngine
 
 
 async def main():
@@ -30,7 +30,7 @@ async def main():
     print("\n[TEST 2] Fetching token metadata (WETH)...")
     try:
         metadata = await service.fetch_token_metadata("0xC02aaA37b1fC06D6FaB1F6C6AD8944Ee7C48b8", "ethereum")
-        print(f"✓ WETH metadata fetched:")
+        print("✓ WETH metadata fetched:")
         print(f"  - Name: {metadata.get('name', 'Unknown')}")
         print(f"  - Symbol: {metadata.get('symbol', 'UNK')}")
         print(f"  - Decimals: {metadata.get('decimals', 18)}")
@@ -42,7 +42,7 @@ async def main():
     print("\n[TEST 3] Checking poller status...")
     try:
         status = await service.get_poller_status()
-        print(f"✓ Poller status retrieved:")
+        print("✓ Poller status retrieved:")
         print(f"  - Running: {status.get('poller_running')}")
         print(f"  - Networks: {len(status.get('networks', []))}")
         print(f"  - Cache size: {status.get('cache_size', 0)}")
@@ -63,7 +63,7 @@ async def main():
         safety_engine = SafetyScoringEngine(service)
         score_result = await safety_engine.score_route(route)
         
-        print(f"✓ Route scored:")
+        print("✓ Route scored:")
         print(f"  - MEV Risk: {score_result.get('mev_risk')}")
         print(f"  - Slippage Safe: {score_result.get('slippage_safe')}")
         print(f"  - Score: {score_result.get('overall_score')}/100")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Coroutine, List
+from typing import Any, Callable, Coroutine
 
 from websockets import WebSocketClientProtocol
 import websockets
@@ -137,7 +137,7 @@ class CoinbaseWebSocketMarketClient:
                             if len(handlers) > 1:  # Multiple subscribers = hub pattern
                                 await self._emit(ch_name, msg)
                                 
-                    except json.JSONDecodeError as e:
+                    except json.JSONDecodeError:
                         log.warning("invalid ws message: %s", raw[:200])
 
             except websockets.ConnectionClosed:

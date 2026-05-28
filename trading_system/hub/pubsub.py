@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Coroutine, List
+from typing import Any, Callable, List
 
 try:
     import redis
@@ -230,7 +230,7 @@ class WebSocketPubSubHub:
                                         except Exception as e:
                                             log.exception("handler error on message: %s", e)
                         
-                        except json.JSONDecodeError as e:
+                        except json.JSONDecodeError:
                             log.warning("invalid JSON payload: %s", payload_str[:200])
                             
                 except asyncio.CancelledError:
@@ -298,7 +298,7 @@ class MarketFeedPublisher:
         for product_id in product_ids:
             subscription = client.subscribe(product_id)
             await self.redis_hub.publish(
-                f"marketfeed.subscription_request",
+                "marketfeed.subscription_request",
                 {**subscription, "source": "market_feed_publisher"}
             )
     

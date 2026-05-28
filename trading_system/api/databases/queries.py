@@ -40,7 +40,7 @@ def get_accounts():
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -73,7 +73,7 @@ def get_trades(limit=50, offset=0):
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -105,7 +105,7 @@ def get_positions():
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -136,7 +136,7 @@ def get_strategies():
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -175,7 +175,7 @@ def get_performance():
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return {"total_realized_pnl_usd": 0.0}
 
 
@@ -208,7 +208,7 @@ def get_price_estimates(instrument):
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return {"current_price": None, "price_estimates": {}}
 
 
@@ -244,7 +244,7 @@ def get_approvals():
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return {"pending_count": 0, "completed_count": 0}
 
 
@@ -277,5 +277,5 @@ def get_research_hypotheses():
         finally:
             session.close()
         
-    except Exception as e:
+    except Exception:
         return {"hypotheses": [], "market_regimes": {}}

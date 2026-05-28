@@ -1,6 +1,6 @@
 """Database models for approval workflow engine."""
 
-from sqlalchemy import Column, Integer, Float, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum
+from sqlalchemy import Column, Integer, Float, String, DateTime, Text, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime, UTC
 

@@ -2,7 +2,6 @@
 
 import pytest
 import asyncio
-from datetime import datetime, timezone
 from typing import Dict, Any
 
 try:
@@ -20,10 +19,7 @@ try:
     )
 except ImportError:
     from storage.postgres.models import (
-        Portfolio, PortfolioSleeve, StrategyConfig, Order, Fill,
-        CapitalBucket, Approval, AuditEvent, Alert, Incident,
-        MarketDataFeed, ExchangeState, TokenMetadata, PoolSnapshot,
-        ContractEvent, FeedHealthRecord
+        Portfolio, StrategyConfig
     )
 
 
@@ -82,7 +78,7 @@ def db_session(test_config: Dict[str, Any]) -> AsyncSession:
                 try:
                     yield db
                     await db.rollback()
-                except Exception as e:
+                except Exception:
                     await db.rollback()
                     raise
             return asyncio.run(_get_session())

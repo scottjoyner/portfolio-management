@@ -324,7 +324,7 @@ async def list_strategies() -> List[Dict[str, Any]]:
         return []
 
 
-async def get_performance() -> Dict[str, Any]:
+async def get_performance(charts: bool = True) -> Dict[str, Any]:
     """Get performance metrics and charts."""
     try:
         nav_query = text("""
@@ -418,7 +418,7 @@ async def get_price_estimations(instrument: str) -> Dict[str, Any]:
                 "confidence_score": None,
             }
     
-    except Exception as e:
+    except Exception:
         return {
             "current_price": None,
             "price_estimates": {},
@@ -426,7 +426,7 @@ async def get_price_estimations(instrument: str) -> Dict[str, Any]:
         }
 
 
-async def get_approvals() -> Dict[str, Any]:
+async def get_approvals(status_filter: str | None = None) -> Dict[str, Any]:
     """Get pending and completed approvals."""
     try:
         query = text("""
@@ -488,7 +488,7 @@ async def get_approvals() -> Dict[str, Any]:
             "completed_count": completed_count - pending_count,
         }
     
-    except Exception as e:
+    except Exception:
         return {
             "approvals": [],
             "pending_count": 0,
@@ -548,3 +548,56 @@ async def get_research_hypotheses() -> Dict[str, Any]:
             "hypotheses": [],
             "market_regimes": {},
         }
+
+
+async def get_market_regime_snapshot() -> Dict[str, Any]:
+    """Get current market regime classification."""
+    try:
+        result = engine.execute(text("""
+            SELECT regime, bullish_pct, bearish_pct, sentiment_score, timestamp
+            FROM sentiment_analysis
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """)).fetchone()
+        if result:
+            data = _extract_from_row(result) if hasattr(result, '_mapping') else {}
+            return {
+                "regime": data.get("regime", "NEUTRAL"),
+                "bullish_pct": float(data.get("bullish_pct", 0)),
+                "bearish_pct": float(data.get("bearish_pct", 0)),
+                "sentiment_score": float(data.get("sentiment_score", 0)),
+                "timestamp": str(data.get("timestamp", datetime.now(timezone.utc))),
+            }
+        return {"regime": "NEUTRAL", "bullish_pct": 0, "bearish_pct": 0, "sentiment_score": 0}
+    except Exception:
+        return {"regime": "NEUTRAL", "bullish_pct": 0, "bearish_pct": 0, "sentiment_score": 0}
+
+
+async def list_backtests(strategy_id: str | None = None) -> Dict[str, Any]:
+    """List backtest results."""
+    return {
+        "backtests": [],
+        "total_count": 0,
+        "note": "Backtesting results will be available after backtester runner execution.",
+    }
+
+
+async def get_capital_allocation() -> Dict[str, Any]:
+    """Get current capital allocation."""
+    try:
+        rows = engine.execute(text("""
+            SELECT name, amount, status
+            FROM capital_buckets
+            ORDER BY name
+        """)).fetchall()
+        buckets = []
+        for row in rows:
+            data = _extract_from_row(row) if hasattr(row, '_mapping') else {}
+            buckets.append({
+                "name": data.get("name", "Unknown"),
+                "amount": float(data.get("amount", 0)),
+                "status": data.get("status", "idle"),
+            })
+        return {"buckets": buckets, "total_capital": sum(b.get("amount", 0) for b in buckets)}
+    except Exception:
+        return {"buckets": [], "total_capital": 0}

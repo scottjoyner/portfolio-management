@@ -46,8 +46,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
-    from storage.postgres.models import Portfolio, Order, Fill, StrategyConfig
-    from plaid.models import PlaidItem, PlaidAccount, PlaidTransaction
+    from storage.postgres.models import Portfolio
+    from plaid.models import PlaidItem
 
 
 class AccountsRepository:
@@ -222,7 +222,6 @@ class AccountsRepository:
         Synchronize account balances from Plaid API.
         Returns balance data with timestamps for audit trail.
         """
-        from plaid.models import PlaidCredentials
         
         # This would call Plaid's get_accounts_v4 endpoint
         # Return structure: {
@@ -252,7 +251,6 @@ class AccountsRepository:
         Check if a Plaid item's access token is expiring soon.
         Returns (is_expiring_soon, days_until_expiry)
         """
-        from plaid.database_models import PlaidItem
         from plaid.models import ConsentState
         
         item = self.get_plaid_item(item_id)

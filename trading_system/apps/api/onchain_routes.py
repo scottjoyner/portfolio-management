@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config.settings import Settings
-from onchain.workers.rpc_poller import RpcPollerWorker
 
 log = logging.getLogger(__name__)
 

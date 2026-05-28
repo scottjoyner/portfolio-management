@@ -18,16 +18,13 @@ Fall back to SQLite (no Docker needed):
 
 import os
 import subprocess
-import tempfile
-from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.main import app
-from apps.api.ws_routes import router as ws_router
 from storage.postgres.models import Base
 from storage.postgres.repository import OpsRepository
 from storage.postgres.session import get_db

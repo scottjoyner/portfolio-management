@@ -282,9 +282,9 @@ def _family(index: int) -> str:
         "volatility_regime",
         "portfolio_treasury",
     ]
-    for b, label in zip(bounds, labels, strict=True):
+    for b, l in zip(bounds, labels, strict=True):
         if index <= b:
-            return label
+            return l
     return "research"
 
 

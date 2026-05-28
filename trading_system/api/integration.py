@@ -30,7 +30,6 @@ strategies = await list_strategies()
 """
 
 import sys
-from typing import Any
 
 
 def setup_database_routes():
@@ -170,7 +169,7 @@ def get_all_api_endpoints(cache_manager=None):
         """Get research data (news + price + fundamentals)."""
         
         from trading_system.apps.research.routes import (
-            get_news, get_price, get_fundamentals, get_hypotheses
+            get_hypotheses
         )
         
         return {

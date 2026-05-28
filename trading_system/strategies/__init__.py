@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """
 Strategies Package (trading_system.strategies)
 
@@ -41,43 +40,19 @@ manager.register(strategy, key="ema_crossover_v1")
 ```
 """
 
-from .registry import (
-    StrategyRegistry,
-    StrategyManager,
-    IStrategy,
-    StrategyError,
-    ValidationError,
-    LoadError,
-    ExecutionError,
-)
-
-from .base import (
-    BaseStrategy,
-    OHLCVBar,
-    compute_sma,
-    compute_ema,
-    compute_z_score,
-)
+from .registry.registry import load_strategies, strategy_metadata_index
+from .base.interfaces import StrategyConfig, StrategyMetadata
+from .base.simple import BaseSignalStrategy
 
 # Import specific strategy implementations
 from .emacrossor_strategy import EMACrossoverStrategy  # noqa: F401
 
 __version__ = "0.1.0"
 __all__ = [
-    "StrategyRegistry",
-    "StrategyManager",
-    "IStrategy",
-    "StrategyError",
-    "ValidationError",
-    "LoadError",
-    "ExecutionError",
-    "BaseStrategy",
-    "OHLCVBar",
-    "compute_sma",
-    "compute_ema",
-    "compute_z_score",
+    "load_strategies",
+    "strategy_metadata_index",
+    "BaseSignalStrategy",
+    "StrategyConfig",
+    "StrategyMetadata",
     "EMACrossoverStrategy",
 ]
-=======
-# Package marker for strategies namespace
->>>>>>> b5e23b51 (Added falcon updates)

@@ -12,7 +12,7 @@ Uses PostgreSQL tables:
 - market_data_feeds (OHLCV historical data)
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 
 
 class TechnicalAnalysisValuation:

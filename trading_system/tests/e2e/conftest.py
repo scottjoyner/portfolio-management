@@ -1,32 +1,52 @@
-<<<<<<< HEAD
 """E2E test fixtures for signal-to-fill workflow.
 
 Provides deterministic fixtures for testing the full paper trading lifecycle:
 market fixture -> strategy signal -> risk evaluation -> paper order -> simulated fill -> persistence -> audit event -> websocket/notification event
 """
 
-import asyncio
 import os
 import tempfile
 import time
+from collections.abc import Generator
 from decimal import Decimal
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
-from apps.paper_exchange.engine import PaperExchangeEngine
 from apps.paper_exchange.engine import PaperExchangeEngine
 from core.events.ws_hub import PubSubHub
 from core.models.domain import OrderIntent, RiskMode
-from core.config.settings import Settings
-from exchange.coinbase.reconciliation.service import ExchangeStateReconciler
 from risk.engine import RiskEngine, RiskPolicy
-from storage.postgres.models import (
-    Order, Portfolio, AuditEvent, Fill, Approval, Alert, Incident,
-    ExchangeState, MarketDataFeed, CapitalBucket, StrategyConfig, StrategyRun,
-)
+from storage.postgres.models import Base
 from storage.postgres.repository import OpsRepository
+from storage.postgres.session import get_db
+
+
+@pytest.fixture(scope="session")
+def _test_db():
+    """Create a persistent temp SQLite DB for the test session."""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    TestSession = sessionmaker(bind=engine)
+    yield engine, TestSession
+    engine.dispose()
+    os.unlink(path)
+
+
+@pytest.fixture()
+def db_session(_test_db) -> Generator[Session, None, None]:
+    """Get a fresh DB session for each test."""
+    _engine, TestSession = _test_db
+    db = TestSession()
+    try:
+        yield db
+    finally:
+        db.rollback()
+        db.close()
 
 
 @pytest.fixture()
@@ -53,9 +73,11 @@ def ws_hub():
 
 
 @pytest.fixture()
-def test_client(paper_exchange, risk_engine):
-    """TestClient with overrides for paper exchange and risk."""
+def test_client(paper_exchange, risk_engine, db_session):
+    """TestClient with overrides for paper exchange, risk, and DB."""
     from apps.api.main import app
+
+    app.dependency_overrides.clear()
 
     def override_get_paper():
         return paper_exchange
@@ -63,14 +85,16 @@ def test_client(paper_exchange, risk_engine):
     def override_get_risk():
         return risk_engine
 
-    # Store original dependencies
-    original_deps = dict(app.dependency_overrides)
+    def override_get_db() -> Generator[Session, None, None]:
+        yield db_session
+
+    app.dependency_overrides["get_paper_exchange"] = override_get_paper
+    app.dependency_overrides["get_risk_engine"] = override_get_risk
+    app.dependency_overrides[get_db] = override_get_db
 
     yield TestClient(app)
 
-    # Restore
     app.dependency_overrides.clear()
-    app.dependency_overrides.update(original_deps)
 
 
 @pytest.fixture()
@@ -102,38 +126,15 @@ def sample_order_intent():
 
 
 @pytest.fixture()
-def seed_portfolios():
-    """Seed portfolios into a test DB session (SQLite)."""
-    from storage.postgres.session import _SessionLocal
-    # Use in-memory SQLite for seeding
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    import tempfile
-    fd, path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-    engine = create_engine(f"sqlite:///{path}")
-    from storage.postgres.models import Base
-    Base.metadata.create_all(bind=engine)
-    Session = sessionmaker(bind=engine)
-    db = Session()
-    try:
-        repo = OpsRepository(db)
-        repo.seed_default_portfolios()
-        db.commit()
-    finally:
-        db.close()
-        engine.dispose()
-        os.unlink(path)
+def seed_portfolios(db_session):
+    """Seed portfolios and strategy configs into test DB."""
+    repo = OpsRepository(db_session)
+    repo.seed_default_portfolios()
+    from storage.postgres.models import StrategyConfig
+    if not db_session.query(StrategyConfig).first():
+        db_session.add_all([
+            StrategyConfig(strategy_id="adaptive_spread_mm", strategy_type="market_making", enabled=True),
+            StrategyConfig(strategy_id="hybrid_hedge", strategy_type="hedge", enabled=True),
+        ])
+        db_session.commit()
     return True
-=======
-"""Conftest for E2E Coinbase sync tests."""
-
-import pytest
-import requests
-
-# Test client for API running on http://localhost:8001
-@pytest.fixture
-def app_client() -> requests.Session:
-    """Create test client for Coinbase read-only sync API."""
-    return requests.Session()
->>>>>>> b5e23b51 (Added falcon updates)

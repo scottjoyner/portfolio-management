@@ -124,7 +124,7 @@ class OnchainPoller:
                 latency_ms=time.time() * 1000,
             )
 
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             raise ValueError(f"invalid RPC response: {raw_response[:200]}")
 
     async def _record_health_failure(self, network: str, error: str) -> None:

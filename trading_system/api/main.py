@@ -33,16 +33,15 @@ from contextlib import asynccontextmanager
 
 from .routes import (
     health_check,
+    get_accounts,
     get_metrics,
-    list_accounts,
-    sync_account_transactions,
     list_trades,
     list_positions,
     list_strategies,
     get_performance,
-    get_price_estimates,
-    list_approvals,
-    list_hypotheses,
+    get_price_estimations,
+    get_approvals,
+    get_research_hypotheses,
     get_market_regime_snapshot,
     list_backtests,
     get_capital_allocation,
@@ -119,11 +118,7 @@ async def metrics_endpoint():
 @app.get("/accounts", response_model=dict, tags=["accounts"])
 async def list_accounts_endpoint():
     """List all discovered and processed accounts from Plaid ingestion."""
-    return await list_accounts()
-
-
-async def sync_account_transactions_post(account_id: str | None = None, default_account_id: str = "default") -> dict:
-    """Trigger transaction sync for specified account."""
+    return await get_accounts()
 
 
 @app.get("/trades", response_model=dict, tags=["trading"])
@@ -153,19 +148,19 @@ async def performance_endpoint(charts: bool = True):
 @app.post("/evaluations/price/{instrument}", response_model=dict, tags=["evaluation"])
 async def get_price_estimates_post(instrument: str):
     """Get price estimates from multiple models for specified instrument."""
-    return await get_price_estimates(instrument)
+    return await get_price_estimations(instrument)
 
 
 @app.get("/approvals", response_model=dict, tags=["approval_routing"])
 async def list_approvals_endpoint(status_filter: str = None):
     """List approval requests with filtering by status."""
-    return await list_approvals(status_filter)
+    return await get_approvals(status_filter)
 
 
 @app.get("/research/hypotheses", response_model=dict, tags=["research"])
 async def list_hypotheses_endpoint():
     """List active trading hypotheses from research system."""
-    return await list_hypotheses()
+    return await get_research_hypotheses()
 
 
 @app.get("/market/regime", response_model=dict, tags=["research"])
@@ -222,7 +217,6 @@ async def load_mock_data():
 # CORS CONFIGURATION (For future web client integration)
 # ============================================================================
 
-from fastapi.middleware.cors import CORSMiddleware
 
 # Add CORS middleware if you plan to serve a separate frontend:
 # app.add_middleware(

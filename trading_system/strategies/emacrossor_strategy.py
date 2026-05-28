@@ -7,8 +7,7 @@ This version is standalone and can be loaded via the strategy registry.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 

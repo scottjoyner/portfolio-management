@@ -7,8 +7,7 @@ the resulting schema matches the SQLAlchemy models.
 import os
 import subprocess
 
-import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
 
 
 def test_alembic_current_reports_head():

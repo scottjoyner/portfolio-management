@@ -1,8 +1,8 @@
 """Approval routing workflow engine."""
 
 from enum import Enum
-from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Any
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)

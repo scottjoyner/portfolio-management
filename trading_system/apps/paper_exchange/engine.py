@@ -168,10 +168,15 @@ class PaperExchangeEngine:
 
         if order.side == "buy":
             self.cash -= notional + order.fee
-            self.positions[order.product_id].size += fill_qty
+            pos = self.positions[order.product_id]
+            pos.cost_basis = ((pos.cost_basis * pos.size) + notional) / (pos.size + fill_qty) if pos.size + fill_qty > 0 else price
+            pos.size += fill_qty
         else:
             self.cash += notional - order.fee
-            self.positions[order.product_id].size -= fill_qty
+            pos = self.positions[order.product_id]
+            avg_cost = fill_qty * pos.cost_basis
+            pos.realized_pnl += notional - avg_cost
+            pos.size -= fill_qty
 
         total_filled = order.filled_size + fill_qty
         order.avg_fill_price = ((order.avg_fill_price * order.filled_size) + (price * fill_qty)) / total_filled if total_filled > 0 else price
