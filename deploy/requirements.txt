@@ -5,7 +5,17 @@
 aiohttp>=3.9.0
 
 # Ethereum ABI parsing (optional, for event decoding)
-eth_abi>=5.0.0
+8|eth_abi>=5.0.0
+
+# ============================================================================
+# DATABASE INTEGRATION (Phase 1A - All API endpoints now query PostgreSQL)
+# SQLAlchemy ORM for trading_system/storage/postgres/ schemas
 
 # Type hints
 typing-extensions>=4.9.0
+
+# ============================================================================
+# DATABASE INTEGRATION DEPENDENCIES
+# All API endpoints query PostgreSQL with SQLAlchemy ORM
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
