@@ -1,0 +1,39 @@
+# Production Dockerfile - Trading System Runtime Service
+## Target Machine: destroyer (ThinkPad T14 i7 32GB RAM)
+## Build Context: /home/destroyer/trading_system
+
+FROM python:3.12-slim@sha256:b8e9c7a5d0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=3
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY onchain/ ./onchain/
+
+# Create non-root user for security
+RUN useradd -u 1000 -m -s /bin/bash appuser && \
+    chown -R appuser:appuser /app && \
+    su appuser -c "pip install --no-cache-dir aiohttp eth_abi"
+
+# Set working directory ownership
+RUN chown -R appuser:appuser /app
+
+USER appuser
+
+WORKDIR /app/onchain/pollers
+
+# Health check (run every 30s, timeout 10s)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python3 -c "from onchain.pollers.service import OnchainPoller; print('OK')" || exit 1
+
+# Default command: run poller service
+CMD ["python3", "-u", "service.py"]
