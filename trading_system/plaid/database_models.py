@@ -66,7 +66,7 @@ class InstitutionStatus(Enum):
             return cls.INACTIVE
 
 
-from sqlalchemy import BigInteger, BLOB, ARRAY, DateTime, Enum, JSON, String, Text, MetaData, create_engine, orm, text
+from sqlalchemy import BigInteger, BLOB, ARRAY, DateTime, Enum, JSON, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 

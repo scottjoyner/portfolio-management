@@ -41,6 +41,7 @@ class RiskEngine:
         self.live_drawdown_pct = 0.0
         self.realized_stress_loss = 0.0
         self.mode_capital_used: dict[RiskMode, float] = {m: 0.0 for m in policy.mode_policies}
+        self.disabled_strategies: set[str] = set()
 
     def set_exchange_trust(self, trust_score: ExchangeTrustScore) -> None:
         self.exchange_trust_score = trust_score
@@ -50,6 +51,8 @@ class RiskEngine:
 
     def evaluate(self, intent: OrderIntent, mark_price: float, stale_data: bool = False) -> tuple[bool, str]:
         mode_policy = self.policy.mode_policies[intent.risk_mode]
+        if intent.strategy_id in self.disabled_strategies:
+            return False, f"strategy {intent.strategy_id} is disabled"
         if self.kill_switch:
             return False, "global kill switch enabled"
         if intent.risk_mode == RiskMode.RESEARCH_ONLY:

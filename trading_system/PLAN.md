@@ -1,7 +1,5 @@
 # Trading System — Implementation Plan
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 This plan reflects the current repository state after the May 26, 2026 implementation/demo pass and extends the trading system with an agentic evaluation mechanism for portfolio evaluation, fair-market-price estimation, strategy research, approval routing, and gated execution.
 
 The project is no longer just a scaffold: the core service layout, Docker build assets, CI quality workflow, SQLAlchemy model set, paper exchange, Coinbase connector modules, WebSocket routes, Prometheus metrics, and broad risk/execution/onchain modules now exist. The next major direction is to turn those components into a governed investment-research and execution platform.
@@ -15,16 +13,6 @@ The system has three distinct responsibilities:
 3. **Execute only after approval**: route profitable and robust strategies through backtesting, paper/shadow incubation, human approval, risk checks, reconciliation, and broker/exchange/onchain execution adapters.
 
 Plaid belongs in the **observe** layer for banking, investment-account, holding, security, and transaction data. It should not be treated as the primary stock-trade execution rail. Stocks/ETFs/options need broker adapters; crypto needs centralized exchange adapters and/or onchain execution modules.
-=======
-This plan reflects the current repository state after the May 26, 2026 implementation/demo pass. The project is no longer just a scaffold: the core service layout, Docker build assets, CI quality workflow, SQLAlchemy model set, paper exchange, Coinbase connector modules, WebSocket routes, Prometheus metrics, and broad risk/execution/onchain modules now exist.
-
-The next implementation pass should focus less on adding new directories and more on proving real workflows end to end, hardening migrations, removing drift, and staging the system safely.
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-This plan reflects the current repository state after the May 26, 2026 implementation/demo pass. The project is no longer just a scaffold: the core service layout, Docker build assets, CI quality workflow, SQLAlchemy model set, paper exchange, Coinbase connector modules, WebSocket routes, Prometheus metrics, and broad risk/execution/onchain modules now exist.
-
-The next implementation pass should focus less on adding new directories and more on proving real workflows end to end, hardening migrations, removing drift, and staging the system safely.
->>>>>>> b5e23b51 (Added falcon updates)
 
 ## Current state snapshot
 
@@ -34,8 +22,6 @@ The next implementation pass should focus less on adding new directories and mor
 | Local commands | `Makefile` has install, lint, typecheck, test, ci, api, worker, backtest, paper demo targets | Present; use `make ci` as local gate |
 | CI | GitHub Actions runs lint, mypy, pytest, and wheel build for `trading_system/**` changes | Present; add DB service containers next |
 | Docker | `Dockerfile`, local compose, and production deploy compose/systemd assets exist | Present; needs smoke validation and clean env handling |
-<<<<<<< HEAD
-<<<<<<< HEAD
 | Database models | Core SQLAlchemy models cover portfolio, strategy, order, fill, capital, approval, audit, alert, incident, exchange state, and market feed domains | Present; extend for accounts, instruments, valuation, strategy certification, and approval packets |
 | Alembic | `alembic/env.py` wires metadata and `DATABASE_URL` | Present; baseline revision workflow still needs a hard gate |
 | API | Health, readiness, metrics, strategy catalog, risk, reconciliation, onchain, ops, and websocket routes exist | Present; add agentic evaluation and approval APIs |
@@ -49,9 +35,6 @@ The next implementation pass should focus less on adding new directories and mor
 | Plaid/account aggregation | Not yet implemented | New roadmap item for account/holding/transaction ingestion, not execution |
 | Equity broker execution | Not yet implemented | New roadmap item; requires broker adapter separate from Plaid |
 | Tests | Unit/integration/sim/performance coverage exists and recent docs report passing lint/typecheck/tests | Present; expand e2e, DB migration, valuation, backtest-certification, and approval tests |
-=======
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 | Database models | Core SQLAlchemy models cover portfolio, strategy, order, fill, capital, approval, audit, alert, incident, exchange state, and market feed domains | Present; migration revision history must be verified |
 | Alembic | `alembic/env.py` wires metadata and `DATABASE_URL` | Present; baseline revision workflow still needs a hard gate |
 | API | Health, readiness, metrics, strategy catalog, risk, reconciliation, onchain, ops, and websocket routes exist | Present; add contract versioning and DB-backed integration tests |
@@ -62,32 +45,16 @@ The next implementation pass should focus less on adding new directories and mor
 | Coinbase | REST/WebSocket/auth/account/execution modules exist | Present; needs read-only staging harness and shadow/live gates |
 | Onchain | RPC, wallet, DEX, bridge, MEV, contract, safety, and route-analysis modules exist | Present; needs ingestion runtime and production key-management plan |
 | Tests | Unit/integration/sim/performance coverage exists and recent docs report passing lint/typecheck/tests | Present; expand e2e + DB migration coverage |
-<<<<<<< HEAD
->>>>>>> b5e23b51 (Added falcon updates)
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 
 ## Guiding rules
 
 1. **Default to paper mode**: no implementation should require live trading to validate correctness.
 2. **Live trading remains gated**: any live mode must require `LIVE_TRADING_ENABLED=true`, explicit credentials, approvals, and reconciliation.
-<<<<<<< HEAD
-<<<<<<< HEAD
 3. **Separate recommendation from execution**: agents may recommend and draft approval packets, but cannot bypass approval or submit orders directly.
 4. **Backtest before approval**: a strategy must be registered, backtested, stress tested, paper/shadow incubated, and approved before live/canary execution.
 5. **Treat database migration as production infrastructure**: committed Alembic revisions, backup/restore proof, and CI migration checks are mandatory before staging.
 6. **Keep generated artifacts out of source control** unless they are intentionally curated fixtures or evidence.
 7. **Audit everything**: every position evaluation, fair-value estimate, strategy hypothesis, backtest, approval, rejection, and execution attempt must be reconstructable.
-=======
-3. **Prefer end-to-end proof over more scaffolding**: the next valuable work is connecting existing modules into tested runtime paths.
-4. **Treat database migration as production infrastructure**: committed Alembic revisions, backup/restore proof, and CI migration checks are mandatory before staging.
-5. **Keep generated artifacts out of source control** unless they are intentionally curated fixtures or evidence.
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-3. **Prefer end-to-end proof over more scaffolding**: the next valuable work is connecting existing modules into tested runtime paths.
-4. **Treat database migration as production infrastructure**: committed Alembic revisions, backup/restore proof, and CI migration checks are mandatory before staging.
-5. **Keep generated artifacts out of source control** unless they are intentionally curated fixtures or evidence.
->>>>>>> b5e23b51 (Added falcon updates)
 
 ## Phase 0 — Repo hygiene and migration baseline
 
@@ -132,8 +99,6 @@ The next implementation pass should focus less on adding new directories and mor
 - `pytest -q tests/integration` catches missing/stale schema;
 - repository methods survive API restart/re-instantiation.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ## Phase 1 — Account, portfolio, and Plaid data foundation
 
 ### 1.1 Plaid ingestion
@@ -185,9 +150,6 @@ The next implementation pass should focus less on adding new directories and mor
 
 **Goal**: demonstrate a full trading lifecycle without live credentials.
 
-=======
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 ## Phase 1 — End-to-end trading path
 
 ### 1.1 Paper-mode signal-to-fill workflow
@@ -196,10 +158,6 @@ The next implementation pass should focus less on adding new directories and mor
 
 **Flow**:
 
-<<<<<<< HEAD
->>>>>>> b5e23b51 (Added falcon updates)
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 ```text
 market fixture -> strategy signal -> risk evaluation -> paper order -> simulated fill -> persistence -> audit event -> websocket/notification event
 ```
@@ -214,15 +172,7 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - the test requires no live credentials;
 - denied risk decisions produce persisted audit evidence.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### 2.2 Worker-to-WebSocket event publishing
-=======
-### 1.2 Worker-to-WebSocket event publishing
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-### 1.2 Worker-to-WebSocket event publishing
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: make realtime endpoints useful with actual producers.
 
@@ -236,15 +186,7 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - connected clients receive order and market events during paper-mode e2e test;
 - disconnected clients do not break publisher flow.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### 2.3 Strategy lifecycle wiring
-=======
-### 1.3 Strategy lifecycle wiring
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-### 1.3 Strategy lifecycle wiring
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: bridge strategy catalog, persisted configs, and runtime state.
 
@@ -257,8 +199,6 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - `/strategies/catalog` and ops strategy endpoints agree on strategy IDs and capabilities;
 - disabled strategies cannot emit runtime orders.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ## Phase 3 — Fair-market-price and agentic position evaluation
 
 ### 3.1 Fair-market-price engine
@@ -449,16 +389,6 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 ## Phase 7 — Coinbase staging path
 
 ### 7.1 Read-only Coinbase sync
-=======
-## Phase 2 — Coinbase staging path
-
-### 2.1 Read-only Coinbase sync
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-## Phase 2 — Coinbase staging path
-
-### 2.1 Read-only Coinbase sync
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: validate credentials and remote state without placing orders.
 
@@ -472,15 +402,7 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - missing/invalid credentials fail closed;
 - no order placement path is reachable with `LIVE_TRADING_ENABLED=false`.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### 7.2 Shadow-mode order preview
-=======
-### 2.2 Shadow-mode order preview
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-### 2.2 Shadow-mode order preview
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: prove live connector payload generation without sending orders.
 
@@ -494,15 +416,7 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - all shadow/live attempts are audit logged;
 - live submit code path requires explicit live gate and approval state.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### 7.3 Reconciliation loop
-=======
-### 2.3 Reconciliation loop
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-### 2.3 Reconciliation loop
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: prevent local/remote state divergence.
 
@@ -515,21 +429,9 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - mismatches block live execution;
 - reconciliation summary is visible through API and audit log.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ## Phase 8 — Onchain runtime path
 
 ### 8.1 RPC ingestion service
-=======
-## Phase 3 — Onchain runtime path
-
-### 3.1 RPC ingestion service
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-## Phase 3 — Onchain runtime path
-
-### 3.1 RPC ingestion service
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: turn implemented onchain adapters into a runtime feed.
 
@@ -542,14 +444,9 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - onchain data can be fetched in paper/shadow mode without signing transactions;
 - RPC failures are visible in feed-health and do not trigger execution.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ## Phase 9 — Production operations
 
 ### 9.1 Redis-backed realtime and rate limiting
-=======
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 ### 3.2 Approval-first transaction planning
 
 **Goal**: keep onchain execution behind explicit operator approval.
@@ -579,10 +476,6 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 ## Phase 4 — Production operations
 
 ### 4.1 Redis-backed realtime and rate limiting
-<<<<<<< HEAD
->>>>>>> b5e23b51 (Added falcon updates)
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: make API/worker deployment safe across processes.
 
@@ -596,15 +489,7 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - abusive request bursts are limited;
 - Redis outage degrades safely.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### 9.2 Deployment smoke scripts
-=======
-### 4.2 Deployment smoke scripts
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-### 4.2 Deployment smoke scripts
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: make Docker/systemd deployment repeatable.
 
@@ -617,35 +502,17 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - local compose deployment can be verified with one script;
 - deployment docs match actual commands.
 
-<<<<<<< HEAD
-<<<<<<< HEAD
 ### 9.3 Observability and governance runbooks
-=======
-### 4.3 Observability runbooks
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-### 4.3 Observability runbooks
->>>>>>> b5e23b51 (Added falcon updates)
 
 **Goal**: turn metrics/logs into operator actions.
 
 **Work**:
 - Document key metrics, alert thresholds, and remediation paths.
-<<<<<<< HEAD
-<<<<<<< HEAD
 - Add incident-response checklist for kill switch, exchange trust degradation, DB failure, Redis failure, wallet safety event, and model drift.
-=======
-- Add incident-response checklist for kill switch, exchange trust degradation, DB failure, Redis failure, and wallet safety event.
->>>>>>> b5e23b51 (Added falcon updates)
-=======
-- Add incident-response checklist for kill switch, exchange trust degradation, DB failure, Redis failure, and wallet safety event.
->>>>>>> b5e23b51 (Added falcon updates)
 - Add sample Grafana dashboard or dashboard spec.
 
 **Acceptance criteria**:
 - each critical alert has a runbook and owner action;
-<<<<<<< HEAD
-<<<<<<< HEAD
 - operators can distinguish backtested, paper, shadow, canary, and live incidents.
 
 ## Phase 10 — Operator UI and reporting
@@ -663,9 +530,6 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 - operator can see why each position is buy/sell/hold;
 - operator can approve strategy and trade separately;
 - reports distinguish backtested, paper, shadow, canary, and live performance.
-=======
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 - operators can distinguish paper/shadow/live incidents.
 
 ## Phase 5 — Strategy and analytics expansion
@@ -695,10 +559,6 @@ market fixture -> strategy signal -> risk evaluation -> paper order -> simulated
 **Acceptance criteria**:
 - backtest/replay outputs are reproducible from committed configs;
 - results distinguish research evidence from production readiness.
-<<<<<<< HEAD
->>>>>>> b5e23b51 (Added falcon updates)
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 
 ## Updated priority backlog
 
@@ -707,8 +567,6 @@ Detailed TODOs live in `TODO.md`. At a high level:
 1. Commit and validate baseline Alembic revision.
 2. Add DB-backed integration harness.
 3. Remove generated/local artifacts from tracked repo state.
-<<<<<<< HEAD
-<<<<<<< HEAD
 4. Add Plaid sandbox ingestion and canonical account/position ledger.
 5. Add instrument master and symbol/security mapping.
 6. Build paper signal-to-fill e2e test.
@@ -726,9 +584,6 @@ Detailed TODOs live in `TODO.md`. At a high level:
 ## Completion definition for the next major milestone
 
 The next milestone is **staging-ready paper/shadow evaluation operations**. It is complete when:
-=======
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 4. Build paper signal-to-fill e2e test.
 5. Wire worker/paper exchange/market data events to WebSockets.
 6. Add Coinbase read-only and shadow-mode staging harness.
@@ -740,16 +595,10 @@ The next milestone is **staging-ready paper/shadow evaluation operations**. It i
 ## Completion definition for the next major milestone
 
 The next milestone is **staging-ready paper/shadow operations**. It is complete when:
-<<<<<<< HEAD
->>>>>>> b5e23b51 (Added falcon updates)
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 
 - migrations are committed and validated against fresh and seeded Postgres databases;
 - `make ci` passes cleanly;
 - DB-backed integration tests pass;
-<<<<<<< HEAD
-<<<<<<< HEAD
 - Plaid sandbox ingestion maps holdings and transactions into internal account/position models;
 - instrument master resolves all seeded holdings;
 - signal-to-fill paper e2e test passes;
@@ -759,15 +608,8 @@ The next milestone is **staging-ready paper/shadow operations**. It is complete 
 - WebSocket clients receive real worker/paper events;
 - Coinbase read-only sync works and live order placement remains gated;
 - docs, TODO, migration guide, and agentic evaluation plan match the actual codebase.
-=======
-=======
->>>>>>> b5e23b51 (Added falcon updates)
 - signal-to-fill paper e2e test passes;
 - WebSocket clients receive real worker/paper events;
 - Coinbase read-only sync works and live order placement remains gated;
 - deployment smoke script verifies compose startup;
 - TODO and migration docs match the actual codebase.
-<<<<<<< HEAD
->>>>>>> b5e23b51 (Added falcon updates)
-=======
->>>>>>> b5e23b51 (Added falcon updates)

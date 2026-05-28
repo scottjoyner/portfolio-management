@@ -5,15 +5,13 @@ and verify API endpoints against a real database.
 """
 
 import os
-import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.main import app
-from storage.postgres.models import Base
 from storage.postgres.repository import OpsRepository
 
 

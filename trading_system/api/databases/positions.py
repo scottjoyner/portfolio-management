@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 
 async def get_active_positions(session: AsyncSession) -> List[Dict[str, Any]]:

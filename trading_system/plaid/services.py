@@ -51,10 +51,7 @@ refresh_result = await service.refresh_item(item_id)
 
 from __future__ import annotations
 
-import hashlib
-import json
 import secrets
-from collections.abc import Coroutine
 from datetime import datetime, timezone, timedelta
 from typing import Any
 

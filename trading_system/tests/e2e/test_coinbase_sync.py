@@ -11,7 +11,6 @@ Tests for the staging harness endpoints:
 - /exchange/credentials/validate
 """
 
-import pytest
 
 
 class TestExchangeHealthEndpoint:
@@ -31,7 +30,6 @@ class TestExchangeHealthEndpoint:
     def test_health_endpoint_without_credentials(self, app_client):
         """Health endpoint works without Coinbase credentials."""
         # Simulate missing credentials
-        from core.config.settings import Settings
         
         # Check it handles gracefully
         response = app_client.get("/exchange/health")

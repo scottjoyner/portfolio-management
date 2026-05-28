@@ -25,12 +25,9 @@ Or programmatically:
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -90,7 +87,7 @@ class IntegrationHarness:
         Yields:
             None after successful connection
         """
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine
         
         engine = create_engine(
             self.db_url,
@@ -148,7 +145,7 @@ class IntegrationHarness:
         self,
     ) -> AsyncIterator[Connection]:
         """Async context manager for database connection."""
-        from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+        from sqlalchemy.ext.asyncio import create_async_engine
         
         engine = create_async_engine(
             self.db_url.replace("postgresql://", "postgresql+asyncpg://"),
@@ -285,7 +282,7 @@ class TestContext:
     
     def connect(self) -> None:
         """Connect to test database and seed data."""
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import create_engine
         
         engine = create_engine(
             self.db_url,

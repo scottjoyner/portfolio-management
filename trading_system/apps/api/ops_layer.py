@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-<<<<<<< HEAD
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
@@ -12,9 +11,11 @@ from sqlalchemy.orm import Session
 
 from storage.postgres.repository import OpsRepository
 from storage.postgres.session import get_db
+from strategies.lifecycle import StrategyLifecycleManager
 from storage.postgres.models import (
     AuditEvent as AuditEventModel,
     Order as OrderModel,
+    PortfolioSleeve,
     StrategyRun as StrategyRunModel,
 )
 
@@ -245,7 +246,7 @@ class BacktestRequest(BaseModel):
 class StrategyActionResponse(BaseModel):
     task_id: str
     strategy_id: str
-    status: Literal["queued", "running", "completed"]
+    status: str
     queued_at: datetime
 
 
@@ -383,11 +384,11 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)) -> Po
     p = repo.get_portfolio(portfolio_id)
     if not p:
         raise HTTPException(status_code=404, detail="portfolio not found")
-    sleeves = {s.name: float(s.weight) for s in p.sleeves}
+    sleeves = {s.name: float(s.weight) for s in db.query(PortfolioSleeve).filter(PortfolioSleeve.portfolio_id == portfolio_id).all()}
     return PortfolioDetail(
         summary=PortfolioSummary(portfolio_id=p.id, name=p.name, objective=p.objective, nav=float(p.nav), available_capital=float(p.available_capital), locked_capital=float(p.locked_capital), realized_pnl=float(p.realized_pnl), unrealized_pnl=float(p.unrealized_pnl), liquidity_score=float(p.liquidity_score), capital_efficiency=float(p.capital_efficiency)),
         sleeves=sleeves,
-        strategy_allocations={sa.strategy_id: float(sa.weight) for sa in p.strategy_allocations},
+        strategy_allocations={},
         transfers_24h=[],
         risk_budget_used=0.0,
         what_changed={},
@@ -611,14 +612,69 @@ def start_backtest(req: BacktestRequest, db: Session = Depends(get_db)) -> Strat
 
 @router.post("/strategies/{strategy_id}/start", response_model=StrategyActionResponse)
 def start_strategy(strategy_id: str, db: Session = Depends(get_db)) -> StrategyActionResponse:
+    mgr = StrategyLifecycleManager(repo=_repo(db))
+    run = mgr.start(strategy_id)
+    return StrategyActionResponse(task_id=run.task_id, strategy_id=strategy_id, status=run.status, queued_at=run.queued_at)
+
+
+@router.post("/strategies/{strategy_id}/stop", response_model=StrategyActionResponse)
+def stop_strategy(strategy_id: str, db: Session = Depends(get_db)) -> StrategyActionResponse:
+    mgr = StrategyLifecycleManager(repo=_repo(db))
     repo = _repo(db)
-    task_id = f"strat-{uuid4().hex[:10]}"
-    run = StrategyRunModel(task_id=task_id, strategy_id=strategy_id, status="running")
-    repo.create_strategy_run(run)
-    repo.create_audit_event(
-        AuditEventModel(event_type="strategy_started", resource_type="strategy_run", resource_id=task_id)
-    )
-    return StrategyActionResponse(task_id=task_id, strategy_id=strategy_id, status="running", queued_at=run.queued_at)
+    latest = repo.db.query(StrategyRunModel).filter(
+        StrategyRunModel.strategy_id == strategy_id,
+        StrategyRunModel.status == "running",
+    ).order_by(StrategyRunModel.queued_at.desc()).first()
+    if not latest:
+        raise HTTPException(status_code=404, detail=f"no running run for strategy {strategy_id}")
+    run = mgr.stop(latest.task_id)
+    return StrategyActionResponse(task_id=run.task_id, strategy_id=strategy_id, status="stopped", queued_at=run.queued_at)
+
+
+@router.post("/strategies/{strategy_id}/pause", response_model=StrategyActionResponse)
+def pause_strategy(strategy_id: str, db: Session = Depends(get_db)) -> StrategyActionResponse:
+    mgr = StrategyLifecycleManager(repo=_repo(db))
+    repo = _repo(db)
+    latest = repo.db.query(StrategyRunModel).filter(
+        StrategyRunModel.strategy_id == strategy_id,
+        StrategyRunModel.status == "running",
+    ).order_by(StrategyRunModel.queued_at.desc()).first()
+    if not latest:
+        raise HTTPException(status_code=404, detail=f"no running run for strategy {strategy_id}")
+    run = mgr.pause(latest.task_id)
+    return StrategyActionResponse(task_id=run.task_id, strategy_id=strategy_id, status="paused", queued_at=run.queued_at)
+
+
+@router.post("/strategies/{strategy_id}/resume", response_model=StrategyActionResponse)
+def resume_strategy(strategy_id: str, db: Session = Depends(get_db)) -> StrategyActionResponse:
+    mgr = StrategyLifecycleManager(repo=_repo(db))
+    repo = _repo(db)
+    latest = repo.db.query(StrategyRunModel).filter(
+        StrategyRunModel.strategy_id == strategy_id,
+        StrategyRunModel.status == "paused",
+    ).order_by(StrategyRunModel.queued_at.desc()).first()
+    if not latest:
+        raise HTTPException(status_code=404, detail=f"no paused run for strategy {strategy_id}")
+    run = mgr.resume(latest.task_id)
+    return StrategyActionResponse(task_id=run.task_id, strategy_id=strategy_id, status="running", queued_at=run.queued_at)
+
+
+@router.post("/strategies/{strategy_id}/enable")
+def enable_strategy(strategy_id: str, db: Session = Depends(get_db)) -> dict:
+    mgr = StrategyLifecycleManager(repo=_repo(db))
+    result = mgr.enable(strategy_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"strategy {strategy_id} not found")
+    return {"strategy_id": strategy_id, "status": "enabled"}
+
+
+@router.post("/strategies/{strategy_id}/disable")
+def disable_strategy(strategy_id: str, db: Session = Depends(get_db)) -> dict:
+    mgr = StrategyLifecycleManager(repo=_repo(db))
+    result = mgr.disable(strategy_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"strategy {strategy_id} not found")
+    return {"strategy_id": strategy_id, "status": "disabled"}
 
 
 @router.get("/strategies/outcomes/realtime", response_model=list[RealtimeStrategyOutcome])
@@ -738,188 +794,3 @@ def audit_events(db: Session = Depends(get_db)) -> list[dict]:
         }
         for e in repo.list_audit_events()
     ]
-=======
-import logging
-from datetime import datetime, timezone
-from typing import Any, Dict
-
-from fastapi import APIRouter, HTTPException, Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-
-log = logging.getLogger(__name__)
-
-
-router = APIRouter(prefix="/exchange")
-
-
-@router.get("/health")
-async def exchange_health() -> dict[str, Any]:
-    """Health check for Coinbase integration."""
-    from core.config.settings import Settings
-    
-    settings = Settings.from_env()
-    
-    return {
-        "status": "ok",
-        "coinbase_configured": bool(settings.coinbase_api_key and settings.coinbase_api_secret),
-        "live_enabled": settings.live_trading_enabled if settings else False,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-@router.get("/accounts")
-async def list_accounts() -> dict[str, Any]:
-    """Fetch Coinbase brokerage accounts (read-only)."""
-    from core.config.settings import Settings
-    from exchange.coinbase.rest.client import CoinbaseRestClient
-    
-    settings = Settings.from_env()
-    
-    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
-        return {
-            "status": "not_configured",
-            "accounts": [],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    
-    client = CoinbaseRestClient(
-        api_key=settings.coinbase_api_key,
-        api_secret=settings.coinbase_api_secret
-    )
-    
-    try:
-        accounts_data = await client.list_accounts()
-        
-        return {
-            "status": "ok",
-            "accounts": [
-                {
-                    "id": a.get("id"),
-                    "name": a.get("name"),
-                    "type": a.get("type"),
-                    "currency": a.get("currency")
-                } for a in accounts_data
-            ],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        log.exception("List accounts error")
-        raise HTTPException(status_code=503, detail=str(e))
-    finally:
-        await client.close()
-
-
-@router.get("/portfolios")
-async def list_portfolios() -> dict[str, Any]:
-    """Fetch Coinbase brokerage portfolios (read-only)."""
-    from core.config.settings import Settings
-    from exchange.coinbase.rest.client import CoinbaseRestClient
-    
-    settings = Settings.from_env()
-    
-    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
-        return {
-            "status": "not_configured",
-            "portfolios": [],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    
-    client = CoinbaseRestClient(
-        api_key=settings.coinbase_api_key,
-        api_secret=settings.coinbase_api_secret
-    )
-    
-    try:
-        portfolios_data = await client.list_portfolios()
-        
-        return {
-            "status": "ok",
-            "portfolios": [
-                {
-                    "id": p.get("id"),
-                    "primary": p.get("primary", False),
-                    "asset_type": p.get("asset_type")
-                } for p in portfolios_data
-            ],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        log.exception("List portfolios error")
-        raise HTTPException(status_code=503, detail=str(e))
-    finally:
-        await client.close()
-
-
-@router.get("/products")
-async def list_products(limit: int = 10) -> dict[str, Any]:
-    """Fetch Coinbase available trading products."""
-    from core.config.settings import Settings
-    from exchange.coinbase.rest.client import CoinbaseRestClient
-    
-    settings = Settings.from_env()
-    
-    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
-        return {
-            "status": "not_configured",
-            "products": [],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    
-    client = CoinbaseRestClient(
-        api_key=settings.coinbase_api_key,
-        api_secret=settings.coinbase_api_secret
-    )
-    
-    try:
-        products_data = await client.list_products()
-        
-        return {
-            "status": "ok",
-            "products": products_data[:limit],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        log.exception("List products error")
-        raise HTTPException(status_code=503, detail=str(e))
-    finally:
-        await client.close()
-
-
-@router.get("/credentials/validate")
-async def validate_credentials() -> dict[str, Any]:
-    """Validate Coinbase API credentials."""
-    from core.config.settings import Settings
-    
-    settings = Settings.from_env()
-    
-    if not settings.coinbase_api_key or not settings.coinbase_api_secret:
-        return {
-            "valid": False,
-            "reason": "No credentials configured",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    
-    client = CoinbaseRestClient(
-        api_key=settings.coinbase_api_key,
-        api_secret=settings.coinbase_api_secret
-    )
-    
-    try:
-        # Validate by fetching accounts (read-only operation)
-        await client.list_accounts()
-        
-        return {
-            "valid": True,
-            "reason": "Credentials validated successfully",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as e:
-        log.exception("Credential validation error")
-        return {
-            "valid": False,
-            "reason": f"Authentication failed: {str(e)}",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    finally:
-        await client.close()
->>>>>>> b5e23b51 (Added falcon updates)

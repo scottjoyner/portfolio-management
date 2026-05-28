@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 
 async def get_price_estimates(session: AsyncSession) -> List[Dict[str, Any]]:

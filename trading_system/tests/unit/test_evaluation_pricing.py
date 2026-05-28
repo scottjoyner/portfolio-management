@@ -5,7 +5,7 @@ import pytest
 
 def test_price_estimation_engine_initialization():
     """Test PriceEstimationEngine initialization with various configs."""
-    from evaluation.pricing_models import PriceEstimationEngine, PriceTargetModel
+    from evaluation.pricing_models import PriceEstimationEngine
     
     # Test default config
     engine = PriceEstimationEngine()
@@ -78,7 +78,6 @@ def test_calculate_position_quality_basic():
 
 def test_position_quality_risk_scoring():
     """Test that risk scoring increases with position size."""
-    from evaluation.pricing_models import PositionQualityMetrics
     
     engine = PriceEstimationEngine()
     

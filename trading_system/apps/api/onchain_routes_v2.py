@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -11,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config.settings import Settings
-from onchain.runtime.service import OnchainRuntimeService
 from storage.postgres.models import FeedHealthRecord
 
 log = logging.getLogger(__name__)
@@ -79,7 +77,7 @@ async def get_token_metadata(token_address: str, db_session: AsyncSession) -> Di
         settings = Settings.from_env()
         
         # Check DB for cached metadata first (TokenMetadata model)
-        from sqlalchemy import select, text
+        from sqlalchemy import select
         
         # Query token metadata from cache
         query = select(FeedHealthRecord).where(

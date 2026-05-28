@@ -37,11 +37,9 @@ Cache Strategy:
 from __future__ import annotations
 
 import json
-import time
 import hashlib
 import pickle
-from datetime import datetime, timezone
-from typing import Any, Optional, Union
+from typing import Any, Optional
 from functools import wraps
 
 
@@ -139,7 +137,7 @@ class RedisCacheManager:
             self.stats["misses"] += 1
             return None
             
-        except Exception as e:
+        except Exception:
             self.stats["errors"] += 1
             return None
     
@@ -180,7 +178,7 @@ class RedisCacheManager:
             self.redis.setex(actual_key, ttl, serialized)
             return True
             
-        except Exception as e:
+        except Exception:
             self.stats["errors"] += 1
             return False
     
@@ -263,7 +261,6 @@ def cache(endpoint: str) -> Any:  # type: ignore[no-any-return]
             
     Returns cached response if available within TTL, otherwise fetches fresh.
     """
-    from functools import wraps
     
     def decorator(func) -> Any:  # type: ignore[no-any-return]
         @wraps(func)

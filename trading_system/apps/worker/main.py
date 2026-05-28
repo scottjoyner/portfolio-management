@@ -7,6 +7,7 @@ from decimal import Decimal
 from apps.paper_exchange.engine import PaperExchangeEngine
 from apps.worker.engine import WorkerEngine
 from core.config.settings import Settings
+from core.events.ws_hub import hub
 from core.logging.structured import get_logger
 from storage.postgres.session import init_db
 
@@ -48,6 +49,14 @@ async def run() -> None:
             }
             signals = engine.evaluate_market_state(product_id, market_state)
             for sig in signals:
+                hub.publish_sync("signals", {
+                    "event": "signal_generated",
+                    "product_id": product_id,
+                    "strategy_id": sig["strategy_id"],
+                    "signal": sig.get("signal"),
+                    "price": float(mid),
+                    "timestamp": market_state.get("timestamp"),
+                })
                 allowed, reason = engine.evaluate_order(sig, market_state)
                 if allowed:
                     order = paper.place_order(
@@ -59,8 +68,21 @@ async def run() -> None:
                         size=Decimal("0.01"),
                         limit_price=Decimal(str(market_state["price"])),
                     )
+                    hub.publish_sync("orders", {
+                        "event": "signal_to_fill",
+                        "order_id": order.order_id,
+                        "strategy_id": sig["strategy_id"],
+                        "product_id": product_id,
+                        "status": "placed",
+                    })
                     log.info("order_placed", order_id=order.order_id, strategy_id=sig["strategy_id"])
                 else:
+                    hub.publish_sync("orders", {
+                        "event": "order_rejected",
+                        "strategy_id": sig["strategy_id"],
+                        "product_id": product_id,
+                        "reason": reason,
+                    })
                     log.info("order_rejected", strategy_id=sig["strategy_id"], reason=reason)
 
         try:

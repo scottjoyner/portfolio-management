@@ -49,11 +49,7 @@ All files saved to: `~/git/portfolio-management/`
 `portfolio-management/trading_system/README.md` has merge conflict markers:
 
 ```bash
-<<<<<<< HEAD
 Production-oriented modular scaffold for a Coinbase-focused algorithmic trading and research platform with explicit risk gates, approvals, paper-first execution, onchain route-analysis support, and an agentic evaluation roadmap for position research and strategy approval.
-=======
-Production-oriented modular scaffold for a Coinbase-focused algorithmic trading and research platform with explicit risk gates, approvals, paper-first execution, and onchain route-analysis support.
->>>>>>> b5e23b51 (Added falcon updates)
 ```
 
 ### Resolution Required

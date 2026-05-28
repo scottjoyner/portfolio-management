@@ -169,7 +169,6 @@ class TradesRepository:
     
     def update_order_status(self, order_id: str, status: str) -> dict[str, Any] | None:
         """Update order status (e.g., from pending to open)."""
-        from storage.postgres.models import Order
         
         order = self.get_order(order_id)
         
@@ -192,7 +191,6 @@ class TradesRepository:
     
     def cancel_order(self, order_id: str) -> dict[str, Any] | None:
         """Cancel an open/partial order."""
-        from storage.postgres.models import Order
         
         order = self.get_order(order_id)
         
@@ -219,7 +217,6 @@ class TradesRepository:
     
     def partially_fill_order(self, order_id: str, fill_size: float, fill_price: float) -> dict[str, Any]:
         """Partially fill an order (for limit orders)."""
-        from storage.postgres.models import Order
         
         order = self.get_order(order_id)
         
@@ -367,7 +364,7 @@ class TradesRepository:
     def get_trade_history(self, product_id: str, portfolio_id: str | None = None, 
                           limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """Get trade history for a product/portfolio."""
-        from storage.postgres.models import Order, Fill
+        from storage.postgres.models import Order
         
         # Query orders and fills together
         query = self.db.query(Order).filter(Order.product_id == product_id)
@@ -381,7 +378,7 @@ class TradesRepository:
     
     def calculate_fill_metrics(self, product_id: str, portfolio_id: str | None = None) -> dict[str, Any]:
         """Calculate execution metrics for a product/portfolio."""
-        from storage.postgres.models import Order, Fill
+        from storage.postgres.models import Fill
         
         fills = self.db.query(Fill).filter(
             Fill.product_id == product_id

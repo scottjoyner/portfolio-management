@@ -64,16 +64,13 @@ transactions = await service.get_transactions(access_token)
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sqlalchemy import Connection, Engine
+    pass
 
 
 class InstitutionStatus(Enum):

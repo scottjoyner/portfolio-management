@@ -35,9 +35,8 @@ All endpoints query actual PostgreSQL tables:
 - portfolios, orders, fills, strategy_configs, capital_buckets, approvals, alerts, incidents
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone
-import json
 from sqlalchemy.orm import Session
 
 # Import repository classes for database operations

@@ -1,10 +1,6 @@
 # Trading System — TODO Backlog
 
-<<<<<<< HEAD
 This backlog reflects the repo after the May 26, 2026 implementation/demo pass and adds the new agentic evaluation mechanism scope: automatic position evaluation, fair-market-price estimation, strategy research/backtesting/certification, approval packets, Plaid account-data integration, equity broker adapters, and crypto/onchain execution alignment.
-=======
-This backlog reflects the repo after the May 26, 2026 implementation/demo pass. Completed scaffold items were removed from the critical path; the remaining work focuses on making the system operationally reliable, database-migratable, observable, and safe for staged execution.
->>>>>>> b5e23b51 (Added falcon updates)
 
 ## P0 — Blockers before staging
 
@@ -37,7 +33,6 @@ This backlog reflects the repo after the May 26, 2026 implementation/demo pass. 
 - **Acceptance criteria**:
   - `git status` stays clean after `make ci`, demo backtests, and local app startup.
 
-<<<<<<< HEAD
 ## P1 — Data foundation and account aggregation
 
 ### P1.1 Plaid sandbox integration
@@ -74,11 +69,6 @@ This backlog reflects the repo after the May 26, 2026 implementation/demo pass. 
 ## P2 — Core runtime wiring
 
 ### P2.1 Signal-to-fill end-to-end workflow
-=======
-## P1 — Core runtime wiring
-
-### P1.1 Signal-to-fill end-to-end workflow
->>>>>>> b5e23b51 (Added falcon updates)
 - **Why**: The system has strategy, risk, paper exchange, persistence, audit, and websocket components, but needs a single tested path joining them.
 - **Deliverables**:
   - `tests/e2e/test_signal_to_fill.py`;
@@ -88,11 +78,7 @@ This backlog reflects the repo after the May 26, 2026 implementation/demo pass. 
   - one command proves the paper-mode trade lifecycle end to end;
   - no live credentials are required.
 
-<<<<<<< HEAD
 ### P2.2 Wire worker event publishing to websocket hub
-=======
-### P1.2 Wire worker event publishing to websocket hub
->>>>>>> b5e23b51 (Added falcon updates)
 - **Why**: WebSocket endpoints exist, but producers must publish real order/market events.
 - **Deliverables**:
   - worker publishes order lifecycle events to `orders` channel;
@@ -101,7 +87,6 @@ This backlog reflects the repo after the May 26, 2026 implementation/demo pass. 
 - **Acceptance criteria**:
   - websocket client receives order and market updates during the e2e test.
 
-<<<<<<< HEAD
 ### P2.3 Strategy lifecycle wiring
 - **Deliverables**:
   - sync catalog entries into `strategy_configs`;
@@ -228,58 +213,23 @@ This backlog reflects the repo after the May 26, 2026 implementation/demo pass. 
 ## P7 — Production hardening and UI
 
 ### P7.1 Rate limiting and abuse protection
-=======
-### P1.3 Coinbase live connector staging harness
-- **Why**: Coinbase REST/WebSocket clients exist, but live integration must be gated and testable without enabling production execution.
-- **Deliverables**:
-  - read-only account/portfolio sync command;
-  - shadow-mode order preview path;
-  - reconciliation report comparing local and remote state.
-- **Acceptance criteria**:
-  - credentials are required for live/shadow connector tests;
-  - failures degrade to no-trade state;
-  - `LIVE_TRADING_ENABLED=false` blocks order placement.
-
-### P1.4 Onchain ingestion runtime
-- **Why**: RPC adapters and services exist, but no runtime continuously calls them.
-- **Deliverables**:
-  - poller for tracked pools, token metadata, price feeds, and events;
-  - persistence path for snapshots and event observations;
-  - safety scoring before route approval packet generation.
-- **Acceptance criteria**:
-  - onchain data can be fetched in paper/shadow mode without signing transactions;
-  - RPC errors are retried and surfaced in feed health.
-
-## P2 — Production hardening
-
-### P2.1 Rate limiting and abuse protection
->>>>>>> b5e23b51 (Added falcon updates)
 - **Deliverables**:
   - token-bucket middleware backed by Redis for multi-worker deployments;
   - safe defaults for local single-process mode;
   - tests for burst and sustained limits.
 
-<<<<<<< HEAD
 ### P7.2 Redis-backed pub/sub
-=======
-### P2.2 Redis-backed pub/sub
->>>>>>> b5e23b51 (Added falcon updates)
 - **Deliverables**:
   - replace or augment in-memory `PubSubHub` for multi-process deployments;
   - worker -> Redis -> API websocket fanout path;
   - fallback behavior when Redis is unavailable.
 
-<<<<<<< HEAD
 ### P7.3 Deployment verification
-=======
-### P2.3 Deployment verification
->>>>>>> b5e23b51 (Added falcon updates)
 - **Deliverables**:
   - local Docker Compose smoke script;
   - production compose validation checklist;
   - optional Kubernetes readiness/liveness checks for API and worker.
 
-<<<<<<< HEAD
 ### P7.4 Secrets and key management plan
 - **Deliverables**:
   - documented dev/staging/prod secret sources;
@@ -293,33 +243,6 @@ This backlog reflects the repo after the May 26, 2026 implementation/demo pass. 
   - evidence and dissenting-agent output viewer;
   - approve/reject with comments;
   - versioned API contract notes and schema snapshots.
-=======
-### P2.4 Secrets and key management plan
-- **Deliverables**:
-  - documented dev/staging/prod secret sources;
-  - explicit prohibition on committing private keys or API secrets;
-  - future KMS/HSM signing adapter interface for onchain wallets.
-
-### P2.5 Operator UI/API contract hardening
-- **Deliverables**:
-  - versioned API contract notes;
-  - response schema snapshots for `/ops/*` routes;
-  - compatibility policy for frontend consumers.
-
-## P3 — Completeness and research extensions
-
-### P3.1 Strategy catalog quality gates
-- Verify all catalog strategies have metadata, risk-tier hints, paper-mode support labels, and backtest/replay capability flags.
-
-### P3.2 Backtesting evidence pack
-- Store canonical benchmark configs, expected outputs, and result interpretation docs.
-
-### P3.3 Onchain advanced modules
-- Prioritize MEV, bridge, DEX routing, liquidity graph, and Solana research only after paper-mode CEX and Base/Ethereum shadow-mode paths are stable.
-
-### P3.4 Documentation system
-- Add `mkdocs` or a lightweight docs index once runbooks, migration guide, API map, and implementation plan stabilize.
->>>>>>> b5e23b51 (Added falcon updates)
 
 ## Done / no longer TODO
 

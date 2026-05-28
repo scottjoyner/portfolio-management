@@ -35,13 +35,13 @@ async def main():
         # Test poller status
         status = await service.get_poller_status()
         results["runtime_init"] = True
-        print(f"  ✓ Runtime service initialized")
+        print("  ✓ Runtime service initialized")
         print(f"    - Networks: {status.get('networks')}")
         print(f"    - Cache size: {status.get('cache_size', 0)}")
         
         # Test token metadata fetch
         metadata = await service.fetch_token_metadata("0xC02aaA37b1fC06D6FaB1F6C6AD8944Ee7C48b8", "ethereum")
-        print(f"  ✓ Token metadata service working")
+        print("  ✓ Token metadata service working")
         print(f"    - WETH: {metadata.get('name', 'Unknown')} ({metadata.get('symbol', 'UNK')})")
         
         results["runtime_service"] = True
@@ -65,7 +65,7 @@ async def main():
         
         # Test feed health property
         health = poller.feed_health
-        print(f"  ✓ Poller service initialized")
+        print("  ✓ Poller service initialized")
         print(f"    - Status: {health.get('status')}")
         print(f"    - Pending pools: {health.get('pending_pools', 0)}")
         
@@ -87,9 +87,9 @@ async def main():
             }
         )
         
-        print(f"  ✓ Token metadata poller initialized")
+        print("  ✓ Token metadata poller initialized")
         print(f"    - Cache TTL: {metadata_poller._cache_ttl_seconds}s")
-        print(f"    - Coingecko integration: enabled")
+        print("    - Coingecko integration: enabled")
         
         # Test cache operations
         cached = await metadata_poller.get_all_cached()
@@ -112,10 +112,10 @@ async def main():
             }
         )
         
-        print(f"  ✓ Event listener poller initialized")
+        print("  ✓ Event listener poller initialized")
         print(f"    - Max events: {event_listener._max_events}")
         print(f"    - Queue size: {event_listener.event_count}")
-        print(f"    - eth_abi decoding: optional dependency")
+        print("    - eth_abi decoding: optional dependency")
         
         # Test properties
         print(f"    - Event queue empty: {len(event_listener.get_pending_events()) == 0}")
@@ -143,7 +143,7 @@ async def main():
         
         score_result = await safety_engine.score_route(route)
         
-        print(f"  ✓ Safety scoring engine working")
+        print("  ✓ Safety scoring engine working")
         print(f"    - Route: {score_result.get('route')}")
         print(f"    - MEV Risk: {score_result.get('mev_risk')}")
         print(f"    - Score: {score_result.get('overall_score')}/100")

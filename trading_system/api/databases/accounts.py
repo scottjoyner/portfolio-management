@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select
 
 
 async def get_all_accounts(session: AsyncSession) -> List[Dict[str, Any]]:

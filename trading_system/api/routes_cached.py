@@ -22,7 +22,7 @@ Cache Strategy:
 Endpoints with caching enabled improve response time for dashboard UI.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
 

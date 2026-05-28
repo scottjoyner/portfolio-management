@@ -24,12 +24,10 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import Any, Callable, Dict, List, Optional, Set
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 try:
     from eth_abi import decode
@@ -414,7 +412,7 @@ class OnchainRuntimeService:
             etherscan_api_key = ""  # Add if configured
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"https://api.etherscan.io/api",
+                    "https://api.etherscan.io/api",
                     params={
                         "module": "account",
                         "action": "tokeninfo",

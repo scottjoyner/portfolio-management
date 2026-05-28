@@ -1,7 +1,7 @@
 """Multi-agent market research orchestrator."""
 
 import asyncio
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 
 class ResearchOrchestrator:

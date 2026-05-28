@@ -1,6 +1,6 @@
 """REST API endpoints for hypothesis generation."""
 
-from typing import Dict, Any, List
+from typing import Any
 import logging
 
 logger = logging.getLogger(__name__)

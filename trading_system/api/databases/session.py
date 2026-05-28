@@ -41,7 +41,7 @@ def get_accounts():
         return db_manager.session.execute(sa.text(
             "SELECT id, name, type, provider, currency, balance_usd FROM portfolios WHERE type='ACTIVE' ORDER BY created_at DESC"
         )).fetchall()
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -51,7 +51,7 @@ def get_trades(limit=50, offset=0):
         return db_manager.session.execute(sa.text(
             "SELECT * FROM orders WHERE status IN ('CLOSED', 'CANCELLED') ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
         ), {"limit": limit, "offset": offset}).fetchall()
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -61,7 +61,7 @@ def get_positions():
         return db_manager.session.execute(sa.text(
             "SELECT o.*, COALESCE(SUM(f.quantity_filled), 0) as total_filled FROM orders o LEFT JOIN fills f ON (o.id = f.order_id AND f.side = o.side) GROUP BY o.id ORDER BY o.created_at DESC"
         )).fetchall()
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -71,7 +71,7 @@ def get_strategies():
         return db_manager.session.execute(sa.text(
             "SELECT config_key, name, description, category, backtested FROM strategy_configs WHERE backtested = true ORDER BY created_at DESC"
         )).fetchall()
-    except Exception as e:
+    except Exception:
         return []
 
 
@@ -82,7 +82,7 @@ def get_performance():
             "SELECT COALESCE(SUM(th.profit_loss), 0) as total_pnl FROM trade_history th INNER JOIN portfolios p ON th.portfolio_id = p.id WHERE p.type='ACTIVE'"
         )).fetchone()
         return {"total_realized_pnl_usd": float(result.total_pnl) if result else 0.0}
-    except Exception as e:
+    except Exception:
         return {"total_realized_pnl_usd": 0.0}
 
 
@@ -104,7 +104,7 @@ def get_price_estimates(instrument):
                 },
             }
         return {"current_price": None, "price_estimates": {}}
-    except Exception as e:
+    except Exception:
         return {"current_price": None, "price_estimates": {}}
 
 
@@ -123,7 +123,7 @@ def get_approvals():
             "completed_count": completed_count,
             "approvals": [],
         }
-    except Exception as e:
+    except Exception:
         return {"pending_count": 0, "completed_count": 0}
 
 
@@ -148,5 +148,5 @@ def get_research_hypotheses():
             ],
             "market_regimes": {},
         }
-    except Exception as e:
+    except Exception:
         return {"hypotheses": [], "market_regimes": {}}

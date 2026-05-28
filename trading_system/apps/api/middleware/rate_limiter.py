@@ -4,10 +4,8 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
-from fastapi.responses import Response
-from starware.middleware.base import BaseMiddleware
 
 log = logging.getLogger(__name__)
 
