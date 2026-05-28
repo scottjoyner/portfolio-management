@@ -1,0 +1,11 @@
+# Trading System Production Dependencies
+## Target: destroyer (ThinkPad T14 i7 32GB RAM)
+
+# Core HTTP/AsyncIO Client - RPC polling and API calls
+aiohttp>=3.9.0
+
+# Ethereum ABI parsing (optional, for event decoding)
+eth_abi>=5.0.0
+
+# Type hints
+typing-extensions>=4.9.0

@@ -1,0 +1,38 @@
+# Trading System Production Deployment Stack
+## Target Machine: destroyer (ThinkPad T14 i7 32GB RAM)
+## Network: tailscale
+## Date: 2026-05-27 | Status: Ready for deployment
+
+services:
+  # Main Trading Service - Onchain Runtime + Pollers
+  trading-service:
+    image: destroyer/trading-service:latest
+    build:
+      context: /home/destroyer/trading_system
+      dockerfile: ../deploy/Dockerfile.prod
+    container_name: trading-runtime-destructor
+    restart: unless-stopped
+    environment:
+      - RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_RPC_KEY
+      - METADATA_CACHE_TTL=3600  # 1 hour
+      - EVENT_QUEUE_CAPACITY=10000
+      - LOG_LEVEL=INFO
+      - ONCHAIN_NETWORKS=ethereum,arbitrum,optimism,base,polygon,avalanche
+    volumes:
+      - /home/destroyer/trading_system/logs:/app/logs
+      - /home/destroyer/trading_system/data:/app/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - tailscale-prod
+      - trading-network
+
+networks:
+  tailscale-prod:
+    external: true  # Use existing Tailscale network
+  trading-network:
+    driver: bridge
