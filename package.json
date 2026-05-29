@@ -1,17 +1,19 @@
 {
   "name": "prediction-arb-system",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "packageManager": "pnpm@9.12.3",
   "scripts": {
     "lint": "node scripts/lint.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node --test tests/**/*.test.mjs tests/integration/*.test.mjs",
-    "build": "node scripts/build.mjs && node scripts/build-web.mjs && node scripts/validate-migrations.mjs",
+    "build": "node scripts/build.mjs && node scripts/build-web.mjs && node scripts/validate-migrations.mjs && node scripts/migrate-postgres.mjs --dry-run > /dev/null",
     "cli": "node apps/cli/src/index.mjs",
     "api": "node apps/api/src/server.mjs",
     "web": "node apps/api/src/server.mjs",
     "migrations:validate": "node scripts/validate-migrations.mjs",
+    "migrations:dry-run": "node scripts/migrate-postgres.mjs --dry-run",
+    "migrations:up": "node scripts/migrate-postgres.mjs",
     "certify:mock": "node scripts/certify-mock.mjs"
   }
 }
