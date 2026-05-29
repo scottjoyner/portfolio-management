@@ -6,6 +6,8 @@ import { handleOperatorRoute } from './operatorRouter.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
+export const createInitialState = createInitialOperatorState;
+
 function json(status, body, headers = {}) {
   return { status, headers: { 'content-type': JSON_TYPE, ...headers }, body: JSON.stringify(body, null, 2) };
 }
