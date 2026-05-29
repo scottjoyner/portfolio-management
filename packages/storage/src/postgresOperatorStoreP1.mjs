@@ -1,5 +1,6 @@
 import { PostgresOperatorStore } from './postgresOperatorStore.mjs';
 import { normalizeOperatorState } from './operatorStore.mjs';
+import { OperatorRowRepository } from './operatorRowRepository.mjs';
 
 function rowJson(value, fallback) {
   if (value === null || value === undefined) return fallback;
@@ -7,10 +8,17 @@ function rowJson(value, fallback) {
   return value;
 }
 
+function iso(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 export class PostgresOperatorStoreP1 extends PostgresOperatorStore {
   constructor(options = {}) {
     super(options);
     this.kind = 'postgres-p1';
+    this.rows = new OperatorRowRepository(this);
   }
 
   async checkMigrations() {
@@ -27,14 +35,54 @@ export class PostgresOperatorStoreP1 extends PostgresOperatorStore {
 
   async load() {
     const base = await super.load();
-    const flags = await this.query("SELECT key, value_json FROM operator_flags WHERE key IN ('accounts','instruments','strategy_templates','paper_executions')");
-    const flagMap = Object.fromEntries(flags.rows.map(row => [row.key, rowJson(row.value_json, [])]));
+    const [accounts, instruments, templates, paperExecutions] = await Promise.all([
+      this.rows.listAccounts(),
+      this.rows.listInstruments(),
+      this.rows.listStrategyTemplates(),
+      this.rows.listPaperExecutions()
+    ]);
     this.state = normalizeOperatorState({
       ...base,
-      accounts: flagMap.accounts || base.accounts,
-      instruments: flagMap.instruments || base.instruments,
-      strategyTemplates: flagMap.strategy_templates || base.strategyTemplates,
-      paperExecutions: flagMap.paper_executions || base.paperExecutions
+      accounts: accounts.map(row => ({
+        id: row.id,
+        name: row.name,
+        provider: row.provider,
+        status: row.status,
+        currency: row.currency,
+        cash: Number(row.cash || 0),
+        nav: Number(row.nav || 0),
+        updatedAt: iso(row.updated_at)
+      })),
+      instruments: instruments.map(row => ({
+        symbol: row.symbol,
+        name: row.name,
+        assetClass: row.asset_class,
+        venue: row.venue,
+        status: row.status,
+        minOrderSize: Number(row.min_order_size || 0),
+        pricePrecision: Number(row.price_precision || 2)
+      })),
+      strategyTemplates: templates.map(row => ({
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        riskLevel: row.risk_level,
+        parameterSchema: rowJson(row.parameter_schema_json, {}),
+        createdAt: iso(row.created_at),
+        updatedAt: iso(row.updated_at)
+      })),
+      paperExecutions: paperExecutions.map(row => ({
+        id: row.id,
+        strategyId: row.strategy_id,
+        accountId: row.account_id,
+        status: row.status,
+        mode: row.mode,
+        startedAt: iso(row.started_at),
+        stoppedAt: iso(row.stopped_at),
+        stopReason: row.stop_reason,
+        lastHeartbeatAt: iso(row.last_heartbeat_at),
+        fills: rowJson(row.fills_json, [])
+      }))
     });
     return this.state;
   }
@@ -42,24 +90,20 @@ export class PostgresOperatorStoreP1 extends PostgresOperatorStore {
   async save(nextState) {
     const state = normalizeOperatorState(nextState);
     await super.save(state);
-    const now = new Date().toISOString();
-    const rows = [
-      ['accounts', state.accounts],
-      ['instruments', state.instruments],
-      ['strategy_templates', state.strategyTemplates],
-      ['paper_executions', state.paperExecutions]
-    ];
-    for (const [key, value] of rows) {
-      await this.query(
-        'INSERT INTO operator_flags (key, value_json, updated_at) VALUES ($1,$2,$3) ON CONFLICT (key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = EXCLUDED.updated_at',
-        [key, JSON.stringify(value), now]
-      );
+    await this.query('BEGIN');
+    try {
+      await this.rows.replaceProductLayer(state);
+      await this.query('COMMIT');
+      this.state = state;
+      return this.state;
+    } catch (error) {
+      await this.query('ROLLBACK').catch(() => {});
+      this.lastError = error;
+      throw error;
     }
-    this.state = state;
-    return this.state;
   }
 
   getStatus() {
-    return { ...super.getStatus(), productLayer: 'p1-json-flags' };
+    return { ...super.getStatus(), productLayer: 'p1-row-tables' };
   }
 }
