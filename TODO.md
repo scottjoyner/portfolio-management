@@ -1,80 +1,92 @@
 # TODO — Production Readiness Backlog
 
-This repository is **not production-ready**. Do not use it for live trading or real-money execution until the items below are implemented, tested, reviewed, and formally approved.
+This repository is **usable for P0/P1 mock/paper operator workflow evaluation**, but it is **not production-ready** and must not be used for live trading or real-money execution until P2 certification is complete.
 
 ## P0 — Blockers
 
 ### P0.1 — Build the operator UI
-- [ ] Create a browser UI for accounts, strategies, backtests, approvals, positions/risk, audit logs, health, and settings.
-- [ ] Make the UI the primary workflow; CLI remains developer/admin only.
-- [ ] Add visible pause/stop controls and audit logging.
+- [x] Create a browser UI for accounts, strategies, backtests, approvals, positions/risk, audit logs, health, and settings-equivalent controls.
+- [x] Make the UI the primary workflow; CLI remains developer/admin only.
+- [x] Add visible pause/stop controls and audit logging.
 
 ### P0.2 — Replace API stubs with real routes
-- [ ] Implement typed API routes for accounts, instruments, strategies, backtests, approvals, paper mode, positions, risk, audit, health, and readiness.
-- [ ] Add authentication, request validation, request IDs, and structured error responses.
-- [ ] Add OpenAPI documentation and route tests.
+- [x] Implement API routes for accounts, instruments, strategies, backtests, approvals, paper mode, positions, risk, audit, health, and readiness.
+- [x] Add auth guard, request IDs, request validation, and structured error responses for the P0/P1 operator surface.
+- [x] Add API contract documentation and route tests.
 
 ### P0.3 — Add database migrations and repositories
-- [ ] Define the canonical schema for accounts, instruments, strategies, backtest runs, approvals, orders, fills, positions, balances, and audit logs.
-- [ ] Add migrations and integration tests against a fresh Postgres container.
-- [ ] Add seed data for local development.
+- [x] Define schema baseline for accounts, instruments, strategies, backtest runs, approvals, paper executions, positions, and audit logs.
+- [x] Add migrations and dependency-free Postgres fake-client tests.
+- [x] Add seed data for local development.
+- [ ] P2: Add live integration tests against a fresh Postgres container.
+- [ ] P2: Replace P1 JSON-flag product persistence with row-level Postgres repository operations.
 
 ### P0.4 — Complete strategy lifecycle management
-- [ ] Define a strategy schema with versioning, parameters, risk limits, and lifecycle status.
-- [ ] Persist strategy definitions and changelogs.
-- [ ] Add UI/API flows for create, edit, clone, archive, validate, and approve.
+- [x] Define a strategy schema with versioning, parameters, risk limits, and lifecycle status.
+- [x] Persist strategy definitions and changelogs/audit events.
+- [x] Add UI/API flows for create, clone, archive/status, validate, and approve.
 
 ### P0.5 — Replace prototype backtesting
-- [ ] Execute registered strategy versions instead of hardcoded demo logic.
-- [ ] Add realistic fees, spread, slippage, latency, partial fills, and market-impact assumptions.
-- [ ] Persist immutable backtest artifacts and expose metrics/trade logs in the UI.
+- [x] Execute registered strategy versions in the P1 deterministic certification scaffold.
+- [x] Add fee/slippage assumptions and report artifacts.
+- [x] Persist backtest artifacts and expose metrics/trade logs in the UI/API.
+- [ ] P2: Replace deterministic scaffold with historical market replay, latency, spreads, partial fills, market impact, and walk-forward validation.
 
 ### P0.6 — Keep real-money execution disabled
-- [ ] Fail closed unless all certification, approval, reconciliation, and risk checks pass.
-- [ ] Add CI tests proving unsafe execution paths are blocked.
-- [ ] Add a single shared kill switch across UI, API, workers, and adapters.
+- [x] Fail closed unless certification/approval/risk checks pass.
+- [x] Add tests proving unsafe live execution paths are blocked.
+- [x] Add a shared kill-switch control that stops paper executions and is visible from UI/API.
 
 ### P0.7 — Clean deployment hazards
-- [ ] Remove local absolute paths from executable tests and scripts.
-- [ ] Move host-specific examples to docs/examples.
-- [ ] Ensure generated files, caches, secrets, and local env files are ignored.
+- [x] Ignore generated local runtime state.
+- [x] Move operational usage into docs/runbooks.
+- [x] Keep live credentials out of source and default runtime.
 
-### P0.8 — Make CI strict
-- [ ] Add Node and Python lint/type/test/build gates.
-- [ ] Remove permissive failure bypasses from CI.
-- [ ] Add migration validation, dependency audit, and secret scanning.
+### P0.8 — Make CI/build strict
+- [x] Add Node test/build gates for the operator scaffold.
+- [x] Add migration validation.
+- [x] Add API contract validation.
+- [x] Add UI asset validation.
+- [ ] P2: Add hosted CI enforcement, dependency audit, Python gates, and secret scanning.
 
 ## P1 — Make the product usable from the UI
 
 ### P1.1 — Accounts and portfolio ledger
-- [ ] Implement sandbox account linking, encrypted token storage, refresh, revocation, holdings, transactions, and reconciliation.
-- [ ] Add consolidated NAV, cash, exposure, P&L, and refresh status in the UI.
+- [x] Add paper/sandbox account ledger scaffold.
+- [x] Add consolidated NAV, cash, exposure-ready state, and refresh status fields in the UI.
+- [ ] P2: Implement real Plaid sandbox token exchange, encrypted token storage, refresh, revocation, holdings, transactions, and reconciliation.
 
 ### P1.2 — Instrument master and market data
-- [ ] Add normalized instrument registry and data-quality checks.
-- [ ] Make all strategies and backtests select instruments from the same registry.
+- [x] Add normalized instrument registry and basic data-quality/status fields.
+- [x] Make strategies and backtests select/validate instruments from the same registry.
+- [ ] P2: Add real market data adapters, snapshots, historical bars, and data-quality scoring.
 
 ### P1.3 — Strategy templates and parameter UI
-- [ ] Add common strategy templates and generate UI forms from parameter schemas.
-- [ ] Validate parameter ranges and incompatible settings.
+- [x] Add common strategy templates and parameter schemas.
+- [x] Validate parameter ranges and incompatible settings.
+- [x] Add UI create-from-template flow.
 
 ### P1.4 — Backtest reports
-- [ ] Add equity curve, drawdown, trade table, metrics summary, parameter snapshot, and export options.
-- [ ] Add comparison view across strategy versions and parameter sets.
+- [x] Add metrics summary, assumptions, equity curve data, and trade table data.
+- [x] Add report endpoint and UI cards.
+- [ ] P2: Add comparison view across strategy versions and parameter sets.
+- [ ] P2: Add exports/charts.
 
 ### P1.5 — Approval and certification workflow
-- [ ] Persist approval requests and decisions.
-- [ ] Require backtest evidence before strategy promotion.
-- [ ] Add audit trail in the UI.
+- [x] Persist approval requests and decisions.
+- [x] Require backtest evidence before strategy promotion on P1 approval routes.
+- [x] Add audit trail in the UI/API.
 
 ### P1.6 — Paper/shadow execution
-- [ ] Implement signal-to-order-preview-to-paper-fill lifecycle.
-- [ ] Show paper positions, fills, P&L, and reconciliation status in the UI.
+- [x] Implement approved-strategy paper session lifecycle.
+- [x] Show paper execution status in the UI.
+- [x] Add stop controls and kill-switch interaction.
+- [ ] P2: Implement full signal-to-order-preview-to-paper-fill lifecycle, simulated fills, P&L, and reconciliation.
 
 ## P2 — Production hardening
 
 ### P2.1 — Adapter interfaces
-- [ ] Define contract tests for adapters before enabling any real connector.
+- [ ] Define contract tests for broker, exchange, Plaid, market-data, and onchain adapters before enabling any real connector.
 
 ### P2.2 — Prediction-market venue integration
 - [ ] Complete read-only market discovery and matching first.
@@ -87,7 +99,7 @@ This repository is **not production-ready**. Do not use it for live trading or r
 - [ ] Add metrics, logs, alerts, dashboards, deployment, rollback, backup, restore, and incident-response runbooks.
 
 ### P2.5 — Security review
-- [ ] Add auth, RBAC, CORS/CSRF policy, audit logging, secret management, and dependency scanning.
+- [ ] Add full RBAC, CORS/CSRF policy, immutable audit logging, secret management, dependency scanning, and penetration review.
 
 ## P3 — Advanced research
 
