@@ -52,6 +52,9 @@ jobs:
       - name: Validate runtime defaults
         run: pnpm runtime:validate
 
+      - name: Validate deployment manifests
+        run: pnpm deploy:validate
+
       - name: Build
         run: pnpm build
 
