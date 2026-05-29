@@ -3,6 +3,7 @@ import { handleRequest as handleBaseRequest } from './server.mjs';
 import { createInitialOperatorState } from '../../../packages/storage/src/operatorStore.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 import { handleOperatorRoute } from './operatorRouter.mjs';
+import { authResponse, authStatus, requestId } from './auth.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -84,25 +85,32 @@ function makeSummary(state, store) {
 }
 
 export async function handleRequest(req, options = {}) {
+  const id = requestId(req.headers || {});
+  const auth = authStatus(req, { ...process.env, ...(options.env || {}) });
+  if (!auth.ok && !['/health', '/ready'].includes(new URL(req.url || '/', 'http://localhost').pathname)) {
+    return authResponse(auth.status, auth.error, id);
+  }
+
   const store = createOperatorStore(options);
   const url = new URL(req.url || '/', 'http://localhost');
   const method = req.method || 'GET';
 
   if (url.pathname === '/api/operator/summary' || isP1Route(url.pathname)) {
     const { state, error } = await loadState(store);
-    if (error) return json(503, { ok: false, error: 'operator_store_unavailable', reason: error.message, storage: storeStatus(store) });
+    if (error) return json(503, { ok: false, error: 'operator_store_unavailable', reason: error.message, storage: storeStatus(store), requestId: id });
 
     if (method === 'GET' && url.pathname === '/api/operator/summary') {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
-      return json(200, { ...body, ...makeSummary(state, store) });
+      return json(200, { ...body, ...makeSummary(state, store), requestId: id, actor: auth.actor });
     }
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
-    if (route) return json(route.status, route.body);
+    if (route) return json(route.status, { ...route.body, requestId: id, actor: auth.actor });
   }
 
-  return handleBaseRequest(req, { ...options, store });
+  const out = await handleBaseRequest(req, { ...options, store });
+  return { ...out, headers: { ...out.headers, 'x-request-id': id } };
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
