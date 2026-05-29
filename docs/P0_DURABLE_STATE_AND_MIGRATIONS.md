@@ -4,7 +4,7 @@
 
 This implementation moves the operator API away from purely in-memory state and introduces a repository layer for strategies, backtests, approvals, positions, audit events, and kill-switch state.
 
-It also adds the first SQL migration file that defines the Postgres target schema for the next storage implementation slice.
+It also adds the first SQL migration file that defines the Postgres target schema.
 
 ## What changed
 
@@ -41,7 +41,7 @@ OPERATOR_STATE_DISABLED=true pnpm api
 
 ### API wiring
 
-`apps/api/src/server.mjs` now uses the store abstraction. Writes to strategies, backtests, approvals, audit, and kill-switch state are persisted when the file store is active.
+`apps/api/src/server.mjs` uses the store abstraction. Writes to strategies, backtests, approvals, audit, and kill-switch state are persisted when a durable store is active.
 
 ### Readiness behavior
 
@@ -57,7 +57,7 @@ With file-backed storage, this changes to:
 sql_database_migrations_pending
 ```
 
-That means local durability is available, but production is still blocked until the Postgres repository implementation is complete.
+With Postgres storage selected, readiness reports migration state and remains fail-closed until later production blockers are removed.
 
 ### Migration baseline
 
@@ -96,6 +96,22 @@ It is also included in:
 pnpm build
 ```
 
+### Postgres follow-up
+
+See:
+
+```text
+docs/P0_POSTGRES_STORE_AND_MIGRATIONS.md
+```
+
+That follow-up adds:
+
+- `PostgresOperatorStore`
+- `operatorStoreFactory.mjs`
+- `scripts/migrate-postgres.mjs`
+- `pnpm migrations:dry-run`
+- `pnpm migrations:up`
+
 ## Safety posture
 
 This does **not** enable production/live trading.
@@ -104,8 +120,8 @@ The following remain true:
 
 - live execution routes are still forbidden
 - `/ready` still returns 503
-- SQL migrations are defined but not yet executed by the app
-- file-backed state is for local/dev operator continuity, not production-grade DB storage
+- file-backed state is for local/dev operator continuity
+- Postgres state is for durable operator storage, not live-trading certification
 - broker, exchange, and onchain execution remain disabled
 
 ## Local usage
@@ -133,10 +149,4 @@ Restart `pnpm api`; the state should still be present.
 
 ## Next storage slice
 
-The next logical implementation is a Postgres-backed repository:
-
-1. Add migration runner.
-2. Apply `001_operator_state.sql` on startup or via CLI.
-3. Implement `PostgresOperatorStore`.
-4. Add integration tests against the `docker-compose.yml` Postgres service.
-5. Change readiness from `sql_database_migrations_pending` to a DB connectivity/migration status check.
+The next logical implementation after the Postgres adapter is integration testing against the `docker-compose.yml` Postgres service and row-level repository operations for concurrent operators.

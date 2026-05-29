@@ -2,7 +2,8 @@ import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { validateModeConfig } from '../../../packages/config/src/mode.mjs';
-import { createInitialOperatorState, createOperatorStore, nextId } from '../../../packages/storage/src/operatorStore.mjs';
+import { createInitialOperatorState, nextId } from '../../../packages/storage/src/operatorStore.mjs';
+import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const UI_ROOT = new URL('../../web/src/', import.meta.url);
@@ -61,16 +62,10 @@ function summarizeReadiness(modeConfig, state, store) {
   if (state.killSwitch.enabled) blockers.push('kill_switch_enabled');
   blockers.push('ui_api_contract_only');
   if (!storage.durable) blockers.push('database_persistence_not_enabled');
-  else blockers.push('sql_database_migrations_pending');
+  else if (!storage.sql) blockers.push('sql_database_migrations_pending');
+  else if (!storage.migrations?.ok) blockers.push('sql_database_migrations_not_ready');
   blockers.push('real_execution_disabled');
-  return {
-    ok: false,
-    mode: modeConfig.mode,
-    productionReady: false,
-    liveTradingCertified: false,
-    storage,
-    blockers
-  };
+  return { ok: false, mode: modeConfig.mode, productionReady: false, liveTradingCertified: false, storage, blockers };
 }
 
 function validateStrategyInput(input) {
@@ -92,13 +87,7 @@ function runDeterministicBacktest(strategy, body = {}) {
   const finalEquity = Math.round(initialCapitalUsd * (1 + totalReturnPct / 100));
   return {
     assumptions: { initialCapitalUsd, feeBps, slippageBps, dataSource: body.dataSource || 'demo-fixture' },
-    metrics: {
-      totalReturnPct,
-      maxDrawdownPct: Number((Math.max(0.75, Math.abs(totalReturnPct) / 3)).toFixed(2)),
-      sharpe: Number((0.8 + Math.max(0, totalReturnPct) / 10).toFixed(2)),
-      totalTrades: strategy.riskLevel === 'low' ? 6 : 14,
-      winRatePct: strategy.riskLevel === 'low' ? 61.11 : 57.14
-    },
+    metrics: { totalReturnPct, maxDrawdownPct: Number((Math.max(0.75, Math.abs(totalReturnPct) / 3)).toFixed(2)), sharpe: Number((0.8 + Math.max(0, totalReturnPct) / 10).toFixed(2)), totalTrades: strategy.riskLevel === 'low' ? 6 : 14, winRatePct: strategy.riskLevel === 'low' ? 61.11 : 57.14 },
     equityCurve: [initialCapitalUsd, Math.round(initialCapitalUsd * 1.005), Math.round(initialCapitalUsd * 0.998), Math.round(initialCapitalUsd * 1.017), finalEquity],
     trades: [
       { timestamp: '2026-01-02T10:00:00.000Z', symbol: strategy.parameters.symbol || 'DEMO', side: 'buy', quantity: 1, price: 100 },
@@ -116,9 +105,17 @@ function serveUi(pathname) {
   return text(200, readFileSync(fullPath, 'utf8'), type);
 }
 
+async function loadStateOrHealthError(store) {
+  try {
+    return { state: await store.load(), error: null };
+  } catch (error) {
+    const fallback = createInitialOperatorState();
+    return { state: fallback, error };
+  }
+}
+
 export async function handleRequest(req, options = {}) {
   const store = createOperatorStore(options);
-  const state = await store.load();
   const env = defaultEnv(options.env || {});
   const modeConfig = validateModeConfig(env);
   const url = new URL(req.url || '/', 'http://localhost');
@@ -126,33 +123,22 @@ export async function handleRequest(req, options = {}) {
 
   if (method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/ui'))) return serveUi(url.pathname);
 
+  const { state, error: loadError } = await loadStateOrHealthError(store);
+
   if (method === 'GET' && url.pathname === '/health') {
-    return json(200, { ok: true, service: 'portfolio-management-api', mode: modeConfig.mode, liveTradingCertified: false, storage: storeStatus(store) });
+    return json(loadError ? 503 : 200, { ok: !loadError, service: 'portfolio-management-api', mode: modeConfig.mode, liveTradingCertified: false, storage: storeStatus(store), error: loadError?.message });
   }
 
-  if (method === 'GET' && url.pathname === '/ready') {
-    return json(503, summarizeReadiness(modeConfig, state, store));
-  }
+  if (method === 'GET' && url.pathname === '/ready') return json(503, summarizeReadiness(modeConfig, state, store));
+
+  if (loadError) return json(503, { ok: false, error: 'operator_store_unavailable', reason: loadError.message, storage: storeStatus(store) });
 
   if (method === 'GET' && url.pathname === '/metrics') {
-    return json(200, {
-      strategies_total: state.strategies.length,
-      backtests_total: state.backtests.length,
-      approvals_pending: state.approvals.filter(a => a.status === 'pending_review').length,
-      positions_open: state.positions.length,
-      kill_switch_enabled: state.killSwitch.enabled ? 1 : 0,
-      durable_storage_enabled: storeStatus(store).durable ? 1 : 0,
-      live_trading_certified: 0
-    });
+    return json(200, { strategies_total: state.strategies.length, backtests_total: state.backtests.length, approvals_pending: state.approvals.filter(a => a.status === 'pending_review').length, positions_open: state.positions.length, kill_switch_enabled: state.killSwitch.enabled ? 1 : 0, durable_storage_enabled: storeStatus(store).durable ? 1 : 0, sql_storage_enabled: storeStatus(store).sql ? 1 : 0, live_trading_certified: 0 });
   }
 
   if (method === 'GET' && url.pathname === '/api/operator/summary') {
-    return json(200, {
-      readiness: summarizeReadiness(modeConfig, state, store),
-      counts: { strategies: state.strategies.length, backtests: state.backtests.length, approvals: state.approvals.length, positions: state.positions.length, auditEvents: state.audit.length },
-      killSwitch: state.killSwitch,
-      storage: storeStatus(store)
-    });
+    return json(200, { readiness: summarizeReadiness(modeConfig, state, store), counts: { strategies: state.strategies.length, backtests: state.backtests.length, approvals: state.approvals.length, positions: state.positions.length, auditEvents: state.audit.length }, killSwitch: state.killSwitch, storage: storeStatus(store) });
   }
 
   if (method === 'GET' && url.pathname === '/api/strategies') return json(200, { strategies: state.strategies });

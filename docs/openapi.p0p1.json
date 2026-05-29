@@ -1,0 +1,54 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Portfolio Management Operator API",
+    "version": "0.3.2-p0p1",
+    "description": "P0/P1 mock-paper operator API. Live trading is not certified and remains blocked."
+  },
+  "servers": [
+    { "url": "http://localhost:3000" }
+  ],
+  "security": [
+    { "bearerAuth": [] }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer" }
+    },
+    "schemas": {
+      "Ok": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "requestId": { "type": "string" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": { "get": { "summary": "Service health", "responses": { "200": { "description": "Healthy" }, "503": { "description": "Unavailable" } } } },
+    "/ready": { "get": { "summary": "Fail-closed readiness", "responses": { "503": { "description": "Not production ready" } } } },
+    "/metrics": { "get": { "summary": "Operational counters", "responses": { "200": { "description": "Metrics" } } } },
+    "/api/operator/summary": { "get": { "summary": "Dashboard summary", "responses": { "200": { "description": "Summary" } } } },
+    "/api/accounts": { "get": { "summary": "List accounts", "responses": { "200": { "description": "Accounts" } } } },
+    "/api/instruments": { "get": { "summary": "List instruments", "responses": { "200": { "description": "Instruments" } } } },
+    "/api/strategy-templates": { "get": { "summary": "List strategy templates", "responses": { "200": { "description": "Templates" } } } },
+    "/api/strategies": { "get": { "summary": "List strategies", "responses": { "200": { "description": "Strategies" } } }, "post": { "summary": "Create free-form strategy", "responses": { "201": { "description": "Created" }, "400": { "description": "Invalid" } } } },
+    "/api/strategies/from-template": { "post": { "summary": "Create strategy from template", "responses": { "201": { "description": "Created" }, "400": { "description": "Invalid" } } } },
+    "/api/strategies/{id}/clone": { "post": { "summary": "Clone strategy version", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "201": { "description": "Created" }, "404": { "description": "Not found" } } } },
+    "/api/strategies/{id}/status": { "post": { "summary": "Update strategy lifecycle status", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" }, "404": { "description": "Not found" } } } },
+    "/api/backtests": { "get": { "summary": "List backtests", "responses": { "200": { "description": "Backtests" } } }, "post": { "summary": "Legacy deterministic backtest", "responses": { "201": { "description": "Created" } } } },
+    "/api/backtests/run": { "post": { "summary": "Run deterministic P1 backtest", "responses": { "201": { "description": "Completed" }, "404": { "description": "Strategy not found" } } } },
+    "/api/backtests/{id}/report": { "get": { "summary": "Get backtest report", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Report" }, "404": { "description": "Not found" } } } },
+    "/api/approvals": { "get": { "summary": "List approvals", "responses": { "200": { "description": "Approvals" } } }, "post": { "summary": "Legacy approval request", "responses": { "201": { "description": "Created" } } } },
+    "/api/approvals/request": { "post": { "summary": "Request approval", "responses": { "201": { "description": "Requested" }, "400": { "description": "Blocked" } } } },
+    "/api/approvals/{id}/decision": { "post": { "summary": "Approve or reject approval request", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Decision saved" }, "404": { "description": "Not found" } } } },
+    "/api/paper-executions": { "get": { "summary": "List paper executions", "responses": { "200": { "description": "Executions" } } }, "post": { "summary": "Start paper execution", "responses": { "201": { "description": "Started" }, "400": { "description": "Blocked" } } } },
+    "/api/paper-executions/{id}/stop": { "post": { "summary": "Stop paper execution", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Stopped" }, "404": { "description": "Not found" } } } },
+    "/api/kill-switch": { "post": { "summary": "Toggle global kill switch", "responses": { "200": { "description": "Updated" } } } },
+    "/api/kill-switch/stop-paper": { "post": { "summary": "Stop all paper executions", "responses": { "200": { "description": "Stopped" } } } },
+    "/api/positions": { "get": { "summary": "List positions", "responses": { "200": { "description": "Positions" } } } },
+    "/api/audit": { "get": { "summary": "List audit events", "responses": { "200": { "description": "Audit events" } } } },
+    "/api/execution/live/{path}": { "post": { "summary": "Live execution blocked", "responses": { "403": { "description": "live_execution_disabled" } } } }
+  }
+}

@@ -1,7 +1,18 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 
 const migrationsDir = 'packages/storage/src/migrations';
-const requiredTables = ['strategies', 'backtest_runs', 'approvals', 'positions', 'audit_events', 'operator_flags'];
+const requiredTables = [
+  'strategies',
+  'backtest_runs',
+  'approvals',
+  'positions',
+  'audit_events',
+  'operator_flags',
+  'accounts',
+  'instruments',
+  'strategy_templates',
+  'paper_executions'
+];
 
 if (!existsSync(migrationsDir)) {
   console.error(`migration validation failed: missing ${migrationsDir}`);

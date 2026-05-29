@@ -2,17 +2,21 @@
 
 ## Production readiness status
 
-**Not ready for production or live trading.**
+**Usable for P0/P1 mock/paper operator evaluation. Not ready for production or live trading.**
 
-This repository is currently a safety-first mock/paper scaffold plus an expanding portfolio-management planning baseline. Live trading must remain disabled until the UI, API, persistence, strategy lifecycle, backtesting, approvals, reconciliation, observability, and deployment controls are complete.
+The current implementation provides a browser operator console, durable local state, Postgres migration scaffolding, strategy templates, deterministic backtest reports, approval decisions, and paper-execution lifecycle controls. Live trading remains blocked until P2 hardening, connector certification, reconciliation, observability, and deployment controls are complete.
 
 See:
 
-- `TODO.md` for the prioritized P0/P1/P2/P3 backlog.
+- `docs/P0_P1_ACCEPTANCE_CHECKLIST.md` for the P0/P1 completion map.
+- `docs/API_CONTRACT_P0_P1.md` for the current API contract.
+- `docs/OPERATOR_RUNBOOK_P0_P1.md` for local operator usage.
+- `TODO.md` for the broader P0/P1/P2/P3 backlog.
 - `docs/PRODUCTION_READINESS_REVIEW_2026_05_29.md` for the deployment review.
 - `docs/ARCHITECTURE.md` for the target operator workflow and service-boundary decisions.
-- `docs/P0_UI_API_IMPLEMENTATION.md` for the first operator UI/API implementation slice.
-- `docs/P0_DURABLE_STATE_AND_MIGRATIONS.md` for durable local state and migration groundwork.
+- `docs/P0_UI_API_IMPLEMENTATION.md` for the first operator UI/API slice.
+- `docs/P0_DURABLE_STATE_AND_MIGRATIONS.md` for durable local state.
+- `docs/P0_POSTGRES_STORE_AND_MIGRATIONS.md` for Postgres store and migration setup.
 
 ## Safety warning
 
@@ -65,18 +69,58 @@ Disable file persistence with:
 OPERATOR_STATE_DISABLED=true pnpm api
 ```
 
+## Optional operator auth
+
+Local mock mode does not require auth by default. To require a bearer token:
+
+```bash
+OPERATOR_AUTH_REQUIRED=true \
+OPERATOR_AUTH_TOKEN=dev-secret \
+pnpm api
+```
+
+Then use:
+
+```http
+Authorization: Bearer dev-secret
+```
+
+`MODE=live` also requires auth, although live execution remains blocked.
+
+## Postgres migration preview
+
+Preview migration SQL:
+
+```bash
+pnpm migrations:dry-run
+```
+
+Apply migrations with the PostgreSQL client installed:
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb pnpm migrations:up
+```
+
+Run the API in Postgres mode after migrations and runtime dependencies are available:
+
+```bash
+OPERATOR_STORE=postgres DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb pnpm api
+```
+
 ## Current capability snapshot
 
 | Capability | Current status |
 |---|---|
 | Mock CLI | Partial deterministic demo responses. |
-| Node API | Operator API skeleton with health, readiness, strategy, backtest, approval, audit, metrics, and kill-switch routes. |
-| Web UI | Static operator console for mock/paper workflows. |
+| Node API | P0/P1 operator API with auth guard, request IDs, health, readiness, account, instrument, strategy, backtest, approval, paper, risk, audit, and metrics routes. |
+| Web UI | Static operator console plus dynamic P1 panels for accounts, instruments, templates, approvals, and paper execution. |
 | Durable local state | File-backed runtime state for local/dev continuity. |
-| SQL migrations | Baseline schema file and migration validator added; Postgres repository is still pending. |
-| Strategy lifecycle | Basic create/list flow only; validation, versioning, and lifecycle controls remain incomplete. |
-| Backtesting | Deterministic demo simulation only; not a realistic certification engine. |
-| Plaid/account data | Mock/scaffold responses only. |
+| SQL migrations | Core and P1 product-layer schemas, validation, dry-run, and psql runner added. |
+| Postgres repository | P1 adapter scaffold with fake-client tests; runtime requires `pg` dependency and integration testing. |
+| Strategy lifecycle | Template creation, validation, cloning/versioning, status updates, backtest evidence, and approval path. |
+| Backtesting | Deterministic strategy-version report scaffold with fees/slippage assumptions, metrics, equity curve, and trade log. |
+| Plaid/account data | Paper/sandbox account ledger scaffold only. |
+| Paper execution | Approved-strategy paper session lifecycle with stop and kill-switch controls. |
 | Live trading | Blocked by design and not certified. |
 
 ## Live trading checklist
@@ -99,5 +143,6 @@ Live trading remains blocked until all of these are true:
 - Cross-venue execution is non-atomic.
 - Partial fills can create temporary unhedged exposure.
 - Similar wording markets may still resolve differently.
-- Strategy and backtest modules are not yet fully wired into production-grade lifecycle workflows.
+- Deterministic backtesting is not production-grade market replay.
+- Paper execution is a lifecycle scaffold, not a full signal/order/fill engine yet.
 - Account, Plaid, broker, exchange, and onchain integrations are not production-certified.
