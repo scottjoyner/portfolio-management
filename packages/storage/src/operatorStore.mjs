@@ -1,14 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { DEFAULT_ACCOUNTS, DEFAULT_INSTRUMENTS, DEFAULT_STRATEGY_TEMPLATES } from './defaultOperatorState.mjs';
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
+    accounts: DEFAULT_ACCOUNTS.map(account => ({ ...account, updatedAt: account.updatedAt || now })),
+    instruments: DEFAULT_INSTRUMENTS,
+    strategyTemplates: DEFAULT_STRATEGY_TEMPLATES,
     strategies: [
       {
         id: 'strategy-ema-cross-v1',
+        templateId: 'template-ema-crossover',
         name: 'EMA Crossover',
         version: 1,
         status: 'draft',
@@ -19,6 +24,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
       },
       {
         id: 'strategy-zscore-v1',
+        templateId: 'template-zscore-mean-reversion',
         name: 'Z-Score Mean Reversion',
         version: 1,
         status: 'draft',
@@ -41,13 +47,15 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
         trades: [
           { timestamp: '2026-01-02T10:00:00.000Z', symbol: 'BTC-USD', side: 'buy', quantity: 0.1, price: 45000 },
           { timestamp: '2026-01-03T15:00:00.000Z', symbol: 'BTC-USD', side: 'sell', quantity: 0.1, price: 46539 }
-        ]
+        ],
+        report: { artifactId: 'artifact-bt-demo-001', summary: 'Demo deterministic backtest artifact.' }
       }
     ],
     approvals: [
       {
         id: 'approval-demo-001',
         strategyId: 'strategy-ema-cross-v1',
+        backtestId: 'bt-demo-001',
         status: 'pending_review',
         tier: 'canary',
         reason: 'Backtest evidence required before paper incubation.',
@@ -55,6 +63,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
       }
     ],
     positions: [],
+    paperExecutions: [],
     audit: [
       { id: 'audit-001', action: 'system_bootstrap', actor: 'system', at: now, details: 'Mock/paper operator surface initialized.' }
     ],
@@ -66,10 +75,14 @@ export function normalizeOperatorState(input = {}) {
   const seeded = createInitialOperatorState();
   return {
     schemaVersion: Number(input.schemaVersion || CURRENT_SCHEMA_VERSION),
+    accounts: Array.isArray(input.accounts) ? input.accounts : seeded.accounts,
+    instruments: Array.isArray(input.instruments) ? input.instruments : seeded.instruments,
+    strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : seeded.strategyTemplates,
     strategies: Array.isArray(input.strategies) ? input.strategies : seeded.strategies,
     backtests: Array.isArray(input.backtests) ? input.backtests : seeded.backtests,
     approvals: Array.isArray(input.approvals) ? input.approvals : seeded.approvals,
     positions: Array.isArray(input.positions) ? input.positions : seeded.positions,
+    paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : seeded.paperExecutions,
     audit: Array.isArray(input.audit) ? input.audit : seeded.audit,
     killSwitch: input.killSwitch && typeof input.killSwitch === 'object' ? input.killSwitch : seeded.killSwitch
   };

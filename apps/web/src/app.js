@@ -1,3 +1,5 @@
+import { refreshP1, wireP1Actions } from './p1.js';
+
 const qs = selector => document.querySelector(selector);
 const fmt = value => JSON.stringify(value, null, 2);
 
@@ -25,7 +27,7 @@ function renderSummary(summary) {
       <strong>${value}</strong>
     </article>
   `).join('');
-  qs('#risk-json').textContent = fmt({ readiness: summary.readiness, killSwitch: summary.killSwitch });
+  qs('#risk-json').textContent = fmt({ readiness: summary.readiness, killSwitch: summary.killSwitch, p0p1: summary.p0p1 });
   qs('#toggle-kill-switch').textContent = summary.killSwitch.enabled ? 'Disable kill switch' : 'Enable kill switch';
 }
 
@@ -59,8 +61,15 @@ function renderApprovals(approvals) {
       <p><span class="badge">${approval.status}</span> ${approval.tier}</p>
       <p>${approval.reason}</p>
       <p class="label">Strategy: ${approval.strategyId}</p>
+      ${approval.status === 'pending_review' ? `<button data-approve="${approval.id}">Approve</button>` : ''}
     </article>
   `).join('');
+  document.querySelectorAll('[data-approve]').forEach(button => {
+    button.addEventListener('click', async () => {
+      await api(`/api/approvals/${button.dataset.approve}/decision`, { method: 'POST', body: { status: 'approved', reviewer: 'operator-ui' } });
+      await refresh();
+    });
+  });
 }
 
 function renderAudit(audit) {
@@ -82,6 +91,7 @@ async function refresh() {
   renderBacktests(backtests.backtests);
   renderApprovals(approvals.approvals);
   renderAudit(audit.audit);
+  await refreshP1();
 }
 
 qs('#create-strategy').addEventListener('click', async () => {
@@ -100,7 +110,7 @@ qs('#run-backtest').addEventListener('click', async () => {
   const strategies = await api('/api/strategies');
   const strategy = strategies.strategies[0];
   if (!strategy) return;
-  await api('/api/backtests', { method: 'POST', body: { strategyId: strategy.id, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 } });
+  await api('/api/backtests/run', { method: 'POST', body: { strategyId: strategy.id, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 } });
   await refresh();
 });
 
@@ -108,7 +118,7 @@ qs('#request-approval').addEventListener('click', async () => {
   const strategies = await api('/api/strategies');
   const strategy = strategies.strategies[0];
   if (!strategy) return;
-  await api('/api/approvals', { method: 'POST', body: { strategyId: strategy.id, tier: 'canary' } });
+  await api('/api/approvals/request', { method: 'POST', body: { strategyId: strategy.id, tier: 'canary' } });
   await refresh();
 });
 
@@ -117,6 +127,8 @@ qs('#toggle-kill-switch').addEventListener('click', async () => {
   await api('/api/kill-switch', { method: 'POST', body: { enabled: !summary.killSwitch.enabled, reason: 'operator_ui_test' } });
   await refresh();
 });
+
+wireP1Actions(refresh);
 
 refresh().catch(error => {
   qs('#readiness-card').innerHTML = `<span class="label">Error</span><strong>${error.message}</strong>`;
