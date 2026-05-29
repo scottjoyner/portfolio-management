@@ -49,6 +49,44 @@ test('durable file store changes readiness blocker from missing persistence to s
   }
 });
 
+test('sql store with migrations avoids sql migrations pending blocker but remains fail-closed', async () => {
+  const store = new MemoryOperatorStore(createInitialState());
+  store.kind = 'postgres';
+  store.durable = true;
+  store.sql = true;
+  store.migrations = { ok: true, checked: true, applied: ['001_operator_state'] };
+  const out = await json('GET', '/ready', undefined, { store });
+  assert.equal(out.status, 503);
+  assert.equal(out.data.storage.sql, true);
+  assert.equal(out.data.blockers.includes('sql_database_migrations_pending'), false);
+  assert.equal(out.data.blockers.includes('sql_database_migrations_not_ready'), false);
+  assert.ok(out.data.blockers.includes('real_execution_disabled'));
+});
+
+test('sql store with missing migrations reports migration blocker', async () => {
+  const store = new MemoryOperatorStore(createInitialState());
+  store.kind = 'postgres';
+  store.durable = true;
+  store.sql = true;
+  store.migrations = { ok: false, checked: true, applied: [], reason: 'operator_tables_missing' };
+  const out = await json('GET', '/ready', undefined, { store });
+  assert.equal(out.status, 503);
+  assert.ok(out.data.blockers.includes('sql_database_migrations_not_ready'));
+});
+
+test('store load error returns 503 for health and API routes', async () => {
+  const store = {
+    getStatus: () => ({ kind: 'postgres', durable: true, sql: true, migrations: { ok: false } }),
+    load: async () => { throw new Error('postgres_migrations_not_ready'); }
+  };
+  const health = await json('GET', '/health', undefined, { store });
+  assert.equal(health.status, 503);
+  assert.equal(health.data.ok, false);
+  const api = await json('GET', '/api/strategies', undefined, { store });
+  assert.equal(api.status, 503);
+  assert.equal(api.data.error, 'operator_store_unavailable');
+});
+
 test('strategy creation validates and persists in request state', async () => {
   const store = memoryStore();
   const created = await json('POST', '/api/strategies', { name: 'Test Strategy', riskLevel: 'low', parameters: { symbol: 'BTC-USD' } }, { store });
