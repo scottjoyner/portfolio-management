@@ -1,3 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: portfolio-management-migrate
+  labels:
+    app: portfolio-management-api
+    job: migrate
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: portfolio-management-api
+        job: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: portfolio-management-api:latest
+          imagePullPolicy: IfNotPresent
+          command: ["node", "scripts/migrate-postgres.mjs"]
+          envFrom:
+            - secretRef:
+                name: portfolio-management-secrets
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
