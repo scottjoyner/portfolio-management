@@ -5,6 +5,7 @@ import { createOperatorStore } from '../../../packages/storage/src/operatorStore
 import { handleOperatorRoute } from './operatorRouter.mjs';
 import { authResponse, authStatus, authorizeRoute, requestId } from './auth.mjs';
 import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
+import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -59,7 +60,7 @@ function isP1Route(pathname) {
     || /^\/api\/paper-executions\/[^/]+\/(stop|signal)$/.test(pathname);
 }
 
-function makeSummary(state, store) {
+function makeSummary(state, store, runtime) {
   return {
     counts: {
       accounts: state.accounts.length,
@@ -74,6 +75,7 @@ function makeSummary(state, store) {
     },
     killSwitch: state.killSwitch,
     storage: storeStatus(store),
+    runtime,
     p0p1: {
       operatorProductLayer: true,
       strategyVersioning: true,
@@ -87,6 +89,7 @@ function makeSummary(state, store) {
 
 export async function handleRequest(req, options = {}) {
   const env = { ...process.env, ...(options.env || {}) };
+  const runtime = validateRuntimeEnv(env);
   const id = requestId(req.headers || {});
   const url = new URL(req.url || '/', 'http://localhost');
 
@@ -115,7 +118,7 @@ export async function handleRequest(req, options = {}) {
     if (method === 'GET' && url.pathname === '/api/operator/summary') {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
-      return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store), requestId: id, actor: auth.actor, role: auth.role }), req, env);
+      return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store, runtime), requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
@@ -127,6 +130,7 @@ export async function handleRequest(req, options = {}) {
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
+  assertRuntimeEnv({ ...process.env, ...(options.env || {}) });
   const store = createOperatorStore(options);
   const s = http.createServer(async (req, res) => {
     try {
