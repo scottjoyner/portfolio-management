@@ -25,14 +25,15 @@ X-Request-Id: optional-request-id
 
 `/health` and `/ready` remain available without auth so deployment tooling can check service status.
 
-## Health and readiness
+## Health, readiness, and observability
 
 | Method | Route | Purpose |
 |---|---|---|
 | GET | `/health` | Service health and storage status. |
 | GET | `/ready` | Fail-closed readiness report. |
-| GET | `/metrics` | Basic operational counters. |
-| GET | `/api/operator/summary` | UI summary, counts, storage status, kill-switch state, and feature flags. |
+| GET | `/metrics` | JSON operational counters for existing API consumers. |
+| GET | `/metrics.prom` | Prometheus-style process/request metrics. |
+| GET | `/api/operator/summary` | UI summary, counts, storage status, kill-switch state, redacted runtime config, and feature flags. |
 
 ## Product primitives
 
@@ -118,5 +119,5 @@ Paper signal body:
 
 - Backtests are deterministic product simulations, not production-grade market replay.
 - Paper execution now includes preview/fill/account/position/reconciliation mechanics, but it is still a paper-only simulator.
-- Postgres P1 product-layer persistence uses versioned JSON flags while relational target tables and row-repository scaffolding are present for the next hardening pass.
+- Product-layer Postgres state uses row tables; the broader core store still has full-state rewrite paths that should be replaced in later P2 work.
 - Live trading remains explicitly uncertified and blocked.
