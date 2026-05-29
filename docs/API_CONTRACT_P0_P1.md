@@ -33,6 +33,7 @@ X-Request-Id: optional-request-id
 | GET | `/ready` | Fail-closed readiness report. |
 | GET | `/metrics` | Basic operational counters. |
 | GET | `/api/operator/summary` | UI summary, counts, storage status, kill-switch state, and feature flags. |
+| GET | `/api/release/status` | First-prod paper-only release posture, blockers, audit status, runtime posture, and enabled capabilities. |
 
 ## Product primitives
 
@@ -111,6 +112,7 @@ Paper signal body:
 |---|---|---|
 | GET | `/api/positions` | List positions. |
 | GET | `/api/audit` | List audit events. |
+| GET | `/api/audit/verify` | Verify hash-chained audit events and return chain issues, count, and last hash. |
 | POST | `/api/kill-switch` | Toggle kill switch. Enabling it stops running paper execution sessions. |
 | Any | `/api/execution/live/*` | Always blocked with `live_execution_disabled`. |
 
@@ -118,5 +120,5 @@ Paper signal body:
 
 - Backtests are deterministic product simulations, not production-grade market replay.
 - Paper execution now includes preview/fill/account/position/reconciliation mechanics, but it is still a paper-only simulator.
-- Postgres P1 product-layer persistence uses versioned JSON flags while relational target tables and row-repository scaffolding are present for the next hardening pass.
+- Postgres product-layer persistence uses row tables, while broader core state still has additional row-level hardening remaining.
 - Live trading remains explicitly uncertified and blocked.
