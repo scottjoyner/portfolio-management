@@ -1,5 +1,6 @@
 import { createBacktest, createStrategyFromTemplate, cloneStrategyVersion, updateStrategyStatus, requestApproval, decideApproval, startPaperExecution, stopPaperExecution } from './operatorFlows.mjs';
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
+import { executePaperSignal } from '../../../packages/execution/src/paperEngine.mjs';
 
 export function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -66,6 +67,17 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'POST' && stopPaper) {
     const body = await readJsonBody();
     return mutate(store, current => stopPaperExecution(current, stopPaper.id, body));
+  }
+
+  const signalPaper = routeMatch(pathname, '/api/paper-executions/:id/signal');
+  if (method === 'POST' && signalPaper) {
+    const body = await readJsonBody();
+    return mutate(store, current => {
+      const result = executePaperSignal(current, signalPaper.id, body.signal || body, body.quote || {});
+      if (!result.ok) return { errors: result.errors };
+      current.audit.push({ id: nextId('audit', current.audit), action: 'paper_signal_filled', actor: 'operator', at: new Date().toISOString(), details: result.fill.id, payload: { executionId: signalPaper.id, symbol: result.fill.symbol } });
+      return result;
+    });
   }
 
   if (method === 'POST' && pathname === '/api/strategies/from-template') {
