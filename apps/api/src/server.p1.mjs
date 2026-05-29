@@ -6,6 +6,7 @@ import { handleOperatorRoute } from './operatorRouter.mjs';
 import { authResponse, authStatus, authorizeRoute, requestId } from './auth.mjs';
 import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
 import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
+import { logRequest, recordResponse, renderPrometheusMetrics } from './metrics.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -13,6 +14,10 @@ export const createInitialState = createInitialOperatorState;
 
 function json(status, body, headers = {}) {
   return { status, headers: { 'content-type': JSON_TYPE, ...headers }, body: JSON.stringify(body, null, 2) };
+}
+
+function text(status, body, contentType = 'text/plain; charset=utf-8') {
+  return { status, headers: { 'content-type': contentType }, body };
 }
 
 function readJsonBody(req) {
@@ -87,13 +92,14 @@ function makeSummary(state, store, runtime) {
   };
 }
 
-export async function handleRequest(req, options = {}) {
+async function dispatchRequest(req, options = {}) {
   const env = { ...process.env, ...(options.env || {}) };
   const runtime = validateRuntimeEnv(env);
   const id = requestId(req.headers || {});
   const url = new URL(req.url || '/', 'http://localhost');
 
   if ((req.method || 'GET') === 'OPTIONS') return preflightResponse(req, env);
+  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
 
   const csrf = csrfStatus(req, env);
   if (!csrf.ok) return securityResponse(csrf.status, csrf.error, id, req, env);
@@ -127,6 +133,16 @@ export async function handleRequest(req, options = {}) {
 
   const out = await handleBaseRequest(req, { ...options, store });
   return withSecurityHeaders({ ...out, headers: { ...out.headers, 'x-request-id': id } }, req, env);
+}
+
+export async function handleRequest(req, options = {}) {
+  const started = Date.now();
+  const id = requestId(req.headers || {});
+  const url = new URL(req.url || '/', 'http://localhost');
+  const out = await dispatchRequest(req, options);
+  recordResponse(out.status);
+  logRequest({ requestId: id, method: req.method || 'GET', path: url.pathname, status: out.status, durationMs: Date.now() - started });
+  return out;
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
