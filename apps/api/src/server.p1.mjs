@@ -3,7 +3,7 @@ import { handleRequest as handleBaseRequest } from './server.mjs';
 import { createInitialOperatorState } from '../../../packages/storage/src/operatorStore.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 import { handleOperatorRoute } from './operatorRouter.mjs';
-import { authResponse, authStatus, requestId } from './auth.mjs';
+import { authResponse, authStatus, authorizeRoute, requestId } from './auth.mjs';
 import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
@@ -100,6 +100,11 @@ export async function handleRequest(req, options = {}) {
     return withSecurityHeaders(authResponse(auth.status, auth.error, id), req, env);
   }
 
+  const authorization = authorizeRoute(auth, req, url.pathname);
+  if (!authorization.ok && !['/health', '/ready'].includes(url.pathname)) {
+    return withSecurityHeaders(authResponse(authorization.status, authorization.error, id), req, env);
+  }
+
   const store = createOperatorStore(options);
   const method = req.method || 'GET';
 
@@ -110,11 +115,11 @@ export async function handleRequest(req, options = {}) {
     if (method === 'GET' && url.pathname === '/api/operator/summary') {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
-      return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store), requestId: id, actor: auth.actor }), req, env);
+      return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store), requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
-    if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor }), req, env);
+    if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
   }
 
   const out = await handleBaseRequest(req, { ...options, store });
