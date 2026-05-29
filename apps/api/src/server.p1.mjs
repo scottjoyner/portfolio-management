@@ -99,7 +99,7 @@ async function dispatchRequest(req, options = {}) {
   const url = new URL(req.url || '/', 'http://localhost');
 
   if ((req.method || 'GET') === 'OPTIONS') return preflightResponse(req, env);
-  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
+  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics.prom') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
 
   const csrf = csrfStatus(req, env);
   if (!csrf.ok) return securityResponse(csrf.status, csrf.error, id, req, env);
