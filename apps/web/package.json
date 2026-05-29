@@ -1,0 +1,10 @@
+{
+  "name": "@portfolio-management/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node ../api/src/server.mjs",
+    "build": "node ../../scripts/build-web.mjs"
+  }
+}
