@@ -13,6 +13,7 @@ See:
 - `docs/ARCHITECTURE.md` for the target operator workflow and service-boundary decisions.
 - `docs/P0_UI_API_IMPLEMENTATION.md` for the first operator UI/API implementation slice.
 - `docs/P0_DURABLE_STATE_AND_MIGRATIONS.md` for durable local state and migration groundwork.
+- `docs/P0_POSTGRES_STORE_AND_MIGRATIONS.md` for Postgres store and migration runner setup.
 
 ## Safety warning
 
@@ -65,6 +66,26 @@ Disable file persistence with:
 OPERATOR_STATE_DISABLED=true pnpm api
 ```
 
+## Postgres migration preview
+
+Preview migration SQL:
+
+```bash
+pnpm migrations:dry-run
+```
+
+Apply migrations with the PostgreSQL client installed:
+
+```bash
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb pnpm migrations:up
+```
+
+Run the API in Postgres mode after migrations and runtime dependencies are available:
+
+```bash
+OPERATOR_STORE=postgres DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb pnpm api
+```
+
 ## Current capability snapshot
 
 | Capability | Current status |
@@ -73,7 +94,8 @@ OPERATOR_STATE_DISABLED=true pnpm api
 | Node API | Operator API skeleton with health, readiness, strategy, backtest, approval, audit, metrics, and kill-switch routes. |
 | Web UI | Static operator console for mock/paper workflows. |
 | Durable local state | File-backed runtime state for local/dev continuity. |
-| SQL migrations | Baseline schema file and migration validator added; Postgres repository is still pending. |
+| SQL migrations | Baseline schema, validation, dry-run, and psql runner added. |
+| Postgres repository | Adapter scaffold and fake-client tests added; live runtime requires `pg` dependency and integration testing. |
 | Strategy lifecycle | Basic create/list flow only; validation, versioning, and lifecycle controls remain incomplete. |
 | Backtesting | Deterministic demo simulation only; not a realistic certification engine. |
 | Plaid/account data | Mock/scaffold responses only. |
