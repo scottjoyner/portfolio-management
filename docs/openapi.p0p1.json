@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portfolio Management Operator API",
-    "version": "0.4.0-p2",
-    "description": "Mock-paper operator API with P2 paper signal/fill simulation. Live trading is not certified and remains blocked."
+    "version": "0.5.2-first-prod-status",
+    "description": "Mock-paper operator API with first-production release status and audit verification. Live trading is not certified and remains blocked."
   },
   "servers": [
     { "url": "http://localhost:3000" }
@@ -30,6 +30,7 @@
     "/ready": { "get": { "summary": "Fail-closed readiness", "responses": { "503": { "description": "Not production ready" } } } },
     "/metrics": { "get": { "summary": "Operational counters", "responses": { "200": { "description": "Metrics" } } } },
     "/api/operator/summary": { "get": { "summary": "Dashboard summary", "responses": { "200": { "description": "Summary" } } } },
+    "/api/release/status": { "get": { "summary": "First production paper-only release status", "responses": { "200": { "description": "Release status" } } } },
     "/api/accounts": { "get": { "summary": "List accounts", "responses": { "200": { "description": "Accounts" } } } },
     "/api/instruments": { "get": { "summary": "List instruments", "responses": { "200": { "description": "Instruments" } } } },
     "/api/strategy-templates": { "get": { "summary": "List strategy templates", "responses": { "200": { "description": "Templates" } } } },
@@ -50,6 +51,7 @@
     "/api/kill-switch/stop-paper": { "post": { "summary": "Stop all paper executions", "responses": { "200": { "description": "Stopped" } } } },
     "/api/positions": { "get": { "summary": "List positions", "responses": { "200": { "description": "Positions" } } } },
     "/api/audit": { "get": { "summary": "List audit events", "responses": { "200": { "description": "Audit events" } } } },
+    "/api/audit/verify": { "get": { "summary": "Verify audit hash chain", "responses": { "200": { "description": "Audit verification report" } } } },
     "/api/execution/live/{path}": { "post": { "summary": "Live execution blocked", "responses": { "403": { "description": "live_execution_disabled" } } } }
   }
 }
