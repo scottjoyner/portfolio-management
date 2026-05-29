@@ -1,6 +1,6 @@
-# Operator Runbook — P0/P1 Mock/Paper Product
+# Operator Runbook — Mock/Paper Operator Product
 
-This runbook is for the P0/P1 operator workflow. It does not certify production or live trading.
+This runbook is for the P0/P1 operator workflow plus the first P2 paper-execution hardening slice. It does not certify production or live trading.
 
 ## Start local mock/paper mode
 
@@ -45,6 +45,12 @@ Prerequisites:
 - Runtime `pg` dependency available to Node
 - Local Postgres service running
 
+Start local services:
+
+```bash
+docker compose up -d postgres
+```
+
 Apply migrations:
 
 ```bash
@@ -59,6 +65,14 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb \
 pnpm api
 ```
 
+Run opt-in Postgres integration smoke test:
+
+```bash
+RUN_POSTGRES_INTEGRATION=true \
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb \
+pnpm test:integration:postgres
+```
+
 ## Operator workflow
 
 1. Confirm `/health` responds.
@@ -71,9 +85,10 @@ pnpm api
 8. Request approval.
 9. Approve the request.
 10. Start paper execution.
-11. Stop paper execution.
-12. Review audit trail.
-13. Test kill switch.
+11. Send a paper signal and review preview/fill/reconciliation output.
+12. Stop paper execution.
+13. Review audit trail.
+14. Test kill switch.
 
 ## API smoke commands
 
@@ -125,6 +140,22 @@ curl -X POST http://localhost:3000/api/paper-executions \
   -H 'Content-Type: application/json' \
   -d '{"strategyId":"strategy-ema-cross-v1","accountId":"acct-paper-primary"}'
 ```
+
+Send paper signal for preview/fill/reconciliation:
+
+```bash
+curl -X POST http://localhost:3000/api/paper-executions/paper-001/signal \
+  -H 'Content-Type: application/json' \
+  -d '{"signal":{"symbol":"BTC-USD","side":"buy","quantity":0.1,"price":50000,"feeBps":5,"slippageBps":10}}'
+```
+
+Use the actual paper execution ID returned from `POST /api/paper-executions` in place of `paper-001`.
+
+Expected response includes:
+
+- `preview`
+- `fill`
+- `reconciliation`
 
 ## Safety checks
 
