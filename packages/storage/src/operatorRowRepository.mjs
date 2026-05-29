@@ -1,3 +1,5 @@
+import { buildAuditEvent } from './auditChain.mjs';
+
 export class OperatorRowRepository {
   constructor(store) {
     this.store = store;
@@ -122,14 +124,22 @@ export class OperatorRowRepository {
     for (const execution of paperExecutions) await this.upsertPaperExecution(execution);
   }
 
+  async latestAuditEvent() {
+    const result = await this.query('SELECT * FROM audit_events WHERE sequence_number IS NOT NULL ORDER BY sequence_number DESC LIMIT 1');
+    const row = result.rows[0];
+    if (!row) return null;
+    return { id: row.id, action: row.action, actor: row.actor, at: row.at, details: row.details, payload: row.payload_json || {}, previousHash: row.previous_hash, eventHash: row.event_hash, sequenceNumber: Number(row.sequence_number) };
+  }
+
   async insertAudit(event) {
+    const chained = buildAuditEvent(event, await this.latestAuditEvent());
     await this.query(
-      `INSERT INTO audit_events (id, action, actor, at, details, payload_json)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO audit_events (id, action, actor, at, details, payload_json, previous_hash, event_hash, sequence_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (id) DO NOTHING`,
-      [event.id, event.action, event.actor || 'system', event.at || new Date().toISOString(), event.details || null, JSON.stringify(event.payload || {})]
+      [chained.id, chained.action, chained.actor || 'system', chained.at || new Date().toISOString(), chained.details || null, JSON.stringify(chained.payload || {}), chained.previousHash, chained.eventHash, chained.sequenceNumber]
     );
-    return event;
+    return chained;
   }
 
   async upsertOperatorFlag(key, value) {
