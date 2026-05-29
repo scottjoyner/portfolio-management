@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 1;
 
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
@@ -81,6 +81,8 @@ export function nextId(prefix, collection) {
 
 export class MemoryOperatorStore {
   constructor(initialState = createInitialOperatorState()) {
+    this.kind = 'memory';
+    this.durable = false;
     this.state = normalizeOperatorState(initialState);
   }
 
@@ -99,11 +101,17 @@ export class MemoryOperatorStore {
     await this.save(state);
     return result;
   }
+
+  getStatus() {
+    return { kind: this.kind, durable: this.durable, schemaVersion: this.state.schemaVersion };
+  }
 }
 
 export class FileOperatorStore extends MemoryOperatorStore {
   constructor(filePath = process.env.OPERATOR_STATE_PATH || 'data/operator-state.json', options = {}) {
     super(options.seedState || createInitialOperatorState());
+    this.kind = 'file';
+    this.durable = true;
     this.filePath = resolve(filePath);
     this.bootstrap = options.bootstrap !== false;
   }
@@ -140,6 +148,10 @@ export class FileOperatorStore extends MemoryOperatorStore {
   async save(nextState) {
     this.state = this.writeState(nextState);
     return this.state;
+  }
+
+  getStatus() {
+    return { kind: this.kind, durable: this.durable, schemaVersion: this.state.schemaVersion, path: this.filePath };
   }
 }
 
