@@ -59,6 +59,8 @@ function isP1Route(pathname) {
     || pathname === '/api/backtests/run'
     || pathname === '/api/approvals/request'
     || pathname === '/api/kill-switch/stop-paper'
+    || pathname === '/api/audit/verify'
+    || pathname === '/api/release/status'
     || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
     || /^\/api\/backtests\/[^/]+\/report$/.test(pathname)
     || /^\/api\/approvals\/[^/]+\/decision$/.test(pathname)
@@ -127,7 +129,7 @@ async function dispatchRequest(req, options = {}) {
       return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store, runtime), requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
 
-    const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
+    const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req), runtime });
     if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
   }
 
