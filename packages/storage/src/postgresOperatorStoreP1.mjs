@@ -13,6 +13,18 @@ export class PostgresOperatorStoreP1 extends PostgresOperatorStore {
     this.kind = 'postgres-p1';
   }
 
+  async checkMigrations() {
+    const migrations = await super.checkMigrations();
+    if (!migrations.ok) return migrations;
+    const hasP1 = migrations.applied.includes('002_operator_product_layer');
+    if (!hasP1) {
+      this.migrations = { ...migrations, ok: false, reason: 'p1_product_layer_migration_missing' };
+      return this.migrations;
+    }
+    this.migrations = migrations;
+    return this.migrations;
+  }
+
   async load() {
     const base = await super.load();
     const flags = await this.query("SELECT key, value_json FROM operator_flags WHERE key IN ('accounts','instruments','strategy_templates','paper_executions')");
