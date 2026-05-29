@@ -1,28 +1,110 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    paths: ["trading_system/**"]
   pull_request:
     branches: [main]
-    paths: ["trading_system/**"]
+  push:
+    branches: [main]
 
-defaults:
-  run:
-    working-directory: trading_system
+permissions:
+  contents: read
 
 jobs:
-  quality:
+  node:
+    name: Node operator gates
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Validate API contract
+        run: pnpm api:validate
+
+      - name: Validate migrations
+        run: pnpm migrations:validate
+
+      - name: Build
+        run: pnpm build
+
+  postgres-smoke:
+    name: Postgres smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: arb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Run Postgres smoke
+        env:
+          RUN_POSTGRES_INTEGRATION: 'true'
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/arb
+        run: pnpm test:integration:postgres
+
+  python-trading-system:
+    name: Python trading_system gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trading_system
     strategy:
       matrix:
-        python-version: ["3.12"]
-
+        python-version: ['3.12']
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -39,18 +121,6 @@ jobs:
 
       - name: Test
         run: pytest -q --tb=short
-
-      - name: E2E Coinbase sync harness tests
-        run: pytest trading_system/tests/e2e/test_coinbase_sync.py -q --tb=short || echo "Sync tests skipped (requires API)"
-
-      - name: DB migration smoke tests
-        run: pytest trading_system/tests/migrations/test_smoke.py -q --tb=short || echo "DB tests skipped (requires container)"
-
-      - name: Signal-to-fill e2e tests
-        run: pytest trading_system/tests/e2e/test_signal_to_fill.py -q --tb=short || echo "E2E tests skipped (requires DB)"
-
-      - name: Onchain runtime health check
-        run: curl -sf http://localhost:8000/onchain/health || echo "Onchain tests skipped"
 
       - name: Build check
         run: python -m build --wheel
