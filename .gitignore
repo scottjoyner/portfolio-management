@@ -69,6 +69,12 @@ trading_system/artifacts/*.yml
 trading_system/artifacts/*.toml
 trading_system/artifacts/*.ini
 
+# --- Operator runtime state ---
+data/
+!data/.gitkeep
+operator-state.json
+operator-state.json.tmp
+
 # --- Test databases ---
 *.db
 *.sqlite
