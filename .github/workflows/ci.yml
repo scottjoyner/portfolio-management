@@ -49,6 +49,9 @@ jobs:
       - name: Validate security
         run: pnpm security:validate
 
+      - name: Validate runtime defaults
+        run: pnpm runtime:validate
+
       - name: Build
         run: pnpm build
 
