@@ -17,6 +17,7 @@ pnpm build
 pnpm api:validate
 pnpm migrations:validate
 pnpm security:validate
+pnpm deploy:validate
 ```
 
 Optional Postgres smoke:
@@ -79,6 +80,8 @@ Confirm migration validation:
 pnpm migrations:validate
 ```
 
+Docker Compose production deployment includes a one-shot `migrate` service and the API waits for `service_completed_successfully` before starting. Kubernetes deployment includes a `portfolio-management-migrate` Job; run and verify that Job before rolling out the API Deployment.
+
 ## 4. Backup and restore policy
 
 Before deployment, create a database backup with your platform backup utility or PostgreSQL custom-format dump.
@@ -130,7 +133,7 @@ portfolio-management-secrets
 
 The secret should provide database/auth/CSRF/CORS values.
 
-## 6. Health checks
+## 6. Health checks and observability
 
 After deploy:
 
@@ -138,6 +141,8 @@ After deploy:
 curl /health
 curl /ready
 curl /api/operator/summary
+curl /metrics
+curl /metrics.prom
 ```
 
 Expected:
@@ -145,6 +150,9 @@ Expected:
 - `/health` returns 200 when service and storage are reachable.
 - `/ready` may remain 503 because live trading is intentionally uncertified.
 - `/api/operator/summary` should include redacted runtime config and storage status.
+- `/metrics` remains the JSON metrics endpoint for existing API consumers.
+- `/metrics.prom` exposes Prometheus-style process/request metrics.
+- Structured request logs are emitted as JSON lines on stdout.
 
 ## 7. Smoke workflow
 
