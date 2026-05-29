@@ -55,6 +55,9 @@ jobs:
       - name: Validate deployment manifests
         run: pnpm deploy:validate
 
+      - name: Validate first production release gates
+        run: pnpm first-prod:validate
+
       - name: Build
         run: pnpm build
 

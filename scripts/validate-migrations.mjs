@@ -11,7 +11,16 @@ const requiredTables = [
   'accounts',
   'instruments',
   'strategy_templates',
-  'paper_executions'
+  'paper_executions',
+  'adapter_certifications'
+];
+
+const requiredFragments = [
+  'previous_hash TEXT',
+  'event_hash TEXT',
+  'sequence_number BIGINT',
+  'idx_audit_events_event_hash',
+  'idx_adapter_certifications_status'
 ];
 
 if (!existsSync(migrationsDir)) {
@@ -29,6 +38,12 @@ const combined = migrations.map(name => readFileSync(`${migrationsDir}/${name}`,
 const missingTables = requiredTables.filter(table => !combined.includes(`CREATE TABLE IF NOT EXISTS ${table}`));
 if (missingTables.length) {
   console.error('migration validation failed: missing tables', missingTables);
+  process.exit(1);
+}
+
+const missingFragments = requiredFragments.filter(fragment => !combined.includes(fragment));
+if (missingFragments.length) {
+  console.error('migration validation failed: missing required fragments', missingFragments);
   process.exit(1);
 }
 
