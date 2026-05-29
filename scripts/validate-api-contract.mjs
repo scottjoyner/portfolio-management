@@ -25,7 +25,9 @@ const requiredRoutes = [
   '/api/backtests/run',
   '/api/approvals/request',
   '/api/paper-executions',
-  '/api/kill-switch/stop-paper'
+  '/api/kill-switch/stop-paper',
+  '/api/audit/verify',
+  '/api/release/status'
 ];
 
 for (const route of requiredRoutes) {
