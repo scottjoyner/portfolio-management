@@ -22,11 +22,17 @@ const checklist = readFileSync('docs/PRODUCTION_DEPLOYMENT_CHECKLIST.md', 'utf8'
 const expectations = [
   [dockerfile, 'HEALTHCHECK', 'Dockerfile must include a healthcheck'],
   [dockerfile, 'apps/api/src/server.p1.mjs', 'Dockerfile must start the operator API'],
+  [compose, 'migrate:', 'compose production must include a migration service'],
+  [compose, 'node", "scripts/migrate-postgres.mjs', 'compose migration service must run migrations'],
+  [compose, 'condition: service_completed_successfully', 'compose API must wait for migration completion'],
   [compose, 'STRICT_RUNTIME_VALIDATION', 'compose production must enable strict runtime validation'],
   [compose, 'LIVE_TRADING: "false"', 'compose production must keep live trading disabled'],
   [compose, 'ALLOW_POLYMARKET_ORDER_SUBMISSION: "false"', 'compose production must keep polymarket order submission disabled'],
   [compose, 'ALLOW_LIVE_SETTLEMENT_REDEMPTION: "false"', 'compose production must keep live settlement redemption disabled'],
   [compose, 'condition: service_healthy', 'compose production must wait for database health'],
+  [k8s, 'kind: Job', 'kubernetes manifest must include migration job'],
+  [k8s, 'portfolio-management-migrate', 'kubernetes migration job must be named'],
+  [k8s, 'scripts/migrate-postgres.mjs', 'kubernetes migration job must run migrations'],
   [k8s, 'STRICT_RUNTIME_VALIDATION', 'kubernetes manifest must enable strict runtime validation'],
   [k8s, 'LIVE_TRADING', 'kubernetes manifest must pin live trading setting'],
   [k8s, 'value: "false"', 'kubernetes manifest must include false values for live flags'],
@@ -34,7 +40,8 @@ const expectations = [
   [k8s, 'livenessProbe', 'kubernetes manifest must include liveness probe'],
   [checklist, 'LIVE_TRADING=false', 'checklist must document live trading prohibition'],
   [checklist, 'pg_dump', 'checklist must document backup command shape'],
-  [checklist, 'pg_restore', 'checklist must document restore command shape']
+  [checklist, 'pg_restore', 'checklist must document restore command shape'],
+  [checklist, '/metrics.prom', 'checklist must document Prometheus metrics endpoint']
 ];
 
 for (const [content, needle, message] of expectations) {
