@@ -2,67 +2,12 @@ import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { validateModeConfig } from '../../../packages/config/src/mode.mjs';
+import { createInitialOperatorState, createOperatorStore, nextId } from '../../../packages/storage/src/operatorStore.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 const UI_ROOT = new URL('../../web/src/', import.meta.url);
 
-export function createInitialState() {
-  return {
-    strategies: [
-      {
-        id: 'strategy-ema-cross-v1',
-        name: 'EMA Crossover',
-        version: 1,
-        status: 'draft',
-        riskLevel: 'medium',
-        parameters: { fastPeriod: 9, slowPeriod: 21, symbol: 'BTC-USD', timeframe: '1h' },
-        createdAt: '2026-05-29T00:00:00.000Z',
-        updatedAt: '2026-05-29T00:00:00.000Z'
-      },
-      {
-        id: 'strategy-zscore-v1',
-        name: 'Z-Score Mean Reversion',
-        version: 1,
-        status: 'draft',
-        riskLevel: 'low',
-        parameters: { lookback: 20, entryZ: -2, exitZ: 0, symbol: 'ETH-USD', timeframe: '1h' },
-        createdAt: '2026-05-29T00:00:00.000Z',
-        updatedAt: '2026-05-29T00:00:00.000Z'
-      }
-    ],
-    backtests: [
-      {
-        id: 'bt-demo-001',
-        strategyId: 'strategy-ema-cross-v1',
-        status: 'completed',
-        startedAt: '2026-05-29T00:00:00.000Z',
-        completedAt: '2026-05-29T00:00:01.000Z',
-        assumptions: { initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10, dataSource: 'demo-fixture' },
-        metrics: { totalReturnPct: 3.42, maxDrawdownPct: 1.18, sharpe: 1.12, totalTrades: 14, winRatePct: 57.14 },
-        equityCurve: [100000, 100800, 100150, 101250, 103420],
-        trades: [
-          { timestamp: '2026-01-02T10:00:00.000Z', symbol: 'BTC-USD', side: 'buy', quantity: 0.1, price: 45000 },
-          { timestamp: '2026-01-03T15:00:00.000Z', symbol: 'BTC-USD', side: 'sell', quantity: 0.1, price: 46539 }
-        ]
-      }
-    ],
-    approvals: [
-      {
-        id: 'approval-demo-001',
-        strategyId: 'strategy-ema-cross-v1',
-        status: 'pending_review',
-        tier: 'canary',
-        reason: 'Backtest evidence required before paper incubation.',
-        createdAt: '2026-05-29T00:00:00.000Z'
-      }
-    ],
-    positions: [],
-    audit: [
-      { id: 'audit-001', action: 'system_bootstrap', actor: 'system', at: '2026-05-29T00:00:00.000Z', details: 'Mock/paper operator surface initialized.' }
-    ],
-    killSwitch: { enabled: false, reason: null, updatedAt: null }
-  };
-}
+export const createInitialState = createInitialOperatorState;
 
 function defaultEnv(overrides = {}) {
   return {
@@ -104,25 +49,28 @@ function readJsonBody(req) {
   });
 }
 
-function summarizeReadiness(modeConfig, state) {
+function storeStatus(store) {
+  return typeof store.getStatus === 'function' ? store.getStatus() : { kind: 'unknown', durable: false };
+}
+
+function summarizeReadiness(modeConfig, state, store) {
+  const storage = storeStatus(store);
   const blockers = [];
   if (!modeConfig.ok) blockers.push(...modeConfig.reasons);
   if (modeConfig.mode === 'live') blockers.push('live_mode_not_certified');
   if (state.killSwitch.enabled) blockers.push('kill_switch_enabled');
   blockers.push('ui_api_contract_only');
-  blockers.push('database_persistence_not_enabled');
+  if (!storage.durable) blockers.push('database_persistence_not_enabled');
+  else blockers.push('sql_database_migrations_pending');
   blockers.push('real_execution_disabled');
   return {
-    ok: blockers.length === 0,
+    ok: false,
     mode: modeConfig.mode,
     productionReady: false,
     liveTradingCertified: false,
+    storage,
     blockers
   };
-}
-
-function nextId(prefix, collection) {
-  return `${prefix}-${String(collection.length + 1).padStart(3, '0')}`;
 }
 
 function validateStrategyInput(input) {
@@ -169,23 +117,21 @@ function serveUi(pathname) {
 }
 
 export async function handleRequest(req, options = {}) {
-  const state = options.state || createInitialState();
+  const store = createOperatorStore(options);
+  const state = await store.load();
   const env = defaultEnv(options.env || {});
   const modeConfig = validateModeConfig(env);
   const url = new URL(req.url || '/', 'http://localhost');
   const method = req.method || 'GET';
 
-  if (method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/ui'))) {
-    return serveUi(url.pathname);
-  }
+  if (method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/ui'))) return serveUi(url.pathname);
 
   if (method === 'GET' && url.pathname === '/health') {
-    return json(200, { ok: true, service: 'portfolio-management-api', mode: modeConfig.mode, liveTradingCertified: false });
+    return json(200, { ok: true, service: 'portfolio-management-api', mode: modeConfig.mode, liveTradingCertified: false, storage: storeStatus(store) });
   }
 
   if (method === 'GET' && url.pathname === '/ready') {
-    const readiness = summarizeReadiness(modeConfig, state);
-    return json(readiness.ok ? 200 : 503, readiness);
+    return json(503, summarizeReadiness(modeConfig, state, store));
   }
 
   if (method === 'GET' && url.pathname === '/metrics') {
@@ -195,21 +141,17 @@ export async function handleRequest(req, options = {}) {
       approvals_pending: state.approvals.filter(a => a.status === 'pending_review').length,
       positions_open: state.positions.length,
       kill_switch_enabled: state.killSwitch.enabled ? 1 : 0,
+      durable_storage_enabled: storeStatus(store).durable ? 1 : 0,
       live_trading_certified: 0
     });
   }
 
   if (method === 'GET' && url.pathname === '/api/operator/summary') {
     return json(200, {
-      readiness: summarizeReadiness(modeConfig, state),
-      counts: {
-        strategies: state.strategies.length,
-        backtests: state.backtests.length,
-        approvals: state.approvals.length,
-        positions: state.positions.length,
-        auditEvents: state.audit.length
-      },
-      killSwitch: state.killSwitch
+      readiness: summarizeReadiness(modeConfig, state, store),
+      counts: { strategies: state.strategies.length, backtests: state.backtests.length, approvals: state.approvals.length, positions: state.positions.length, auditEvents: state.audit.length },
+      killSwitch: state.killSwitch,
+      storage: storeStatus(store)
     });
   }
 
@@ -219,19 +161,13 @@ export async function handleRequest(req, options = {}) {
     const body = await readJsonBody(req);
     const errors = validateStrategyInput(body);
     if (errors.length) return json(400, { ok: false, errors });
-    const now = new Date().toISOString();
-    const strategy = {
-      id: nextId('strategy', state.strategies),
-      name: body.name,
-      version: 1,
-      status: 'draft',
-      riskLevel: body.riskLevel || 'medium',
-      parameters: body.parameters,
-      createdAt: now,
-      updatedAt: now
-    };
-    state.strategies.push(strategy);
-    state.audit.push({ id: nextId('audit', state.audit), action: 'strategy_created', actor: 'operator', at: now, details: strategy.id });
+    const strategy = await store.mutate(async current => {
+      const now = new Date().toISOString();
+      const next = { id: nextId('strategy', current.strategies), name: body.name, version: 1, status: 'draft', riskLevel: body.riskLevel || 'medium', parameters: body.parameters, createdAt: now, updatedAt: now };
+      current.strategies.push(next);
+      current.audit.push({ id: nextId('audit', current.audit), action: 'strategy_created', actor: 'operator', at: now, details: next.id });
+      return next;
+    });
     return json(201, { ok: true, strategy });
   }
 
@@ -239,34 +175,35 @@ export async function handleRequest(req, options = {}) {
 
   if (method === 'POST' && url.pathname === '/api/backtests') {
     const body = await readJsonBody(req);
-    const strategy = state.strategies.find(s => s.id === body.strategyId);
-    if (!strategy) return json(404, { ok: false, errors: ['strategy_not_found'] });
-    const now = new Date().toISOString();
-    const result = runDeterministicBacktest(strategy, body);
-    const backtest = { id: nextId('bt', state.backtests), strategyId: strategy.id, status: 'completed', startedAt: now, completedAt: now, ...result };
-    state.backtests.push(backtest);
-    state.audit.push({ id: nextId('audit', state.audit), action: 'backtest_completed', actor: 'operator', at: now, details: backtest.id });
-    return json(201, { ok: true, backtest });
+    const created = await store.mutate(async current => {
+      const strategy = current.strategies.find(s => s.id === body.strategyId);
+      if (!strategy) return null;
+      const now = new Date().toISOString();
+      const result = runDeterministicBacktest(strategy, body);
+      const backtest = { id: nextId('bt', current.backtests), strategyId: strategy.id, status: 'completed', startedAt: now, completedAt: now, ...result };
+      current.backtests.push(backtest);
+      current.audit.push({ id: nextId('audit', current.audit), action: 'backtest_completed', actor: 'operator', at: now, details: backtest.id });
+      return backtest;
+    });
+    if (!created) return json(404, { ok: false, errors: ['strategy_not_found'] });
+    return json(201, { ok: true, backtest: created });
   }
 
   if (method === 'GET' && url.pathname === '/api/approvals') return json(200, { approvals: state.approvals });
 
   if (method === 'POST' && url.pathname === '/api/approvals') {
     const body = await readJsonBody(req);
-    const strategy = state.strategies.find(s => s.id === body.strategyId);
-    if (!strategy) return json(404, { ok: false, errors: ['strategy_not_found'] });
-    const hasBacktest = state.backtests.some(b => b.strategyId === strategy.id && b.status === 'completed');
-    const now = new Date().toISOString();
-    const approval = {
-      id: nextId('approval', state.approvals),
-      strategyId: strategy.id,
-      status: hasBacktest ? 'pending_review' : 'blocked',
-      tier: body.tier || 'canary',
-      reason: hasBacktest ? 'Ready for human review.' : 'Completed backtest evidence is required.',
-      createdAt: now
-    };
-    state.approvals.push(approval);
-    state.audit.push({ id: nextId('audit', state.audit), action: 'approval_requested', actor: 'operator', at: now, details: approval.id });
+    const approval = await store.mutate(async current => {
+      const strategy = current.strategies.find(s => s.id === body.strategyId);
+      if (!strategy) return null;
+      const hasBacktest = current.backtests.some(b => b.strategyId === strategy.id && b.status === 'completed');
+      const now = new Date().toISOString();
+      const next = { id: nextId('approval', current.approvals), strategyId: strategy.id, status: hasBacktest ? 'pending_review' : 'blocked', tier: body.tier || 'canary', reason: hasBacktest ? 'Ready for human review.' : 'Completed backtest evidence is required.', createdAt: now };
+      current.approvals.push(next);
+      current.audit.push({ id: nextId('audit', current.audit), action: 'approval_requested', actor: 'operator', at: now, details: next.id });
+      return next;
+    });
+    if (!approval) return json(404, { ok: false, errors: ['strategy_not_found'] });
     return json(201, { ok: true, approval });
   }
 
@@ -275,24 +212,24 @@ export async function handleRequest(req, options = {}) {
 
   if (method === 'POST' && url.pathname === '/api/kill-switch') {
     const body = await readJsonBody(req);
-    const now = new Date().toISOString();
-    state.killSwitch = { enabled: body.enabled !== false, reason: body.reason || 'operator_request', updatedAt: now };
-    state.audit.push({ id: nextId('audit', state.audit), action: state.killSwitch.enabled ? 'kill_switch_enabled' : 'kill_switch_disabled', actor: 'operator', at: now, details: state.killSwitch.reason });
-    return json(200, { ok: true, killSwitch: state.killSwitch });
+    const killSwitch = await store.mutate(async current => {
+      const now = new Date().toISOString();
+      current.killSwitch = { enabled: body.enabled !== false, reason: body.reason || 'operator_request', updatedAt: now };
+      current.audit.push({ id: nextId('audit', current.audit), action: current.killSwitch.enabled ? 'kill_switch_enabled' : 'kill_switch_disabled', actor: 'operator', at: now, details: current.killSwitch.reason });
+      return current.killSwitch;
+    });
+    return json(200, { ok: true, killSwitch });
   }
 
-  if (url.pathname.startsWith('/api/execution/live')) {
-    return json(403, { ok: false, error: 'live_execution_disabled', reason: 'Live trading is not certified in this implementation slice.' });
-  }
-
+  if (url.pathname.startsWith('/api/execution/live')) return json(403, { ok: false, error: 'live_execution_disabled', reason: 'Live trading is not certified in this implementation slice.' });
   return json(404, { ok: false, error: 'route_not_found', route: url.pathname });
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
-  const state = options.state || createInitialState();
+  const store = createOperatorStore(options);
   const s = http.createServer(async (req, res) => {
     try {
-      const out = await handleRequest(req, { ...options, state });
+      const out = await handleRequest(req, { ...options, store });
       res.writeHead(out.status, out.headers);
       res.end(out.body);
     } catch (error) {
@@ -304,6 +241,4 @@ export function startServer(port = Number(process.env.PORT || 3000), options = {
   return s;
 }
 
-if (process.argv[1] === new URL(import.meta.url).pathname) {
-  startServer();
-}
+if (process.argv[1] === new URL(import.meta.url).pathname) startServer();
