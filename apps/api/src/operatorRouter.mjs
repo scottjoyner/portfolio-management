@@ -1,6 +1,7 @@
 import { createBacktest, createStrategyFromTemplate, cloneStrategyVersion, updateStrategyStatus, requestApproval, decideApproval, startPaperExecution, stopPaperExecution } from './operatorFlows.mjs';
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 import { executePaperSignal } from '../../../packages/execution/src/paperEngine.mjs';
+import { auditVerificationReport, certificationStatus } from './releaseStatus.mjs';
 
 export function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -24,10 +25,12 @@ async function mutate(store, fn) {
   return { status: 200, body: { ok: true, ...result } };
 }
 
-export async function handleOperatorRoute({ method, pathname, state, store, readJsonBody }) {
+export async function handleOperatorRoute({ method, pathname, state, store, readJsonBody, runtime }) {
   if (method === 'GET' && pathname === '/api/accounts') return { status: 200, body: { accounts: state.accounts } };
   if (method === 'GET' && pathname === '/api/instruments') return { status: 200, body: { instruments: state.instruments } };
   if (method === 'GET' && pathname === '/api/strategy-templates') return { status: 200, body: { templates: state.strategyTemplates } };
+  if (method === 'GET' && pathname === '/api/audit/verify') return { status: 200, body: { audit: auditVerificationReport(state) } };
+  if (method === 'GET' && pathname === '/api/release/status') return { status: 200, body: { status: certificationStatus(state, runtime) } };
 
   const clone = routeMatch(pathname, '/api/strategies/:id/clone');
   if (method === 'POST' && clone) {
