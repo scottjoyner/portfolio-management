@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portfolio-management-api
+  labels:
+    app: portfolio-management-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: portfolio-management-api
+  template:
+    metadata:
+      labels:
+        app: portfolio-management-api
+    spec:
+      containers:
+        - name: api
+          image: portfolio-management-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DEPLOYMENT_ENV
+              value: production
+            - name: STRICT_RUNTIME_VALIDATION
+              value: "true"
+            - name: OPERATOR_STORE
+              value: postgres
+            - name: OPERATOR_AUTH_REQUIRED
+              value: "true"
+            - name: CSRF_REQUIRED
+              value: "true"
+            - name: PAPER_TRADING
+              value: "true"
+            - name: LIVE_TRADING
+              value: "false"
+            - name: ALLOW_POLYMARKET_ORDER_SUBMISSION
+              value: "false"
+            - name: ALLOW_LIVE_SETTLEMENT_REDEMPTION
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: portfolio-management-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portfolio-management-api
+spec:
+  selector:
+    app: portfolio-management-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
