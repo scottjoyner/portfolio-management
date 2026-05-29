@@ -4,6 +4,7 @@ import { createInitialOperatorState } from '../../../packages/storage/src/operat
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 import { handleOperatorRoute } from './operatorRouter.mjs';
 import { authResponse, authStatus, requestId } from './auth.mjs';
+import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -55,7 +56,7 @@ function isP1Route(pathname) {
     || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
     || /^\/api\/backtests\/[^/]+\/report$/.test(pathname)
     || /^\/api\/approvals\/[^/]+\/decision$/.test(pathname)
-    || /^\/api\/paper-executions\/[^/]+\/stop$/.test(pathname);
+    || /^\/api\/paper-executions\/[^/]+\/(stop|signal)$/.test(pathname);
 }
 
 function makeSummary(state, store) {
@@ -85,32 +86,39 @@ function makeSummary(state, store) {
 }
 
 export async function handleRequest(req, options = {}) {
+  const env = { ...process.env, ...(options.env || {}) };
   const id = requestId(req.headers || {});
-  const auth = authStatus(req, { ...process.env, ...(options.env || {}) });
-  if (!auth.ok && !['/health', '/ready'].includes(new URL(req.url || '/', 'http://localhost').pathname)) {
-    return authResponse(auth.status, auth.error, id);
+  const url = new URL(req.url || '/', 'http://localhost');
+
+  if ((req.method || 'GET') === 'OPTIONS') return preflightResponse(req, env);
+
+  const csrf = csrfStatus(req, env);
+  if (!csrf.ok) return securityResponse(csrf.status, csrf.error, id, req, env);
+
+  const auth = authStatus(req, env);
+  if (!auth.ok && !['/health', '/ready'].includes(url.pathname)) {
+    return withSecurityHeaders(authResponse(auth.status, auth.error, id), req, env);
   }
 
   const store = createOperatorStore(options);
-  const url = new URL(req.url || '/', 'http://localhost');
   const method = req.method || 'GET';
 
   if (url.pathname === '/api/operator/summary' || isP1Route(url.pathname)) {
     const { state, error } = await loadState(store);
-    if (error) return json(503, { ok: false, error: 'operator_store_unavailable', reason: error.message, storage: storeStatus(store), requestId: id });
+    if (error) return withSecurityHeaders(json(503, { ok: false, error: 'operator_store_unavailable', reason: error.message, storage: storeStatus(store), requestId: id }), req, env);
 
     if (method === 'GET' && url.pathname === '/api/operator/summary') {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
-      return json(200, { ...body, ...makeSummary(state, store), requestId: id, actor: auth.actor });
+      return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store), requestId: id, actor: auth.actor }), req, env);
     }
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
-    if (route) return json(route.status, { ...route.body, requestId: id, actor: auth.actor });
+    if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor }), req, env);
   }
 
   const out = await handleBaseRequest(req, { ...options, store });
-  return { ...out, headers: { ...out.headers, 'x-request-id': id } };
+  return withSecurityHeaders({ ...out, headers: { ...out.headers, 'x-request-id': id } }, req, env);
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {

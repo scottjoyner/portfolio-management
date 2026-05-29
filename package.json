@@ -1,12 +1,14 @@
 {
   "name": "prediction-arb-system",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.4.0-p2",
   "packageManager": "pnpm@9.12.3",
+  "type": "module",
   "scripts": {
     "lint": "node scripts/lint.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node --test tests/**/*.test.mjs tests/integration/*.test.mjs",
+    "test:integration:postgres": "node tests/integration/postgres-smoke.test.mjs",
     "build": "node scripts/build.mjs && node scripts/build-web.mjs && node scripts/validate-migrations.mjs && node scripts/validate-api-contract.mjs && node scripts/migrate-postgres.mjs --dry-run > /dev/null",
     "cli": "node apps/cli/src/index.mjs",
     "api": "node apps/api/src/server.p1.mjs",
@@ -16,5 +18,8 @@
     "migrations:up": "node scripts/migrate-postgres.mjs",
     "api:validate": "node scripts/validate-api-contract.mjs",
     "certify:mock": "node scripts/certify-mock.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
   }
 }

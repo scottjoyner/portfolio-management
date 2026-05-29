@@ -48,7 +48,8 @@ const requiredPatterns = [
   ['/api/strategies/:id/status', '/api/strategies/{id}/status'],
   ['/api/backtests/:id/report', '/api/backtests/{id}/report'],
   ['/api/approvals/:id/decision', '/api/approvals/{id}/decision'],
-  ['/api/paper-executions/:id/stop', '/api/paper-executions/{id}/stop']
+  ['/api/paper-executions/:id/stop', '/api/paper-executions/{id}/stop'],
+  ['/api/paper-executions/:id/signal', '/api/paper-executions/{id}/signal']
 ];
 
 for (const [markdownRoute, openapiRoute] of requiredPatterns) {
