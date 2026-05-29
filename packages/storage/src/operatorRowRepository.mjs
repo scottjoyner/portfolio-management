@@ -1,3 +1,5 @@
+import { buildAuditEvent } from './auditChain.mjs';
+
 export class OperatorRowRepository {
   constructor(store) {
     this.store = store;
@@ -122,14 +124,46 @@ export class OperatorRowRepository {
     for (const execution of paperExecutions) await this.upsertPaperExecution(execution);
   }
 
+  async latestAuditEvent() {
+    const result = await this.query('SELECT * FROM audit_events WHERE sequence_number IS NOT NULL ORDER BY sequence_number DESC LIMIT 1');
+    const row = result.rows[0];
+    if (!row) return null;
+    return { id: row.id, action: row.action, actor: row.actor, at: row.at, details: row.details, payload: row.payload_json || {}, previousHash: row.previous_hash, eventHash: row.event_hash, sequenceNumber: Number(row.sequence_number) };
+  }
+
   async insertAudit(event) {
+    const chained = buildAuditEvent(event, await this.latestAuditEvent());
     await this.query(
-      `INSERT INTO audit_events (id, action, actor, at, details, payload_json)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO audit_events (id, action, actor, at, details, payload_json, previous_hash, event_hash, sequence_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (id) DO NOTHING`,
-      [event.id, event.action, event.actor || 'system', event.at || new Date().toISOString(), event.details || null, JSON.stringify(event.payload || {})]
+      [chained.id, chained.action, chained.actor || 'system', chained.at || new Date().toISOString(), chained.details || null, JSON.stringify(chained.payload || {}), chained.previousHash, chained.eventHash, chained.sequenceNumber]
     );
-    return event;
+    return chained;
+  }
+
+  async listAdapterCertifications() {
+    const result = await this.query('SELECT * FROM adapter_certifications ORDER BY adapter_name ASC, adapter_kind ASC');
+    return result.rows;
+  }
+
+  async upsertAdapterCertification(certification) {
+    await this.query(
+      `INSERT INTO adapter_certifications (id, adapter_name, adapter_kind, status, live_enabled, certified_at, expires_at, reviewer, evidence_json, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (id) DO UPDATE SET
+         adapter_name = EXCLUDED.adapter_name,
+         adapter_kind = EXCLUDED.adapter_kind,
+         status = EXCLUDED.status,
+         live_enabled = EXCLUDED.live_enabled,
+         certified_at = EXCLUDED.certified_at,
+         expires_at = EXCLUDED.expires_at,
+         reviewer = EXCLUDED.reviewer,
+         evidence_json = EXCLUDED.evidence_json,
+         updated_at = EXCLUDED.updated_at`,
+      [certification.id, certification.adapterName || certification.adapter_name, certification.adapterKind || certification.adapter_kind || 'broker_execution', certification.status || 'draft', Boolean(certification.liveEnabled || certification.live_enabled || false), certification.certifiedAt || certification.certified_at || null, certification.expiresAt || certification.expires_at || null, certification.reviewer || null, JSON.stringify(certification.evidence || certification.evidence_json || {}), certification.createdAt || certification.created_at || new Date().toISOString(), certification.updatedAt || certification.updated_at || new Date().toISOString()]
+    );
+    return certification;
   }
 
   async upsertOperatorFlag(key, value) {
