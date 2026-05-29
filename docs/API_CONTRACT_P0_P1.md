@@ -1,4 +1,4 @@
-# API Contract — P0/P1 Operator Product
+# API Contract — P0/P1/P2 Operator Product
 
 This contract covers the current mock/paper operator surface. It is intentionally not a live-trading API.
 
@@ -32,7 +32,7 @@ X-Request-Id: optional-request-id
 | GET | `/health` | Service health and storage status. |
 | GET | `/ready` | Fail-closed readiness report. |
 | GET | `/metrics` | Basic operational counters. |
-| GET | `/api/operator/summary` | UI summary, counts, storage status, kill-switch state, and P0/P1 feature flags. |
+| GET | `/api/operator/summary` | UI summary, counts, storage status, kill-switch state, and feature flags. |
 
 ## Product primitives
 
@@ -87,7 +87,23 @@ Decision body:
 | GET | `/api/paper-executions` | List paper execution sessions. |
 | POST | `/api/paper-executions` | Start paper execution for an approved strategy. |
 | POST | `/api/paper-executions/:id/stop` | Stop a running paper execution. |
+| POST | `/api/paper-executions/:id/signal` | Paper-only signal-to-preview-to-fill execution with account/position/reconciliation updates. |
 | POST | `/api/kill-switch/stop-paper` | Stop all running paper executions without changing global kill-switch state. |
+
+Paper signal body:
+
+```json
+{
+  "signal": {
+    "symbol": "BTC-USD",
+    "side": "buy",
+    "quantity": 0.1,
+    "price": 50000,
+    "feeBps": 5,
+    "slippageBps": 10
+  }
+}
+```
 
 ## Risk and audit
 
@@ -101,6 +117,6 @@ Decision body:
 ## Current limitations
 
 - Backtests are deterministic product simulations, not production-grade market replay.
-- Paper execution has session lifecycle and approval gates but does not yet implement a full signal/order/fill engine.
-- Postgres P1 product-layer persistence uses versioned JSON flags while relational target tables are present for the next row-level repository pass.
+- Paper execution now includes preview/fill/account/position/reconciliation mechanics, but it is still a paper-only simulator.
+- Postgres P1 product-layer persistence uses versioned JSON flags while relational target tables and row-repository scaffolding are present for the next hardening pass.
 - Live trading remains explicitly uncertified and blocked.
