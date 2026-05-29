@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Portfolio Management Operator Console</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">P0 Operator Surface</p>
+        <h1>Portfolio Management Console</h1>
+        <p class="lede">Strategy setup, backtesting, approvals, paper execution readiness, audit visibility, and kill-switch control from one safe mock/paper UI.</p>
+      </div>
+      <div class="status-card" id="readiness-card">
+        <span class="label">Readiness</span>
+        <strong>Loading…</strong>
+      </div>
+    </section>
+
+    <nav class="tabs" aria-label="Operator sections">
+      <a href="#strategies">Strategies</a>
+      <a href="#backtests">Backtests</a>
+      <a href="#approvals">Approvals</a>
+      <a href="#risk">Risk</a>
+      <a href="#audit">Audit</a>
+    </nav>
+
+    <section class="grid summary-grid" id="summary-grid"></section>
+
+    <section class="panel" id="strategies">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">P0.4</p>
+          <h2>Strategy lifecycle</h2>
+        </div>
+        <button id="create-strategy">Create demo strategy</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Status</th><th>Risk</th><th>Parameters</th></tr></thead>
+          <tbody id="strategy-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="backtests">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">P0.5</p>
+          <h2>Backtest runs</h2>
+        </div>
+        <button id="run-backtest">Run demo backtest</button>
+      </div>
+      <div id="backtest-cards" class="cards"></div>
+    </section>
+
+    <section class="panel" id="approvals">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">P1.5</p>
+          <h2>Approvals</h2>
+        </div>
+        <button id="request-approval">Request approval</button>
+      </div>
+      <div id="approval-cards" class="cards"></div>
+    </section>
+
+    <section class="panel danger" id="risk">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">P0.6</p>
+          <h2>Risk controls</h2>
+          <p>Live execution is blocked in this implementation slice. Use the kill switch to validate the operator control path.</p>
+        </div>
+        <button id="toggle-kill-switch">Enable kill switch</button>
+      </div>
+      <pre id="risk-json"></pre>
+    </section>
+
+    <section class="panel" id="audit">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">P0.3</p>
+          <h2>Audit trail</h2>
+        </div>
+      </div>
+      <ol id="audit-list"></ol>
+    </section>
+  </main>
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>
