@@ -24,13 +24,24 @@ test('historical bar validation sorts bars and rejects duplicates', () => {
   assert.ok(result.issues.some(issue => issue.issue === 'duplicate_timestamp'));
 });
 
+test('historical bar validation rejects invalid OHLC values', () => {
+  assert.throws(() => normalizeBar({ timestamp: '2026-01-01T00:00:00.000Z', open: 'bad', high: 1, low: 1, close: 1 }), /bar_open_invalid/);
+});
+
 test('moving average replay returns metrics trades and equity curve', () => {
   const result = replayMovingAverageCross({ strategy: { parameters: { fastPeriod: 2, slowPeriod: 4 } }, bars, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 });
   assert.equal(result.ok, true);
   assert.equal(result.assumptions.engine, 'moving_average_cross_replay');
+  assert.equal(result.assumptions.feeBps, 5);
+  assert.equal(result.assumptions.slippageBps, 10);
   assert.ok(result.equityCurve.length === bars.length);
   assert.ok(Number.isFinite(result.metrics.totalReturnPct));
   assert.ok(result.metrics.totalTrades >= 1);
+});
+
+test('moving average replay is deterministic for identical inputs', () => {
+  const input = { strategy: { parameters: { fastPeriod: 2, slowPeriod: 4 } }, bars, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 };
+  assert.deepEqual(replayMovingAverageCross(input), replayMovingAverageCross(input));
 });
 
 test('moving average replay rejects invalid periods', () => {
