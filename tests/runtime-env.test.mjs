@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateRuntimeEnv } from '../packages/config/src/runtimeEnv.mjs';
+import { assertRuntimeEnv, validateRuntimeEnv } from '../packages/config/src/runtimeEnv.mjs';
 
 test('runtime env allows development with warnings', () => {
   const result = validateRuntimeEnv({ NODE_ENV: 'development' });
@@ -50,4 +50,8 @@ test('runtime env accepts strict paper-only production config', () => {
   assert.equal(result.ok, true);
   assert.equal(result.strict, true);
   assert.equal(result.safeSummary.DATABASE_URL.includes('strong-hosted-password'), false);
+});
+
+test('assert runtime env throws in invalid production mode', () => {
+  assert.throws(() => assertRuntimeEnv({ DEPLOYMENT_ENV: 'production' }), /runtime_env_invalid/);
 });
