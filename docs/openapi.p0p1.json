@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portfolio Management Operator API",
-    "version": "0.3.2-p0p1",
-    "description": "P0/P1 mock-paper operator API. Live trading is not certified and remains blocked."
+    "version": "0.4.0-p2",
+    "description": "Mock-paper operator API with P2 paper signal/fill simulation. Live trading is not certified and remains blocked."
   },
   "servers": [
     { "url": "http://localhost:3000" }
@@ -45,6 +45,7 @@
     "/api/approvals/{id}/decision": { "post": { "summary": "Approve or reject approval request", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Decision saved" }, "404": { "description": "Not found" } } } },
     "/api/paper-executions": { "get": { "summary": "List paper executions", "responses": { "200": { "description": "Executions" } } }, "post": { "summary": "Start paper execution", "responses": { "201": { "description": "Started" }, "400": { "description": "Blocked" } } } },
     "/api/paper-executions/{id}/stop": { "post": { "summary": "Stop paper execution", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Stopped" }, "404": { "description": "Not found" } } } },
+    "/api/paper-executions/{id}/signal": { "post": { "summary": "Paper-only signal preview/fill/reconciliation", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Paper fill completed" }, "400": { "description": "Paper fill blocked" }, "404": { "description": "Paper execution not found" } } } },
     "/api/kill-switch": { "post": { "summary": "Toggle global kill switch", "responses": { "200": { "description": "Updated" } } } },
     "/api/kill-switch/stop-paper": { "post": { "summary": "Stop all paper executions", "responses": { "200": { "description": "Stopped" } } } },
     "/api/positions": { "get": { "summary": "List positions", "responses": { "200": { "description": "Positions" } } } },
