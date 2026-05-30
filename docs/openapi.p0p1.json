@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portfolio Management Operator API",
-    "version": "0.5.2-production-hardening",
-    "description": "Mock-paper operator API with audit verification and production-paper readiness. Live trading is not certified and remains blocked."
+    "version": "0.5.3-opportunity-workflow",
+    "description": "Mock-paper operator API with audit verification, opportunity review, research agent cost accounting, and production-paper readiness. Live trading is not certified and remains blocked."
   },
   "servers": [
     { "url": "http://localhost:3000" }
@@ -45,6 +45,19 @@
     "/api/approvals": { "get": { "summary": "List approvals", "responses": { "200": { "description": "Approvals" } } }, "post": { "summary": "Legacy approval request", "responses": { "201": { "description": "Created" } } } },
     "/api/approvals/request": { "post": { "summary": "Request approval", "responses": { "201": { "description": "Requested" }, "400": { "description": "Blocked" } } } },
     "/api/approvals/{id}/decision": { "post": { "summary": "Approve or reject approval request", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Decision saved" }, "404": { "description": "Not found" } } } },
+    "/api/opportunity-dashboard": { "get": { "summary": "Aggregated opportunity dashboard state", "responses": { "200": { "description": "Dashboard opportunity, risk, research, cost, and market data state" } } } },
+    "/api/opportunities": { "get": { "summary": "List review opportunities", "responses": { "200": { "description": "Opportunities" } } }, "post": { "summary": "Create review opportunity", "responses": { "201": { "description": "Created" }, "400": { "description": "Invalid or unsafe opportunity input" } } } },
+    "/api/opportunities/{id}": { "get": { "summary": "Get opportunity detail", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Opportunity detail with risk breakdown" }, "404": { "description": "Opportunity not found" } } } },
+    "/api/opportunities/{id}/approve": { "post": { "summary": "Approve opportunity for review/paper workflow", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Approved" }, "404": { "description": "Opportunity not found" } } } },
+    "/api/opportunities/{id}/reject": { "post": { "summary": "Reject opportunity", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Rejected" }, "404": { "description": "Opportunity not found" } } } },
+    "/api/opportunities/{id}/defer": { "post": { "summary": "Defer opportunity", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Deferred" }, "404": { "description": "Opportunity not found" } } } },
+    "/api/opportunities/{id}/request-research": { "post": { "summary": "Request bounded-cost follow-up research", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Research requested" }, "400": { "description": "Budget guardrail blocked request" }, "404": { "description": "Opportunity not found" } } } },
+    "/api/risk-breakdowns": { "get": { "summary": "List risk breakdowns", "responses": { "200": { "description": "Risk breakdowns" } } } },
+    "/api/agents/jobs": { "get": { "summary": "List research jobs", "responses": { "200": { "description": "Research jobs" } } }, "post": { "summary": "Create research job", "responses": { "201": { "description": "Created" }, "400": { "description": "Invalid or over-budget job" } } } },
+    "/api/agents/budgets": { "get": { "summary": "List agent budgets", "responses": { "200": { "description": "Agent budgets" } } } },
+    "/api/agents/costs": { "get": { "summary": "List agent cost ledger and summary", "responses": { "200": { "description": "Agent costs" } } } },
+    "/api/market-data/snapshots": { "get": { "summary": "List normalized market data snapshots", "responses": { "200": { "description": "Market snapshots" } } } },
+    "/api/polymarket/opportunities": { "get": { "summary": "List prediction-market opportunities", "responses": { "200": { "description": "Prediction market opportunities" } } } },
     "/api/paper-executions": { "get": { "summary": "List paper executions", "responses": { "200": { "description": "Executions" } } }, "post": { "summary": "Start paper execution", "responses": { "201": { "description": "Started" }, "400": { "description": "Blocked" } } } },
     "/api/paper-executions/{id}/stop": { "post": { "summary": "Stop paper execution", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Stopped" }, "404": { "description": "Not found" } } } },
     "/api/paper-executions/{id}/signal": { "post": { "summary": "Paper-only signal preview/fill/reconciliation", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Paper fill completed" }, "400": { "description": "Paper fill blocked" }, "404": { "description": "Paper execution not found" } } } },
