@@ -10,6 +10,11 @@ async function api(path, options = {}) {
   return res.json();
 }
 
+function addNavLink(nav, href, label, position = 'beforeend') {
+  if (!nav || nav.querySelector(`a[href="${href}"]`)) return;
+  nav.insertAdjacentHTML(position, `<a href="${href}">${label}</a>`);
+}
+
 function ensureP1Panels() {
   if (qs('#p1-panels')) return;
   const anchor = qs('#strategies');
@@ -32,10 +37,9 @@ function ensureP1Panels() {
   `;
   anchor.parentNode.insertBefore(wrapper, anchor);
   const nav = document.querySelector('.tabs');
-  if (nav && !nav.querySelector('a[href="#accounts"]')) {
-    nav.insertAdjacentHTML('afterbegin', '<a href="#accounts">Accounts</a><a href="#templates">Templates</a>');
-    nav.insertAdjacentHTML('beforeend', '<a href="#paper">Paper</a>');
-  }
+  addNavLink(nav, '#accounts', 'Accounts', 'afterbegin');
+  addNavLink(nav, '#templates', 'Templates', 'afterbegin');
+  addNavLink(nav, '#paper', 'Paper');
 }
 
 function renderAccounts(accounts) {
