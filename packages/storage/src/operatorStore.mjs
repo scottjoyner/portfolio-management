@@ -69,6 +69,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
     budgetApprovals: [],
     agentCostLedger: [],
     marketDataSnapshots: [],
+    connectorRuns: [],
     positions: [],
     paperExecutions: [],
     audit: [
@@ -95,6 +96,7 @@ export function normalizeOperatorState(input = {}) {
     budgetApprovals: Array.isArray(input.budgetApprovals) ? input.budgetApprovals : seeded.budgetApprovals,
     agentCostLedger: Array.isArray(input.agentCostLedger) ? input.agentCostLedger : seeded.agentCostLedger,
     marketDataSnapshots: Array.isArray(input.marketDataSnapshots) ? input.marketDataSnapshots : seeded.marketDataSnapshots,
+    connectorRuns: Array.isArray(input.connectorRuns) ? input.connectorRuns : seeded.connectorRuns,
     positions: Array.isArray(input.positions) ? input.positions : seeded.positions,
     paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : seeded.paperExecutions,
     audit: Array.isArray(input.audit) ? input.audit : seeded.audit,
