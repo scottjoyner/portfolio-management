@@ -2,6 +2,7 @@ import { createBacktest, createStrategyFromTemplate, cloneStrategyVersion, updat
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 import { executePaperSignal } from '../../../packages/execution/src/paperEngine.mjs';
 import { createOpportunity, createResearchJob, decideOpportunity, ensureOpportunityState, summarizeAgentCosts } from './opportunityFlows.mjs';
+import { generateOpportunitiesFromConnectors, ingestConnectorSnapshots } from './opportunityGenerator.mjs';
 
 export function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -53,6 +54,16 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'GET' && pathname === '/api/market-data/snapshots') return { status: 200, body: { snapshots: state.marketDataSnapshots } };
   if (method === 'GET' && pathname === '/api/polymarket/opportunities') return { status: 200, body: { opportunities: state.opportunities.filter(o => o.venue?.includes('polymarket') || o.marketType === 'prediction_market') } };
 
+  if (method === 'POST' && pathname === '/api/connectors/market-data/ingest') {
+    const result = await mutate(store, current => ingestConnectorSnapshots(current));
+    return result;
+  }
+
+  if (method === 'POST' && pathname === '/api/opportunities/generate-from-connectors') {
+    const result = await mutate(store, current => generateOpportunitiesFromConnectors(current));
+    return { ...result, status: result.status === 200 ? 201 : result.status };
+  }
+
   const opportunityDetail = routeMatch(pathname, '/api/opportunities/:id');
   if (method === 'GET' && opportunityDetail) {
     const opportunity = state.opportunities.find(o => o.id === opportunityDetail.id);
@@ -87,7 +98,9 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
     return mutate(store, current => {
       const opportunity = current.opportunities.find(o => o.id === requestResearch.id);
       if (!opportunity) return { errors: ['opportunity_not_found'] };
-      const { job, ledger } = createResearchJob(current, { ...body, agentId: body.agentId || opportunity.sourceAgentId, marketScope: opportunity.marketSlug || opportunity.symbol || opportunity.title });
+      const research = createResearchJob(current, { ...body, agentId: body.agentId || opportunity.sourceAgentId, marketScope: opportunity.marketSlug || opportunity.symbol || opportunity.title });
+      if (research.errors) return research;
+      const { job, ledger } = research;
       opportunity.status = 'research_requested';
       opportunity.updatedAt = new Date().toISOString();
       current.audit.push({ id: nextId('audit', current.audit), action: 'opportunity_research_requested', actor: job.agentId, at: new Date().toISOString(), details: opportunity.id, payload: { jobId: job.id, costLedgerId: ledger.id } });
