@@ -88,7 +88,7 @@ These routes power the operator opportunity feed. They are review/paper workflow
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/opportunity-dashboard` | Aggregated opportunity, risk, research, market snapshot, and agent cost state for the UI. |
+| GET | `/api/opportunity-dashboard` | Aggregated opportunity, risk, research, connector, market snapshot, and agent cost state for the UI. |
 | GET | `/api/opportunities` | List review opportunities. |
 | POST | `/api/opportunities` | Create a review opportunity and linked risk breakdown. |
 | GET | `/api/opportunities/:id` | Retrieve opportunity detail with linked risk breakdown. |
@@ -102,11 +102,13 @@ These routes power the operator opportunity feed. They are review/paper workflow
 | GET | `/api/agents/budgets` | List agent budget limits. |
 | GET | `/api/agents/costs` | List agent cost ledger and aggregate cost summary. |
 | GET | `/api/market-data/snapshots` | List normalized market data snapshots. |
-| POST | `/api/connectors/market-data/ingest` | Ingest normalized market snapshots from configured paper/watch adapters. |
-| POST | `/api/opportunities/generate-from-connectors` | Generate review opportunities from connector snapshots with risk and research records. |
+| GET | `/api/connectors/status` | Show connector freshness, stale status, recent runs, and last run summary. |
+| GET | `/api/connectors/runs` | List connector ingestion/generation run history. |
+| POST | `/api/connectors/market-data/ingest` | Ingest normalized market snapshots from configured paper/watch adapters and record a connector run. |
+| POST | `/api/opportunities/generate-from-connectors` | Generate review opportunities from connector snapshots with risk, research, cost, and connector run records. |
 | GET | `/api/polymarket/opportunities` | List prediction-market opportunities. |
 
-Connector generation is idempotent for active candidates: a second run should not duplicate active opportunities for the same symbol and venue.
+Connector generation is idempotent for active candidates: a second run should not duplicate active opportunities for the same symbol and venue. Connector runs record kind, adapters, status, snapshot count, error count, timestamps, and errors. Connector status flags stale venues based on the latest snapshot timestamp.
 
 Opportunity creation validates:
 
