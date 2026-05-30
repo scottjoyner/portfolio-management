@@ -17,13 +17,45 @@ export function routeMatch(pathname, pattern) {
   return params;
 }
 
-async function persistRouteArtifacts(store, result = {}) {
+async function persistOne(store, method, value) {
+  if (value && typeof store[method] === 'function') await store[method](value);
+}
+
+async function persistMany(store, method, values = []) {
+  if (!Array.isArray(values) || !values.length || typeof store[method] !== 'function') return;
+  await store[method](values);
+}
+
+export async function persistRouteArtifacts(store, result = {}) {
   if (!result || result.errors?.length) return;
-  if (result.budgetApproval && typeof store.upsertBudgetApproval === 'function') await store.upsertBudgetApproval(result.budgetApproval);
-  if (result.job && typeof store.upsertResearchJob === 'function') await store.upsertResearchJob(result.job);
-  if (result.ledger && typeof store.upsertAgentCost === 'function') await store.upsertAgentCost(result.ledger);
-  if (Array.isArray(result.jobs) && typeof store.upsertResearchJob === 'function') for (const job of result.jobs) await store.upsertResearchJob(job);
-  if (Array.isArray(result.ledgers) && typeof store.upsertAgentCost === 'function') for (const ledger of result.ledgers) await store.upsertAgentCost(ledger);
+
+  if (typeof store.upsertOpportunityBundle === 'function') {
+    const bundle = {
+      marketDataSnapshots: result.snapshots || result.marketDataSnapshots || [],
+      budgetApprovals: [result.budgetApproval].filter(Boolean),
+      researchJobs: [result.job, ...(result.jobs || [])].filter(Boolean),
+      opportunities: [result.opportunity, ...(result.opportunities || [])].filter(Boolean),
+      riskBreakdowns: [result.riskBreakdown, ...(result.riskBreakdowns || [])].filter(Boolean),
+      agentCostLedger: [result.ledger, ...(result.ledgers || [])].filter(Boolean)
+    };
+    const hasBundleRecords = Object.values(bundle).some(records => records.length);
+    if (hasBundleRecords) {
+      await store.upsertOpportunityBundle(bundle);
+      return;
+    }
+  }
+
+  await persistMany(store, 'upsertMarketDataSnapshots', result.snapshots || result.marketDataSnapshots || []);
+  await persistOne(store, 'upsertBudgetApproval', result.budgetApproval);
+  await persistOne(store, 'upsertResearchJob', result.job);
+  await persistOne(store, 'upsertAgentCost', result.ledger);
+  await persistOne(store, 'upsertOpportunity', result.opportunity);
+  await persistOne(store, 'upsertRiskBreakdown', result.riskBreakdown);
+
+  for (const job of result.jobs || []) await persistOne(store, 'upsertResearchJob', job);
+  for (const ledger of result.ledgers || []) await persistOne(store, 'upsertAgentCost', ledger);
+  for (const opportunity of result.opportunities || []) await persistOne(store, 'upsertOpportunity', opportunity);
+  for (const riskBreakdown of result.riskBreakdowns || []) await persistOne(store, 'upsertRiskBreakdown', riskBreakdown);
 }
 
 async function mutate(store, fn) {
