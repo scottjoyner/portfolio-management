@@ -28,6 +28,16 @@ async function persistMany(store, method, values = []) {
 
 export async function persistRouteArtifacts(store, result = {}) {
   if (!result || result.errors?.length) return;
+  
+  if (result.budgetApproval && typeof store.upsertBudgetApproval === 'function') await store.upsertBudgetApproval(result.budgetApproval);
+  if (result.job && typeof store.upsertResearchJob === 'function') await store.upsertResearchJob(result.job);
+  if (result.ledger && typeof store.upsertAgentCost === 'function') await store.upsertAgentCost(result.ledger);
+  if (result.opportunity && typeof store.upsertOpportunity === 'function') await store.upsertOpportunity(result.opportunity);
+  if (result.riskBreakdown && typeof store.upsertRiskBreakdown === 'function') await store.upsertRiskBreakdown(result.riskBreakdown);
+  if (Array.isArray(result.jobs) && typeof store.upsertResearchJob === 'function') for (const job of result.jobs) await store.upsertResearchJob(job);
+  if (Array.isArray(result.ledgers) && typeof store.upsertAgentCost === 'function') for (const ledger of result.ledgers) await store.upsertAgentCost(ledger);
+  if (Array.isArray(result.opportunities) && typeof store.upsertOpportunity === 'function') for (const opportunity of result.opportunities) await store.upsertOpportunity(opportunity);
+  if (Array.isArray(result.riskBreakdowns) && typeof store.upsertRiskBreakdown === 'function') for (const riskBreakdown of result.riskBreakdowns) await store.upsertRiskBreakdown(riskBreakdown);
 
   if (typeof store.upsertOpportunityBundle === 'function') {
     const bundle = {

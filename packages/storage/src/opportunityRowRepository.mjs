@@ -106,6 +106,6 @@ export class OpportunityRowRepository {
     await this.query('DELETE FROM research_jobs');
     await this.query('DELETE FROM budget_approvals');
     await this.query('DELETE FROM market_data_snapshots');
-    await this.upsertOpportunityBundle({ marketDataSnapshots, budgetApprovals, researchJobs, opportunities, riskBreakdowns, agentCostLedger });
+    return this.upsertOpportunityBundle({ marketDataSnapshots, budgetApprovals, researchJobs, opportunities, riskBreakdowns, agentCostLedger });
   }
 }
