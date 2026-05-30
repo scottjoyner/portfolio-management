@@ -88,7 +88,7 @@ These routes power the operator opportunity feed. They are review/paper workflow
 
 | Method | Route | Purpose |
 |---|---|---|
-| GET | `/api/opportunity-dashboard` | Aggregated opportunity, risk, research, market snapshot, and agent cost state for the UI. |
+| GET | `/api/opportunity-dashboard` | Aggregated opportunity, risk, research, market snapshot, budget approval, and agent cost state for the UI. |
 | GET | `/api/opportunities` | List review opportunities. |
 | POST | `/api/opportunities` | Create a review opportunity and linked risk breakdown. |
 | GET | `/api/opportunities/:id` | Retrieve opportunity detail with linked risk breakdown. |
@@ -100,6 +100,9 @@ These routes power the operator opportunity feed. They are review/paper workflow
 | GET | `/api/agents/jobs` | List research jobs. |
 | POST | `/api/agents/jobs` | Create a research job and agent cost ledger row. |
 | GET | `/api/agents/budgets` | List agent budget limits. |
+| GET | `/api/agents/budget-approvals` | List explicit research-spend budget approvals. |
+| POST | `/api/agents/budget-approvals` | Request additional research budget. |
+| POST | `/api/agents/budget-approvals/:id/decision` | Approve or reject a research budget request. |
 | GET | `/api/agents/costs` | List agent cost ledger and aggregate cost summary. |
 | GET | `/api/market-data/snapshots` | List normalized market data snapshots. |
 | POST | `/api/connectors/market-data/ingest` | Ingest normalized market snapshots from configured paper/watch adapters. |
@@ -129,7 +132,38 @@ Research-job creation validates:
 - per-market cost limit
 - approval threshold for expensive research
 
-Research jobs can pass `approvedBudgetOverride: true` only when an operator has explicitly approved additional spend.
+Expensive research should use an explicit budget approval:
+
+1. Create `POST /api/agents/budget-approvals` with projected cost/tokens.
+2. Approve it with `POST /api/agents/budget-approvals/:id/decision`.
+3. Submit the research job with `budgetApprovalId`.
+
+`systemBudgetOverride: true` remains available for system/internal flows and tests, but operator-driven expensive research should use explicit budget approvals.
+
+Budget approval request example:
+
+```json
+{
+  "agentId": "market-research-agent",
+  "marketScope": "PREDICTION:DEMO",
+  "projectedCost": 12,
+  "projectedTokens": 60000,
+  "requestedBy": "operator",
+  "reason": "Need deeper research on prediction market candidate"
+}
+```
+
+Budget approval decision example:
+
+```json
+{
+  "status": "approved",
+  "reviewer": "risk-manager",
+  "approvedCostLimit": 12,
+  "approvedTokenLimit": 60000,
+  "reason": "bounded one-off research approved"
+}
+```
 
 Opportunity body example:
 
