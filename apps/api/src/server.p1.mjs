@@ -66,11 +66,13 @@ function isP1Route(pathname) {
     || pathname === '/api/risk-breakdowns'
     || pathname === '/api/agents/jobs'
     || pathname === '/api/agents/budgets'
+    || pathname === '/api/agents/budget-approvals'
     || pathname === '/api/agents/costs'
     || pathname === '/api/market-data/snapshots'
     || pathname === '/api/connectors/market-data/ingest'
     || pathname === '/api/opportunities/generate-from-connectors'
     || pathname === '/api/polymarket/opportunities'
+    || /^\/api\/agents\/budget-approvals\/[^/]+\/decision$/.test(pathname)
     || /^\/api\/opportunities\/[^/]+$/.test(pathname)
     || /^\/api\/opportunities\/[^/]+\/(approve|reject|defer|request-research)$/.test(pathname)
     || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
@@ -90,6 +92,7 @@ function makeSummary(state, store, runtime) {
       approvals: state.approvals.length,
       opportunities: state.opportunities?.length || 0,
       researchJobs: state.researchJobs?.length || 0,
+      budgetApprovals: state.budgetApprovals?.length || 0,
       paperExecutions: state.paperExecutions.length,
       positions: state.positions.length,
       auditEvents: state.audit.length
@@ -105,6 +108,7 @@ function makeSummary(state, store, runtime) {
       paperExecution: true,
       opportunityReview: true,
       agentCostLedger: true,
+      budgetApprovals: true,
       liveTradingCertified: false
     }
   };
