@@ -1,12 +1,36 @@
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 
+const JOB_STATUSES = new Set(['queued', 'running', 'completed', 'failed', 'cancelled']);
+const OPPORTUNITY_STATUSES = new Set(['needs_review', 'approved', 'rejected', 'deferred', 'research_requested', 'blocked']);
+const LOCAL_OR_REMOTE = new Set(['local', 'remote']);
+
+function finiteNumber(value, fallback = 0) {
+  const n = Number(value ?? fallback);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function nonNegative(value, fallback = 0) {
+  const n = finiteNumber(value, fallback);
+  return Number.isFinite(n) && n >= 0 ? n : NaN;
+}
+
+function clampPercent(value, fallback = 0.5) {
+  const n = finiteNumber(value, fallback);
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : NaN;
+}
+
+function invalidNumber(name, value) {
+  return !Number.isFinite(value) ? `${name}_invalid_number` : null;
+}
+
 export function localModelCost({ runtimeHours = 0, estimatedWatts = 0, electricityRatePerKwh = 0.14, hardwareDepreciationPerHour = 0 } = {}) {
-  return Number(((runtimeHours * estimatedWatts / 1000 * electricityRatePerKwh) + (hardwareDepreciationPerHour * runtimeHours)).toFixed(6));
+  const cost = (nonNegative(runtimeHours) * nonNegative(estimatedWatts) / 1000 * nonNegative(electricityRatePerKwh, 0.14)) + (nonNegative(hardwareDepreciationPerHour) * nonNegative(runtimeHours));
+  return Number((Number.isFinite(cost) ? cost : 0).toFixed(6));
 }
 
 export function netExpectedValue(input = {}) {
-  const gross = Number(input.grossExpectedValue ?? input.expectedValue ?? 0);
-  const costs = Number(input.estimatedFees || 0) + Number(input.estimatedSlippage || 0) + Number(input.estimatedGas || 0) + Number(input.agentResearchCost || 0) + Number(input.modelInferenceCost || 0);
+  const gross = finiteNumber(input.grossExpectedValue ?? input.expectedValue, 0);
+  const costs = nonNegative(input.estimatedFees) + nonNegative(input.estimatedSlippage) + nonNegative(input.estimatedGas) + nonNegative(input.agentResearchCost) + nonNegative(input.modelInferenceCost);
   return Number((gross - costs).toFixed(2));
 }
 
@@ -32,6 +56,87 @@ export function ensureOpportunityState(state) {
     );
   }
   return state;
+}
+
+function costForLedger(row) {
+  return Number(row.remoteApiCost || 0) + Number(row.localComputeCost || 0);
+}
+
+function projectedResearchCost(body = {}) {
+  const totalTokens = nonNegative(body.totalTokens || Number(body.promptTokens || 0) + Number(body.completionTokens || 0));
+  const isLocal = body.localOrRemote === 'local';
+  if (isLocal) {
+    const runtimeHours = nonNegative(body.runtimeSeconds || 120) / 3600;
+    return localModelCost({ runtimeHours, estimatedWatts: nonNegative(body.estimatedWatts || 250), electricityRatePerKwh: nonNegative(body.electricityRatePerKwh || 0.14), hardwareDepreciationPerHour: nonNegative(body.hardwareDepreciationPerHour || 0.35) });
+  }
+  return Number((Number(body.remoteApiCost || 0) || (totalTokens / 1000000) * nonNegative(body.costPerMillionTokens || 1.5)).toFixed(4));
+}
+
+function validateResearchJobInput(state, body = {}) {
+  const errors = [];
+  const localOrRemote = body.localOrRemote || 'remote';
+  if (!LOCAL_OR_REMOTE.has(localOrRemote)) errors.push('local_or_remote_invalid');
+  const status = body.status || 'completed';
+  if (!JOB_STATUSES.has(status)) errors.push('research_job_status_invalid');
+  const promptTokens = nonNegative(body.promptTokens || 0);
+  const completionTokens = nonNegative(body.completionTokens || 0);
+  const totalTokens = nonNegative(body.totalTokens || promptTokens + completionTokens);
+  for (const [name, value] of Object.entries({ promptTokens, completionTokens, totalTokens })) {
+    const error = invalidNumber(name, value);
+    if (error) errors.push(error);
+  }
+  if (totalTokens < promptTokens + completionTokens) errors.push('total_tokens_below_prompt_completion_sum');
+  const agentId = body.agentId || 'market-research-agent';
+  const budget = state.agentBudgets.find(row => row.agentId === agentId);
+  const projectedCost = projectedResearchCost({ ...body, localOrRemote, totalTokens });
+  if (!Number.isFinite(projectedCost)) errors.push('projected_cost_invalid_number');
+  if (budget) {
+    if (!budget.enabled) errors.push('agent_budget_disabled');
+    if (Number(budget.perJobTokenLimit || Infinity) < totalTokens && !body.approvedBudgetOverride) errors.push('per_job_token_limit_exceeded');
+    const dailyCost = state.agentCostLedger.filter(row => row.agentId === agentId).reduce((sum, row) => sum + costForLedger(row), 0);
+    if (dailyCost + projectedCost > Number(budget.dailyCostLimit || Infinity) && !body.approvedBudgetOverride) errors.push('daily_cost_limit_exceeded');
+    const marketScope = body.marketScope || body.symbol || 'general';
+    const marketCost = state.agentCostLedger
+      .filter(row => row.agentId === agentId)
+      .filter(row => state.researchJobs.find(job => job.id === row.jobId)?.marketScope === marketScope)
+      .reduce((sum, row) => sum + costForLedger(row), 0);
+    if (marketCost + projectedCost > Number(budget.perMarketCostLimit || Infinity) && !body.approvedBudgetOverride) errors.push('per_market_cost_limit_exceeded');
+    if (projectedCost > Number(budget.requireApprovalAboveCost || Infinity) && !body.approvedBudgetOverride) errors.push('research_budget_approval_required');
+  }
+  return errors;
+}
+
+function validateOpportunityInput(state, body = {}) {
+  const errors = [];
+  if (!String(body.title || body.market || body.symbol || '').trim()) errors.push('opportunity_title_required');
+  if (!String(body.venue || '').trim()) errors.push('venue_required');
+  if (!String(body.marketType || '').trim()) errors.push('market_type_required');
+  if (body.researchJobId && !state.researchJobs.some(job => job.id === body.researchJobId)) errors.push('research_job_not_found');
+  if (body.strategyId && !state.strategies.some(strategy => strategy.id === body.strategyId)) errors.push('strategy_not_found');
+  if (body.backtestId && !state.backtests.some(backtest => backtest.id === body.backtestId)) errors.push('backtest_not_found');
+  const fields = {
+    confidenceScore: clampPercent(body.confidenceScore, 0.5),
+    winProbability: clampPercent(body.winProbability, 0.5),
+    lossProbability: clampPercent(body.lossProbability ?? (1 - Number(body.winProbability ?? 0.5)), 0.5),
+    totalMoneyRisked: nonNegative(body.totalMoneyRisked || 0),
+    maxLoss: nonNegative(body.maxLoss || body.totalMoneyRisked || 0),
+    potentialUpside: nonNegative(body.potentialUpside || 0),
+    liquidityScore: nonNegative(body.liquidityScore ?? 50),
+    dataFreshnessScore: nonNegative(body.dataFreshnessScore ?? 70),
+    estimatedFees: nonNegative(body.estimatedFees || 0),
+    estimatedSlippage: nonNegative(body.estimatedSlippage || 0),
+    estimatedGas: nonNegative(body.estimatedGas || 0),
+    agentResearchCost: nonNegative(body.agentResearchCost || 0),
+    modelInferenceCost: nonNegative(body.modelInferenceCost || 0)
+  };
+  for (const [name, value] of Object.entries(fields)) {
+    const error = invalidNumber(name, value);
+    if (error) errors.push(error);
+  }
+  if (fields.maxLoss > fields.totalMoneyRisked && fields.totalMoneyRisked > 0) errors.push('max_loss_exceeds_total_money_risked');
+  if (Math.abs((fields.winProbability + fields.lossProbability) - 1) > 0.05) errors.push('win_loss_probability_sum_invalid');
+  if (!OPPORTUNITY_STATUSES.has(body.status || 'needs_review')) errors.push('opportunity_status_invalid');
+  return errors;
 }
 
 export function buildRiskBreakdown(opportunity, now = new Date().toISOString()) {
@@ -63,6 +168,8 @@ export function buildRiskBreakdown(opportunity, now = new Date().toISOString()) 
 
 export function createResearchJob(state, body = {}, now = new Date().toISOString()) {
   ensureOpportunityState(state);
+  const errors = validateResearchJobInput(state, body);
+  if (errors.length) return { errors };
   const totalTokens = Number(body.totalTokens || Number(body.promptTokens || 0) + Number(body.completionTokens || 0));
   const runtimeHours = Number(body.runtimeSeconds || 120) / 3600;
   const isLocal = body.localOrRemote === 'local';
@@ -97,39 +204,42 @@ export function createResearchJob(state, body = {}, now = new Date().toISOString
 
 export function createOpportunity(state, body = {}, now = new Date().toISOString()) {
   ensureOpportunityState(state);
+  const errors = validateOpportunityInput(state, body);
+  if (errors.length) return { errors };
   const job = body.researchJobId ? state.researchJobs.find(j => j.id === body.researchJobId) : null;
+  const winProbability = clampPercent(body.winProbability, 0.5);
   const opportunity = {
     id: nextId('opp', state.opportunities),
     sourceAgentId: body.sourceAgentId || job?.agentId || 'market-research-agent',
     researchJobId: body.researchJobId || job?.id || null,
     strategyId: body.strategyId || null,
-    marketType: body.marketType || 'unknown',
-    venue: body.venue || 'unknown',
+    marketType: body.marketType,
+    venue: body.venue,
     symbol: body.symbol || null,
     marketSlug: body.marketSlug || null,
-    title: body.title || body.market || body.symbol || 'Untitled opportunity',
+    title: body.title || body.market || body.symbol,
     recommendation: body.recommendation || 'review',
-    confidenceScore: Number(body.confidenceScore ?? 0.5),
-    winProbability: Number(body.winProbability ?? 0.5),
-    lossProbability: Number(body.lossProbability ?? (1 - Number(body.winProbability ?? 0.5))),
-    expectedValue: Number(body.expectedValue ?? body.grossExpectedValue ?? 0),
-    grossExpectedValue: Number(body.grossExpectedValue ?? body.expectedValue ?? 0),
-    totalMoneyRisked: Number(body.totalMoneyRisked || 0),
-    maxLoss: Number(body.maxLoss || body.totalMoneyRisked || 0),
-    potentialUpside: Number(body.potentialUpside || 0),
+    confidenceScore: clampPercent(body.confidenceScore, 0.5),
+    winProbability,
+    lossProbability: clampPercent(body.lossProbability ?? (1 - winProbability), 1 - winProbability),
+    expectedValue: finiteNumber(body.expectedValue ?? body.grossExpectedValue, 0),
+    grossExpectedValue: finiteNumber(body.grossExpectedValue ?? body.expectedValue, 0),
+    totalMoneyRisked: nonNegative(body.totalMoneyRisked || 0),
+    maxLoss: nonNegative(body.maxLoss || body.totalMoneyRisked || 0),
+    potentialUpside: nonNegative(body.potentialUpside || 0),
     rewardRiskRatio: Number(body.rewardRiskRatio || 0),
-    liquidityScore: Number(body.liquidityScore ?? 50),
-    dataFreshnessScore: Number(body.dataFreshnessScore ?? 70),
+    liquidityScore: nonNegative(body.liquidityScore ?? 50),
+    dataFreshnessScore: nonNegative(body.dataFreshnessScore ?? 70),
     backtestId: body.backtestId || null,
     backtestStatus: body.backtestStatus || (body.backtestId ? 'linked' : 'backtest_missing'),
     riskBreakdownId: null,
     status: body.status || 'needs_review',
-    approvalStatus: body.approvalStatus || 'needs_review',
-    estimatedFees: Number(body.estimatedFees || 0),
-    estimatedSlippage: Number(body.estimatedSlippage || 0),
-    estimatedGas: Number(body.estimatedGas || 0),
-    agentResearchCost: Number(body.agentResearchCost || 0),
-    modelInferenceCost: Number(body.modelInferenceCost || 0),
+    approvalStatus: body.approvalStatus || body.status || 'needs_review',
+    estimatedFees: nonNegative(body.estimatedFees || 0),
+    estimatedSlippage: nonNegative(body.estimatedSlippage || 0),
+    estimatedGas: nonNegative(body.estimatedGas || 0),
+    agentResearchCost: nonNegative(body.agentResearchCost || 0),
+    modelInferenceCost: nonNegative(body.modelInferenceCost || 0),
     netExpectedValue: 0,
     notes: body.notes || '',
     evidence: Array.isArray(body.evidence) ? body.evidence : [],
