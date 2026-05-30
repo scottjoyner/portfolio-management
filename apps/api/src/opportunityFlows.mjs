@@ -3,6 +3,7 @@ import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 const JOB_STATUSES = new Set(['queued', 'running', 'completed', 'failed', 'cancelled']);
 const OPPORTUNITY_STATUSES = new Set(['needs_review', 'approved', 'rejected', 'deferred', 'research_requested', 'blocked']);
 const LOCAL_OR_REMOTE = new Set(['local', 'remote']);
+const BUDGET_APPROVAL_STATUSES = new Set(['pending_review', 'approved', 'rejected', 'expired']);
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value ?? fallback);
@@ -39,6 +40,7 @@ export function ensureOpportunityState(state) {
   state.riskBreakdowns ||= [];
   state.researchJobs ||= [];
   state.agentBudgets ||= [];
+  state.budgetApprovals ||= [];
   state.agentCostLedger ||= [];
   state.marketDataSnapshots ||= [];
   if (!state.agentBudgets.length) {
@@ -72,6 +74,23 @@ function projectedResearchCost(body = {}) {
   return Number((Number(body.remoteApiCost || 0) || (totalTokens / 1000000) * nonNegative(body.costPerMillionTokens || 1.5)).toFixed(4));
 }
 
+function isBudgetApprovalUsable(approval, { agentId, marketScope, projectedCost, totalTokens }, now = new Date()) {
+  if (!approval || approval.status !== 'approved') return false;
+  if (approval.expiresAt && new Date(approval.expiresAt).getTime() < now.getTime()) return false;
+  if (approval.agentId !== agentId) return false;
+  if (approval.marketScope && marketScope && approval.marketScope !== marketScope) return false;
+  if (Number(approval.approvedCostLimit || 0) < projectedCost) return false;
+  if (Number(approval.approvedTokenLimit || 0) < totalTokens) return false;
+  return true;
+}
+
+function hasApprovedBudgetOverride(state, body, context) {
+  if (body.systemBudgetOverride === true) return true;
+  if (!body.budgetApprovalId) return false;
+  const approval = state.budgetApprovals.find(row => row.id === body.budgetApprovalId);
+  return isBudgetApprovalUsable(approval, context);
+}
+
 function validateResearchJobInput(state, body = {}) {
   const errors = [];
   const localOrRemote = body.localOrRemote || 'remote';
@@ -89,19 +108,21 @@ function validateResearchJobInput(state, body = {}) {
   const agentId = body.agentId || 'market-research-agent';
   const budget = state.agentBudgets.find(row => row.agentId === agentId);
   const projectedCost = projectedResearchCost({ ...body, localOrRemote, totalTokens });
+  const marketScope = body.marketScope || body.symbol || 'general';
+  const approvedOverride = hasApprovedBudgetOverride(state, body, { agentId, marketScope, projectedCost, totalTokens });
   if (!Number.isFinite(projectedCost)) errors.push('projected_cost_invalid_number');
+  if (body.budgetApprovalId && !approvedOverride) errors.push('budget_approval_not_usable');
   if (budget) {
     if (!budget.enabled) errors.push('agent_budget_disabled');
-    if (Number(budget.perJobTokenLimit || Infinity) < totalTokens && !body.approvedBudgetOverride) errors.push('per_job_token_limit_exceeded');
+    if (Number(budget.perJobTokenLimit || Infinity) < totalTokens && !approvedOverride) errors.push('per_job_token_limit_exceeded');
     const dailyCost = state.agentCostLedger.filter(row => row.agentId === agentId).reduce((sum, row) => sum + costForLedger(row), 0);
-    if (dailyCost + projectedCost > Number(budget.dailyCostLimit || Infinity) && !body.approvedBudgetOverride) errors.push('daily_cost_limit_exceeded');
-    const marketScope = body.marketScope || body.symbol || 'general';
+    if (dailyCost + projectedCost > Number(budget.dailyCostLimit || Infinity) && !approvedOverride) errors.push('daily_cost_limit_exceeded');
     const marketCost = state.agentCostLedger
       .filter(row => row.agentId === agentId)
       .filter(row => state.researchJobs.find(job => job.id === row.jobId)?.marketScope === marketScope)
       .reduce((sum, row) => sum + costForLedger(row), 0);
-    if (marketCost + projectedCost > Number(budget.perMarketCostLimit || Infinity) && !body.approvedBudgetOverride) errors.push('per_market_cost_limit_exceeded');
-    if (projectedCost > Number(budget.requireApprovalAboveCost || Infinity) && !body.approvedBudgetOverride) errors.push('research_budget_approval_required');
+    if (marketCost + projectedCost > Number(budget.perMarketCostLimit || Infinity) && !approvedOverride) errors.push('per_market_cost_limit_exceeded');
+    if (projectedCost > Number(budget.requireApprovalAboveCost || Infinity) && !approvedOverride) errors.push('research_budget_approval_required');
   }
   return errors;
 }
@@ -166,6 +187,56 @@ export function buildRiskBreakdown(opportunity, now = new Date().toISOString()) 
   };
 }
 
+export function requestBudgetApproval(state, body = {}, now = new Date().toISOString()) {
+  ensureOpportunityState(state);
+  const agentId = body.agentId || 'market-research-agent';
+  const projectedCost = nonNegative(body.projectedCost || body.approvedCostLimit || 0);
+  const projectedTokens = nonNegative(body.projectedTokens || body.approvedTokenLimit || 0);
+  const errors = [];
+  if (!agentId) errors.push('agent_id_required');
+  if (!Number.isFinite(projectedCost) || projectedCost <= 0) errors.push('projected_cost_required');
+  if (!Number.isFinite(projectedTokens) || projectedTokens <= 0) errors.push('projected_tokens_required');
+  if (errors.length) return { errors };
+  const approval = {
+    id: nextId('budget-approval', state.budgetApprovals),
+    agentId,
+    marketScope: body.marketScope || null,
+    opportunityId: body.opportunityId || null,
+    requestedBy: body.requestedBy || 'operator',
+    reason: body.reason || 'additional research budget requested',
+    status: 'pending_review',
+    projectedCost,
+    projectedTokens,
+    approvedCostLimit: 0,
+    approvedTokenLimit: 0,
+    reviewer: null,
+    decisionReason: null,
+    requestedAt: now,
+    reviewedAt: null,
+    expiresAt: body.expiresAt || null
+  };
+  state.budgetApprovals.push(approval);
+  state.audit.push({ id: nextId('audit', state.audit), action: 'budget_approval_requested', actor: approval.requestedBy, at: now, details: approval.id, payload: { agentId, projectedCost, projectedTokens } });
+  return { budgetApproval: approval };
+}
+
+export function decideBudgetApproval(state, approvalId, body = {}, now = new Date().toISOString()) {
+  ensureOpportunityState(state);
+  const approval = state.budgetApprovals.find(row => row.id === approvalId);
+  if (!approval) return { errors: ['budget_approval_not_found'] };
+  if (!['approved', 'rejected'].includes(body.status)) return { errors: ['invalid_budget_approval_decision'] };
+  approval.status = body.status;
+  approval.reviewer = body.reviewer || 'operator';
+  approval.decisionReason = body.reason || null;
+  approval.reviewedAt = now;
+  approval.approvedCostLimit = body.status === 'approved' ? nonNegative(body.approvedCostLimit || approval.projectedCost) : 0;
+  approval.approvedTokenLimit = body.status === 'approved' ? nonNegative(body.approvedTokenLimit || approval.projectedTokens) : 0;
+  approval.expiresAt = body.expiresAt || approval.expiresAt;
+  if (body.status === 'approved' && (!Number.isFinite(approval.approvedCostLimit) || !Number.isFinite(approval.approvedTokenLimit))) return { errors: ['invalid_budget_approval_limits'] };
+  state.audit.push({ id: nextId('audit', state.audit), action: `budget_approval_${body.status}`, actor: approval.reviewer, at: now, details: approval.id, payload: { approvedCostLimit: approval.approvedCostLimit, approvedTokenLimit: approval.approvedTokenLimit } });
+  return { budgetApproval: approval };
+}
+
 export function createResearchJob(state, body = {}, now = new Date().toISOString()) {
   ensureOpportunityState(state);
   const errors = validateResearchJobInput(state, body);
@@ -192,13 +263,14 @@ export function createResearchJob(state, body = {}, now = new Date().toISOString
     totalTokens,
     estimatedRemoteCost,
     estimatedLocalCost,
+    budgetApprovalId: body.budgetApprovalId || null,
     opportunityIdsCreated: [],
     failureReason: null
   };
   const ledger = { id: nextId('cost', state.agentCostLedger), agentId: job.agentId, jobId: job.id, model: job.model, provider: job.provider, localOrRemote: job.localOrRemote, promptTokens: job.promptTokens, completionTokens: job.completionTokens, totalTokens, remoteApiCost: estimatedRemoteCost, localComputeCost: estimatedLocalCost, allocatedOpportunityId: null, createdAt: now };
   state.researchJobs.push(job);
   state.agentCostLedger.push(ledger);
-  state.audit.push({ id: nextId('audit', state.audit), action: 'research_job_created', actor: job.agentId, at: now, details: job.id, payload: { totalTokens, costLedgerId: ledger.id } });
+  state.audit.push({ id: nextId('audit', state.audit), action: 'research_job_created', actor: job.agentId, at: now, details: job.id, payload: { totalTokens, costLedgerId: ledger.id, budgetApprovalId: job.budgetApprovalId } });
   return { job, ledger };
 }
 
@@ -276,5 +348,5 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
 export function summarizeAgentCosts(state) {
   ensureOpportunityState(state);
   const total = state.agentCostLedger.reduce((sum, row) => sum + Number(row.remoteApiCost || 0) + Number(row.localComputeCost || 0), 0);
-  return { dailyBudgetUsd: state.agentBudgets.reduce((sum, row) => sum + Number(row.dailyCostLimit || 0), 0), spentTodayUsd: Number(total.toFixed(2)), remoteModelCostUsd: Number(state.agentCostLedger.reduce((sum, row) => sum + Number(row.remoteApiCost || 0), 0).toFixed(2)), localModelCostUsd: Number(state.agentCostLedger.reduce((sum, row) => sum + Number(row.localComputeCost || 0), 0).toFixed(2)), openResearchJobs: state.researchJobs.filter(job => ['queued', 'running'].includes(job.status)).length, costPerOpportunityUsd: state.opportunities.length ? Number((total / state.opportunities.length).toFixed(2)) : 0, localCostFormula: 'runtime_hours * estimated_watts / 1000 * electricity_rate_per_kwh + hardware_depreciation_per_hour * runtime_hours' };
+  return { dailyBudgetUsd: state.agentBudgets.reduce((sum, row) => sum + Number(row.dailyCostLimit || 0), 0), spentTodayUsd: Number(total.toFixed(2)), remoteModelCostUsd: Number(state.agentCostLedger.reduce((sum, row) => sum + Number(row.remoteApiCost || 0), 0).toFixed(2)), localModelCostUsd: Number(state.agentCostLedger.reduce((sum, row) => sum + Number(row.localComputeCost || 0), 0).toFixed(2)), openResearchJobs: state.researchJobs.filter(job => ['queued', 'running'].includes(job.status)).length, pendingBudgetApprovals: state.budgetApprovals.filter(approval => approval.status === 'pending_review').length, costPerOpportunityUsd: state.opportunities.length ? Number((total / state.opportunities.length).toFixed(2)) : 0, localCostFormula: 'runtime_hours * estimated_watts / 1000 * electricity_rate_per_kwh + hardware_depreciation_per_hour * runtime_hours' };
 }
