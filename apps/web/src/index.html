@@ -7,114 +7,143 @@
   <link rel="stylesheet" href="/ui/styles.css" />
 </head>
 <body>
-  <main class="shell">
-    <section class="hero">
-      <div>
-        <p class="eyebrow">Production-paper operator cockpit</p>
-        <h1>Trading Bot Command Center</h1>
-        <p class="lede">Live-disabled dashboard for strategy setup, backtesting, opportunity review, Polymarket research, agent cost control, paper execution, and audit integrity.</p>
-      </div>
-      <div class="status-stack">
-        <div class="status-card" id="readiness-card"><span class="label">Readiness</span><strong>Loading…</strong></div>
-        <div class="status-card compact" id="audit-status-card"><span class="label">Audit</span><strong>Loading…</strong></div>
-      </div>
-    </section>
-
-    <nav class="tabs" aria-label="Operator sections">
-      <a href="#overview">Overview</a>
-      <a href="#portfolio">Portfolio</a>
-      <a href="#live-markets">Live Markets</a>
-      <a href="#strategies">Strategies</a>
-      <a href="#backtests">Backtesting</a>
-      <a href="#opportunities">Opportunities</a>
-      <a href="#polymarket">Polymarket</a>
-      <a href="#agents">Agents</a>
-      <a href="#risk">Risk</a>
-      <a href="#approvals">Approvals</a>
-      <a href="#paper">Executions</a>
-      <a href="#audit">Audit</a>
-    </nav>
-
-    <section class="panel" id="overview">
-      <div class="panel-heading">
+  <div class="app-frame">
+    <aside class="sidebar" aria-label="Trading dashboard navigation">
+      <div class="brand-block">
+        <div class="brand-mark">PM</div>
         <div>
-          <p class="eyebrow">Overview</p>
-          <h2>Operator summary</h2>
+          <strong>Portfolio OS</strong>
+          <span>paper-only command</span>
         </div>
-        <button id="refresh-dashboard">Refresh</button>
       </div>
-      <section class="grid summary-grid" id="summary-grid"></section>
-      <div class="grid kpi-grid" id="pnl-liquidity-grid"></div>
-    </section>
+      <nav class="tabs" aria-label="Operator sections">
+        <a href="#overview">Overview</a>
+        <a href="#portfolio">Portfolio</a>
+        <a href="#live-markets">Live Markets</a>
+        <a href="#strategies">Strategies</a>
+        <a href="#backtests">Backtesting</a>
+        <a href="#opportunities">Opportunities</a>
+        <a href="#polymarket">Polymarket</a>
+        <a href="#agents">Agents</a>
+        <a href="#risk">Risk</a>
+        <a href="#approvals">Approvals</a>
+        <a href="#paper">Executions</a>
+        <a href="#audit">Audit</a>
+      </nav>
+      <section class="sidebar-card danger-lite">
+        <span class="label">Execution state</span>
+        <strong>Live blocked</strong>
+        <p>All execution controls remain paper-only until a separate live certification release.</p>
+      </section>
+      <section class="sidebar-card">
+        <span class="label">Research budget</span>
+        <strong id="sidebar-agent-spend">Loading…</strong>
+        <p>Agent tokens, local compute, and API calls are treated as operational losses until attributed.</p>
+      </section>
+    </aside>
 
-    <section class="panel" id="portfolio">
-      <div class="panel-heading"><div><p class="eyebrow">Portfolio</p><h2>P/L, cash, and liquidity</h2></div></div>
-      <div class="cards" id="portfolio-cards"></div>
-      <div class="table-wrap"><table><thead><tr><th>Position</th><th>Quantity</th><th>Average</th><th>Mark</th><th>Status</th></tr></thead><tbody id="position-rows"></tbody></table></div>
-    </section>
+    <main class="shell">
+      <header class="command-bar">
+        <div>
+          <p class="eyebrow">Production-paper operator cockpit</p>
+          <h1>Trading Bot Command Center</h1>
+        </div>
+        <div class="command-actions">
+          <button id="refresh-dashboard">Refresh</button>
+          <button id="verify-audit" class="secondary-button">Verify audit</button>
+          <button id="toggle-kill-switch" class="danger-button">Enable kill switch</button>
+        </div>
+      </header>
 
-    <section class="panel" id="live-markets">
-      <div class="panel-heading"><div><p class="eyebrow">Live Markets</p><h2>Watchlist and market data readiness</h2></div><span class="badge blocked">data scaffold</span></div>
-      <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Venue</th><th>Bid/Ask</th><th>Spread</th><th>Liquidity</th><th>Status</th></tr></thead><tbody id="market-rows"></tbody></table></div>
-    </section>
+      <section class="market-strip" id="market-strip" aria-label="Market ticker strip"></section>
 
-    <section class="panel" id="strategies">
-      <div class="panel-heading">
-        <div><p class="eyebrow">Strategies</p><h2>Strategy lifecycle</h2></div>
-        <button id="create-strategy">Create demo strategy</button>
-      </div>
-      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th>Risk</th><th>Parameters</th></tr></thead><tbody id="strategy-rows"></tbody></table></div>
-    </section>
+      <section class="hero cockpit-hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Mission control</p>
+          <h2>Review agent-found trades, see capital risk, approve only what survives backtest and cost checks.</h2>
+          <p class="lede">The dashboard is designed around the real operating loop: discover, score, backtest, price research cost, approve, paper execute, audit.</p>
+        </div>
+        <div class="status-stack">
+          <div class="status-card" id="readiness-card"><span class="label">Readiness</span><strong>Loading…</strong></div>
+          <div class="status-card compact" id="audit-status-card"><span class="label">Audit</span><strong>Loading…</strong></div>
+        </div>
+      </section>
 
-    <section class="panel" id="backtests">
-      <div class="panel-heading">
-        <div><p class="eyebrow">Backtesting</p><h2>Backtest runs</h2></div>
-        <button id="run-backtest">Run demo backtest</button>
-      </div>
-      <div id="backtest-cards" class="cards"></div>
-    </section>
+      <section class="dashboard-grid" id="overview">
+        <section class="panel span-8">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Overview</p><h2>Operating summary</h2></div>
+          </div>
+          <section class="grid summary-grid" id="summary-grid"></section>
+          <div class="grid kpi-grid" id="pnl-liquidity-grid"></div>
+        </section>
+        <section class="panel span-4 command-queue-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Command queue</p><h2>Needs operator attention</h2></div></div>
+          <div id="command-queue" class="stack-list"></div>
+        </section>
+      </section>
 
-    <section class="panel" id="opportunities">
-      <div class="panel-heading"><div><p class="eyebrow">Opportunities</p><h2>Research-agent trade review feed</h2></div><span class="badge warning">approval required</span></div>
-      <div id="opportunity-cards" class="cards wide-cards"></div>
-    </section>
+      <section class="dashboard-grid">
+        <section class="panel span-7" id="opportunities">
+          <div class="panel-heading"><div><p class="eyebrow">Opportunities</p><h2>Trade review feed</h2></div><span class="badge warning">approval required</span></div>
+          <div id="opportunity-cards" class="cards opportunity-feed"></div>
+        </section>
+        <section class="panel span-5" id="risk">
+          <div class="panel-heading"><div><p class="eyebrow">Risk</p><h2>Capital-at-risk stack</h2><p>Every opportunity must show max loss and net EV after research/model cost.</p></div></div>
+          <div id="risk-stack" class="risk-stack"></div>
+          <pre id="risk-json"></pre>
+        </section>
+      </section>
 
-    <section class="panel" id="polymarket">
-      <div class="panel-heading"><div><p class="eyebrow">Polymarket</p><h2>Prediction-market opportunities</h2></div><span class="badge blocked">live orders blocked</span></div>
-      <div id="polymarket-cards" class="cards wide-cards"></div>
-    </section>
+      <section class="dashboard-grid">
+        <section class="panel span-6" id="portfolio">
+          <div class="panel-heading"><div><p class="eyebrow">Portfolio</p><h2>P/L, cash, and liquidity</h2></div></div>
+          <div class="cards" id="portfolio-cards"></div>
+          <div class="table-wrap"><table><thead><tr><th>Position</th><th>Quantity</th><th>Average</th><th>Mark</th><th>Status</th></tr></thead><tbody id="position-rows"></tbody></table></div>
+        </section>
 
-    <section class="panel" id="agents">
-      <div class="panel-heading"><div><p class="eyebrow">Agents</p><h2>Research cost and token budget</h2></div><span class="badge warning">costs count as losses</span></div>
-      <div class="grid kpi-grid" id="agent-cost-grid"></div>
-      <div class="table-wrap"><table><thead><tr><th>Job</th><th>Agent</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th></tr></thead><tbody id="agent-job-rows"></tbody></table></div>
-    </section>
+        <section class="panel span-6" id="live-markets">
+          <div class="panel-heading"><div><p class="eyebrow">Live Markets</p><h2>Watchlist and market data readiness</h2></div><span class="badge blocked">data scaffold</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Venue</th><th>Bid/Ask</th><th>Spread</th><th>Liquidity</th><th>Status</th></tr></thead><tbody id="market-rows"></tbody></table></div>
+        </section>
+      </section>
 
-    <section class="panel danger" id="risk">
-      <div class="panel-heading">
-        <div><p class="eyebrow">Risk</p><h2>Risk controls and kill switch</h2><p>Live execution is blocked. Every opportunity must show max loss and net EV after model/research cost.</p></div>
-        <button id="toggle-kill-switch">Enable kill switch</button>
-      </div>
-      <pre id="risk-json"></pre>
-    </section>
+      <section class="dashboard-grid">
+        <section class="panel span-6" id="polymarket">
+          <div class="panel-heading"><div><p class="eyebrow">Polymarket</p><h2>Prediction-market desk</h2></div><span class="badge blocked">live orders blocked</span></div>
+          <div id="polymarket-cards" class="cards wide-cards"></div>
+        </section>
+        <section class="panel span-6" id="agents">
+          <div class="panel-heading"><div><p class="eyebrow">Agents</p><h2>Research cost and token budget</h2></div><span class="badge warning">costs count as losses</span></div>
+          <div class="grid kpi-grid" id="agent-cost-grid"></div>
+          <div class="table-wrap"><table><thead><tr><th>Job</th><th>Agent</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th></tr></thead><tbody id="agent-job-rows"></tbody></table></div>
+        </section>
+      </section>
 
-    <section class="panel" id="approvals">
-      <div class="panel-heading">
-        <div><p class="eyebrow">Approvals</p><h2>Human approval feed</h2></div>
-        <button id="request-approval">Request approval</button>
-      </div>
-      <div id="approval-cards" class="cards"></div>
-    </section>
+      <section class="dashboard-grid">
+        <section class="panel span-6" id="strategies">
+          <div class="panel-heading"><div><p class="eyebrow">Strategies</p><h2>Strategy lifecycle</h2></div><button id="create-strategy">Create demo strategy</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Status</th><th>Risk</th><th>Parameters</th></tr></thead><tbody id="strategy-rows"></tbody></table></div>
+        </section>
+        <section class="panel span-6" id="backtests">
+          <div class="panel-heading"><div><p class="eyebrow">Backtesting</p><h2>Backtest runs</h2></div><button id="run-backtest">Run demo backtest</button></div>
+          <div id="backtest-cards" class="cards"></div>
+        </section>
+      </section>
 
-    <section class="panel" id="audit">
-      <div class="panel-heading">
-        <div><p class="eyebrow">Audit</p><h2>Audit trail and verification</h2></div>
-        <button id="verify-audit">Verify audit chain</button>
-      </div>
-      <pre id="audit-verify-json"></pre>
-      <ol id="audit-list"></ol>
-    </section>
-  </main>
+      <section class="dashboard-grid">
+        <section class="panel span-6" id="approvals">
+          <div class="panel-heading"><div><p class="eyebrow">Approvals</p><h2>Human approval feed</h2></div><button id="request-approval">Request approval</button></div>
+          <div id="approval-cards" class="cards"></div>
+        </section>
+        <section class="panel span-6" id="audit">
+          <div class="panel-heading"><div><p class="eyebrow">Audit</p><h2>Audit trail and verification</h2></div></div>
+          <pre id="audit-verify-json"></pre>
+          <ol id="audit-list"></ol>
+        </section>
+      </section>
+    </main>
+  </div>
   <script type="module" src="/ui/app.js"></script>
 </body>
 </html>
