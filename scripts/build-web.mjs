@@ -49,16 +49,16 @@ for (const endpoint of ['/api/accounts', '/api/instruments', '/api/strategy-temp
   }
 }
 
-for (const endpoint of ['/api/opportunity-dashboard', '/api/opportunities', '/api/agents/jobs']) {
+for (const endpoint of ['/api/opportunity-dashboard', '/api/opportunities', '/api/agents/jobs', '/api/agents/budget-approvals']) {
   if (!app.includes(endpoint)) {
     console.error(`web build failed: app.js missing API-backed dashboard endpoint ${endpoint}`);
     process.exit(1);
   }
 }
 
-for (const token of ['netExpectedValue', 'totalMoneyRisked', 'modelInferenceCost', 'agentResearchCost']) {
-  if (!app.includes(token)) {
-    console.error(`web build failed: app.js missing opportunity cost/risk token ${token}`);
+for (const token of ['netExpectedValue', 'totalMoneyRisked', 'modelInferenceCost', 'agentResearchCost', 'budgetApprovals', 'budget-approval-cards', 'request-budget-approval']) {
+  if (!(html + app).includes(token)) {
+    console.error(`web build failed: missing opportunity/budget approval UI token ${token}`);
     process.exit(1);
   }
 }
@@ -68,4 +68,4 @@ if (app.includes("from './dashboard-data.js'")) {
   process.exit(1);
 }
 
-console.log('web build ok: API-backed cockpit trading dashboard assets validated');
+console.log('web build ok: API-backed cockpit dashboard and budget approval controls validated');
