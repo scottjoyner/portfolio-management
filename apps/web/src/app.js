@@ -11,8 +11,9 @@ let opportunityState = {
   researchJobs: [],
   agentCostLedger: [],
   agentBudgets: [],
+  budgetApprovals: [],
   marketDataSnapshots: [],
-  agentCostSummary: { spentTodayUsd: 0, dailyBudgetUsd: 0, remoteModelCostUsd: 0, localModelCostUsd: 0, costPerOpportunityUsd: 0, openResearchJobs: 0 }
+  agentCostSummary: { spentTodayUsd: 0, dailyBudgetUsd: 0, remoteModelCostUsd: 0, localModelCostUsd: 0, costPerOpportunityUsd: 0, openResearchJobs: 0, pendingBudgetApprovals: 0 }
 };
 
 async function api(path, options = {}) {
@@ -91,14 +92,8 @@ async function ensureSeededOpportunityData() {
 function renderSummary(summary) {
   const readiness = summary.readiness || { productionReady: false, mode: 'mock', liveTradingCertified: false, blockers: [] };
   const paperReady = summary.productionPaperReady || summary.productionPaperReadiness;
-  qs('#readiness-card').innerHTML = `
-    <span class="label">Readiness</span>
-    <strong>${paperReady?.productionPaperReady ? 'Paper-production ready' : readiness.productionReady ? 'Production ready' : 'Paper-only / not prod ready'}</strong>
-    <span>${readiness.mode || 'mock'} mode · live certified: ${readiness.liveTradingCertified ? 'yes' : 'no'}</span>
-  `;
-  qs('#summary-grid').innerHTML = Object.entries(summary.counts || {}).map(([key, value]) => `
-    <article class="summary-card compact-kpi"><span class="label">${key}</span><strong>${value}</strong></article>
-  `).join('');
+  qs('#readiness-card').innerHTML = `<span class="label">Readiness</span><strong>${paperReady?.productionPaperReady ? 'Paper-production ready' : readiness.productionReady ? 'Production ready' : 'Paper-only / not prod ready'}</strong><span>${readiness.mode || 'mock'} mode · live certified: ${readiness.liveTradingCertified ? 'yes' : 'no'}</span>`;
+  qs('#summary-grid').innerHTML = Object.entries(summary.counts || {}).map(([key, value]) => `<article class="summary-card compact-kpi"><span class="label">${key}</span><strong>${value}</strong></article>`).join('');
   qs('#risk-json').textContent = fmt({ readiness: summary.readiness, killSwitch: summary.killSwitch, p0p1: summary.p0p1 });
   qs('#toggle-kill-switch').textContent = summary.killSwitch?.enabled ? 'Disable kill switch' : 'Enable kill switch';
 }
@@ -108,8 +103,8 @@ function renderCommandQueue(summary = {}) {
   const items = [
     { title: 'Review opportunity feed', detail: `${opportunityState.opportunities.length} API-backed candidates`, tone: 'warning' },
     { title: 'Backtesting depth', detail: 'Deterministic scaffold exists; historical replay still required', tone: 'blocked' },
-    { title: 'Agent spend controls', detail: `${money(agentCost.spentTodayUsd)} spent today; add hard budget enforcement`, tone: 'warning' },
-    { title: 'Approvals', detail: `${summary.counts?.approvals || 0} strategy approval records currently tracked`, tone: 'neutral' }
+    { title: 'Agent spend controls', detail: `${money(agentCost.spentTodayUsd)} spent today · ${agentCost.pendingBudgetApprovals || 0} budget approvals pending`, tone: 'warning' },
+    { title: 'Approvals', detail: `${summary.counts?.approvals || 0} strategy approvals · ${summary.counts?.budgetApprovals || 0} budget approvals`, tone: 'neutral' }
   ];
   qs('#command-queue').innerHTML = items.map(item => `<article class="queue-item ${item.tone}"><strong>${item.title}</strong><span>${item.detail}</span></article>`).join('');
 }
@@ -120,10 +115,7 @@ function renderPortfolio(accounts = [], positions = []) {
   const locked = positions.reduce((sum, position) => sum + Math.abs(Number(position.quantity || 0) * Number(position.averagePrice || position.average_price || 0)) * 0.1, 0);
   const risked = opportunityState.opportunities.reduce((sum, opp) => sum + Number(opp.totalMoneyRisked || 0), 0);
   const netEv = opportunityState.opportunities.reduce((sum, opp) => sum + Number(opp.netExpectedValue || 0), 0);
-  qs('#pnl-liquidity-grid').innerHTML = [
-    ['Total NAV', money(nav), 'capital base'], ['Cash', money(cash), 'available'], ['Risk reserve', money(locked), 'paper positions'], ['Opportunity risk', money(risked), 'candidate capital'], ['Net EV queue', money(netEv), 'after model/research cost'], ['Research spend today', money(opportunityState.agentCostSummary.spentTodayUsd), 'operational loss']
-  ].map(([label, value, hint]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong><small>${hint}</small></article>`).join('');
-
+  qs('#pnl-liquidity-grid').innerHTML = [['Total NAV', money(nav), 'capital base'], ['Cash', money(cash), 'available'], ['Risk reserve', money(locked), 'paper positions'], ['Opportunity risk', money(risked), 'candidate capital'], ['Net EV queue', money(netEv), 'after model/research cost'], ['Research spend today', money(opportunityState.agentCostSummary.spentTodayUsd), 'operational loss']].map(([label, value, hint]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong><small>${hint}</small></article>`).join('');
   qs('#portfolio-cards').innerHTML = accounts.map(account => `<article class="card account-card"><h3>${account.name}</h3><p><span class="badge">${account.status}</span> ${account.provider}</p><p><strong>${money(account.nav)}</strong> NAV · ${money(account.cash)} cash</p><div class="mini-bar"><span style="width:${Math.min(100, Math.round((Number(account.cash || 0) / Math.max(1, Number(account.nav || 1))) * 100))}%"></span></div><p class="label">${account.currency || 'USD'} · paper/sandbox capital</p></article>`).join('') || '<p class="label">No accounts loaded.</p>';
   qs('#position-rows').innerHTML = positions.map(position => `<tr><td><strong>${position.symbol}</strong><br/><span class="label">${position.strategyId || 'manual/paper'}</span></td><td>${position.quantity}</td><td>${money(position.averagePrice || position.average_price)}</td><td>${position.markPrice || position.mark_price ? money(position.markPrice || position.mark_price) : 'pending'}</td><td><span class="badge">${position.status}</span></td></tr>`).join('') || '<tr><td colspan="5" class="label">No open positions yet.</td></tr>';
 }
@@ -143,9 +135,7 @@ function renderRiskStack() {
   qs('#risk-stack').innerHTML = rows.map(([label, value, width]) => `<article class="risk-row"><div><span class="label">${label}</span><strong>${value}</strong></div><div class="score-line"><span style="width:${width}%"></span></div></article>`).join('');
 }
 
-function riskForOpportunity(opp) {
-  return opportunityState.riskBreakdowns.find(risk => risk.id === opp.riskBreakdownId || risk.scopeId === opp.id) || {};
-}
+function riskForOpportunity(opp) { return opportunityState.riskBreakdowns.find(risk => risk.id === opp.riskBreakdownId || risk.scopeId === opp.id) || {}; }
 
 function opportunityCard(opp) {
   const risk = riskForOpportunity(opp);
@@ -159,8 +149,20 @@ function renderOpportunities() {
     button.addEventListener('click', async () => {
       const id = button.dataset.opportunityId;
       const action = button.dataset.opportunityDecision;
-      if (action === 'request-research') await api(`/api/opportunities/${id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review-model', totalTokens: 8000, runtimeSeconds: 90, approvedBudgetOverride: true } });
+      if (action === 'request-research') await api(`/api/opportunities/${id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review-model', totalTokens: 8000, runtimeSeconds: 90, systemBudgetOverride: true } });
       else await api(`/api/opportunities/${id}/${action}`, { method: 'POST', body: { reviewer: 'operator-ui', reason: `${action} from dashboard` } });
+      await refresh();
+    });
+  });
+}
+
+function renderBudgetApprovals() {
+  const approvals = opportunityState.budgetApprovals || [];
+  qs('#budget-approval-rows').innerHTML = approvals.map(approval => `<tr><td><strong>${approval.id}</strong><br/><span class="label">${approval.requestedBy || 'operator'} · ${approval.reason || ''}</span></td><td>${approval.agentId}</td><td>${approval.marketScope || 'general'}</td><td>${money(approval.projectedCost)}<br/><span class="label">${Number(approval.projectedTokens || 0).toLocaleString()} tokens</span></td><td>${money(approval.approvedCostLimit)}<br/><span class="label">${Number(approval.approvedTokenLimit || 0).toLocaleString()} tokens</span></td><td><span class="badge ${approval.status === 'pending_review' ? 'warning' : ''}">${approval.status}</span></td><td>${approval.status === 'pending_review' ? `<button data-budget-approve="${approval.id}">Approve</button>` : '<span class="label">No action</span>'}</td></tr>`).join('') || '<tr><td colspan="7" class="label">No budget approvals yet.</td></tr>';
+  document.querySelectorAll('[data-budget-approve]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const approval = approvals.find(row => row.id === button.dataset.budgetApprove);
+      await api(`/api/agents/budget-approvals/${button.dataset.budgetApprove}/decision`, { method: 'POST', body: { status: 'approved', reviewer: 'operator-ui', approvedCostLimit: approval?.projectedCost || 12, approvedTokenLimit: approval?.projectedTokens || 60000, reason: 'Approved from Agents dashboard' } });
       await refresh();
     });
   });
@@ -169,36 +171,31 @@ function renderOpportunities() {
 function renderAgents() {
   const summary = opportunityState.agentCostSummary || {};
   qs('#sidebar-agent-spend').textContent = money(summary.spentTodayUsd);
-  qs('#agent-cost-grid').innerHTML = [['Daily budget', money(summary.dailyBudgetUsd)], ['Spent today', money(summary.spentTodayUsd)], ['Remote model cost', money(summary.remoteModelCostUsd)], ['Local model cost', money(summary.localModelCostUsd)], ['Cost/opportunity', money(summary.costPerOpportunityUsd)], ['Open research jobs', summary.openResearchJobs || 0]].map(([label, value]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong></article>`).join('');
-  qs('#agent-job-rows').innerHTML = (opportunityState.researchJobs || []).map(job => `<tr><td><strong>${job.id}</strong></td><td>${job.agentId}</td><td>${job.model}</td><td><span class="badge">${job.status}</span></td><td>${Number(job.totalTokens || 0).toLocaleString()}</td><td>${money(Number(job.estimatedRemoteCost || 0) + Number(job.estimatedLocalCost || 0))}</td></tr>`).join('') || '<tr><td colspan="6" class="label">No research jobs yet.</td></tr>';
+  qs('#agent-cost-grid').innerHTML = [['Daily budget', money(summary.dailyBudgetUsd)], ['Spent today', money(summary.spentTodayUsd)], ['Remote model cost', money(summary.remoteModelCostUsd)], ['Local model cost', money(summary.localModelCostUsd)], ['Cost/opportunity', money(summary.costPerOpportunityUsd)], ['Pending budget approvals', summary.pendingBudgetApprovals || 0]].map(([label, value]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong></article>`).join('');
+  renderBudgetApprovals();
+  qs('#agent-job-rows').innerHTML = (opportunityState.researchJobs || []).map(job => `<tr><td><strong>${job.id}</strong></td><td>${job.agentId}</td><td>${job.model}</td><td><span class="badge">${job.status}</span></td><td>${Number(job.totalTokens || 0).toLocaleString()}</td><td>${job.budgetApprovalId || '<span class="label">none</span>'}</td><td>${money(Number(job.estimatedRemoteCost || 0) + Number(job.estimatedLocalCost || 0))}</td></tr>`).join('') || '<tr><td colspan="7" class="label">No research jobs yet.</td></tr>';
 }
 
 function renderStrategies(strategies) { qs('#strategy-rows').innerHTML = strategies.map(strategy => `<tr><td><strong>${strategy.name}</strong><br/><span class="label">${strategy.id} · v${strategy.version}</span></td><td><span class="badge">${strategy.status}</span></td><td>${strategy.riskLevel}</td><td><code>${fmt(strategy.parameters)}</code></td></tr>`).join(''); }
 function renderBacktests(backtests) { qs('#backtest-cards').innerHTML = backtests.map(run => `<article class="card"><h3>${run.id}</h3><p><span class="badge">${run.status}</span></p><p><strong>${run.metrics.totalReturnPct}%</strong> total return · ${run.metrics.maxDrawdownPct}% max drawdown</p><p>Sharpe ${run.metrics.sharpe} · ${run.metrics.totalTrades} trades · ${run.metrics.winRatePct}% win rate</p><pre>${fmt(run.assumptions)}</pre></article>`).join('') || '<p class="label">No backtests yet.</p>'; }
 function renderApprovals(approvals) { qs('#approval-cards').innerHTML = approvals.map(approval => `<article class="card"><h3>${approval.id}</h3><p><span class="badge">${approval.status}</span> ${approval.tier}</p><p>${approval.reason}</p><p class="label">Strategy: ${approval.strategyId}</p>${approval.status === 'pending_review' ? `<button data-approve="${approval.id}">Approve</button>` : ''}</article>`).join('') || '<p class="label">No approval requests yet.</p>'; document.querySelectorAll('[data-approve]').forEach(button => { button.addEventListener('click', async () => { await api(`/api/approvals/${button.dataset.approve}/decision`, { method: 'POST', body: { status: 'approved', reviewer: 'operator-ui' } }); await refresh(); }); }); }
 function renderAudit(audit) { qs('#audit-list').innerHTML = audit.slice().reverse().map(event => `<li><strong>${event.action}</strong> — ${event.actor} — ${event.at}<br/><span class="label">${event.details || ''}</span></li>`).join(''); }
-
 async function verifyAudit() { const result = await api('/api/audit/verify').catch(error => ({ ok: false, error: error.message })); qs('#audit-verify-json').textContent = fmt(result); qs('#audit-status-card').innerHTML = `<span class="label">Audit</span><strong>${result.ok ? 'Verified' : 'Needs attention'}</strong><span>${result.reason || result.error || 'audit check complete'}</span>`; }
 
 async function refresh() {
   const [summary, strategies, backtests, approvals, audit, accounts, positions, dashboard] = await Promise.all([api('/api/operator/summary'), api('/api/strategies'), api('/api/backtests'), api('/api/approvals'), api('/api/audit'), api('/api/accounts'), api('/api/positions'), ensureSeededOpportunityData()]);
   opportunityState = dashboard;
-  renderSummary(summary);
-  renderCommandQueue(summary);
-  renderPortfolio(accounts.accounts || [], positions.positions || []);
-  renderMarkets();
-  renderRiskStack();
-  renderOpportunities();
-  renderAgents();
-  renderStrategies(strategies.strategies);
-  renderBacktests(backtests.backtests);
-  renderApprovals(approvals.approvals);
-  renderAudit(audit.audit);
-  await refreshP1();
-  await verifyAudit();
+  renderSummary(summary); renderCommandQueue(summary); renderPortfolio(accounts.accounts || [], positions.positions || []); renderMarkets(); renderRiskStack(); renderOpportunities(); renderAgents(); renderStrategies(strategies.strategies); renderBacktests(backtests.backtests); renderApprovals(approvals.approvals); renderAudit(audit.audit);
+  await refreshP1(); await verifyAudit();
+}
+
+async function requestDemoBudgetApproval() {
+  await api('/api/agents/budget-approvals', { method: 'POST', body: { agentId: 'market-research-agent', marketScope: 'PREDICTION:DEMO', projectedCost: 12, projectedTokens: 60000, requestedBy: 'operator-ui', reason: 'Demo bounded follow-up research budget from Agents dashboard' } });
+  await refresh();
 }
 
 qs('#refresh-dashboard').addEventListener('click', refresh);
+qs('#request-budget-approval').addEventListener('click', requestDemoBudgetApproval);
 qs('#create-strategy').addEventListener('click', async () => { await api('/api/strategies', { method: 'POST', body: { name: `Demo Strategy ${Date.now()}`, riskLevel: 'low', parameters: { symbol: 'SOL-USD', timeframe: '1h', lookback: 14, entryThresholdPct: 1.5 } } }); await refresh(); });
 qs('#run-backtest').addEventListener('click', async () => { const strategies = await api('/api/strategies'); const strategy = strategies.strategies[0]; if (!strategy) return; await api('/api/backtests/run', { method: 'POST', body: { strategyId: strategy.id, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 } }); await refresh(); });
 qs('#request-approval').addEventListener('click', async () => { const strategies = await api('/api/strategies'); const strategy = strategies.strategies[0]; if (!strategy) return; await api('/api/approvals/request', { method: 'POST', body: { strategyId: strategy.id, tier: 'canary' } }); await refresh(); });
