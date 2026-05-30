@@ -2,7 +2,7 @@ import { createBacktest, createStrategyFromTemplate, cloneStrategyVersion, updat
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 import { executePaperSignal } from '../../../packages/execution/src/paperEngine.mjs';
 import { createOpportunity, createResearchJob, decideOpportunity, ensureOpportunityState, summarizeAgentCosts } from './opportunityFlows.mjs';
-import { generateOpportunitiesFromConnectors, ingestConnectorSnapshots } from './opportunityGenerator.mjs';
+import { connectorHealth, generateOpportunitiesFromConnectors, ingestConnectorSnapshots } from './opportunityGenerator.mjs';
 
 export function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -33,8 +33,11 @@ function opportunityDashboard(state) {
     riskBreakdowns: state.riskBreakdowns,
     researchJobs: state.researchJobs,
     agentBudgets: state.agentBudgets,
+    budgetApprovals: state.budgetApprovals || [],
     agentCostLedger: state.agentCostLedger,
     marketDataSnapshots: state.marketDataSnapshots,
+    connectorRuns: state.connectorRuns || [],
+    connectorHealth: connectorHealth(state),
     agentCostSummary: summarizeAgentCosts(state)
   };
 }
@@ -52,6 +55,8 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'GET' && pathname === '/api/agents/budgets') return { status: 200, body: { budgets: state.agentBudgets } };
   if (method === 'GET' && pathname === '/api/agents/costs') return { status: 200, body: { costs: state.agentCostLedger, summary: summarizeAgentCosts(state) } };
   if (method === 'GET' && pathname === '/api/market-data/snapshots') return { status: 200, body: { snapshots: state.marketDataSnapshots } };
+  if (method === 'GET' && pathname === '/api/connectors/status') return { status: 200, body: connectorHealth(state) };
+  if (method === 'GET' && pathname === '/api/connectors/runs') return { status: 200, body: { runs: state.connectorRuns || [] } };
   if (method === 'GET' && pathname === '/api/polymarket/opportunities') return { status: 200, body: { opportunities: state.opportunities.filter(o => o.venue?.includes('polymarket') || o.marketType === 'prediction_market') } };
 
   if (method === 'POST' && pathname === '/api/connectors/market-data/ingest') {
