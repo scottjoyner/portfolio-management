@@ -1,0 +1,47 @@
+# Production Docker Compose for Destroyer Sandbox Environment
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+      target: production
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://user:***@host.docker.internal:5432/portfolio
+      REDIS_URL: redis://host.docker.internal:6379/0
+      PLAINTEXT_SECRET_KEY: ${PLAINTEXT_SECRET_KEY}
+      PYTHONPATH: /app
+    volumes:
+      - ./.env:/app/.env
+    depends_on:
+      - postgresql
+      - redis
+    restart: unless-stopped
+
+  postgresql:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: portfolio
+    volumes:
+      - ../postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - ../redis-data:/data
+    ports:
+      - "6379:6379"
+    command: redis-server --save "" --appendonly yes
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local

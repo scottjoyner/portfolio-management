@@ -62,18 +62,13 @@ trading_system/artifacts/*.csv
 trading_system/artifacts/*.log
 trading_system/artifacts/*.parquet
 trading_system/artifacts/*.pkl
+trading_system/artifacts/*.csv
 trading_system/artifacts/*.md
 trading_system/artifacts/*.txt
 trading_system/artifacts/*.yaml
 trading_system/artifacts/*.yml
 trading_system/artifacts/*.toml
 trading_system/artifacts/*.ini
-
-# --- Operator runtime state ---
-data/
-!data/.gitkeep
-operator-state.json
-operator-state.json.tmp
 
 # --- Test databases ---
 *.db
@@ -89,7 +84,7 @@ apps/*/node_modules/
 packages/*/dist/
 packages/*/build/
 packages/*/node_modules/
-
+packages/web-ui/node_modules/
 # --- Streamlit cache ---
 .streamlit/
 
