@@ -68,6 +68,8 @@ function isP1Route(pathname) {
     || pathname === '/api/agents/budgets'
     || pathname === '/api/agents/costs'
     || pathname === '/api/market-data/snapshots'
+    || pathname === '/api/connectors/market-data/ingest'
+    || pathname === '/api/opportunities/generate-from-connectors'
     || pathname === '/api/polymarket/opportunities'
     || /^\/api\/opportunities\/[^/]+$/.test(pathname)
     || /^\/api\/opportunities\/[^/]+\/(approve|reject|defer|request-research)$/.test(pathname)
