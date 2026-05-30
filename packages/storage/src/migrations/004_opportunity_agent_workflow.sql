@@ -29,6 +29,25 @@ CREATE TABLE IF NOT EXISTS agent_budgets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS budget_approvals (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  market_scope TEXT,
+  opportunity_id TEXT,
+  requested_by TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending_review', 'approved', 'rejected', 'expired')),
+  projected_cost NUMERIC NOT NULL DEFAULT 0,
+  projected_tokens BIGINT NOT NULL DEFAULT 0,
+  approved_cost_limit NUMERIC NOT NULL DEFAULT 0,
+  approved_token_limit BIGINT NOT NULL DEFAULT 0,
+  reviewer TEXT,
+  decision_reason TEXT,
+  requested_at TIMESTAMPTZ NOT NULL,
+  reviewed_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS research_jobs (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -46,6 +65,7 @@ CREATE TABLE IF NOT EXISTS research_jobs (
   total_tokens BIGINT NOT NULL DEFAULT 0,
   estimated_remote_cost NUMERIC NOT NULL DEFAULT 0,
   estimated_local_cost NUMERIC NOT NULL DEFAULT 0,
+  budget_approval_id TEXT REFERENCES budget_approvals(id),
   opportunity_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   failure_reason TEXT
 );
@@ -128,8 +148,11 @@ CREATE TABLE IF NOT EXISTS agent_cost_ledger (
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_data_snapshots_symbol ON market_data_snapshots(symbol, venue);
+CREATE INDEX IF NOT EXISTS idx_budget_approvals_agent_status ON budget_approvals(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_budget_approvals_market_scope ON budget_approvals(market_scope);
 CREATE INDEX IF NOT EXISTS idx_research_jobs_agent_status ON research_jobs(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_research_jobs_market_scope ON research_jobs(market_scope);
+CREATE INDEX IF NOT EXISTS idx_research_jobs_budget_approval ON research_jobs(budget_approval_id);
 CREATE INDEX IF NOT EXISTS idx_opportunities_status ON opportunities(status);
 CREATE INDEX IF NOT EXISTS idx_opportunities_venue_market_type ON opportunities(venue, market_type);
 CREATE INDEX IF NOT EXISTS idx_opportunities_source_agent ON opportunities(source_agent_id);

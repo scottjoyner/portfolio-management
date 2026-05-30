@@ -1,7 +1,7 @@
 import { createBacktest, createStrategyFromTemplate, cloneStrategyVersion, updateStrategyStatus, requestApproval, decideApproval, startPaperExecution, stopPaperExecution } from './operatorFlows.mjs';
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 import { executePaperSignal } from '../../../packages/execution/src/paperEngine.mjs';
-import { createOpportunity, createResearchJob, decideOpportunity, ensureOpportunityState, summarizeAgentCosts } from './opportunityFlows.mjs';
+import { createOpportunity, createResearchJob, decideBudgetApproval, decideOpportunity, ensureOpportunityState, requestBudgetApproval, summarizeAgentCosts } from './opportunityFlows.mjs';
 import { generateOpportunitiesFromConnectors, ingestConnectorSnapshots } from './opportunityGenerator.mjs';
 
 export function routeMatch(pathname, pattern) {
@@ -33,6 +33,7 @@ function opportunityDashboard(state) {
     riskBreakdowns: state.riskBreakdowns,
     researchJobs: state.researchJobs,
     agentBudgets: state.agentBudgets,
+    budgetApprovals: state.budgetApprovals,
     agentCostLedger: state.agentCostLedger,
     marketDataSnapshots: state.marketDataSnapshots,
     agentCostSummary: summarizeAgentCosts(state)
@@ -50,6 +51,7 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'GET' && pathname === '/api/risk-breakdowns') return { status: 200, body: { riskBreakdowns: state.riskBreakdowns } };
   if (method === 'GET' && pathname === '/api/agents/jobs') return { status: 200, body: { jobs: state.researchJobs } };
   if (method === 'GET' && pathname === '/api/agents/budgets') return { status: 200, body: { budgets: state.agentBudgets } };
+  if (method === 'GET' && pathname === '/api/agents/budget-approvals') return { status: 200, body: { budgetApprovals: state.budgetApprovals } };
   if (method === 'GET' && pathname === '/api/agents/costs') return { status: 200, body: { costs: state.agentCostLedger, summary: summarizeAgentCosts(state) } };
   if (method === 'GET' && pathname === '/api/market-data/snapshots') return { status: 200, body: { snapshots: state.marketDataSnapshots } };
   if (method === 'GET' && pathname === '/api/polymarket/opportunities') return { status: 200, body: { opportunities: state.opportunities.filter(o => o.venue?.includes('polymarket') || o.marketType === 'prediction_market') } };
@@ -62,6 +64,18 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'POST' && pathname === '/api/opportunities/generate-from-connectors') {
     const result = await mutate(store, current => generateOpportunitiesFromConnectors(current));
     return { ...result, status: result.status === 200 ? 201 : result.status };
+  }
+
+  if (method === 'POST' && pathname === '/api/agents/budget-approvals') {
+    const body = await readJsonBody();
+    const result = await mutate(store, current => requestBudgetApproval(current, body));
+    return { ...result, status: result.status === 200 ? 201 : result.status };
+  }
+
+  const budgetDecision = routeMatch(pathname, '/api/agents/budget-approvals/:id/decision');
+  if (method === 'POST' && budgetDecision) {
+    const body = await readJsonBody();
+    return mutate(store, current => decideBudgetApproval(current, budgetDecision.id, body));
   }
 
   const opportunityDetail = routeMatch(pathname, '/api/opportunities/:id');
@@ -103,7 +117,7 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
       const { job, ledger } = research;
       opportunity.status = 'research_requested';
       opportunity.updatedAt = new Date().toISOString();
-      current.audit.push({ id: nextId('audit', current.audit), action: 'opportunity_research_requested', actor: job.agentId, at: new Date().toISOString(), details: opportunity.id, payload: { jobId: job.id, costLedgerId: ledger.id } });
+      current.audit.push({ id: nextId('audit', current.audit), action: 'opportunity_research_requested', actor: job.agentId, at: new Date().toISOString(), details: opportunity.id, payload: { jobId: job.id, costLedgerId: ledger.id, budgetApprovalId: job.budgetApprovalId } });
       return { opportunity, job, ledger };
     });
   }
