@@ -26,16 +26,23 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
     const [opportunities, riskBreakdowns, budgetApprovals, researchJobs, agentCostLedger] = await Promise.all([
       this.opportunityRows.listOpportunities(),
       this.opportunityRows.listRiskBreakdowns(),
+    const [marketDataSnapshots, budgetApprovals, researchJobs, opportunities, riskBreakdowns, agentCostLedger] = await Promise.all([
+      this.opportunityRows.listMarketDataSnapshots(),
       this.opportunityRows.listBudgetApprovals(),
       this.opportunityRows.listResearchJobs(),
+      this.opportunityRows.listOpportunities(),
+      this.opportunityRows.listRiskBreakdowns(),
       this.opportunityRows.listAgentCosts()
     ]);
     this.state = normalizeOperatorState({
       ...base,
       opportunities,
       riskBreakdowns,
+      marketDataSnapshots,
       budgetApprovals,
       researchJobs,
+      opportunities,
+      riskBreakdowns,
       agentCostLedger
     });
     return this.state;
@@ -57,6 +64,16 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
     }
   }
 
+  async upsertMarketDataSnapshot(snapshot) {
+    await this.opportunityRows.upsertMarketDataSnapshot(snapshot);
+    return snapshot;
+  }
+
+  async upsertMarketDataSnapshots(snapshots = []) {
+    await this.opportunityRows.upsertMarketDataSnapshots(snapshots);
+    return snapshots;
+  }
+
   async upsertBudgetApproval(approval) {
     await this.opportunityRows.upsertBudgetApproval(approval);
     return approval;
@@ -65,6 +82,16 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
   async upsertResearchJob(job) {
     await this.opportunityRows.upsertResearchJob(job);
     return job;
+  }
+
+  async upsertOpportunity(opportunity) {
+    await this.opportunityRows.upsertOpportunity(opportunity);
+    return opportunity;
+  }
+
+  async upsertRiskBreakdown(riskBreakdown) {
+    await this.opportunityRows.upsertRiskBreakdown(riskBreakdown);
+    return riskBreakdown;
   }
 
   async upsertAgentCost(cost) {
@@ -80,9 +107,11 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
   async upsertRiskBreakdown(riskBreakdown) {
     await this.opportunityRows.upsertRiskBreakdown(riskBreakdown);
     return riskBreakdown;
+  async upsertOpportunityBundle(bundle) {
+    return this.opportunityRows.upsertOpportunityBundle(bundle);
   }
 
   getStatus() {
-    return { ...super.getStatus(), opportunityWorkflowLayer: 'p2-row-tables' };
+    return { ...super.getStatus(), opportunityWorkflowLayer: 'p2-row-tables', targetedProductMutations: true };
   }
 }
