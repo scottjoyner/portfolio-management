@@ -1,4 +1,4 @@
-import { upsertProductRecord, upsertProductRecords } from './productUpserts.mjs';
+import { upsertProductRecord as upsertProductRecordSql, upsertProductRecords as upsertProductRecordsSql } from './productUpserts.mjs';
 
 export const PRODUCT_MUTATION_TYPES = [
   'marketDataSnapshot',
@@ -35,11 +35,15 @@ function asQuery(store) {
 }
 
 export async function upsertProduct(store, type, record) {
-  return runTransaction(store, async () => upsertProductRecord(asQuery(store), type, record));
+  return runTransaction(store, async () => upsertProductRecordSql(asQuery(store), type, record));
+}
+
+export async function upsertProductRecord(store, type, record) {
+  return upsertProduct(store, type, record);
 }
 
 export async function upsertProducts(store, type, records = []) {
-  return runTransaction(store, async () => upsertProductRecords(asQuery(store), type, records));
+  return runTransaction(store, async () => upsertProductRecordsSql(asQuery(store), type, records));
 }
 
 export async function upsertProductBundle(store, bundle = {}) {
@@ -48,7 +52,7 @@ export async function upsertProductBundle(store, bundle = {}) {
     for (const type of PRODUCT_MUTATION_TYPES) {
       const records = bundle[type] || bundle[`${type}s`] || [];
       if (!records.length) continue;
-      results[type] = await upsertProductRecords(asQuery(store), type, records);
+      results[type] = await upsertProductRecordsSql(asQuery(store), type, records);
     }
     return results;
   });
@@ -89,6 +93,7 @@ export async function upsertAgentCost(store, cost) {
 export function attachProductMutations(store) {
   return Object.assign(store, {
     upsertProduct: (type, record) => upsertProduct(store, type, record),
+    upsertProductRecord: (type, record) => upsertProductRecord(store, type, record),
     upsertProducts: (type, records) => upsertProducts(store, type, records),
     upsertProductBundle: bundle => upsertProductBundle(store, bundle),
     upsertMarketDataSnapshot: snapshot => upsertMarketDataSnapshot(store, snapshot),
