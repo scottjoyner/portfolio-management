@@ -44,6 +44,62 @@ test('operator UI assets are served over HTTP and use API-backed dashboard data'
   });
 });
 
+test('opportunity validation and agent budget guardrails reject unsafe inputs', async () => {
+  await withServer(async ({ baseUrl }) => {
+    const invalidOpportunity = await request(baseUrl, '/api/opportunities', {
+      method: 'POST',
+      body: {
+        marketType: 'crypto_spot',
+        venue: 'coinbase-paper',
+        title: 'Invalid risk candidate',
+        winProbability: 0.9,
+        lossProbability: 0.9,
+        totalMoneyRisked: 100,
+        maxLoss: 250,
+        potentialUpside: 50
+      }
+    });
+    assert.equal(invalidOpportunity.response.status, 400);
+    assert.ok(invalidOpportunity.body.errors.includes('max_loss_exceeds_total_money_risked'));
+    assert.ok(invalidOpportunity.body.errors.includes('win_loss_probability_sum_invalid'));
+
+    const runawayJob = await request(baseUrl, '/api/agents/jobs', {
+      method: 'POST',
+      body: {
+        agentId: 'market-research-agent',
+        model: 'expensive-remote-model',
+        localOrRemote: 'remote',
+        promptTokens: 250000,
+        completionTokens: 250000,
+        totalTokens: 500000,
+        costPerMillionTokens: 200,
+        marketScope: 'PREDICTION:DEMO'
+      }
+    });
+    assert.equal(runawayJob.response.status, 400);
+    assert.ok(runawayJob.body.errors.includes('per_job_token_limit_exceeded'));
+    assert.ok(runawayJob.body.errors.includes('daily_cost_limit_exceeded'));
+    assert.ok(runawayJob.body.errors.includes('research_budget_approval_required'));
+
+    const overrideJob = await request(baseUrl, '/api/agents/jobs', {
+      method: 'POST',
+      body: {
+        agentId: 'market-research-agent',
+        model: 'approved-review-model',
+        localOrRemote: 'remote',
+        promptTokens: 1000,
+        completionTokens: 500,
+        totalTokens: 1500,
+        remoteApiCost: 12,
+        approvedBudgetOverride: true,
+        marketScope: 'PREDICTION:DEMO'
+      }
+    });
+    assert.equal(overrideJob.response.status, 201);
+    assert.equal(overrideJob.body.job.agentId, 'market-research-agent');
+  });
+});
+
 test('opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
   await withServer(async ({ baseUrl }) => {
     const job = await request(baseUrl, '/api/agents/jobs', {
