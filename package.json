@@ -1,7 +1,7 @@
 {
   "name": "prediction-arb-system",
   "private": true,
-  "version": "0.5.1-first-prod-certification",
+  "version": "0.5.2-production-hardening",
   "packageManager": "pnpm@9.12.3",
   "type": "module",
   "scripts": {
@@ -21,6 +21,8 @@
     "runtime:validate": "node scripts/validate-runtime-env.mjs",
     "deploy:validate": "node scripts/validate-deployment.mjs",
     "first-prod:validate": "node scripts/validate-first-prod-release.mjs",
+    "audit:verify": "node scripts/verify-audit-chain.mjs",
+    "smoke:production-paper": "node scripts/smoke-production-paper.mjs",
     "certify:mock": "node scripts/certify-mock.mjs"
   },
   "dependencies": {
