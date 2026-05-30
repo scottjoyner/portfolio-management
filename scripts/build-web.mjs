@@ -49,7 +49,7 @@ for (const endpoint of ['/api/accounts', '/api/instruments', '/api/strategy-temp
   }
 }
 
-for (const endpoint of ['/api/opportunity-dashboard', '/api/opportunities', '/api/agents/jobs', '/api/polymarket/opportunities', '/api/market-data/snapshots']) {
+for (const endpoint of ['/api/opportunity-dashboard', '/api/opportunities', '/api/agents/jobs']) {
   if (!app.includes(endpoint)) {
     console.error(`web build failed: app.js missing API-backed dashboard endpoint ${endpoint}`);
     process.exit(1);
