@@ -15,6 +15,7 @@ const requiredTables = [
   'adapter_certifications',
   'market_data_snapshots',
   'agent_budgets',
+  'budget_approvals',
   'research_jobs',
   'opportunities',
   'risk_breakdowns',
@@ -28,9 +29,12 @@ const requiredFragments = [
   'idx_audit_events_event_hash',
   'idx_adapter_certifications_status',
   'idx_opportunities_status',
+  'idx_budget_approvals_agent_status',
+  'idx_research_jobs_budget_approval',
   'idx_agent_cost_ledger_agent',
   'confidence_score NUMERIC NOT NULL CHECK',
   'local_or_remote TEXT NOT NULL CHECK',
+  'budget_approval_id TEXT REFERENCES budget_approvals(id)',
   'net_expected_value NUMERIC NOT NULL DEFAULT 0'
 ];
 
