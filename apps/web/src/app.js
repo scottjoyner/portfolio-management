@@ -11,7 +11,10 @@ let opportunityState = {
   researchJobs: [],
   agentCostLedger: [],
   agentBudgets: [],
+  budgetApprovals: [],
   marketDataSnapshots: [],
+  connectorRuns: [],
+  connectorHealth: { connectors: [], runs: [] },
   agentCostSummary: { spentTodayUsd: 0, dailyBudgetUsd: 0, remoteModelCostUsd: 0, localModelCostUsd: 0, costPerOpportunityUsd: 0, openResearchJobs: 0 }
 };
 
@@ -28,63 +31,8 @@ async function api(path, options = {}) {
 
 async function ensureSeededOpportunityData() {
   const dashboard = await api('/api/opportunity-dashboard');
-  if (dashboard.opportunities?.length) return dashboard;
-  const job = await api('/api/agents/jobs', { method: 'POST', body: { agentId: 'market-research-agent', model: 'research-model', localOrRemote: 'remote', promptTokens: 12000, completionTokens: 6400, totalTokens: 18400, marketScope: 'prediction-demo' } });
-  await api('/api/opportunities', {
-    method: 'POST',
-    body: {
-      researchJobId: job.job.id,
-      sourceAgentId: 'market-research-agent',
-      marketType: 'prediction_market',
-      venue: 'polymarket-watch',
-      symbol: 'PREDICTION:DEMO',
-      marketSlug: 'demo-prediction-market',
-      title: 'Demo prediction-market research candidate',
-      recommendation: 'review_yes',
-      confidenceScore: 0.68,
-      winProbability: 0.57,
-      lossProbability: 0.43,
-      grossExpectedValue: 68.4,
-      totalMoneyRisked: 500,
-      maxLoss: 500,
-      potentialUpside: 420,
-      liquidityScore: 71,
-      dataFreshnessScore: 86,
-      backtestStatus: 'historical_analog_required',
-      estimatedFees: 5,
-      estimatedSlippage: 10,
-      agentResearchCost: 9.35,
-      modelInferenceCost: 2.9,
-      notes: 'Seeded by the API to prove the UI is no longer backed by static dashboard fixtures.',
-      evidence: [{ type: 'agent_note', summary: 'Candidate requires operator review before any paper action.' }]
-    }
-  });
-  await api('/api/opportunities', {
-    method: 'POST',
-    body: {
-      sourceAgentId: 'liquidity-scanner',
-      marketType: 'crypto_spot',
-      venue: 'coinbase-paper',
-      symbol: 'ETH-USD',
-      title: 'ETH-USD mean reversion paper setup',
-      recommendation: 'paper_review',
-      confidenceScore: 0.61,
-      winProbability: 0.54,
-      lossProbability: 0.46,
-      grossExpectedValue: 37.4,
-      totalMoneyRisked: 1200,
-      maxLoss: 180,
-      potentialUpside: 310,
-      liquidityScore: 79,
-      dataFreshnessScore: 78,
-      backtestStatus: 'deterministic_scaffold_only',
-      estimatedFees: 6,
-      estimatedSlippage: 5,
-      agentResearchCost: 5.2,
-      modelInferenceCost: 1.1,
-      notes: 'Paper-only candidate until historical replay and real market data adapters are implemented.'
-    }
-  });
+  if (dashboard.opportunities?.length || dashboard.connectorRuns?.length) return dashboard;
+  await api('/api/opportunities/generate-from-connectors', { method: 'POST' });
   return api('/api/opportunity-dashboard');
 }
 
@@ -105,8 +53,10 @@ function renderSummary(summary) {
 
 function renderCommandQueue(summary = {}) {
   const agentCost = opportunityState.agentCostSummary || {};
+  const staleConnectors = (opportunityState.connectorHealth?.connectors || []).filter(connector => connector.stale).length;
   const items = [
     { title: 'Review opportunity feed', detail: `${opportunityState.opportunities.length} API-backed candidates`, tone: 'warning' },
+    { title: 'Connector freshness', detail: `${staleConnectors} stale connector(s), ${opportunityState.connectorRuns?.length || 0} run(s) recorded`, tone: staleConnectors ? 'blocked' : 'neutral' },
     { title: 'Backtesting depth', detail: 'Deterministic scaffold exists; historical replay still required', tone: 'blocked' },
     { title: 'Agent spend controls', detail: `${money(agentCost.spentTodayUsd)} spent today; add hard budget enforcement`, tone: 'warning' },
     { title: 'Approvals', detail: `${summary.counts?.approvals || 0} strategy approval records currently tracked`, tone: 'neutral' }
@@ -132,6 +82,29 @@ function renderMarkets() {
   const snapshots = opportunityState.marketDataSnapshots || [];
   qs('#market-strip').innerHTML = snapshots.map(market => `<article class="ticker-tile"><span>${market.symbol}</span><strong>${money(market.ask)}</strong><small>${market.spreadBps} bps · LQ ${market.liquidityScore}</small></article>`).join('');
   qs('#market-rows').innerHTML = snapshots.map(market => `<tr><td><strong>${market.symbol}</strong><br/><span class="label">${market.assetClass}</span></td><td>${market.venue}</td><td>${money(market.bid)} / ${money(market.ask)}</td><td>${market.spreadBps} bps</td><td><div class="score-line"><span style="width:${market.liquidityScore}%"></span></div>${market.liquidityScore}/100</td><td><span class="badge">${market.status}</span></td></tr>`).join('');
+}
+
+function renderConnectors() {
+  const health = opportunityState.connectorHealth || { connectors: [], runs: [] };
+  const connectors = health.connectors || [];
+  const runs = health.runs || opportunityState.connectorRuns || [];
+  qs('#connector-health-grid').innerHTML = connectors.length ? connectors.map(connector => `
+    <article class="summary-card">
+      <span class="label">${connector.venue}</span>
+      <strong>${connector.stale ? 'Stale' : 'Fresh'}</strong>
+      <small>${connector.snapshotCount} snapshot(s) · ${Math.round((connector.ageMs || 0) / 1000)}s old</small>
+    </article>
+  `).join('') : '<p class="label">No connector snapshots yet. Run ingestion to collect market data.</p>';
+  qs('#connector-run-rows').innerHTML = runs.map(run => `
+    <tr>
+      <td><strong>${run.id}</strong><br/><span class="label">${(run.adapters || []).join(', ')}</span></td>
+      <td>${run.kind}</td>
+      <td><span class="badge ${run.status === 'failed' ? 'blocked' : run.status === 'partial_success' ? 'warning' : ''}">${run.status}</span></td>
+      <td>${run.snapshotCount}</td>
+      <td>${run.errorCount}</td>
+      <td>${run.completedAt}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="6" class="label">No connector runs yet.</td></tr>';
 }
 
 function renderRiskStack() {
@@ -187,6 +160,7 @@ async function refresh() {
   renderCommandQueue(summary);
   renderPortfolio(accounts.accounts || [], positions.positions || []);
   renderMarkets();
+  renderConnectors();
   renderRiskStack();
   renderOpportunities();
   renderAgents();
@@ -199,6 +173,8 @@ async function refresh() {
 }
 
 qs('#refresh-dashboard').addEventListener('click', refresh);
+qs('#ingest-connectors').addEventListener('click', async () => { await api('/api/connectors/market-data/ingest', { method: 'POST' }); await refresh(); });
+qs('#generate-opportunities').addEventListener('click', async () => { await api('/api/opportunities/generate-from-connectors', { method: 'POST' }); await refresh(); });
 qs('#create-strategy').addEventListener('click', async () => { await api('/api/strategies', { method: 'POST', body: { name: `Demo Strategy ${Date.now()}`, riskLevel: 'low', parameters: { symbol: 'SOL-USD', timeframe: '1h', lookback: 14, entryThresholdPct: 1.5 } } }); await refresh(); });
 qs('#run-backtest').addEventListener('click', async () => { const strategies = await api('/api/strategies'); const strategy = strategies.strategies[0]; if (!strategy) return; await api('/api/backtests/run', { method: 'POST', body: { strategyId: strategy.id, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 } }); await refresh(); });
 qs('#request-approval').addEventListener('click', async () => { const strategies = await api('/api/strategies'); const strategy = strategies.strategies[0]; if (!strategy) return; await api('/api/approvals/request', { method: 'POST', body: { strategyId: strategy.id, tier: 'canary' } }); await refresh(); });
