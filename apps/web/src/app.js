@@ -11,8 +11,9 @@ let opportunityState = {
   researchJobs: [],
   agentCostLedger: [],
   agentBudgets: [],
+  budgetApprovals: [],
   marketDataSnapshots: [],
-  agentCostSummary: { spentTodayUsd: 0, dailyBudgetUsd: 0, remoteModelCostUsd: 0, localModelCostUsd: 0, costPerOpportunityUsd: 0, openResearchJobs: 0 }
+  agentCostSummary: { spentTodayUsd: 0, dailyBudgetUsd: 0, remoteModelCostUsd: 0, localModelCostUsd: 0, costPerOpportunityUsd: 0, openResearchJobs: 0, pendingBudgetApprovals: 0 }
 };
 
 async function api(path, options = {}) {
@@ -105,10 +106,11 @@ function renderSummary(summary) {
 
 function renderCommandQueue(summary = {}) {
   const agentCost = opportunityState.agentCostSummary || {};
+  const pendingBudgetApprovals = opportunityState.budgetApprovals.filter(approval => approval.status === 'pending_review').length;
   const items = [
     { title: 'Review opportunity feed', detail: `${opportunityState.opportunities.length} API-backed candidates`, tone: 'warning' },
     { title: 'Backtesting depth', detail: 'Deterministic scaffold exists; historical replay still required', tone: 'blocked' },
-    { title: 'Agent spend controls', detail: `${money(agentCost.spentTodayUsd)} spent today; add hard budget enforcement`, tone: 'warning' },
+    { title: 'Agent spend controls', detail: `${money(agentCost.spentTodayUsd)} spent today · ${pendingBudgetApprovals} budget approvals pending`, tone: pendingBudgetApprovals ? 'warning' : 'neutral' },
     { title: 'Approvals', detail: `${summary.counts?.approvals || 0} strategy approval records currently tracked`, tone: 'neutral' }
   ];
   qs('#command-queue').innerHTML = items.map(item => `<article class="queue-item ${item.tone}"><strong>${item.title}</strong><span>${item.detail}</span></article>`).join('');
@@ -159,8 +161,35 @@ function renderOpportunities() {
     button.addEventListener('click', async () => {
       const id = button.dataset.opportunityId;
       const action = button.dataset.opportunityDecision;
-      if (action === 'request-research') await api(`/api/opportunities/${id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review-model', totalTokens: 8000, runtimeSeconds: 90, approvedBudgetOverride: true } });
+      if (action === 'request-research') await api(`/api/opportunities/${id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review-model', totalTokens: 8000, runtimeSeconds: 90, systemBudgetOverride: true } });
       else await api(`/api/opportunities/${id}/${action}`, { method: 'POST', body: { reviewer: 'operator-ui', reason: `${action} from dashboard` } });
+      await refresh();
+    });
+  });
+}
+
+function budgetApprovalCard(approval) {
+  return `<article class="card budget-approval-card" data-budget-approval-id="${approval.id}"><div class="card-topline"><div><p class="eyebrow">${approval.agentId}</p><h3>${approval.marketScope || 'general research budget'}</h3></div><span class="badge ${approval.status === 'approved' ? '' : 'warning'}">${approval.status}</span></div><div class="metric-row"><span><b>${money(approval.projectedCost)}</b><small>projected cost</small></span><span><b>${Number(approval.projectedTokens || 0).toLocaleString()}</b><small>projected tokens</small></span><span><b>${money(approval.approvedCostLimit)}</b><small>approved cost</small></span><span><b>${Number(approval.approvedTokenLimit || 0).toLocaleString()}</b><small>approved tokens</small></span></div><p>${approval.reason || ''}</p>${approval.status === 'pending_review' ? `<div class="button-row"><button data-budget-approval-action="approve" data-budget-approval-id="${approval.id}">Approve budget</button><button data-budget-approval-action="reject" data-budget-approval-id="${approval.id}">Reject</button></div>` : `<p class="label">Reviewed by ${approval.reviewer || 'n/a'} ${approval.reviewedAt || ''}</p>`}</article>`;
+}
+
+function renderBudgetApprovals() {
+  const approvals = opportunityState.budgetApprovals || [];
+  qs('#budget-approval-cards').innerHTML = approvals.map(budgetApprovalCard).join('') || '<p class="label">No research budget approvals yet.</p>';
+  document.querySelectorAll('[data-budget-approval-action]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const id = button.dataset.budgetApprovalId;
+      const action = button.dataset.budgetApprovalAction;
+      const approval = opportunityState.budgetApprovals.find(row => row.id === id);
+      await api(`/api/agents/budget-approvals/${id}/decision`, {
+        method: 'POST',
+        body: {
+          status: action === 'approve' ? 'approved' : 'rejected',
+          reviewer: 'operator-ui',
+          approvedCostLimit: approval?.projectedCost || 0,
+          approvedTokenLimit: approval?.projectedTokens || 0,
+          reason: `${action} from dashboard`
+        }
+      });
       await refresh();
     });
   });
@@ -169,8 +198,9 @@ function renderOpportunities() {
 function renderAgents() {
   const summary = opportunityState.agentCostSummary || {};
   qs('#sidebar-agent-spend').textContent = money(summary.spentTodayUsd);
-  qs('#agent-cost-grid').innerHTML = [['Daily budget', money(summary.dailyBudgetUsd)], ['Spent today', money(summary.spentTodayUsd)], ['Remote model cost', money(summary.remoteModelCostUsd)], ['Local model cost', money(summary.localModelCostUsd)], ['Cost/opportunity', money(summary.costPerOpportunityUsd)], ['Open research jobs', summary.openResearchJobs || 0]].map(([label, value]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong></article>`).join('');
-  qs('#agent-job-rows').innerHTML = (opportunityState.researchJobs || []).map(job => `<tr><td><strong>${job.id}</strong></td><td>${job.agentId}</td><td>${job.model}</td><td><span class="badge">${job.status}</span></td><td>${Number(job.totalTokens || 0).toLocaleString()}</td><td>${money(Number(job.estimatedRemoteCost || 0) + Number(job.estimatedLocalCost || 0))}</td></tr>`).join('') || '<tr><td colspan="6" class="label">No research jobs yet.</td></tr>';
+  qs('#agent-cost-grid').innerHTML = [['Daily budget', money(summary.dailyBudgetUsd)], ['Spent today', money(summary.spentTodayUsd)], ['Remote model cost', money(summary.remoteModelCostUsd)], ['Local model cost', money(summary.localModelCostUsd)], ['Cost/opportunity', money(summary.costPerOpportunityUsd)], ['Pending approvals', summary.pendingBudgetApprovals || 0], ['Open research jobs', summary.openResearchJobs || 0]].map(([label, value]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong></article>`).join('');
+  renderBudgetApprovals();
+  qs('#agent-job-rows').innerHTML = (opportunityState.researchJobs || []).map(job => `<tr><td><strong>${job.id}</strong><br/><span class="label">${job.budgetApprovalId ? `Budget: ${job.budgetApprovalId}` : 'standard budget'}</span></td><td>${job.agentId}</td><td>${job.model}</td><td><span class="badge">${job.status}</span></td><td>${Number(job.totalTokens || 0).toLocaleString()}</td><td>${money(Number(job.estimatedRemoteCost || 0) + Number(job.estimatedLocalCost || 0))}</td></tr>`).join('') || '<tr><td colspan="6" class="label">No research jobs yet.</td></tr>';
 }
 
 function renderStrategies(strategies) { qs('#strategy-rows').innerHTML = strategies.map(strategy => `<tr><td><strong>${strategy.name}</strong><br/><span class="label">${strategy.id} · v${strategy.version}</span></td><td><span class="badge">${strategy.status}</span></td><td>${strategy.riskLevel}</td><td><code>${fmt(strategy.parameters)}</code></td></tr>`).join(''); }
@@ -199,6 +229,7 @@ async function refresh() {
 }
 
 qs('#refresh-dashboard').addEventListener('click', refresh);
+qs('#request-budget-approval').addEventListener('click', async () => { await api('/api/agents/budget-approvals', { method: 'POST', body: { agentId: 'market-research-agent', marketScope: 'PREDICTION:DEMO', projectedCost: 12, projectedTokens: 60000, requestedBy: 'operator-ui', reason: 'UI-requested bounded research budget for prediction-market candidate' } }); await refresh(); });
 qs('#create-strategy').addEventListener('click', async () => { await api('/api/strategies', { method: 'POST', body: { name: `Demo Strategy ${Date.now()}`, riskLevel: 'low', parameters: { symbol: 'SOL-USD', timeframe: '1h', lookback: 14, entryThresholdPct: 1.5 } } }); await refresh(); });
 qs('#run-backtest').addEventListener('click', async () => { const strategies = await api('/api/strategies'); const strategy = strategies.strategies[0]; if (!strategy) return; await api('/api/backtests/run', { method: 'POST', body: { strategyId: strategy.id, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 } }); await refresh(); });
 qs('#request-approval').addEventListener('click', async () => { const strategies = await api('/api/strategies'); const strategy = strategies.strategies[0]; if (!strategy) return; await api('/api/approvals/request', { method: 'POST', body: { strategyId: strategy.id, tier: 'canary' } }); await refresh(); });
