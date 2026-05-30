@@ -68,6 +68,8 @@ function isP1Route(pathname) {
     || pathname === '/api/agents/budgets'
     || pathname === '/api/agents/costs'
     || pathname === '/api/market-data/snapshots'
+    || pathname === '/api/connectors/status'
+    || pathname === '/api/connectors/runs'
     || pathname === '/api/connectors/market-data/ingest'
     || pathname === '/api/opportunities/generate-from-connectors'
     || pathname === '/api/polymarket/opportunities'
@@ -90,6 +92,7 @@ function makeSummary(state, store, runtime) {
       approvals: state.approvals.length,
       opportunities: state.opportunities?.length || 0,
       researchJobs: state.researchJobs?.length || 0,
+      connectorRuns: state.connectorRuns?.length || 0,
       paperExecutions: state.paperExecutions.length,
       positions: state.positions.length,
       auditEvents: state.audit.length
@@ -105,6 +108,7 @@ function makeSummary(state, store, runtime) {
       paperExecution: true,
       opportunityReview: true,
       agentCostLedger: true,
+      connectorIngestion: true,
       liveTradingCertified: false
     }
   };
