@@ -23,13 +23,17 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
 
   async load() {
     const base = await super.load();
-    const [budgetApprovals, researchJobs, agentCostLedger] = await Promise.all([
+    const [opportunities, riskBreakdowns, budgetApprovals, researchJobs, agentCostLedger] = await Promise.all([
+      this.opportunityRows.listOpportunities(),
+      this.opportunityRows.listRiskBreakdowns(),
       this.opportunityRows.listBudgetApprovals(),
       this.opportunityRows.listResearchJobs(),
       this.opportunityRows.listAgentCosts()
     ]);
     this.state = normalizeOperatorState({
       ...base,
+      opportunities,
+      riskBreakdowns,
       budgetApprovals,
       researchJobs,
       agentCostLedger
@@ -66,6 +70,16 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
   async upsertAgentCost(cost) {
     await this.opportunityRows.upsertAgentCost(cost);
     return cost;
+  }
+
+  async upsertOpportunity(opportunity) {
+    await this.opportunityRows.upsertOpportunity(opportunity);
+    return opportunity;
+  }
+
+  async upsertRiskBreakdown(riskBreakdown) {
+    await this.opportunityRows.upsertRiskBreakdown(riskBreakdown);
+    return riskBreakdown;
   }
 
   getStatus() {
