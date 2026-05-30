@@ -12,7 +12,13 @@ const requiredTables = [
   'instruments',
   'strategy_templates',
   'paper_executions',
-  'adapter_certifications'
+  'adapter_certifications',
+  'market_data_snapshots',
+  'agent_budgets',
+  'research_jobs',
+  'opportunities',
+  'risk_breakdowns',
+  'agent_cost_ledger'
 ];
 
 const requiredFragments = [
@@ -20,7 +26,12 @@ const requiredFragments = [
   'event_hash TEXT',
   'sequence_number BIGINT',
   'idx_audit_events_event_hash',
-  'idx_adapter_certifications_status'
+  'idx_adapter_certifications_status',
+  'idx_opportunities_status',
+  'idx_agent_cost_ledger_agent',
+  'confidence_score NUMERIC NOT NULL CHECK',
+  'local_or_remote TEXT NOT NULL CHECK',
+  'net_expected_value NUMERIC NOT NULL DEFAULT 0'
 ];
 
 if (!existsSync(migrationsDir)) {

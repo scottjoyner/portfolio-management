@@ -82,6 +82,87 @@ Decision body:
 }
 ```
 
+## Opportunity review, research agents, and cost accounting
+
+These routes power the operator opportunity feed. They are review/paper workflow routes only and do not submit live orders.
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/api/opportunity-dashboard` | Aggregated opportunity, risk, research, market snapshot, and agent cost state for the UI. |
+| GET | `/api/opportunities` | List review opportunities. |
+| POST | `/api/opportunities` | Create a review opportunity and linked risk breakdown. |
+| GET | `/api/opportunities/:id` | Retrieve opportunity detail with linked risk breakdown. |
+| POST | `/api/opportunities/:id/approve` | Mark opportunity as approved for review/paper workflow. |
+| POST | `/api/opportunities/:id/reject` | Reject opportunity. |
+| POST | `/api/opportunities/:id/defer` | Defer opportunity. |
+| POST | `/api/opportunities/:id/request-research` | Create a bounded-cost follow-up research job for an opportunity. |
+| GET | `/api/risk-breakdowns` | List risk breakdowns. |
+| GET | `/api/agents/jobs` | List research jobs. |
+| POST | `/api/agents/jobs` | Create a research job and agent cost ledger row. |
+| GET | `/api/agents/budgets` | List agent budget limits. |
+| GET | `/api/agents/costs` | List agent cost ledger and aggregate cost summary. |
+| GET | `/api/market-data/snapshots` | List normalized market data snapshots. |
+| GET | `/api/polymarket/opportunities` | List prediction-market opportunities. |
+
+Opportunity creation validates:
+
+- title/venue/market type are present
+- optional strategy/backtest/research job references exist
+- numeric risk/cost fields are finite and non-negative
+- max loss cannot exceed total money risked when risked capital is positive
+- win/loss probabilities must sum to approximately 1
+- status must be a known opportunity review status
+
+Research-job creation validates:
+
+- token counts are non-negative
+- `totalTokens` is not below prompt + completion tokens
+- local/remote mode is valid
+- status is valid
+- enabled agent budget exists when configured
+- per-job token limit
+- daily cost limit
+- per-market cost limit
+- approval threshold for expensive research
+
+Research jobs can pass `approvedBudgetOverride: true` only when an operator has explicitly approved additional spend.
+
+Opportunity body example:
+
+```json
+{
+  "researchJobId": "job-001",
+  "marketType": "prediction_market",
+  "venue": "polymarket-watch",
+  "symbol": "PREDICTION:DEMO",
+  "title": "Demo prediction opportunity",
+  "recommendation": "review_yes",
+  "confidenceScore": 0.68,
+  "winProbability": 0.57,
+  "lossProbability": 0.43,
+  "grossExpectedValue": 68.4,
+  "totalMoneyRisked": 500,
+  "maxLoss": 500,
+  "potentialUpside": 420,
+  "estimatedFees": 5,
+  "estimatedSlippage": 10,
+  "agentResearchCost": 9.35,
+  "modelInferenceCost": 2.9
+}
+```
+
+Net expected value is computed as:
+
+```text
+netExpectedValue = grossExpectedValue - estimatedFees - estimatedSlippage - estimatedGas - agentResearchCost - modelInferenceCost
+```
+
+Local model cost is estimated as:
+
+```text
+runtime_hours * estimated_watts / 1000 * electricity_rate_per_kwh + hardware_depreciation_per_hour * runtime_hours
+```
+
 ## Paper execution
 
 | Method | Route | Purpose |
@@ -121,5 +202,7 @@ Paper signal body:
 
 - Backtests are deterministic product simulations, not production-grade market replay.
 - Paper execution includes preview/fill/account/position/reconciliation mechanics, but it is still a paper-only simulator.
-- Product-layer Postgres state uses row tables; the broader core store still has full-state rewrite paths that should be replaced in later P2 work.
+- Product-layer Postgres state has schema targets for opportunities/research/costs, but the broader store should still be moved toward targeted row-level mutations.
+- Market data snapshots currently use seeded/demo sources until real adapters are implemented.
+- Polymarket opportunities are review records only; live order submission remains blocked.
 - Live trading remains explicitly uncertified and blocked.
