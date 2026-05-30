@@ -35,23 +35,39 @@ test('operator UI assets are served over HTTP and use API-backed dashboard data'
     assert.match(home.body, /Trading Bot Command Center/);
     assert.match(home.body, /id="opportunities"/);
     assert.match(home.body, /id="polymarket"/);
+    assert.match(home.body, /id="connectors"/);
 
     const app = await request(baseUrl, '/ui/app.js');
     assert.equal(app.response.status, 200);
     assert.match(app.body, /netExpectedValue/);
     assert.match(app.body, /\/api\/opportunity-dashboard/);
+    assert.match(app.body, /\/api\/connectors\/market-data\/ingest/);
+    assert.match(app.body, /\/api\/opportunities\/generate-from-connectors/);
     assert.doesNotMatch(app.body, /dashboard-data\.js/);
   });
 });
 
-test('connector ingest generates market snapshots and review opportunities', async () => {
+test('connector ingest records status, run history, snapshots, and review opportunities', async () => {
   await withServer(async ({ baseUrl }) => {
+    const initialStatus = await request(baseUrl, '/api/connectors/status');
+    assert.equal(initialStatus.response.status, 200);
+    assert.equal(initialStatus.body.connectors.length, 0);
+    assert.equal(initialStatus.body.lastRun, null);
+
     const ingest = await request(baseUrl, '/api/connectors/market-data/ingest', { method: 'POST' });
     assert.equal(ingest.response.status, 200);
+    assert.equal(ingest.body.run.status, 'completed');
     assert.ok(ingest.body.snapshots.length >= 3);
+    assert.ok(ingest.body.health.connectors.length >= 2);
+
+    const runsAfterIngest = await request(baseUrl, '/api/connectors/runs');
+    assert.equal(runsAfterIngest.response.status, 200);
+    assert.equal(runsAfterIngest.body.runs.length, 1);
+    assert.equal(runsAfterIngest.body.runs[0].kind, 'market_data_ingest');
 
     const generated = await request(baseUrl, '/api/opportunities/generate-from-connectors', { method: 'POST' });
     assert.equal(generated.response.status, 201);
+    assert.equal(generated.body.run.kind, 'opportunity_generation');
     assert.ok(generated.body.opportunities.length >= 3);
     assert.ok(generated.body.opportunities.some(opp => opp.venue === 'polymarket-watch'));
     assert.ok(generated.body.opportunities.every(opp => Number.isFinite(opp.netExpectedValue)));
@@ -59,6 +75,8 @@ test('connector ingest generates market snapshots and review opportunities', asy
     const dashboard = await request(baseUrl, '/api/opportunity-dashboard');
     assert.equal(dashboard.response.status, 200);
     assert.ok(dashboard.body.marketDataSnapshots.length >= 3);
+    assert.ok(dashboard.body.connectorRuns.length >= 3);
+    assert.ok(dashboard.body.connectorHealth.connectors.length >= 2);
     assert.ok(dashboard.body.researchJobs.length >= generated.body.opportunities.length);
     assert.ok(dashboard.body.riskBreakdowns.length >= generated.body.opportunities.length);
 
