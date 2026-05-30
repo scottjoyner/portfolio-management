@@ -114,8 +114,12 @@
           <div id="polymarket-cards" class="cards wide-cards"></div>
         </section>
         <section class="panel span-6" id="agents">
-          <div class="panel-heading"><div><p class="eyebrow">Agents</p><h2>Research cost and token budget</h2></div><span class="badge warning">costs count as losses</span></div>
+          <div class="panel-heading"><div><p class="eyebrow">Agents</p><h2>Research cost and token budget</h2></div><button id="request-budget-approval">Request demo budget</button></div>
           <div class="grid kpi-grid" id="agent-cost-grid"></div>
+          <div class="budget-approval-block">
+            <div class="panel-heading compact-heading"><div><p class="eyebrow">Budget approvals</p><h3>Research spend approval queue</h3></div><span class="badge warning">required for expensive jobs</span></div>
+            <div id="budget-approval-cards" class="cards"></div>
+          </div>
           <div class="table-wrap"><table><thead><tr><th>Job</th><th>Agent</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th></tr></thead><tbody id="agent-job-rows"></tbody></table></div>
         </section>
       </section>
