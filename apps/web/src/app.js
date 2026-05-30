@@ -22,11 +22,11 @@ function renderSummary(summary) {
   const paperReady = summary.productionPaperReady || summary.productionPaperReadiness;
   qs('#readiness-card').innerHTML = `
     <span class="label">Readiness</span>
-    <strong>${paperReady?.productionPaperReady ? 'Paper-production ready' : readiness.productionReady ? 'Production ready' : 'Not production ready'}</strong>
+    <strong>${paperReady?.productionPaperReady ? 'Paper-production ready' : readiness.productionReady ? 'Production ready' : 'Paper-only / not prod ready'}</strong>
     <span>${readiness.mode || 'mock'} mode · live certified: ${readiness.liveTradingCertified ? 'yes' : 'no'}</span>
   `;
   qs('#summary-grid').innerHTML = Object.entries(summary.counts || {}).map(([key, value]) => `
-    <article class="summary-card">
+    <article class="summary-card compact-kpi">
       <span class="label">${key}</span>
       <strong>${value}</strong>
     </article>
@@ -35,24 +35,43 @@ function renderSummary(summary) {
   qs('#toggle-kill-switch').textContent = summary.killSwitch?.enabled ? 'Disable kill switch' : 'Enable kill switch';
 }
 
+function renderCommandQueue(summary = {}) {
+  const pendingApprovals = summary.counts?.approvals || 0;
+  const items = [
+    { title: 'Review opportunity feed', detail: `${opportunities.length} agent-found candidates need persistent approval API`, tone: 'warning' },
+    { title: 'Backtesting depth', detail: 'Deterministic scaffold exists; historical replay still required', tone: 'blocked' },
+    { title: 'Agent spend controls', detail: `${money(agentCostSummary.spentTodayUsd)} spent today; add hard budget enforcement`, tone: 'warning' },
+    { title: 'Approvals', detail: `${pendingApprovals} strategy approval records currently tracked`, tone: 'neutral' }
+  ];
+  qs('#command-queue').innerHTML = items.map(item => `
+    <article class="queue-item ${item.tone}">
+      <strong>${item.title}</strong>
+      <span>${item.detail}</span>
+    </article>
+  `).join('');
+}
+
 function renderPortfolio(accounts = [], positions = []) {
   const nav = accounts.reduce((sum, account) => sum + Number(account.nav || 0), 0);
   const cash = accounts.reduce((sum, account) => sum + Number(account.cash || 0), 0);
   const locked = positions.reduce((sum, position) => sum + Math.abs(Number(position.quantity || 0) * Number(position.averagePrice || position.average_price || 0)) * 0.1, 0);
+  const risked = opportunities.reduce((sum, opp) => sum + Number(opp.totalMoneyRisked || 0), 0);
+  const netEv = opportunities.reduce((sum, opp) => sum + Number(opp.netExpectedValue || 0), 0);
   qs('#pnl-liquidity-grid').innerHTML = [
-    ['Total NAV', money(nav)],
-    ['Cash', money(cash)],
-    ['Locked/Risk reserve', money(locked)],
-    ['Open positions', positions.length],
-    ['Daily P/L', 'pending market data'],
-    ['Research spend today', money(agentCostSummary.spentTodayUsd)]
-  ].map(([label, value]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong></article>`).join('');
+    ['Total NAV', money(nav), 'capital base'],
+    ['Cash', money(cash), 'available'],
+    ['Risk reserve', money(locked), 'paper positions'],
+    ['Opportunity risk', money(risked), 'candidate capital'],
+    ['Net EV queue', money(netEv), 'after model/research cost'],
+    ['Research spend today', money(agentCostSummary.spentTodayUsd), 'operational loss']
+  ].map(([label, value, hint]) => `<article class="summary-card"><span class="label">${label}</span><strong>${value}</strong><small>${hint}</small></article>`).join('');
 
   qs('#portfolio-cards').innerHTML = accounts.map(account => `
-    <article class="card">
+    <article class="card account-card">
       <h3>${account.name}</h3>
       <p><span class="badge">${account.status}</span> ${account.provider}</p>
       <p><strong>${money(account.nav)}</strong> NAV · ${money(account.cash)} cash</p>
+      <div class="mini-bar"><span style="width:${Math.min(100, Math.round((Number(account.cash || 0) / Math.max(1, Number(account.nav || 1))) * 100))}%"></span></div>
       <p class="label">${account.currency || 'USD'} · paper/sandbox capital</p>
     </article>
   `).join('') || '<p class="label">No accounts loaded.</p>';
@@ -69,15 +88,41 @@ function renderPortfolio(accounts = [], positions = []) {
 }
 
 function renderMarkets() {
+  qs('#market-strip').innerHTML = marketSnapshots.map(market => `
+    <article class="ticker-tile">
+      <span>${market.symbol}</span>
+      <strong>${money(market.ask)}</strong>
+      <small>${market.spreadBps} bps · LQ ${market.liquidityScore}</small>
+    </article>
+  `).join('');
   qs('#market-rows').innerHTML = marketSnapshots.map(market => `
     <tr>
       <td><strong>${market.symbol}</strong><br/><span class="label">${market.assetClass}</span></td>
       <td>${market.venue}</td>
       <td>${money(market.bid)} / ${money(market.ask)}</td>
       <td>${market.spreadBps} bps</td>
-      <td>${market.liquidityScore}/100</td>
+      <td><div class="score-line"><span style="width:${market.liquidityScore}%"></span></div>${market.liquidityScore}/100</td>
       <td><span class="badge">${market.status}</span></td>
     </tr>
+  `).join('');
+}
+
+function renderRiskStack() {
+  const totalRisked = opportunities.reduce((sum, opp) => sum + Number(opp.totalMoneyRisked || 0), 0);
+  const maxLoss = opportunities.reduce((sum, opp) => sum + Number(opp.maxLoss || 0), 0);
+  const netEv = opportunities.reduce((sum, opp) => sum + Number(opp.netExpectedValue || 0), 0);
+  const agentCost = opportunities.reduce((sum, opp) => sum + Number(opp.agentResearchCost || 0) + Number(opp.modelInferenceCost || 0), 0);
+  const rows = [
+    ['Candidate capital', money(totalRisked), 74],
+    ['Max loss queue', money(maxLoss), 58],
+    ['Net EV after costs', money(netEv), 42],
+    ['Research/model drag', money(agentCost), 29]
+  ];
+  qs('#risk-stack').innerHTML = rows.map(([label, value, width]) => `
+    <article class="risk-row">
+      <div><span class="label">${label}</span><strong>${value}</strong></div>
+      <div class="score-line"><span style="width:${width}%"></span></div>
+    </article>
   `).join('');
 }
 
@@ -91,26 +136,29 @@ function opportunityCard(opp) {
         </div>
         <span class="badge warning">${opp.approvalStatus}</span>
       </div>
-      <div class="metric-row">
-        <span><b>${opp.recommendation}</b><small>recommendation</small></span>
+      <div class="thesis-strip">
+        <span>${opp.recommendation}</span>
+        <span>Risk ${opp.riskScore}/100</span>
+        <span>Backtest: ${opp.backtestStatus}</span>
+      </div>
+      <div class="metric-row large-metrics">
         <span><b>${pct(opp.winProbability)}</b><small>win probability</small></span>
+        <span><b>${pct(opp.lossProbability)}</b><small>loss probability</small></span>
         <span><b>${money(opp.totalMoneyRisked)}</b><small>risked</small></span>
+        <span><b>${money(opp.maxLoss)}</b><small>max loss</small></span>
         <span><b>${money(opp.potentialUpside)}</b><small>upside</small></span>
         <span><b>${money(opp.netExpectedValue)}</b><small>net EV</small></span>
       </div>
       <details>
-        <summary>Risk, backtest, and cost breakdown</summary>
+        <summary>Risk, backtest, evidence, and cost breakdown</summary>
         <div class="split-grid">
           <pre>${fmt({
             riskScore: opp.riskScore,
             confidenceScore: opp.confidenceScore,
-            lossProbability: opp.lossProbability,
-            maxLoss: opp.maxLoss,
             liquidityScore: opp.liquidityScore,
             riskBreakdown: opp.riskBreakdown
           })}</pre>
           <pre>${fmt({
-            backtestStatus: opp.backtestStatus,
             grossExpectedValue: opp.grossExpectedValue,
             agentResearchCost: opp.agentResearchCost,
             modelInferenceCost: opp.modelInferenceCost,
@@ -137,6 +185,7 @@ function renderOpportunities() {
 }
 
 function renderAgents() {
+  qs('#sidebar-agent-spend').textContent = money(agentCostSummary.spentTodayUsd);
   qs('#agent-cost-grid').innerHTML = [
     ['Daily budget', money(agentCostSummary.dailyBudgetUsd)],
     ['Spent today', money(agentCostSummary.spentTodayUsd)],
@@ -221,8 +270,10 @@ async function refresh() {
     api('/api/positions')
   ]);
   renderSummary(summary);
+  renderCommandQueue(summary);
   renderPortfolio(accounts.accounts || [], positions.positions || []);
   renderMarkets();
+  renderRiskStack();
   renderOpportunities();
   renderAgents();
   renderStrategies(strategies.strategies);
