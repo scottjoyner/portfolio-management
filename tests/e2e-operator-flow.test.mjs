@@ -115,12 +115,75 @@ test('opportunity validation and agent budget guardrails reject unsafe inputs', 
         completionTokens: 500,
         totalTokens: 1500,
         remoteApiCost: 12,
-        approvedBudgetOverride: true,
+        systemBudgetOverride: true,
         marketScope: 'PREDICTION:DEMO'
       }
     });
     assert.equal(overrideJob.response.status, 201);
     assert.equal(overrideJob.body.job.agentId, 'market-research-agent');
+  });
+});
+
+test('explicit budget approval unlocks expensive research and is audited', async () => {
+  await withServer(async ({ baseUrl }) => {
+    const blocked = await request(baseUrl, '/api/agents/jobs', {
+      method: 'POST',
+      body: {
+        agentId: 'market-research-agent',
+        model: 'expensive-remote-model',
+        localOrRemote: 'remote',
+        totalTokens: 60000,
+        remoteApiCost: 12,
+        marketScope: 'PREDICTION:DEMO'
+      }
+    });
+    assert.equal(blocked.response.status, 400);
+    assert.ok(blocked.body.errors.includes('research_budget_approval_required'));
+
+    const requested = await request(baseUrl, '/api/agents/budget-approvals', {
+      method: 'POST',
+      body: {
+        agentId: 'market-research-agent',
+        marketScope: 'PREDICTION:DEMO',
+        projectedCost: 12,
+        projectedTokens: 60000,
+        requestedBy: 'e2e',
+        reason: 'Need deeper research on prediction market candidate'
+      }
+    });
+    assert.equal(requested.response.status, 201);
+    assert.equal(requested.body.budgetApproval.status, 'pending_review');
+
+    const approved = await request(baseUrl, `/api/agents/budget-approvals/${requested.body.budgetApproval.id}/decision`, {
+      method: 'POST',
+      body: { status: 'approved', reviewer: 'risk-manager', approvedCostLimit: 12, approvedTokenLimit: 60000, reason: 'bounded one-off research approved' }
+    });
+    assert.equal(approved.response.status, 200);
+    assert.equal(approved.body.budgetApproval.status, 'approved');
+
+    const allowed = await request(baseUrl, '/api/agents/jobs', {
+      method: 'POST',
+      body: {
+        agentId: 'market-research-agent',
+        model: 'expensive-remote-model',
+        localOrRemote: 'remote',
+        totalTokens: 60000,
+        remoteApiCost: 12,
+        marketScope: 'PREDICTION:DEMO',
+        budgetApprovalId: requested.body.budgetApproval.id
+      }
+    });
+    assert.equal(allowed.response.status, 201);
+    assert.equal(allowed.body.job.budgetApprovalId, requested.body.budgetApproval.id);
+
+    const list = await request(baseUrl, '/api/agents/budget-approvals');
+    assert.equal(list.response.status, 200);
+    assert.ok(list.body.budgetApprovals.some(row => row.id === requested.body.budgetApproval.id));
+
+    const audit = await request(baseUrl, '/api/audit');
+    assert.equal(audit.response.status, 200);
+    assert.ok(audit.body.audit.some(event => event.action === 'budget_approval_requested'));
+    assert.ok(audit.body.audit.some(event => event.action === 'budget_approval_approved'));
   });
 });
 
@@ -176,7 +239,7 @@ test('opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
     assert.equal(approved.response.status, 200);
     assert.equal(approved.body.opportunity.status, 'approved');
 
-    const moreResearch = await request(baseUrl, `/api/opportunities/${created.body.opportunity.id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review', totalTokens: 8000, runtimeSeconds: 60, approvedBudgetOverride: true } });
+    const moreResearch = await request(baseUrl, `/api/opportunities/${created.body.opportunity.id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review', totalTokens: 8000, runtimeSeconds: 60, systemBudgetOverride: true } });
     assert.equal(moreResearch.response.status, 200);
     assert.equal(moreResearch.body.opportunity.status, 'research_requested');
     assert.ok(moreResearch.body.ledger.localComputeCost >= 0);
