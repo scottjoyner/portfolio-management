@@ -82,7 +82,7 @@ Decision body:
 }
 ```
 
-## Opportunity review, research agents, and cost accounting
+## Opportunity review, research agents, connectors, and cost accounting
 
 These routes power the operator opportunity feed. They are review/paper workflow routes only and do not submit live orders.
 
@@ -102,7 +102,11 @@ These routes power the operator opportunity feed. They are review/paper workflow
 | GET | `/api/agents/budgets` | List agent budget limits. |
 | GET | `/api/agents/costs` | List agent cost ledger and aggregate cost summary. |
 | GET | `/api/market-data/snapshots` | List normalized market data snapshots. |
+| POST | `/api/connectors/market-data/ingest` | Ingest normalized market snapshots from configured paper/watch adapters. |
+| POST | `/api/opportunities/generate-from-connectors` | Generate review opportunities from connector snapshots with risk and research records. |
 | GET | `/api/polymarket/opportunities` | List prediction-market opportunities. |
+
+Connector generation is idempotent for active candidates: a second run should not duplicate active opportunities for the same symbol and venue.
 
 Opportunity creation validates:
 
@@ -203,6 +207,6 @@ Paper signal body:
 - Backtests are deterministic product simulations, not production-grade market replay.
 - Paper execution includes preview/fill/account/position/reconciliation mechanics, but it is still a paper-only simulator.
 - Product-layer Postgres state has schema targets for opportunities/research/costs, but the broader store should still be moved toward targeted row-level mutations.
-- Market data snapshots currently use seeded/demo sources until real adapters are implemented.
+- Market data connector adapters are paper/static watch adapters until real venue adapters are implemented.
 - Polymarket opportunities are review records only; live order submission remains blocked.
 - Live trading remains explicitly uncertified and blocked.

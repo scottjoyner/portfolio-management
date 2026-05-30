@@ -44,6 +44,30 @@ test('operator UI assets are served over HTTP and use API-backed dashboard data'
   });
 });
 
+test('connector ingest generates market snapshots and review opportunities', async () => {
+  await withServer(async ({ baseUrl }) => {
+    const ingest = await request(baseUrl, '/api/connectors/market-data/ingest', { method: 'POST' });
+    assert.equal(ingest.response.status, 200);
+    assert.ok(ingest.body.snapshots.length >= 3);
+
+    const generated = await request(baseUrl, '/api/opportunities/generate-from-connectors', { method: 'POST' });
+    assert.equal(generated.response.status, 201);
+    assert.ok(generated.body.opportunities.length >= 3);
+    assert.ok(generated.body.opportunities.some(opp => opp.venue === 'polymarket-watch'));
+    assert.ok(generated.body.opportunities.every(opp => Number.isFinite(opp.netExpectedValue)));
+
+    const dashboard = await request(baseUrl, '/api/opportunity-dashboard');
+    assert.equal(dashboard.response.status, 200);
+    assert.ok(dashboard.body.marketDataSnapshots.length >= 3);
+    assert.ok(dashboard.body.researchJobs.length >= generated.body.opportunities.length);
+    assert.ok(dashboard.body.riskBreakdowns.length >= generated.body.opportunities.length);
+
+    const secondRun = await request(baseUrl, '/api/opportunities/generate-from-connectors', { method: 'POST' });
+    assert.equal(secondRun.response.status, 201);
+    assert.equal(secondRun.body.opportunities.length, 0);
+  });
+});
+
 test('opportunity validation and agent budget guardrails reject unsafe inputs', async () => {
   await withServer(async ({ baseUrl }) => {
     const invalidOpportunity = await request(baseUrl, '/api/opportunities', {

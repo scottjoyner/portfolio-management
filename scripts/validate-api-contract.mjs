@@ -40,6 +40,8 @@ const requiredRoutes = [
   '/api/agents/budgets',
   '/api/agents/costs',
   '/api/market-data/snapshots',
+  '/api/connectors/market-data/ingest',
+  '/api/opportunities/generate-from-connectors',
   '/api/polymarket/opportunities'
 ];
 
