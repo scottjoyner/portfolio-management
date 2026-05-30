@@ -20,6 +20,7 @@
         <a href="#overview">Overview</a>
         <a href="#portfolio">Portfolio</a>
         <a href="#live-markets">Live Markets</a>
+        <a href="#connectors">Connectors</a>
         <a href="#strategies">Strategies</a>
         <a href="#backtests">Backtesting</a>
         <a href="#opportunities">Opportunities</a>
@@ -106,6 +107,18 @@
           <div class="panel-heading"><div><p class="eyebrow">Live Markets</p><h2>Watchlist and market data readiness</h2></div><span class="badge blocked">data scaffold</span></div>
           <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Venue</th><th>Bid/Ask</th><th>Spread</th><th>Liquidity</th><th>Status</th></tr></thead><tbody id="market-rows"></tbody></table></div>
         </section>
+      </section>
+
+      <section class="panel" id="connectors">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Connectors</p><h2>Market data ingestion and opportunity generation</h2><p>Trigger paper-safe connector runs, review stale data, and generate review opportunities from normalized snapshots.</p></div>
+          <div class="button-row">
+            <button id="ingest-connectors">Ingest market snapshots</button>
+            <button id="generate-opportunities" class="secondary-button">Generate opportunities</button>
+          </div>
+        </div>
+        <div class="grid kpi-grid" id="connector-health-grid"></div>
+        <div class="table-wrap"><table><thead><tr><th>Run</th><th>Kind</th><th>Status</th><th>Snapshots</th><th>Errors</th><th>Completed</th></tr></thead><tbody id="connector-run-rows"></tbody></table></div>
       </section>
 
       <section class="dashboard-grid">
