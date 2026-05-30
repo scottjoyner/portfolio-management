@@ -32,7 +32,15 @@ const requiredRoutes = [
   '/api/backtests/run',
   '/api/approvals/request',
   '/api/paper-executions',
-  '/api/kill-switch/stop-paper'
+  '/api/kill-switch/stop-paper',
+  '/api/opportunity-dashboard',
+  '/api/opportunities',
+  '/api/risk-breakdowns',
+  '/api/agents/jobs',
+  '/api/agents/budgets',
+  '/api/agents/costs',
+  '/api/market-data/snapshots',
+  '/api/polymarket/opportunities'
 ];
 
 for (const route of requiredRoutes) {
@@ -56,7 +64,12 @@ const requiredPatterns = [
   ['/api/backtests/:id/report', '/api/backtests/{id}/report'],
   ['/api/approvals/:id/decision', '/api/approvals/{id}/decision'],
   ['/api/paper-executions/:id/stop', '/api/paper-executions/{id}/stop'],
-  ['/api/paper-executions/:id/signal', '/api/paper-executions/{id}/signal']
+  ['/api/paper-executions/:id/signal', '/api/paper-executions/{id}/signal'],
+  ['/api/opportunities/:id', '/api/opportunities/{id}'],
+  ['/api/opportunities/:id/approve', '/api/opportunities/{id}/approve'],
+  ['/api/opportunities/:id/reject', '/api/opportunities/{id}/reject'],
+  ['/api/opportunities/:id/defer', '/api/opportunities/{id}/defer'],
+  ['/api/opportunities/:id/request-research', '/api/opportunities/{id}/request-research']
 ];
 
 for (const [markdownRoute, openapiRoute] of requiredPatterns) {

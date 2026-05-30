@@ -1,6 +1,7 @@
 import { createBacktest, createStrategyFromTemplate, cloneStrategyVersion, updateStrategyStatus, requestApproval, decideApproval, startPaperExecution, stopPaperExecution } from './operatorFlows.mjs';
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
 import { executePaperSignal } from '../../../packages/execution/src/paperEngine.mjs';
+import { createOpportunity, createResearchJob, decideOpportunity, ensureOpportunityState, summarizeAgentCosts } from './opportunityFlows.mjs';
 
 export function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -24,10 +25,75 @@ async function mutate(store, fn) {
   return { status: 200, body: { ok: true, ...result } };
 }
 
+function opportunityDashboard(state) {
+  ensureOpportunityState(state);
+  return {
+    opportunities: state.opportunities,
+    riskBreakdowns: state.riskBreakdowns,
+    researchJobs: state.researchJobs,
+    agentBudgets: state.agentBudgets,
+    agentCostLedger: state.agentCostLedger,
+    marketDataSnapshots: state.marketDataSnapshots,
+    agentCostSummary: summarizeAgentCosts(state)
+  };
+}
+
 export async function handleOperatorRoute({ method, pathname, state, store, readJsonBody }) {
+  ensureOpportunityState(state);
+
   if (method === 'GET' && pathname === '/api/accounts') return { status: 200, body: { accounts: state.accounts } };
   if (method === 'GET' && pathname === '/api/instruments') return { status: 200, body: { instruments: state.instruments } };
   if (method === 'GET' && pathname === '/api/strategy-templates') return { status: 200, body: { templates: state.strategyTemplates } };
+  if (method === 'GET' && pathname === '/api/opportunity-dashboard') return { status: 200, body: opportunityDashboard(state) };
+  if (method === 'GET' && pathname === '/api/opportunities') return { status: 200, body: { opportunities: state.opportunities } };
+  if (method === 'GET' && pathname === '/api/risk-breakdowns') return { status: 200, body: { riskBreakdowns: state.riskBreakdowns } };
+  if (method === 'GET' && pathname === '/api/agents/jobs') return { status: 200, body: { jobs: state.researchJobs } };
+  if (method === 'GET' && pathname === '/api/agents/budgets') return { status: 200, body: { budgets: state.agentBudgets } };
+  if (method === 'GET' && pathname === '/api/agents/costs') return { status: 200, body: { costs: state.agentCostLedger, summary: summarizeAgentCosts(state) } };
+  if (method === 'GET' && pathname === '/api/market-data/snapshots') return { status: 200, body: { snapshots: state.marketDataSnapshots } };
+  if (method === 'GET' && pathname === '/api/polymarket/opportunities') return { status: 200, body: { opportunities: state.opportunities.filter(o => o.venue?.includes('polymarket') || o.marketType === 'prediction_market') } };
+
+  const opportunityDetail = routeMatch(pathname, '/api/opportunities/:id');
+  if (method === 'GET' && opportunityDetail) {
+    const opportunity = state.opportunities.find(o => o.id === opportunityDetail.id);
+    if (!opportunity) return { status: 404, body: { ok: false, errors: ['opportunity_not_found'] } };
+    return { status: 200, body: { opportunity, riskBreakdown: state.riskBreakdowns.find(r => r.id === opportunity.riskBreakdownId) || null } };
+  }
+
+  if (method === 'POST' && pathname === '/api/agents/jobs') {
+    const body = await readJsonBody();
+    const result = await mutate(store, current => createResearchJob(current, body));
+    return { ...result, status: result.status === 200 ? 201 : result.status };
+  }
+
+  if (method === 'POST' && pathname === '/api/opportunities') {
+    const body = await readJsonBody();
+    const result = await mutate(store, current => createOpportunity(current, body));
+    return { ...result, status: result.status === 200 ? 201 : result.status };
+  }
+
+  for (const decisionStatus of ['approve', 'reject', 'defer']) {
+    const decision = routeMatch(pathname, `/api/opportunities/:id/${decisionStatus}`);
+    if (method === 'POST' && decision) {
+      const body = await readJsonBody();
+      const status = decisionStatus === 'approve' ? 'approved' : decisionStatus === 'reject' ? 'rejected' : 'deferred';
+      return mutate(store, current => decideOpportunity(current, decision.id, { ...body, status }));
+    }
+  }
+
+  const requestResearch = routeMatch(pathname, '/api/opportunities/:id/request-research');
+  if (method === 'POST' && requestResearch) {
+    const body = await readJsonBody();
+    return mutate(store, current => {
+      const opportunity = current.opportunities.find(o => o.id === requestResearch.id);
+      if (!opportunity) return { errors: ['opportunity_not_found'] };
+      const { job, ledger } = createResearchJob(current, { ...body, agentId: body.agentId || opportunity.sourceAgentId, marketScope: opportunity.marketSlug || opportunity.symbol || opportunity.title });
+      opportunity.status = 'research_requested';
+      opportunity.updatedAt = new Date().toISOString();
+      current.audit.push({ id: nextId('audit', current.audit), action: 'opportunity_research_requested', actor: job.agentId, at: new Date().toISOString(), details: opportunity.id, payload: { jobId: job.id, costLedgerId: ledger.id } });
+      return { opportunity, job, ledger };
+    });
+  }
 
   const clone = routeMatch(pathname, '/api/strategies/:id/clone');
   if (method === 'POST' && clone) {
