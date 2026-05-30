@@ -58,7 +58,46 @@ export async function persistRouteArtifacts(store, result = {}) {
   for (const riskBreakdown of result.riskBreakdowns || []) await persistOne(store, 'upsertRiskBreakdown', riskBreakdown);
 }
 
-async function mutate(store, fn) {
+function supportsTargetedProductFastPath(store) {
+  if (store?.targetedProductMutations === true) return true;
+  if (typeof store?.getStatus !== 'function') return false;
+  const status = store.getStatus();
+  return Boolean(status?.targetedProductMutations && typeof store.load === 'function' && typeof store.upsertOpportunityBundle === 'function');
+}
+
+export async function persistAuditEvents(store, events = []) {
+  if (!Array.isArray(events) || !events.length) return;
+  if (typeof store.upsertAuditEvents === 'function') {
+    await store.upsertAuditEvents(events);
+    return;
+  }
+  if (typeof store.query !== 'function') return;
+  for (const event of events) {
+    await store.query(
+      'INSERT INTO audit_events (id, action, actor, at, details, payload_json) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO UPDATE SET action = EXCLUDED.action, actor = EXCLUDED.actor, at = EXCLUDED.at, details = EXCLUDED.details, payload_json = EXCLUDED.payload_json',
+      [event.id, event.action, event.actor || 'system', event.at || new Date().toISOString(), event.details || null, JSON.stringify(event.payload || {})]
+    );
+  }
+}
+
+async function mutateTargetedProduct(store, fn) {
+  const state = await store.load();
+  const auditStart = Array.isArray(state.audit) ? state.audit.length : 0;
+  const result = await fn(state);
+  if (result?.errors?.length) {
+    const missing = result.errors.some(error => error.endsWith('_not_found'));
+    return { status: missing ? 404 : 400, body: { ok: false, errors: result.errors } };
+  }
+  await persistRouteArtifacts(store, result);
+  await persistAuditEvents(store, (state.audit || []).slice(auditStart));
+  store.state = state;
+  return { status: 200, body: { ok: true, ...result } };
+}
+
+async function mutate(store, fn, options = {}) {
+  if (options.productOnly && supportsTargetedProductFastPath(store)) {
+    return mutateTargetedProduct(store, fn);
+  }
   const result = await store.mutate(async state => fn(state));
   if (result?.errors?.length) {
     const missing = result.errors.some(error => error.endsWith('_not_found'));
@@ -99,25 +138,25 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'GET' && pathname === '/api/polymarket/opportunities') return { status: 200, body: { opportunities: state.opportunities.filter(o => o.venue?.includes('polymarket') || o.marketType === 'prediction_market') } };
 
   if (method === 'POST' && pathname === '/api/connectors/market-data/ingest') {
-    const result = await mutate(store, current => ingestConnectorSnapshots(current));
+    const result = await mutate(store, current => ingestConnectorSnapshots(current), { productOnly: true });
     return result;
   }
 
   if (method === 'POST' && pathname === '/api/opportunities/generate-from-connectors') {
-    const result = await mutate(store, current => generateOpportunitiesFromConnectors(current));
+    const result = await mutate(store, current => generateOpportunitiesFromConnectors(current), { productOnly: true });
     return { ...result, status: result.status === 200 ? 201 : result.status };
   }
 
   if (method === 'POST' && pathname === '/api/agents/budget-approvals') {
     const body = await readJsonBody();
-    const result = await mutate(store, current => requestBudgetApproval(current, body));
+    const result = await mutate(store, current => requestBudgetApproval(current, body), { productOnly: true });
     return { ...result, status: result.status === 200 ? 201 : result.status };
   }
 
   const budgetDecision = routeMatch(pathname, '/api/agents/budget-approvals/:id/decision');
   if (method === 'POST' && budgetDecision) {
     const body = await readJsonBody();
-    return mutate(store, current => decideBudgetApproval(current, budgetDecision.id, body));
+    return mutate(store, current => decideBudgetApproval(current, budgetDecision.id, body), { productOnly: true });
   }
 
   const opportunityDetail = routeMatch(pathname, '/api/opportunities/:id');
@@ -129,13 +168,13 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
 
   if (method === 'POST' && pathname === '/api/agents/jobs') {
     const body = await readJsonBody();
-    const result = await mutate(store, current => createResearchJob(current, body));
+    const result = await mutate(store, current => createResearchJob(current, body), { productOnly: true });
     return { ...result, status: result.status === 200 ? 201 : result.status };
   }
 
   if (method === 'POST' && pathname === '/api/opportunities') {
     const body = await readJsonBody();
-    const result = await mutate(store, current => createOpportunity(current, body));
+    const result = await mutate(store, current => createOpportunity(current, body), { productOnly: true });
     return { ...result, status: result.status === 200 ? 201 : result.status };
   }
 
@@ -144,7 +183,7 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
     if (method === 'POST' && decision) {
       const body = await readJsonBody();
       const status = decisionStatus === 'approve' ? 'approved' : decisionStatus === 'reject' ? 'rejected' : 'deferred';
-      return mutate(store, current => decideOpportunity(current, decision.id, { ...body, status }));
+      return mutate(store, current => decideOpportunity(current, decision.id, { ...body, status }), { productOnly: true });
     }
   }
 
@@ -161,7 +200,7 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
       opportunity.updatedAt = new Date().toISOString();
       current.audit.push({ id: nextId('audit', current.audit), action: 'opportunity_research_requested', actor: job.agentId, at: new Date().toISOString(), details: opportunity.id, payload: { jobId: job.id, costLedgerId: ledger.id, budgetApprovalId: job.budgetApprovalId } });
       return { opportunity, job, ledger };
-    });
+    }, { productOnly: true });
   }
 
   const clone = routeMatch(pathname, '/api/strategies/:id/clone');
