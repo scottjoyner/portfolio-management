@@ -61,6 +61,16 @@ function isP1Route(pathname) {
     || pathname === '/api/approvals/request'
     || pathname === '/api/kill-switch/stop-paper'
     || pathname === '/api/audit/verify'
+    || pathname === '/api/opportunity-dashboard'
+    || pathname === '/api/opportunities'
+    || pathname === '/api/risk-breakdowns'
+    || pathname === '/api/agents/jobs'
+    || pathname === '/api/agents/budgets'
+    || pathname === '/api/agents/costs'
+    || pathname === '/api/market-data/snapshots'
+    || pathname === '/api/polymarket/opportunities'
+    || /^\/api\/opportunities\/[^/]+$/.test(pathname)
+    || /^\/api\/opportunities\/[^/]+\/(approve|reject|defer|request-research)$/.test(pathname)
     || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
     || /^\/api\/backtests\/[^/]+\/report$/.test(pathname)
     || /^\/api\/approvals\/[^/]+\/decision$/.test(pathname)
@@ -76,6 +86,8 @@ function makeSummary(state, store, runtime) {
       strategies: state.strategies.length,
       backtests: state.backtests.length,
       approvals: state.approvals.length,
+      opportunities: state.opportunities?.length || 0,
+      researchJobs: state.researchJobs?.length || 0,
       paperExecutions: state.paperExecutions.length,
       positions: state.positions.length,
       auditEvents: state.audit.length
@@ -89,6 +101,8 @@ function makeSummary(state, store, runtime) {
       approvalDecisions: true,
       backtestReports: true,
       paperExecution: true,
+      opportunityReview: true,
+      agentCostLedger: true,
       liveTradingCertified: false
     }
   };
