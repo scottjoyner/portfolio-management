@@ -38,6 +38,7 @@ const requiredRoutes = [
   '/api/risk-breakdowns',
   '/api/agents/jobs',
   '/api/agents/budgets',
+  '/api/agents/budget-approvals',
   '/api/agents/costs',
   '/api/market-data/snapshots',
   '/api/connectors/market-data/ingest',
@@ -71,7 +72,8 @@ const requiredPatterns = [
   ['/api/opportunities/:id/approve', '/api/opportunities/{id}/approve'],
   ['/api/opportunities/:id/reject', '/api/opportunities/{id}/reject'],
   ['/api/opportunities/:id/defer', '/api/opportunities/{id}/defer'],
-  ['/api/opportunities/:id/request-research', '/api/opportunities/{id}/request-research']
+  ['/api/opportunities/:id/request-research', '/api/opportunities/{id}/request-research'],
+  ['/api/agents/budget-approvals/:id/decision', '/api/agents/budget-approvals/{id}/decision']
 ];
 
 for (const [markdownRoute, openapiRoute] of requiredPatterns) {
