@@ -49,16 +49,16 @@ for (const endpoint of ['/api/accounts', '/api/instruments', '/api/strategy-temp
   }
 }
 
-for (const endpoint of ['/api/opportunity-dashboard', '/api/opportunities', '/api/agents/jobs']) {
+for (const endpoint of ['/api/opportunity-dashboard', '/api/opportunities', '/api/agents/jobs', '/api/agents/budget-approvals']) {
   if (!app.includes(endpoint)) {
     console.error(`web build failed: app.js missing API-backed dashboard endpoint ${endpoint}`);
     process.exit(1);
   }
 }
 
-for (const token of ['netExpectedValue', 'totalMoneyRisked', 'modelInferenceCost', 'agentResearchCost']) {
-  if (!app.includes(token)) {
-    console.error(`web build failed: app.js missing opportunity cost/risk token ${token}`);
+for (const token of ['netExpectedValue', 'totalMoneyRisked', 'modelInferenceCost', 'agentResearchCost', 'budgetApprovalId', 'budget-approval-rows', 'request-budget-approval']) {
+  if (!(app + html).includes(token)) {
+    console.error(`web build failed: dashboard missing product token ${token}`);
     process.exit(1);
   }
 }
