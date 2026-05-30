@@ -7,6 +7,7 @@ import { authResponse, authStatus, authorizeRoute, requestId } from './auth.mjs'
 import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
 import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { logRequest, recordResponse, renderPrometheusMetrics } from './metrics.mjs';
+import { verifyAuditIntegrity } from '../../../packages/audit/src/integrity.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -59,6 +60,7 @@ function isP1Route(pathname) {
     || pathname === '/api/backtests/run'
     || pathname === '/api/approvals/request'
     || pathname === '/api/kill-switch/stop-paper'
+    || pathname === '/api/audit/verify'
     || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
     || /^\/api\/backtests\/[^/]+\/report$/.test(pathname)
     || /^\/api\/approvals\/[^/]+\/decision$/.test(pathname)
@@ -92,6 +94,17 @@ function makeSummary(state, store, runtime) {
   };
 }
 
+function productionPaperReadiness({ runtime, storage, audit }) {
+  const blockers = [];
+  if (!runtime.ok) blockers.push(...runtime.errors);
+  if (storage.kind !== 'postgres-p1' && storage.kind !== 'postgres') blockers.push('postgres_storage_required');
+  if (!storage.durable || !storage.sql) blockers.push('sql_durable_storage_required');
+  if (!storage.migrations?.ok) blockers.push('postgres_migrations_not_ready');
+  if (audit && !audit.ok) blockers.push(`audit_integrity_${audit.reason}`);
+  if (runtime.safeSummary?.LIVE_TRADING === 'true') blockers.push('live_trading_must_be_false');
+  return { ok: blockers.length === 0, productionPaperReady: blockers.length === 0, liveTradingCertified: false, blockers, storage, runtime, audit };
+}
+
 async function dispatchRequest(req, options = {}) {
   const env = { ...process.env, ...(options.env || {}) };
   const runtime = validateRuntimeEnv(env);
@@ -99,23 +112,30 @@ async function dispatchRequest(req, options = {}) {
   const url = new URL(req.url || '/', 'http://localhost');
 
   if ((req.method || 'GET') === 'OPTIONS') return preflightResponse(req, env);
-  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
+  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics.prom') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
 
   const csrf = csrfStatus(req, env);
   if (!csrf.ok) return securityResponse(csrf.status, csrf.error, id, req, env);
 
   const auth = authStatus(req, env);
-  if (!auth.ok && !['/health', '/ready'].includes(url.pathname)) {
+  if (!auth.ok && !['/health', '/ready', '/ready/production-paper'].includes(url.pathname)) {
     return withSecurityHeaders(authResponse(auth.status, auth.error, id), req, env);
   }
 
   const authorization = authorizeRoute(auth, req, url.pathname);
-  if (!authorization.ok && !['/health', '/ready'].includes(url.pathname)) {
+  if (!authorization.ok && !['/health', '/ready', '/ready/production-paper'].includes(url.pathname)) {
     return withSecurityHeaders(authResponse(authorization.status, authorization.error, id), req, env);
   }
 
   const store = createOperatorStore(options);
   const method = req.method || 'GET';
+
+  if (method === 'GET' && url.pathname === '/ready/production-paper') {
+    const { state, error } = await loadState(store);
+    const audit = error ? { ok: false, reason: 'operator_store_unavailable' } : verifyAuditIntegrity(state.audit || []);
+    const readiness = productionPaperReadiness({ runtime, storage: storeStatus(store), audit });
+    return withSecurityHeaders(json(readiness.ok ? 200 : 503, { ...readiness, requestId: id }), req, env);
+  }
 
   if (url.pathname === '/api/operator/summary' || isP1Route(url.pathname)) {
     const { state, error } = await loadState(store);
@@ -125,6 +145,11 @@ async function dispatchRequest(req, options = {}) {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
       return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store, runtime), requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/audit/verify') {
+      const audit = verifyAuditIntegrity(state.audit || []);
+      return withSecurityHeaders(json(audit.ok ? 200 : 409, { ...audit, requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });

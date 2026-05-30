@@ -18,6 +18,13 @@ const server = readFileSync(serverPath, 'utf8');
 const router = readFileSync(routerPath, 'utf8');
 
 const requiredRoutes = [
+  '/health',
+  '/ready',
+  '/ready/production-paper',
+  '/metrics',
+  '/metrics.prom',
+  '/api/operator/summary',
+  '/api/audit/verify',
   '/api/accounts',
   '/api/instruments',
   '/api/strategy-templates',
