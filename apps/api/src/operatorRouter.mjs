@@ -17,12 +17,22 @@ export function routeMatch(pathname, pattern) {
   return params;
 }
 
+async function persistRouteArtifacts(store, result = {}) {
+  if (!result || result.errors?.length) return;
+  if (result.budgetApproval && typeof store.upsertBudgetApproval === 'function') await store.upsertBudgetApproval(result.budgetApproval);
+  if (result.job && typeof store.upsertResearchJob === 'function') await store.upsertResearchJob(result.job);
+  if (result.ledger && typeof store.upsertAgentCost === 'function') await store.upsertAgentCost(result.ledger);
+  if (Array.isArray(result.jobs) && typeof store.upsertResearchJob === 'function') for (const job of result.jobs) await store.upsertResearchJob(job);
+  if (Array.isArray(result.ledgers) && typeof store.upsertAgentCost === 'function') for (const ledger of result.ledgers) await store.upsertAgentCost(ledger);
+}
+
 async function mutate(store, fn) {
   const result = await store.mutate(async state => fn(state));
   if (result?.errors?.length) {
     const missing = result.errors.some(error => error.endsWith('_not_found'));
     return { status: missing ? 404 : 400, body: { ok: false, errors: result.errors } };
   }
+  await persistRouteArtifacts(store, result);
   return { status: 200, body: { ok: true, ...result } };
 }
 
