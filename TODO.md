@@ -1,113 +1,408 @@
-# TODO — Production Readiness Backlog
+# TODO Roadmap
 
-This repository is **usable for P0/P1 mock/paper operator workflow evaluation**, but it is **not production-ready** and must not be used for live trading or real-money execution until P2 certification is complete.
+This roadmap tracks the gap between the current production-paper backend scaffold and the target trading-bot operator product.
 
-## P0 — Blockers
+The current system has meaningful backend scaffolding, paper-mode controls, audit hardening, certification gates, and some UI/API surface. It is **not** a complete trading dashboard, not a complete research-agent system, and not certified for live real-money execution.
 
-### P0.1 — Build the operator UI
-- [x] Create a browser UI for accounts, strategies, backtests, approvals, positions/risk, audit logs, health, and settings-equivalent controls.
-- [x] Make the UI the primary workflow; CLI remains developer/admin only.
-- [x] Add visible pause/stop controls and audit logging.
+Live trading remains blocked until a separate live certification release.
 
-### P0.2 — Replace API stubs with real routes
-- [x] Implement API routes for accounts, instruments, strategies, backtests, approvals, paper mode, positions, risk, audit, health, and readiness.
-- [x] Add auth guard, request IDs, request validation, and structured error responses for the P0/P1 operator surface.
-- [x] Add API contract documentation and route tests.
+## Current product reality
 
-### P0.3 — Add database migrations and repositories
-- [x] Define schema baseline for accounts, instruments, strategies, backtest runs, approvals, paper executions, positions, and audit logs.
-- [x] Add migrations and dependency-free Postgres fake-client tests.
-- [x] Add seed data for local development.
-- [ ] P2: Add live integration tests against a fresh Postgres container.
-- [ ] P2: Replace P1 JSON-flag product persistence with row-level Postgres repository operations.
+Completed or partially completed:
 
-### P0.4 — Complete strategy lifecycle management
-- [x] Define a strategy schema with versioning, parameters, risk limits, and lifecycle status.
-- [x] Persist strategy definitions and changelogs/audit events.
-- [x] Add UI/API flows for create, clone, archive/status, validate, and approve.
+- Paper-first operator API
+- Strategy templates and strategy lifecycle scaffolding
+- Deterministic backtest scaffold
+- Approval workflow scaffold
+- Paper execution scaffold
+- Kill switch
+- Audit logging and audit-chain verification
+- Production-paper readiness and smoke commands
+- First-production certification validation scaffolding
+- Deployment docs and runbooks
 
-### P0.5 — Replace prototype backtesting
-- [x] Execute registered strategy versions in the P1 deterministic certification scaffold.
-- [x] Add fee/slippage assumptions and report artifacts.
-- [x] Persist backtest artifacts and expose metrics/trade logs in the UI/API.
-- [ ] P2: Replace deterministic scaffold with historical market replay, latency, spreads, partial fills, market impact, and walk-forward validation.
+Still missing for the product we actually want:
 
-### P0.6 — Keep real-money execution disabled
-- [x] Fail closed unless certification/approval/risk checks pass.
-- [x] Add tests proving unsafe live execution paths are blocked.
-- [x] Add a shared kill-switch control that stops paper executions and is visible from UI/API.
+- Real trading dashboard UX
+- Opportunity review feed
+- Polymarket-focused research and opportunity tab
+- Live P/L and liquidity dashboard
+- Market data adapter layer in the UI
+- Daily research-agent workflow
+- Agent token/model cost accounting
+- Net expected value after model/research costs
+- Real historical replay backtesting
+- Collapsible risk breakdowns for every opportunity
+- Human approval feed for every trade candidate
 
-### P0.7 — Clean deployment hazards
-- [x] Ignore generated local runtime state.
-- [x] Move operational usage into docs/runbooks.
-- [x] Keep live credentials out of source and default runtime.
+## P0 — Make the existing product honest and operator-usable
 
-### P0.8 — Make CI/build strict
-- [x] Add Node test/build gates for the operator scaffold.
-- [x] Add migration validation.
-- [x] Add API contract validation.
-- [x] Add UI asset validation.
-- [ ] P2: Add hosted CI enforcement, dependency audit, Python gates, and secret scanning.
+### P0.1 CI failure triage
 
-## P1 — Make the product usable from the UI
+- [ ] Keep failing GitHub Actions visible.
+- [ ] Categorize failures into lint/test/build/deploy-validation groups.
+- [ ] Add `docs/CI_FAILURE_TRIAGE.md` with current failures, likely causes, and next actions.
+- [ ] Do not mark broken checks as success just to make the repo look clean.
 
-### P1.1 — Accounts and portfolio ledger
-- [x] Add paper/sandbox account ledger scaffold.
-- [x] Add consolidated NAV, cash, exposure-ready state, and refresh status fields in the UI.
-- [ ] P2: Implement real Plaid sandbox token exchange, encrypted token storage, refresh, revocation, holdings, transactions, and reconciliation.
+### P0.2 UI route shell
 
-### P1.2 — Instrument master and market data
-- [x] Add normalized instrument registry and basic data-quality/status fields.
-- [x] Make strategies and backtests select/validate instruments from the same registry.
-- [ ] P2: Add real market data adapters, snapshots, historical bars, and data-quality scoring.
+- [ ] Add or refactor the UI into a real operator shell with these tabs:
+  - Overview
+  - Portfolio
+  - Live Markets
+  - Strategies
+  - Backtesting
+  - Opportunities
+  - Polymarket
+  - Agents
+  - Risk
+  - Approvals
+  - Executions
+  - Audit
+  - Settings
+- [ ] Keep unimplemented tabs visible with clear empty states and TODO links.
+- [ ] Make paper-only/live-disabled status visible globally.
 
-### P1.3 — Strategy templates and parameter UI
-- [x] Add common strategy templates and parameter schemas.
-- [x] Validate parameter ranges and incompatible settings.
-- [x] Add UI create-from-template flow.
+### P0.3 Overview tab
 
-### P1.4 — Backtest reports
-- [x] Add metrics summary, assumptions, equity curve data, and trade table data.
-- [x] Add report endpoint and UI cards.
-- [ ] P2: Add comparison view across strategy versions and parameter sets.
-- [ ] P2: Add exports/charts.
+- [ ] Use `/api/operator/summary` as the first data source.
+- [ ] Show total NAV or placeholder if unavailable.
+- [ ] Show daily P/L placeholder until real P/L is implemented.
+- [ ] Show realized/unrealized P/L placeholders.
+- [ ] Show account cash, locked capital, and liquidity placeholders.
+- [ ] Show counts for strategies, backtests, approvals, paper executions, and audit events.
+- [ ] Show kill-switch status.
+- [ ] Show production-paper readiness.
+- [ ] Show audit integrity status.
+- [ ] Show agent spend today/month placeholders.
 
-### P1.5 — Approval and certification workflow
-- [x] Persist approval requests and decisions.
-- [x] Require backtest evidence before strategy promotion on P1 approval routes.
-- [x] Add audit trail in the UI/API.
+### P0.4 Strategies tab
 
-### P1.6 — Paper/shadow execution
-- [x] Implement approved-strategy paper session lifecycle.
-- [x] Show paper execution status in the UI.
-- [x] Add stop controls and kill-switch interaction.
-- [ ] P2: Implement full signal-to-order-preview-to-paper-fill lifecycle, simulated fills, P&L, and reconciliation.
+- [ ] List strategies with version, status, risk level, and parameter summary.
+- [ ] Create strategy from template.
+- [ ] Clone strategy version.
+- [ ] Update lifecycle status.
+- [ ] Link strategies to backtests, approvals, and paper executions.
 
-## P2 — Production hardening
+### P0.5 Backtesting tab
 
-### P2.1 — Adapter interfaces
-- [ ] Define contract tests for broker, exchange, Plaid, market-data, and onchain adapters before enabling any real connector.
+- [ ] List backtest runs.
+- [ ] Run deterministic P1 backtest.
+- [ ] Show metrics, assumptions, trades, and equity curve data.
+- [ ] Add clear label that current backtesting is deterministic/scaffolded, not production-grade historical replay.
 
-### P2.2 — Prediction-market venue integration
-- [ ] Complete read-only market discovery and matching first.
-- [ ] Keep order submission disabled until certification is complete.
+### P0.6 Approvals tab
 
-### P2.3 — Onchain runtime hardening
-- [ ] Add checkpoints, reorg handling, rate limits, retries, and ABI-driven parsing.
+- [ ] Present approvals as a feed, not just a table.
+- [ ] Show strategy, backtest evidence, requested action, risk level, reason, reviewer, and status.
+- [ ] Add approve/reject controls.
+- [ ] Prepare layout for future opportunity approvals.
 
-### P2.4 — Observability and runbooks
-- [ ] Add metrics, logs, alerts, dashboards, deployment, rollback, backup, restore, and incident-response runbooks.
+### P0.7 Executions tab
 
-### P2.5 — Security review
-- [ ] Add full RBAC, CORS/CSRF policy, immutable audit logging, secret management, dependency scanning, and penetration review.
+- [ ] List paper executions.
+- [ ] Start approved paper strategy.
+- [ ] Stop paper execution.
+- [ ] Send paper signal.
+- [ ] Show simulated fills, slippage, fees, and stop reason.
+- [ ] Show blocked live execution attempts.
 
-## P3 — Advanced research
+### P0.8 Audit tab
 
-### P3.1 — Fair-market-price evaluation
-- [ ] Replace placeholder price bands with tested models and provenance.
+- [ ] List audit events.
+- [ ] Add audit verification panel using `/api/audit/verify`.
+- [ ] Show audit chain status.
+- [ ] Filter by actor, action, strategy, market, and date.
 
-### P3.2 — Hypothesis generation
-- [ ] Add research queue and require human approval before promotion.
+## P1 — Build the opportunity-review product
 
-### P3.3 — Portfolio optimization
-- [ ] Add allocation constraints, risk budgets, scenario analysis, and stress tests.
+### P1.1 Opportunity domain object
+
+- [ ] Add `Opportunity` model/table/store with:
+  - id
+  - sourceAgentId
+  - strategyId/version
+  - marketType
+  - venue
+  - symbol or marketSlug
+  - recommendation
+  - confidenceScore
+  - winProbability
+  - lossProbability
+  - expectedValue
+  - netExpectedValue
+  - capitalRequired
+  - totalMoneyRisked
+  - maxLoss
+  - potentialUpside
+  - rewardRiskRatio
+  - liquidityScore
+  - dataFreshnessScore
+  - backtestId
+  - riskBreakdownId
+  - status
+  - expiresAt
+  - createdAt
+  - updatedAt
+
+### P1.2 Opportunity API
+
+- [ ] `GET /api/opportunities`
+- [ ] `GET /api/opportunities/:id`
+- [ ] `POST /api/opportunities/:id/approve`
+- [ ] `POST /api/opportunities/:id/reject`
+- [ ] `POST /api/opportunities/:id/defer`
+- [ ] `POST /api/opportunities/:id/request-research`
+- [ ] Write audit events for approve/reject/defer/research-request.
+
+### P1.3 Opportunity approval feed UI
+
+- [ ] Build card-based opportunity feed.
+- [ ] Card must show:
+  - market/venue
+  - recommendation
+  - confidence score
+  - win probability
+  - loss probability
+  - total money risked
+  - max loss
+  - potential upside
+  - gross EV
+  - net EV after model/research costs
+  - backtest status
+  - risk score
+  - approval status
+- [ ] Add approve/reject/defer/request-more-research controls.
+
+### P1.4 Collapsible opportunity details
+
+- [ ] Risk breakdown panel.
+- [ ] Backtest summary panel.
+- [ ] Evidence/research notes panel.
+- [ ] Agent/model cost panel.
+- [ ] Execution preview panel.
+
+Risk breakdown must include:
+
+- capital at risk
+- max loss
+- expected loss
+- expected upside
+- win/loss probability
+- liquidity score
+- slippage estimate
+- data freshness score
+- strategy certification state
+- agent cost impact
+
+### P1.5 Polymarket tab v1
+
+- [ ] Add Polymarket market discovery placeholder or read-only ingest.
+- [ ] Show market question, category, outcome token, yes/no price, spread, depth, and expiry.
+- [ ] Show fair value estimate and edge estimate.
+- [ ] Show win/loss probability.
+- [ ] Show max loss, total money risked, and potential upside.
+- [ ] Show liquidity risk, resolution ambiguity risk, time-to-resolution risk, and slippage risk.
+- [ ] Add approve/reject/defer/request-more-research controls.
+- [ ] Keep live Polymarket order submission blocked.
+
+### P1.6 Risk breakdown model
+
+- [ ] Add `RiskBreakdown` model/table/store with:
+  - scope: portfolio, strategy, opportunity, venue, agent
+  - aggregate score
+  - capital-at-risk score
+  - liquidity score
+  - slippage score
+  - drawdown score
+  - volatility score
+  - correlation score
+  - model confidence score
+  - data freshness score
+  - agent cost score
+  - explanation
+  - generatedAt
+
+### P1.7 Backtest linkage for opportunities
+
+- [ ] Every opportunity should either link to a backtest/replay result or explicitly show `backtest_missing`.
+- [ ] Approval should be blocked or loudly warned when no backtest exists.
+- [ ] Show backtest summary directly inside the opportunity card.
+
+## P2 — Daily research-agent workflow and cost accounting
+
+### P2.1 Research job ledger
+
+- [ ] Add `ResearchJob` model/table/store with:
+  - id
+  - agentId
+  - triggerType
+  - marketScope
+  - symbolScope
+  - provider
+  - model
+  - status
+  - startedAt
+  - completedAt
+  - promptTokens
+  - completionTokens
+  - totalTokens
+  - estimatedRemoteCost
+  - estimatedLocalCost
+  - opportunityIdsCreated
+  - failureReason
+
+### P2.2 Agent budget model
+
+- [ ] Add `AgentBudget` model/table/store with:
+  - agentId
+  - dailyTokenLimit
+  - dailyCostLimit
+  - perJobTokenLimit
+  - perMarketCostLimit
+  - requireApprovalAboveCost
+  - enabled
+
+### P2.3 Agent cost ledger
+
+- [ ] Add `AgentCostLedger` model/table/store with:
+  - id
+  - agentId
+  - jobId
+  - model
+  - provider
+  - localOrRemote
+  - promptTokens
+  - completionTokens
+  - totalTokens
+  - remoteApiCost
+  - localComputeCost
+  - allocatedOpportunityId
+  - createdAt
+
+### P2.4 Local model token cost calculation
+
+- [ ] Implement cost estimates for local models, even when there is no API bill.
+- [ ] Estimate local cost from tokens/sec, watts, runtime, hardware depreciation, and electricity cost.
+- [ ] Store local model cost as estimated operational cost.
+- [ ] Include local model cost in opportunity net EV calculations.
+- [ ] Display local-vs-remote model cost in Agents tab.
+
+Minimum formula:
+
+```text
+local_model_cost = runtime_hours * estimated_watts / 1000 * electricity_rate_per_kwh + hardware_depreciation_per_hour * runtime_hours
+```
+
+### P2.5 Net expected value after all costs
+
+- [ ] Compute gross EV.
+- [ ] Subtract fees.
+- [ ] Subtract slippage.
+- [ ] Subtract gas/settlement costs.
+- [ ] Subtract agent research cost.
+- [ ] Subtract remote model API cost.
+- [ ] Subtract local model compute cost.
+- [ ] Show both gross EV and net EV on opportunity cards.
+
+Formula:
+
+```text
+net_expected_value = gross_expected_value - estimated_fees - estimated_slippage - estimated_gas - agent_research_cost - model_inference_cost
+```
+
+### P2.6 Agent spend as loss metric
+
+- [ ] Treat research spend as operational loss until linked to profitable outcomes.
+- [ ] Track daily research spend.
+- [ ] Track weekly research spend.
+- [ ] Track cost per opportunity generated.
+- [ ] Track cost per approved opportunity.
+- [ ] Track cost per rejected opportunity.
+- [ ] Track cost per profitable trade.
+- [ ] Track cost per losing trade.
+- [ ] Track research cost as percent of expected upside.
+- [ ] Track research cost as percent of realized P/L.
+
+### P2.7 Expensive research approval gate
+
+- [ ] Agents must request approval before exceeding configured per-job or daily budgets.
+- [ ] Operator can approve/reject additional research spend.
+- [ ] Budget approvals must be audited.
+
+## P3 — Live market and portfolio dashboard
+
+### P3.1 Live P/L and liquidity view
+
+- [ ] Total NAV.
+- [ ] Daily P/L.
+- [ ] Realized P/L.
+- [ ] Unrealized P/L.
+- [ ] Cash.
+- [ ] Locked/reserved capital.
+- [ ] Liquidity by venue.
+- [ ] Exposure by asset class.
+- [ ] Exposure by strategy.
+- [ ] Open risk by opportunity.
+
+### P3.2 Market data adapters
+
+- [ ] Add normalized `MarketDataSnapshot` model with bid, ask, spread, last, volume, depth, volatility, timestamp, and source.
+- [ ] Add live quote board.
+- [ ] Add historical data coverage indicators.
+
+### P3.3 Streaming updates
+
+- [ ] SSE or WebSocket stream for market data.
+- [ ] Stream account/liquidity changes.
+- [ ] Stream opportunity status.
+- [ ] Stream backtest completion.
+- [ ] Stream approval changes.
+- [ ] Stream execution state.
+- [ ] Stream agent job state.
+
+### P3.4 Polymarket liquidity and order book UI
+
+- [ ] Show yes/no prices.
+- [ ] Show spread and depth.
+- [ ] Show liquidity available at target size.
+- [ ] Show slippage at proposed order size.
+- [ ] Show resolution date and ambiguity score.
+
+## P4 — Live certification later
+
+### P4.1 Live execution remains blocked
+
+- [ ] Do not expose live order buttons until a separate certification release.
+- [ ] Keep all live controls disabled or hidden behind certification state.
+- [ ] Continue surfacing blocked live attempts in audit.
+
+### P4.2 Broker/venue adapter contract tests
+
+- [ ] Add adapter-specific contract tests before any live execution.
+- [ ] Require paper certification before live certification.
+- [ ] Require kill-switch and reconciliation tests.
+
+### P4.3 External/WORM audit sink
+
+- [ ] Add append-only audit write path.
+- [ ] Add external immutable audit sink.
+- [ ] Add export and verification process.
+
+## Immediate next branch recommendation
+
+```text
+codex/ui-opportunity-dashboard-design
+```
+
+First implementation target:
+
+- UI route shell
+- Overview tab
+- Opportunities tab scaffold
+- Polymarket tab scaffold
+- Agents tab scaffold
+- Audit verification panel
+- Risk and cost metric placeholders
+
+Do not start live execution work yet.
