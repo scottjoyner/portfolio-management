@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import { DEFAULT_ACCOUNTS, DEFAULT_INSTRUMENTS, DEFAULT_STRATEGY_TEMPLATES } from './defaultOperatorState.mjs';
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
@@ -62,6 +62,12 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
         createdAt: now
       }
     ],
+    opportunities: [],
+    riskBreakdowns: [],
+    researchJobs: [],
+    agentBudgets: [],
+    agentCostLedger: [],
+    marketDataSnapshots: [],
     positions: [],
     paperExecutions: [],
     audit: [
@@ -81,6 +87,12 @@ export function normalizeOperatorState(input = {}) {
     strategies: Array.isArray(input.strategies) ? input.strategies : seeded.strategies,
     backtests: Array.isArray(input.backtests) ? input.backtests : seeded.backtests,
     approvals: Array.isArray(input.approvals) ? input.approvals : seeded.approvals,
+    opportunities: Array.isArray(input.opportunities) ? input.opportunities : seeded.opportunities,
+    riskBreakdowns: Array.isArray(input.riskBreakdowns) ? input.riskBreakdowns : seeded.riskBreakdowns,
+    researchJobs: Array.isArray(input.researchJobs) ? input.researchJobs : seeded.researchJobs,
+    agentBudgets: Array.isArray(input.agentBudgets) ? input.agentBudgets : seeded.agentBudgets,
+    agentCostLedger: Array.isArray(input.agentCostLedger) ? input.agentCostLedger : seeded.agentCostLedger,
+    marketDataSnapshots: Array.isArray(input.marketDataSnapshots) ? input.marketDataSnapshots : seeded.marketDataSnapshots,
     positions: Array.isArray(input.positions) ? input.positions : seeded.positions,
     paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : seeded.paperExecutions,
     audit: Array.isArray(input.audit) ? input.audit : seeded.audit,
