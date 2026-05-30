@@ -23,15 +23,21 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
 
   async load() {
     const base = await super.load();
-    const [budgetApprovals, researchJobs, agentCostLedger] = await Promise.all([
+    const [marketDataSnapshots, budgetApprovals, researchJobs, opportunities, riskBreakdowns, agentCostLedger] = await Promise.all([
+      this.opportunityRows.listMarketDataSnapshots(),
       this.opportunityRows.listBudgetApprovals(),
       this.opportunityRows.listResearchJobs(),
+      this.opportunityRows.listOpportunities(),
+      this.opportunityRows.listRiskBreakdowns(),
       this.opportunityRows.listAgentCosts()
     ]);
     this.state = normalizeOperatorState({
       ...base,
+      marketDataSnapshots,
       budgetApprovals,
       researchJobs,
+      opportunities,
+      riskBreakdowns,
       agentCostLedger
     });
     return this.state;
@@ -53,6 +59,16 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
     }
   }
 
+  async upsertMarketDataSnapshot(snapshot) {
+    await this.opportunityRows.upsertMarketDataSnapshot(snapshot);
+    return snapshot;
+  }
+
+  async upsertMarketDataSnapshots(snapshots = []) {
+    await this.opportunityRows.upsertMarketDataSnapshots(snapshots);
+    return snapshots;
+  }
+
   async upsertBudgetApproval(approval) {
     await this.opportunityRows.upsertBudgetApproval(approval);
     return approval;
@@ -63,12 +79,26 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
     return job;
   }
 
+  async upsertOpportunity(opportunity) {
+    await this.opportunityRows.upsertOpportunity(opportunity);
+    return opportunity;
+  }
+
+  async upsertRiskBreakdown(riskBreakdown) {
+    await this.opportunityRows.upsertRiskBreakdown(riskBreakdown);
+    return riskBreakdown;
+  }
+
   async upsertAgentCost(cost) {
     await this.opportunityRows.upsertAgentCost(cost);
     return cost;
   }
 
+  async upsertOpportunityBundle(bundle) {
+    return this.opportunityRows.upsertOpportunityBundle(bundle);
+  }
+
   getStatus() {
-    return { ...super.getStatus(), opportunityWorkflowLayer: 'p2-row-tables' };
+    return { ...super.getStatus(), opportunityWorkflowLayer: 'p2-row-tables', targetedProductMutations: true };
   }
 }
