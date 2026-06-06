@@ -1,0 +1,60 @@
+{
+  "markets": [
+    {
+      "market_id": "BTC-JAN31-100K",
+      "title": "Bitcoin will trade above $100,000 by January 31, 2025",
+      "bid": 58.5,
+      "ask": 59.2,
+      "volume": 8000,
+      "category": "cryptocurrency",
+      "status": "open"
+    },
+    {
+      "market_id": "BTC-FEB28-75K",
+      "title": "Bitcoin will trade above $75,000 by February 28, 2025",
+      "bid": 71.8,
+      "ask": 72.5,
+      "volume": 6000,
+      "category": "cryptocurrency",
+      "status": "open"
+    },
+    {
+      "market_id": "ELECTION-TRUMP-BIDEN",
+      "title": "Will Trump win the 2024 US Presidential election?",
+      "bid": 61.8,
+      "ask": 62.5,
+      "volume": 8000,
+      "category": "politics",
+      "status": "open"
+    },
+    {
+      "market_id": "ELECTION-BIDEN-TRUMP",
+      "title": "Will Biden win the 2024 US Presidential election?",
+      "bid": 57.5,
+      "ask": 58.2,
+      "volume": 8000,
+      "category": "politics",
+      "status": "open"
+    },
+    {
+      "market_id": "CLIMATE-2024-TEMP",
+      "title": "Will average global temperature in 2024 exceed 1.5\u00b0C above pre-industrial?",
+      "bid": 78.2,
+      "ask": 79.5,
+      "volume": 12000,
+      "category": "climate",
+      "status": "open"
+    },
+    {
+      "market_id": "NFL-SB-CHIEFS",
+      "title": "Will the Kansas City Chiefs win Super Bowl 2025?",
+      "bid": 48.5,
+      "ask": 51.2,
+      "volume": 6000,
+      "category": "sports",
+      "status": "open"
+    }
+  ],
+  "generated_at": "2026-06-01T19:00:54.448454",
+  "description": "Mock Kalshi market data for arbitrage testing"
+}

@@ -1,0 +1,55 @@
+{
+  "kalshi_trades": [
+    {
+      "order_id": "ORD-001",
+      "market_id": "BTC-JAN31-100K",
+      "action": "buy",
+      "size_usd": 500,
+      "price": 58.5,
+      "timestamp": "2026-06-01T10:30:00Z"
+    },
+    {
+      "order_id": "ORD-002",
+      "market_id": "BTC-JAN31-100K",
+      "action": "buy",
+      "size_usd": 1000,
+      "price": 59.0,
+      "timestamp": "2026-06-01T10:35:00Z"
+    },
+    {
+      "order_id": "ORD-003",
+      "market_id": "BTC-JAN31-100K",
+      "action": "sell",
+      "size_usd": 750,
+      "price": 59.2,
+      "timestamp": "2026-06-01T10:40:00Z"
+    }
+  ],
+  "polymarket_trades": [
+    {
+      "order_id": "PM-001",
+      "market_slug": "bitcoin-100k-by-jan-31",
+      "action": "buy",
+      "size_usd": 500,
+      "price": 46.8,
+      "timestamp": "2026-06-01T10:32:00Z"
+    },
+    {
+      "order_id": "PM-002",
+      "market_slug": "bitcoin-100k-by-jan-31",
+      "action": "buy",
+      "size_usd": 1500,
+      "price": 47.2,
+      "timestamp": "2026-06-01T10:37:00Z"
+    },
+    {
+      "order_id": "PM-003",
+      "market_slug": "bitcoin-100k-by-jan-31",
+      "action": "sell",
+      "size_usd": 1000,
+      "price": 47.5,
+      "timestamp": "2026-06-01T10:42:00Z"
+    }
+  ],
+  "generated_at": "2026-06-01T19:00:54.448997"
+}

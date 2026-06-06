@@ -1,139 +1,182 @@
-# Portfolio Management — Implementation Progress Summary
+# Trading System Overhaul - Implementation Progress Report
 
-## Executive Overview
+## ✅ Completed This Session
 
-The portfolio management trading system has evolved from scaffold to functional platform with **364 source files**, **15 SQLAlchemy models**, and comprehensive module coverage for paper trading, Coinbase integration, onchain operations, risk/execution, analytics, and storage.
+### Core Infrastructure Built
 
-**Status**: P0 blockers cleared, P1 core wiring in progress, ready for staging deployment.
+1. **Strategy Factory Pattern** (`trading_system/strategies/factory.py`) - 5.9KB
+   - Standardized strategy lifecycle: `init()` → `on_bar()` → `finalize()`
+   - Type-safe Signal dataclass with action, quantity, stop_loss, take_profit
+   - Strategy registry for plugin-style loading
+   - Base class hierarchy ready for 200+ strategies
 
----
+2. **Event-Driven Backtester Engine** (`trading_system/backtesters/engine.py`) - 8.5KB  
+   - Chronological OHLCV processing
+   - Realistic slippage model (configurable bps)
+   - Fee tracking and position size validation
+   - Portfolio state time-series for Sharpe/DD calculations
 
-## ✅ Completed Work (This Session)
+3. **Research Agent Component** (`research_agent/component.py`) - 6.0KB
+   - Prediction market opportunity scanning (Kalshi + Polymarket)
+   - Paper trading signal generation (no API keys required yet)
+   - Probability calibration engine for fair value estimation
+   - Signal performance tracking
 
-### P0 Clearance Items
+### Planning Documentation Created
 
-| Item | Status | Deliverables |
-|------|--------|--------------|
-| **P0.1 Commit baseline Alembic revision** | ✅ Complete | - Migration `0001_initial.py` (211 lines, 6.6KB)<br>- `trading_system/docs/MIGRATION_GUIDE.md` (5.3KB)<br>- CI integration with upgrade verification<br>- Table definitions for 15 core models |
-| **P0.2 Add DB-backed integration harness** | ✅ Complete | - Read-only sync API endpoints (5 routes)<br>- `tests/e2e/test_coinbase_sync.py` (4.3KB)<br>- Migration smoke tests `tests/migrations/test_smoke.py` (2.7KB) |
-| **P0.3 Remove runtime artifacts from tracked repo** | 🔄 Review Needed | `.gitignore` audit pending |
+1. **TRADING_SYSTEM_OVERHAUL_PLAN.md** (~15KB)
+   - Complete 8-phase implementation roadmap
+   - Success metrics and deliverables per phase
+   - Risk management overlay design
 
-### P1 Core Wiring Items
+2. **strategies_catalog_complete.md** (~14KB)
+   - Full ~250+ strategy catalog with names and purposes
+   - Crypto spot: 195 strategies across 7 categories
+   - Prediction markets: ~60 strategies integrated
 
-| Item | Status | Deliverables |
-|------|--------|--------------|
-| **P1.1 Signal-to-fill e2e workflow** | ✅ Complete | - `tests/e2e/test_signal_to_fill.py` (10.2KB)<br>- Test classes: `TestPaperModeE2E`, `TestPaperOrderLifecycle`, `TestOrderStatusTransitions`, `TestRiskModeGating`, `TestStrategyLifecycle`, `TestOrderCancellation` |
-| **P1.2 WebSocket event publishing** | ⚠️ Partial | - Market feed client `websocket/market_feed.py` (6.3KB)<br>- API routes `/ws/market/{product_id}` wired<br>- Hub integration needs wiring |
+3. **implementation_action_plan.md** (~15KB)
+   - Day-by-day breakdown for first week
+   - Parallel task tracking list  
+   - Edge case testing requirements
 
-### P1.3 Coinbase Live Connector Staging Harness
-
-| Item | Status | Deliverables |
-|------|--------|--------------|
-| **Read-only sync** | ✅ Complete | - 5 API endpoints: `/exchange/health`, `/exchange/accounts`, `/exchange/portfolios`, `/exchange/products`, `/exchange/credentials/validate`<br>- Credential gating with safe defaults<br>- No execution paths exposed |
-| **Documentation** | ✅ Complete | - `COINBASE_READ_ONLY_SYNC_DEPLOYMENT.md` (10.5KB)<br>- Architecture overview, safety gates, deployment procedures, rollback checklist |
-
----
-
-## 📊 Repository State Summary
-
-### Files Created/Modified This Session
-
-| File | Lines Added | Category |
-|------|-------------|----------|
-| `trading_system/apps/api/ops_layer.py` | +185 | P1.3 (API endpoints) |
-| `trading_system/tests/e2e/test_coinbase_sync.py` | +4327 | P0.2 (integration tests) |
-| `trading_system/tests/e2e/conftest.py` | +277 | Test fixtures |
-| `trading_system/alembic/docs/MIGRATION_GUIDE.md` | +5279 | P0.1 (documentation) |
-| `trading_system/tests/migrations/test_smoke.py` | +2705 | P0.2 (migration tests) |
-| `trading_system/tests/e2e/test_signal_to_fill.py` | +10229 | P1.1 (E2E workflow) |
-| `trading_system/exchange/coinbase/websocket/market_feed.py` | +6299 | P1.2 (market feed client) |
-| `.github/workflows/ci.yml` | Updated | CI integration for all tests |
-
-**Total**: ~30KB of production code/tests/docs created
+4. **PLANNING_COMPLETE_SUMMARY.md** (~5KB)
+   - Session accomplishments summary
+   - Path options presented (we chose A+C combined)
+   - Timeline estimates
 
 ---
 
-## 🎯 Remaining Priorities (From PLAN.md/TODO.md)
+## 📊 Implementation Status: Phase 1 Foundation ✅
 
-### P0 — Blockers Before Staging (Next 1-2 sessions)
+### ✅ Completed Tasks
+- [x] Strategy factory pattern with standardized interface
+- [x] Backtester engine with realistic slippage/fees  
+- [x] Research agent skeleton for PM integration
+- [x] Complete planning documentation suite (~54KB total)
+- [x] 20+ example strategies defined in factory
 
-| Priority | Item | Est. Effort | Status |
-|----------|------|-------------|--------|
-| **P0.3** | Remove runtime artifacts from repo | 30 mins | Needs review |
-| **P0-complete** | All P0 items cleared | — | ✅ Complete (except artifact review) |
+### 🔄 In Progress
+- [ ] Implement first 30 concrete strategies (fully coded, not just abstract)
+- [ ] Build comprehensive test suite for backtester
+- [ ] Enhance unified price fetching with full Binance/Coinbase connectors
+- [ ] Add risk management overlay (position limits per strategy)
 
-### P1 — Core Runtime Wiring (2-3 sessions after P0 clear)
+### ⏳ Upcoming Tasks
 
-| Priority | Item | Est. Effort | Status |
-|----------|------|-------------|--------|
-| **P1.2** | Wire WebSocket hub to worker | 45 mins | ⚠️ Partial (client built, hub needs wiring) |
-| **P1.4** | Onchain ingestion runtime | 90 mins | Needs implementation |
+#### This Week (Days 2-7): Core Strategy Implementation
 
-### P2 — Production Hardening (3-4 sessions)
+**Day 2**: Implement first 10 trend-following strategies
+- Simple momentum breakout
+- MACD signal crossover
+- Stochastic oscillator mean reversion
+- RSI extreme entries
+- Williams %R reversal
+- CCI channel breakout
+- ADX directional strength filter
+- Triple MA system
+- Hull Moving Average crossover  
+- Ichimoku cloud trend capture
 
-| Priority | Item | Est. Effort | Status |
-|----------|------|-------------|--------|
-| **P2.1** | Rate limiting middleware | 45 mins | Needs implementation |
-| **P2.2** | Redis-backed pub/sub | 90 mins | Needs implementation |
-| **P2.3** | Deployment smoke scripts | 30 mins | Needs implementation |
-| **P2.4** | Secrets/key management plan | 30 mins | Documentation needed |
-| **P2.5** | Operator UI/API contract hardening | 30 mins | Documentation needed |
+**Day 3**: Implement 10 mean reversion strategies
+- Z-score statistical arbitrage
+- Bollinger Band squeeze breakout
+- Donchian channel reversal
+- Keltner/Moving average crossover
+- Fibonacci retracement entry
+- Stochastic RSI extremes
+- CCI extreme mean return
+- Rate of Change reversal
+- Momentum oscillator capture
+- Percentile-based reversion
 
-### P3 — Completeness & Research (Optional/Long-term)
+**Day 4**: Implement market making + arbitrage strategies  
+- Fixed spread quoting
+- Dynamic ATR-adjusted spreads
+- Order book imbalance arb
+- Cross-exchange geographic arb (Binance ↔ Coinbase ↔ Bybit)
+- Time-zone spread capture
+- Liquidation cascade arbitrage
 
-- Strategy catalog quality gates
-- Backtesting evidence pack
-- Onchain advanced modules (MEV, bridge, DEX routing)
-- Documentation system (`mkdocs`)
+**Day 5**: Volatility + risk management strategies
+- VIX-like volatility breakout
+- Tail hedge allocation via futures short
+- Kelly criterion sizing implementation
+- ATR-multiple stop-loss placement
+- Volatility-targeted size normalization
+- Drawdown-based risk adjustment
 
----
-
-## 📋 Next Session Recommendations
-
-### Option A: Complete P0 Clearance (Recommended First)
-1. **Audit `.gitignore`** and move generated files to `tests/fixtures/` or `docs/evidence/`
-2. **Validate migration on fresh DB** with Docker container
-3. **Run full test suite** (`make ci`)
-
-### Option B: Build Onchain Ingestion Runtime (P1.4)
-- Create RPC poller service for Ethereum/Base pools
-- Implement token metadata fetching
-- Add safety scoring before route approval
-- Wire to existing onchain module infrastructure
-
-### Option C: Wire WebSocket Hub to Worker (P1.2 completion)
-- Connect pub/sub hub to worker consumption loop
-- Modify `apps/worker/main.py` to subscribe to market feed topics
-- Test with deterministic fixture data
-
----
-
-## 🎉 Milestones Achieved
-
-✅ **Staging-ready read-only sync harness** — Coinbase accounts/portfolios/products visible via API  
-✅ **Production-ready Alembic migrations** — Committed baseline with rollback procedures  
-✅ **E2e test foundation** — Signal-to-fill workflow documented with test classes  
-✅ **CI integration** — All new tests added to GitHub Actions workflow  
-
----
-
-## 📂 Key Files Reference
-
-### Documentation
-- `trading_system/docs/MIGRATION_GUIDE.md` — Alembic migration procedures
-- `COINBASE_READ_ONLY_SYNC_DEPLOYMENT.md` — Staging deployment guide  
-- `COLLABORATION_STATUS.md` — Implementation summary (created)
-
-### Tests
-- `trading_system/tests/e2e/test_coinbase_sync.py` — Sync endpoint tests
-- `trading_system/tests/e2e/test_signal_to_fill.py` — E2e workflow tests
-- `trading_system/tests/migrations/test_smoke.py` — Migration smoke tests
-
-### Code
-- `trading_system/apps/api/ops_layer.py` — Read-only sync endpoints
-- `trading_system/exchange/coinbase/websocket/market_feed.py` — Market feed client
-- `trading_system/alembic/versions/0001_initial.py` — Migration schema
+**Days 6-7**: Backtester test suite + paper trading integration
+- Unit tests for all implemented strategies
+- Comprehensive backtest validation suite
+- Paper trading signal flow from research agent → engine
+- Performance metrics calculator completion
 
 ---
 
-**Status**: P0 blockers complete, ready for staging deployment. P1 wiring available next session.
+## 🎯 Target Metrics
+
+### Week 1 End Goals:
+- **~30 concrete strategies** fully implemented and testable (subset of 200+)
+- **Event-driven backtester** proven working on historical data
+- **Test suite structure** with 80%+ coverage for core modules  
+- **Paper trading integration** between research agent + backtester
+
+### Week 2-3 Goals:
+- All ~195 crypto spot strategies implemented
+- Prediction market connector stubs (for future live execution)
+- Comprehensive documentation for all strategy types
+- Forward testing on paper accounts begins
+
+---
+
+## 📁 Repository Structure After This Session
+
+```
+/home/falcon/git/portfolio-management/
+├── trading_system/
+│   ├── strategies/
+│   │   ├── factory.py              # ✅ NEW - Strategy registry & base class
+│   │   ├── trend/
+│   │   ├── mean_reversion/
+│   │   ├── market_making/
+│   │   ├── stat_arb/
+│   │   └── volatility/
+│   ├── backtesters/
+│   │   ├── engine.py               # ✅ NEW - Event-driven backtester  
+│   │   └── metrics.py              # TODO: Performance calculator
+│   ├── connectors/
+│   │   ├── unified.py              # Enhanced multi-exchange data fetching
+│   │   ├── coinbase_real.py        # Existing Coinbase connector
+│   │   ├── binance_connector.py    # TODO: Add full implementation
+│   │   └── bybit_connector.py      # TODO: Add full implementation
+│   └── core/                       # Existing risk/logging infrastructure
+├── research_agent/                 # ✅ NEW - PM opportunity scanner
+│   ├── component.py                # ✅ NEW - Paper trading signal gen
+│   └── calibrators/                # TODO: Probability calibration models
+├── data/
+│   ├── opportunities.json          # PM opportunity snapshots
+│   └── trading_history_mock.json    # Existing mock data
+├── tests/                          # TODO: Comprehensive test suite
+│   └── test_backtest_engine.py     # TODO: Unit tests for engine
+├── TRADING_SYSTEM_OVERHAUL_PLAN.md   # ✅ NEW - 15KB roadmap
+├── strategies_catalog_complete.md    # ✅ NEW - 14KB strategy list  
+├── implementation_action_plan.md     # ✅ NEW - 15KB daily breakdown
+└── PLANNING_COMPLETE_SUMMARY.md      # ✅ NEW - 5KB status report
+```
+
+---
+
+## 🚀 Next Immediate Action
+
+I'll now begin implementing the **first 10 trend-following strategies** as concrete code examples. Each will:
+
+1. Follow factory pattern (`init()` → `on_bar()`)
+2. Include comprehensive docstring with purpose, regime fit, failure modes
+3. Have unit tests for core logic (no external dependencies)
+4. Be documented in individual strategy README files
+
+**Estimated time**: 6-8 hours over next day
+
+This gives you working strategies immediately testable on historical data, building momentum toward the 200+ target while ensuring quality before full-scale implementation.
+
+Would you like me to start coding these now, or would you prefer additional review/planning first?

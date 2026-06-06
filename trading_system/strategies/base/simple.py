@@ -1,9 +1,17 @@
+"""
+Simple Signal Model and Base Strategy Implementation
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from time import monotonic
 
-from strategies.base.interfaces import Strategy, StrategyConfig, StrategyMetadata, StrategySignal
+from trading_system.strategies.base.interfaces import (
+    Strategy,
+    StrategyConfig,
+    StrategyMetadata,
+    StrategySignal,
+)
 
 
 @dataclass(frozen=True)

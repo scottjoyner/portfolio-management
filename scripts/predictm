@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Prediction Markets Trading CLI - Unified interface for Kalshi & Polymarket
+# Integrates with existing Alpaca CLI for stocks/crypto positions
+# Author: Falcon Git
+# Usage: predictm <command> [options]
+
+set -e  # Exit on error
+
+ALPACA_PROFILE="${ALPACA_PROFILE:-paper}"
+PORTFOLIO_HOME="/home/falcon/git/portfolio-management"
+
+# Colors for output (can be disabled with NO_COLOR=1)
+if [[ "$NO_COLOR" == "" ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
+
+# Usage function
+usage() {
+    echo -e "${BLUE}Predict Markets Trading CLI${NC}"
+    echo ""
+    echo "Unified interface for prediction market trading via Kalshi and Polymarket"
+    echo "Integrates with Alpaca CLI for stocks/crypto positions"
+    echo ""
+    echo "Usage: predictm <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo -e "  ${YELLOW}markets${NC}         List available prediction markets"
+    echo -e "  ${GREEN}market info<id>${NC}   Get details for a specific market"
+    echo -e "  ${BLUE}order list${NC}          List open prediction market orders"
+    echo -e "  ${BLUE}order cancel<id>${NC}   Cancel an open order"
+    echo -e "  ${GREEN}history<id>${NC}        Fetch historical price data for a market"
+    echo -e "  ${RED}balance${NC}            Check account balance"
+    echo -e "  ${YELLOW}watcher<market_id>${NC}   Continuous price watcher (tail-like)"
+    echo ""
+    echo "Examples:"
+    echo -e "  # List Polymarket election markets"
+    echo "  predictm markets --event us-pres-24"
+    echo ""
+    echo -e "  # Get market details"
+    echo "  predictm market info us-pres-24-biden-win"
+    echo ""
+    echo -e "  # Watch price changes for a market"
+    echo "  predictm watcher bitcoin-price-above-100k"
+    echo ""
+    echo "Environment:"
+    echo -e "  ALPACA_PROFILE=${NC}      Alpaca profile to use (paper or live)"
+    echo -e "  NO_COLOR=1              Disable colored output"
+    echo ""
+    alpaca doctor --quiet --profile "$ALPACA_PROFILE" 2>/dev/null || echo "Alpaca CLI ready for integration"
+}
+
+# Function: Get available prediction markets (Polymarket)
+markets() {
+    local event="$1"
+    
+    if [[ -n "$event" ]]; then
+        echo -e "${BLUE}📊 Fetching markets for event: ${GREEN}${event}${NC}"
+        
+        # Call Polymarket API for specific event
+        curl -s "https://api.polymarket.io/v1/markets/events/${event}" \
+            | jq -r '.markets[]? | 
+                "\(.id) \(.marketTitle) | Open: \(.status == \"open\" ? \"YES\" : \"NO\") | Volume: \((.totalVolumeUsd // 0)|.floor(2))"' 
+    else
+        echo -e "${BLUE}📊 Listing top prediction markets${NC}"
+        
+        curl -s "https://api.polymarket.io/v1/markets/slots" \
+            | jq -r '.markets[]? | 
+                "\(.id) \(.market.eventTitle // "Unknown Event") | Status: \(.status) | Volume: \((.totalVolumeUsd // 0)|.floor(2))"' 
+    fi
+}
+
+# Function: Get market details
+market_info() {
+    local market_id="$1"
+    
+    if [[ -z "$market_id" ]]; then
+        echo "Error: Market ID required"
+        return 1
+    fi
+    
+    echo -e "${BLUE}📊 Market Details for: ${GREEN}${market_id}${NC}"
+    
+    curl -s "https://api.polymarket.io/v1/markets/slots/${market_id}" \
+        | jq '.markets[]? | {
+            description: .description,
+            status: .status,
+            filledVolumeUsd: ((.filledVolumeUsd // 0) | floor(2)),
+            resolutionDate: (.event.resolutionDate // "N/A"),
+            price: .price // null
+        }' || echo -e "${RED}Failed to fetch market info${NC}"
+}
+
+# Function: List orders (via unified_price_fetcher integration)
+order_list() {
+    echo -e "${BLUE}📊 Checking prediction market orders${NC}"
+    
+    # This would integrate with Kalshi/Polymarket order history endpoints
+    # For now, show example of how to call Alpaca for cross-trading
+    
+    echo "To view your Alpaca positions (for cross-trading):"
+    alpaca position list --quiet --profile "$ALPACA_PROFILE"
+    
+    echo ""
+    echo "Prediction market orders would be listed here when credentials are configured"
+}
+
+# Function: Cancel order
+order_cancel() {
+    local order_id="$1"
+    
+    if [[ -z "$order_id" ]]; then
+        echo "Error: Order ID required"
+        return 1
+    fi
+    
+    # Placeholder for prediction market order cancellation
+    echo -e "${YELLOW}Would cancel order: ${GREEN}${order_id}${NC}"
+    echo "(Polymarket/Kalshi direct API integration required)"
+}
+
+# Function: Fetch market history
+history() {
+    local market_id="$1"
+    local start_date="${2:-2024-01-01T00:00:00Z}"
+    local end_date="${3:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    
+    if [[ -z "$market_id" ]]; then
+        echo "Error: Market ID required"
+        return 1
+    fi
+    
+    echo -e "${BLUE}📊 Fetching history for market: ${GREEN}${market_id}${NC}"
+    echo "Start: $start_date | End: $end_date"
+    
+    # Placeholder - would call Kalshi public historical endpoint or Polymarket snapshot API
+    curl -s "https://api.kalshi.com/v1/market-history?marketId=${market_id}&granularity=86400&startTime=${start_date}&endTime=${end_date}" \
+        | jq '.data[]? | {timestamp: .timeStamp, price: .value}' || echo -e "${RED}No historical data available for this market${NC}"
+}
+
+# Function: Balance checker
+balance() {
+    echo -e "${BLUE}📊 Checking account balances${NC}"
+    
+    echo ""
+    echo "Alpaca Paper Trading Balance:"
+    alpaca account get --quiet --profile "$ALPACA_PROFILE"
+    
+    echo ""
+    echo "Prediction market platforms require their own API keys:"
+    echo -e "  ${YELLOW}Kalshi:${NC}     See https://kalshi.com/account to get API keys"
+    echo -e "  ${YELLOW}Polymarket:${NC} Add POLYMARKET_API_KEY to your .env file"
+}
+
+# Function: Continuous price watcher (tail-like output)
+watcher() {
+    local market_id="$1"
+    
+    if [[ -z "$market_id" ]]; then
+        echo "Error: Market ID required"
+        return 1
+    fi
+    
+    echo -e "${BLUE}👁️ Watching market price: ${GREEN}${market_id}${NC}"
+    echo "(Press Ctrl+C to stop)"
+    echo ""
+    
+    # Poll market info every 5 seconds
+    while true; do
+        if [[ "$NO_COLOR" == "" ]]; then
+            clear  # Clear terminal for cleaner watcher view
+        fi
+        
+        echo -e "${BLUE}=== Market Watcher ===${NC}"
+        echo "Market: ${market_id}"
+        echo ""
+        
+        if curl -s "https://api.polymarket.io/v1/markets/slots/${market_id}" | jq -r '
+            .markets[]? as $m |
+            if $m.description then
+                "\($m.description) | Price: \($m.price // "N/A") | Filled Volume: \((\($m.filledVolumeUsd // 0)|.floor(2)) USDC"
+            else
+                empty
+            end
+        ' 2>/dev/null || echo -e "${RED}Market not found or inaccessible${NC}"
+        
+        echo ""
+        sleep 5  # Check every 5 seconds
+    done
+}
+
+# Main command dispatcher
+command="${1:-}"
+shift 2>/dev/null || true
+
+case "$command" in
+    markets)
+        markets "$1"
+        ;;
+    "market info")
+        market_info "$1"
+        ;;
+    order list)
+        order_list
+        ;;
+    "order cancel")
+        order_cancel "$1"
+        ;;
+    history)
+        history "$1" "${2:-}" "${3:-}"
+        ;;
+    balance)
+        balance
+        ;;
+    watcher)
+        watcher "$1"
+        ;;
+    help|--help|-h|"")
+        usage
+        ;;
+    *)
+        echo "Unknown command: $command"
+        echo "Run 'predictm help' for usage information"
+        exit 1
+        ;;
+esac
