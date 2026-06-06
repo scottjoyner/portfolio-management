@@ -1,11 +1,76 @@
+# Portfolio Management Multi-Service Deployment
+version: '3.8'
+
 services:
-  postgres:
-    image: postgres:16
+  portfolio-manager:
+    build:
+      context: ./services/portfolio-manager
+      dockerfile: Dockerfile
+    container_name: portfolio_manager
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./data:/app/data
+      - ./logs/portfolio:/app/logs
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: arb
-    ports: ["5432:5432"]
-  redis:
-    image: redis:7
-    ports: ["6379:6379"]
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_CAPITAL=100000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.path.insert(0, '/app'); from portfolio_manager import *; b=Backtester(); print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  data-collector:
+    build:
+      context: ./services/data-collector
+      dockerfile: Dockerfile
+    container_name: data_collector
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./logs/collector:/app/logs
+    environment:
+      - COINBASE_API_KEY=${COINBASE_API_KEY:-test}
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-test}
+    restart: unless-stopped
+
+  backtester:
+    build:
+      context: ./services/backtester
+      dockerfile: Dockerfile
+    container_name: backtester
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./data:/app/data
+      - ./logs/backtest:/app/logs
+    environment:
+      - BACKTEST_INTERVAL=6h
+    depends_on:
+      - portfolio-manager
+    restart: unless-stopped
+
+  alerts:
+    build:
+      context: ./services/alerts
+      dockerfile: Dockerfile
+    container_name: alerts
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./data:/app/data
+      - ./logs/alerts:/app/logs
+    environment:
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-test}
+      - EMAIL_SMTP_HOST=${EMAIL_SMTP_HOST:-localhost}
+    depends_on:
+      - portfolio-manager
+    restart: unless-stopped
+
+# Network configuration
+networks:
+  default:
+    driver: bridge
