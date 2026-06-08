@@ -1,0 +1,93 @@
+COINBASE V3 - QUICK REFERENCE CARD
+==================================
+
+INSTALLATION (ONE TIME)
+  npm install -g @coinbase/coinbase-cli          # Already done ✅
+  sudo apt install -y libsecret-tools             # Already done ✅
+
+SETUP (ONE TIME PER API KEY)
+  python3 scripts/setup_coinbase_credentials.py ~/Downloads/cdp_api_key.json
+
+VERIFICATION
+  coinbase balance                                # Test CLI
+  python3 verify_coinbase_v3.py                  # Full test suite
+
+USAGE - SIMPLE BALANCE CHECK
+  python3 check_balance.py                        # Table format
+  python3 check_balance.py --json                 # JSON format
+  python3 check_balance.py --csv                  # CSV format
+
+USAGE - PYTHON CODE
+  from trading_system.connectors.coinbase_v3 import CoinbaseConnectorV3
+  
+  cb = CoinbaseConnectorV3()
+  
+  # Get balances
+  balances = cb.get_balances()
+  
+  # Get price
+  price = cb.get_price('BTC-USD')
+  
+  # Preview order (no execution)
+  preview = cb.preview_order(
+      product_id='BTC-USD',
+      side='BUY',
+      order_type='market',
+      quote_size=100.0
+  )
+  
+  # Execute order
+  order = cb.create_order(
+      product_id='BTC-USD',
+      side='BUY',
+      order_type='market',
+      quote_size=100.0
+  )
+
+DOCUMENTATION
+  COINBASE_V3_README.md               # Full API reference
+  COINBASE_V3_IMPLEMENTATION_GUIDE.md # Detailed how-to
+  COINBASE_V3_DEPLOYMENT_SUMMARY.txt  # This deployment
+  trading_system/coinbase_v3_examples.py # Working examples
+
+CURRENT API KEY
+  Org:         534df359-3e4e-4383-83a6-2625030ec715
+  Key ID:      0012c0ce-befc-4a9d-a32f-c512ca98e6f9
+  Type:        ECDSA ✅
+  Permissions: View (Read-Only)
+  
+  ✅ Can: Check balances, prices, orders, preview trades
+  ❌ Cannot: Execute trades, transfer funds (needs Trade+Transfer perms)
+
+FILES CREATED
+  trading_system/connectors/coinbase_v3.py        (17 KB)  - Main class
+  check_balance.py                                (6.7 KB) - Simple checker
+  verify_coinbase_v3.py                           (9.4 KB) - Tests
+  scripts/setup_coinbase_credentials.py           (5.2 KB) - Setup
+  trading_system/coinbase_v3_examples.py          (6.8 KB) - Examples
+  COINBASE_V3_README.md                           (9.0 KB) - Docs
+  COINBASE_V3_IMPLEMENTATION_GUIDE.md             (10 KB)  - Guide
+  COINBASE_V3_DEPLOYMENT_SUMMARY.txt              (9.7 KB) - Summary
+
+TROUBLESHOOTING
+  coinbase: command not found
+    → npm install -g @coinbase/coinbase-cli
+  
+  HTTP 401 - Unauthorized
+    → Create new ECDSA key in CDP Portal
+    → Run setup script with new key
+  
+  HTTP 403 - Missing scopes
+    → Add Trade + Transfer permissions to key
+    → Create new key with correct permissions
+  
+  No module named 'trading_system'
+    → Run from portfolio-management/ directory
+    → python3 check_balance.py (not from subdirectory)
+
+COMMON COMMANDS
+  coinbase balance                  # Check account balance
+  coinbase products get BTC-USD     # Get BTC price
+  coinbase orders list              # List all orders
+  coinbase balance --jq '.USD'      # Get just USD balance
+  coinbase --help                   # CLI help
