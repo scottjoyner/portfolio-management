@@ -1,27 +1,9 @@
-# Trading System Requirements
-# Core Python Dependencies for Portfolio Management Backtesting
+# Portfolio Management System Dependencies
+# Install with: pip install -r requirements.txt
 
-# Standard library (no external packages needed for core functionality)
-# All trading strategies use only built-in modules:
-#   - collections, typing, dataclasses, time
-#   - random (for edge case testing)
-#   - statistics (for volatility calculations)
-#   - math (for position sizing)
+# Core data sources
+yfinance>=0.2.36
+requests>=2.31.0
 
-# Optional Dependencies (for advanced features):
-numpy==1.26.4          # Vectorized backtesting (optional)
-pandas==2.2.1          # Time series handling (optional)
-pytest==8.3.2          # Testing framework
-pyyaml==6.0.1          # Configuration file parsing
-
-# Production Deployment:
-flask==3.0.3           # Web dashboard serving (optional)
-prometheus-client==0.20.0  # Metrics collection (optional)
-
-# Linting & Quality:
-flake8==7.1.1          # Code quality checks
-black==24.4.2          # Auto-formatting
-
-# Documentation:
-mkdocs==1.6.0          # Project documentation
-mkdocstrings==0.25.1   # API documentation generation
+# Utilities
+python-dotenv>=1.0.0

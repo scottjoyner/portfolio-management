@@ -1,0 +1,24 @@
+# Portfolio Management System Configuration
+# Data Source Settings
+
+default:
+  # Preferred order of sources to try when fetching data
+  source_priority: [yfinance, alphavantage, default]
+
+yfinance:
+  enabled: true
+  api_key: ""
+  rate_limit_delay: 1.0
+  max_retries: 3
+
+alphavantage:
+  enabled: true
+  api_key: ""
+  # Rate limits: 5 calls/minute, 500/day on free tier
+  rate_limit_delay: 60.0
+  max_retries: 2
+
+default_fallback:
+  enabled: false
+  use_mock_data: true
+  cache_dir: "~/.hermes/portfolio-cache"
