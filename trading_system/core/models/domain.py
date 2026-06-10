@@ -1,10 +1,9 @@
 from __future__ import annotations
-
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from time import monotonic_ns
 from pydantic import BaseModel, Field
-
+from typing import List, Optional, Dict, Any
 
 class CapitalBucketType(str, Enum):
     LOCKED_RESERVE = "LOCKED_RESERVE"
@@ -13,7 +12,6 @@ class CapitalBucketType(str, Enum):
     ACCUMULATION = "ACCUMULATION"
     HEDGING = "HEDGING"
     CASH_BUFFER = "CASH_BUFFER"
-
 
 class RiskMode(str, Enum):
     ULTRA_CONSERVATIVE = "ULTRA_CONSERVATIVE"
@@ -25,12 +23,10 @@ class RiskMode(str, Enum):
     DERIVATIVES_EXPERT = "DERIVATIVES_EXPERT"
     RESEARCH_ONLY = "RESEARCH_ONLY"
 
-
 class ExchangeTrustScore(str, Enum):
     HEALTHY = "HEALTHY"
     DEGRADED = "DEGRADED"
     UNTRUSTED = "UNTRUSTED"
-
 
 class CapitalBucket(BaseModel):
     name: str
@@ -39,7 +35,6 @@ class CapitalBucket(BaseModel):
     min_weight: float = Field(ge=0, le=1, default=0)
     max_weight: float = Field(ge=0, le=1, default=1)
     locked: bool = False
-
 
 class OrderIntent(BaseModel):
     strategy_id: str
@@ -53,7 +48,6 @@ class OrderIntent(BaseModel):
     risk_mode: RiskMode = RiskMode.NORMAL
     reduce_only: bool = False
 
-
 class StructuredApprovalPayload(BaseModel):
     reason: str
     urgency: str
@@ -65,7 +59,6 @@ class StructuredApprovalPayload(BaseModel):
     liquidity_state: str
     exchange_trust_score: ExchangeTrustScore
     rollback_plan: str
-
 
 @dataclass(slots=True)
 class LatencyTrace:
@@ -85,7 +78,6 @@ class LatencyTrace:
     def as_us(self) -> dict[str, float]:
         def delta(a: int, b: int) -> float:
             return max(b - a, 0) / 1_000.0 if a and b else 0.0
-
         return {
             "feed_receive_latency_us": delta(self.feed_received_ns, self.normalize_done_ns),
             "normalization_latency_us": delta(self.normalize_done_ns, self.feature_done_ns),
@@ -95,3 +87,17 @@ class LatencyTrace:
             "order_submit_latency_us": delta(self.submit_done_ns, self.ack_done_ns),
             "exchange_ack_latency_us": delta(self.ack_done_ns, self.fill_done_ns),
         }
+
+class Bracket(BaseModel):
+    client_order_id: str
+    product_id: str
+    side: str
+    base_size: float
+    quote_size: float
+    entry_price: float
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    status: str = "OPEN" # OPEN, FILLED, CLOSED, CANCELLED
+    strategy_id: str
+    timestamp: float
+    metadata: Dict[str, Any] = Field(default_factory=dict)

@@ -1,38 +1,26 @@
-#!/usr/bin/env python3
-"""
-Unified Price Fetcher - Multi-Platform Prediction Market Price Aggregation
-Combines real-time prices from Coinbase, Alpaca, Kalshi, and Polymarket into single interface
-
-This provides unified access to:
-✅ Stock/crypto prices (Alpaca/Coinbase)
-✅ Prediction market outcomes (Kalshi/Polymarket)
-✅ Cross-platform arbitrage opportunities
-✅ Aggregated liquidity data
-"""
-
-import asyncio
-from typing import Optional, Dict, List
+from __future__ import annotations
+from typing import Optional, Dict, List, Any
 from datetime import datetime
+import asyncio
+import os
+import dotenv
+from pathlib import Path
 
+from trading_system.core.providers.base import BaseProvider
+from trading_system.core.providers.alpaca import AlpacaProvider
+from trading_system.core.providers.coinbase import CoinbaseProvider
+from trading_system.core.providers.kraken import KrakenProvider
+from trading_system.core.providers.binance import BinanceProvider
+from trading_system.core.providers.prediction_markets import KalshiProvider, PolymarketProvider
 
 class UnifiedPriceFetcher:
-    """Unified price fetcher across all trading platforms"""
+    """Unified price fetcher across all trading platforms using the Provider Pattern."""
     
-    # Platform-specific connectors
     def __init__(self):
-        self.alpaca = None
-        self.coinbase = None
-        self.kalshi = None
-        self.polymarket = None
-    
-    async def initialize(self):
-        """Initialize all platform connections"""
-        print("\n🔌 INITIALIZING PRICE FETCHERS...")
+        self.providers: Dict[str, BaseProvider] = {}
         
-        # Check which platforms have credentials available
-        import os
-        from pathlib import Path
-        import dotenv
+    async def initialize(self):
+        print("\n🔌 INITIALIZING PRICE FETCHERS...")
         
         env_files = [
             Path('/home/falcon/git/portfolio-management/.env'),
@@ -44,32 +32,26 @@ class UnifiedPriceFetcher:
                 dotenv.load_dotenv(env_file)
                 break
         
-        # Initialize Alpaca connector (already working)
-        try:
-            from trading_system.connectors.alpaca import AlpacaConnector
-            alpaca_key = os.environ.get('ALPACA_API_KEY', '')
-            alpaca_secret = os.environ.get('ALPACA_API_SECRET', '')
-            
-            if alpaca_key and not '***' in alpaca_key:
-                self.alpaca = AlpacaConnector(
-                    paper_trading=True,
-                    api_key=alpaca_key,
-                    api_secret=alpaca_secret
-                )
-                await self.alpaca.connect()
-        except Exception as e:
-            print(f"⚠️  Alpaca initialization failed: {str(e)}")
+        # Initialize Providers
+        providers_to_init = [
+            (AlpacaProvider, {'api_key': os.environ.get('ALPACA_API_KEY'), 'api_secret': os.environ.get('ALPACA_API_SECRET'), 'paper_trading': True}),
+            (CoinbaseProvider, {'api_key': os.environ.get('COINBASE_API_KEY'), 'api_secret': os.environ.get('COINBASE_API_SECRET')}),
+            (KrakenProvider, {'api_key': os.environ.get('KRAKEN_API_KEY'), 'api_secret': os.environ.get('KRAKEN_API_SECRET')}),
+            (BinanceProvider, {'api_key': os.environ.get('BINANCE_API_KEY'), 'api_secret': os.environ.get('BINANCE_API_SECRET')}),
+            (KalshiProvider, {}),
+            (PolymarketProvider, {})
+        ]
         
-        # Initialize Coinbase connector (already working)  
-        try:
-            from trading_system.connectors.coinbase import CoinbaseConnector
-            coinbase = CoinbaseConnector()
-            await coinbase.connect()
-        except Exception as e:
-            print(f"⚠️  Coinbase initialization failed: {str(e)}")
+        for provider_cls, kwargs in providers_to_init:
+            try:
+                provider = provider_cls(**kwargs)
+                await provider.connect()
+                self.providers[provider.get_name().lower()] = provider
+            except Exception as e:
+                print(f"⚠️  {provider_cls.__name__} initialization failed: {str(e)}")
         
         print("\n✅ Price fetchers initialized successfully!\n")
-    
+
     async def fetch_stock_price(self, symbol: str, exchange: str = 'alpaca') -> Optional[Dict]:
         """
         Fetch current price for a stock
@@ -81,38 +63,32 @@ class UnifiedPriceFetcher:
         Returns:
             Price data dictionary
         """
-        try:
-            if exchange == 'alpaca' and self.alpaca:
-                prices = await self.alpaca.get_current_prices([symbol])
-                return prices.get(symbol, None)
-            elif exchange == 'coinbase' and self.coinbase:
-                prices = await self.coinbase.get_current_prices([symbol])
-                return prices.get(symbol, None)
-                
-        except Exception as e:
-            print(f"❌ Error fetching stock price for {symbol}: {str(e)}")
-        
-        return None
-    
-    async def fetch_crypto_price(self, symbol: str) -> Optional[Dict]:
-        """
-        Fetch current crypto price
-        
-        Args:
-            symbol: Crypto pair (e.g., 'BTC-USD', 'ETH-USD')
-            
-        Returns:
-            Price data dictionary
-        """
-        if self.coinbase:
+        provider = self.providers.get(exchange.lower())
+        if provider:
             try:
-                prices = await self.coinbase.get_current_prices([symbol])
+                prices = await provider.get_current_prices([symbol])
                 return prices.get(symbol, None)
             except Exception as e:
-                print(f"❌ Error fetching crypto price for {symbol}: {str(e)}")
+                print(f"❌ Error fetching stock price from {exchange}: {str(e)}")
+        else:
+            print(f"⚠️  Provider '{exchange}' not found.")
         
         return None
-    
+
+    async def fetch_crypto_price(self, symbol: str) -> Optional[Dict]:
+        """
+        Fetch current crypto price (Defaulting to Coinbase)
+        """
+        provider = self.providers.get('coinbase')
+        if provider:
+            try:
+                prices = await provider.get_current_prices([symbol])
+                return prices.get(symbol, None)
+            except Exception as e:
+                print(f"❌ Error fetching crypto price from coinbase: {str(e)}")
+        
+        return None
+
     async def fetch_prediction_market_price(
         self, 
         market_id: str, 
@@ -123,49 +99,29 @@ class UnifiedPriceFetcher:
         Fetch current price for a prediction market outcome
         
         Args:
-            market_id: Market ID (e.g., 'us-pres-24-biden-win')
-            outcome: Outcome index (0=first option, 1=second option)
+            market_id: Market ID
+            outcome: Outcome index
             platform: Platform source ('polymarket' or 'kalshi')
             
         Returns:
             Prediction market price data
         """
-        try:
-            if platform == 'polymarket' and self.polymarket:
-                # Get order book to see current outcome prices
-                await self.polymarket.get_order_book(market_id)
-                
-                # Try to get detailed market info for exact pricing
-                details = await self.polymarket.get_market_details(market_id)
-                
-                if details and 'markets' in details:
-                    markets = details['markets']
-                    if outcome < len(markets):
-                        return {
-                            'market': market_id,
-                            'outcome_index': outcome,
-                            'description': markets[outcome]['description'],
-                            'price': float(markets[outcome].get('price', 0)),
-                            'volume': markets[outcome].get('filledVolume', 0),
-                            'last_updated': datetime.now().isoformat()
-                        }
-            
-            elif platform == 'kalshi' and self.kalshi:
-                # Kalshi uses market ID directly in history endpoint
-                history = await self.kalshi.get_market_history(market_id)
-                
-                if history.get('prices'):
-                    return {
-                        'market': market_id,
-                        'price': float(history['prices'][0].get('value', 0)),
-                        'last_updated': datetime.now().isoformat()
-                    }
-                
-        except Exception as e:
-            print(f"❌ Error fetching prediction market price for {market_id}: {str(e)}")
+        provider = self.providers.get(platform.lower())
+        if provider:
+            try:
+                # We'll need to add specific methods to the mocks for this to be useful
+                # But for now, we'll just call get_current_prices as a fallback
+                prices = await provider.get_current_prices([market_id])
+                return {
+                    'market': market_id,
+                    'price': prices.get(market_id, 0.0),
+                    'last_updated': datetime.now().isoformat()
+                }
+            except Exception as e:
+                print(f"❌ Error fetching prediction market price from {platform}: {str(e)}")
         
         return None
-    
+
     async def fetch_all_prices(
         self, 
         stocks: List[str] = None,
@@ -174,14 +130,6 @@ class UnifiedPriceFetcher:
     ) -> Dict:
         """
         Fetch prices across all asset classes
-        
-        Args:
-            stocks: List of stock symbols to fetch
-            cryptos: List of crypto pairs to fetch  
-            predictions: List of {'market_id': ..., 'outcome': 0} dicts
-            
-        Returns:
-            Unified price data dictionary
         """
         print("\n📊 FETCHING UNIFIED PRICES...")
         
@@ -191,36 +139,29 @@ class UnifiedPriceFetcher:
             'predictions': {}
         }
         
-        # Fetch stock prices
         if stocks:
-            for symbol in stocks[:5]:  # Limit to prevent rate limit
+            for symbol in stocks[:5]:
                 price = await self.fetch_stock_price(symbol)
                 if price:
                     prices['stocks'][symbol] = price
         
-        # Fetch crypto prices
         if cryptos:
-            for crypto in cryptos[:3]:  # Limit
+            for crypto in cryptos[:3]:
                 price = await self.fetch_crypto_price(crypto)
                 if price:
                     prices['cryptos'][crypto] = price
         
-        # Fetch prediction market prices
         if predictions:
-            for pred in predictions[:3]:  # Limit
+            for pred in predictions[:3]:
                 market_id = pred.get('market_id')
-                outcome = pred.get('outcome', 0)
+                platform = pred.get('platform', 'polymarket')
                 
-                if platform == 'polymarket':
-                    price_data = await self.fetch_prediction_market_price(market_id, outcome)
-                else:
-                    price_data = await self.fetch_prediction_market_price(market_id, outcome)
-                    
-                if price_data:
-                    prices['predictions'][market_id] = price_data
+                if market_id:
+                    price_data = await self.fetch_prediction_market_price(market_id, pred.get('outcome', 0), platform)
+                    if price_data:
+                        prices['predictions'][market_id] = price_data
         
         return prices
-
 
 # Test unified price fetching
 async def test_unified_fetcher():
@@ -233,20 +174,24 @@ async def test_unified_fetcher():
     fetcher = UnifiedPriceFetcher()
     await fetcher.initialize()
     
-    # Example: Fetch prices from multiple sources
     test_requests = {
-        'stocks': ['AAPL', 'TSLA'],  # Stock symbols
-        'cryptos': ['BTC-USD', 'ETH-USD'],  # Crypto pairs  
+        'stocks': ['AAPL', 'TSLA'],
+        'cryptos': ['BTC-USD', 'ETH-USD'],
         'predictions': [
-            {'market_id': 'us-pres-24-biden-win', 'outcome': 0}  # Example Polymarket market
+            {'market_id': 'us-pres-24-biden-win', 'outcome': 0, 'platform': 'polymarket'}
         ]
     }
     
-    print("\n💡 Ready to fetch unified prices from:")
-    print("   • Stocks (via Alpaca)")
-    print("   • Crypto (via Coinbase)")  
-    print("   • Prediction Markets (via Polymarket/Kalshi)")
-
+    prices = await fetcher.fetch_all_prices(
+        stocks=test_requests['stocks'],
+        cryptos=test_requests['cryptos'],
+        predictions=test_requests['predictions']
+    )
+    
+    print("\n📊 FETCHED PRICES:")
+    import json
+    print(json.dumps(prices, indent=2))
+    print("\n" + "="*80)
 
 if __name__ == "__main__":
     asyncio.run(test_unified_fetcher())

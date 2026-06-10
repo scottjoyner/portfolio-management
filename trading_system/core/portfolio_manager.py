@@ -1,0 +1,44 @@
+from __future__ import annotations
+from typing import List, Dict
+from trading_system.core.models.domain import OrderIntent
+from trading_system.core.config import CoreConfig
+
+def calculate_rebalance(
+    prices: Dict[str, float],
+    portfolio_value_usd: float,
+    product_weights: Dict[str, float],
+    current_base: Dict[str, float],
+    min_notional: float = 50.0
+) -> List[OrderIntent]:
+    """
+    Calculates the necessary trades to reach target portfolio weights.
+    This is now a core function independent of specific exchange implementations.
+    """
+    intents = []
+    for product, w in product_weights.items():
+        px = prices.get(product)
+        if px is None or px <= 0:
+            continue
+            
+        target_usd = max(0.0, w) * portfolio_value_usd
+        target_base = target_usd / px
+        cur_base = current_base.get(product, 0.0)
+        
+        diff_base = target_base - cur_base
+        diff_usd = diff_base * px
+        
+        if abs(diff_usd) < min_notional:
+            continue
+            
+        intents.append(OrderIntent(
+            strategy_id="rebalance_auto",
+            product_id=product,
+            side="buy" if diff_base > 0 else "sell",
+            order_type="market", # Defaulting to market for core logic; specific types can be overridden
+            size=abs(diff_base),
+            price=None, # Market orders don't need price in the intent stage
+            budget_category="AUTO_REBALANCE", 
+            risk_mode="NORMAL",
+            reason=f"Automatic rebalance to weight {w}"
+        ))
+    return intents

@@ -1,20 +1,39 @@
 from __future__ import annotations
-def rebalance_plan(prices: dict[str, float], portfolio_value_usd: float, product_weights: dict[str, float], current_base: dict[str, float], min_notional: float = 50.0) -> list[dict]:
-    intents = []
-    for product, w in product_weights.items():
-        px = prices.get(product)
-        if px is None: continue
-        target_usd = max(0.0, w) * portfolio_value_usd
-        target_base = target_usd / px if px>0 else 0.0
-        cur = current_base.get(product, 0.0)
-        diff_base = target_base - cur
-        diff_usd = diff_base * px
-        if abs(diff_usd) < min_notional:
-            continue
-        intents.append({
-            "product_id": product,
-            "side": "buy" if diff_base > 0 else "sell",
-            "base_size": abs(diff_base),
-            "quote_size": abs(diff_usd)
-        })
-    return intents
+from typing import List, Dict
+from trading_system.core.portfolio_manager import calculate_rebalance
+from trading_system.core.models.domain import OrderIntent
+
+def rebalance_plan(
+    prices: Dict[str, float], 
+    portfolio_value_usd: float, 
+    product_weights: Dict[str, float], 
+    current_base: Dict[str, float], 
+    min_notional: float = 50.0
+) -> List[OrderIntent]:
+    """
+    Bridge function for Coinbase to utilize the shared core portfolio management logic.
+    
+    This maintains backward compatibility for the Coinbase-specific module while 
+    unifying the underlying strategy calculation.
+    """
+    # Call the shared core logic
+    intents = calculate_rebalance(
+        prices=prices,
+        portfolio_value_usd=portfolio_value_usd,
+        product_weights=product_weights,
+        current_base=current_base,
+        min_notional=min_notional
+    )
+    
+    # If the rest of the Coinbase system expects raw dictionaries instead of OrderIntent objects,
+    # we convert them here.
+    return [
+        {
+            "product_id": intent.product_id,
+            "side": intent.side,
+            "base_size": intent.size,
+            "quote_size": intent.size * prices.get(intent.product_id, 0.0) if intent.side == "buy" else intent.size * prices.get(intent.product_id, 0.0), # Note: Simplified
+            "rationale": intent.reason
+        }
+        for intent in intents
+    ]

@@ -1,0 +1,57 @@
+{
+  "fetch_time": "2026-06-09T18:35:02.600879",
+  "assets_configured": [
+    {
+      "symbol": "AAPL",
+      "interval": "1d"
+    },
+    {
+      "symbol": "MSFT",
+      "interval": "1d"
+    },
+    {
+      "symbol": "GOOGL",
+      "interval": "1d"
+    },
+    {
+      "symbol": "AMZN",
+      "interval": "1d"
+    },
+    {
+      "symbol": "META",
+      "interval": "1d"
+    },
+    {
+      "symbol": "NVDA",
+      "interval": "1d"
+    },
+    {
+      "symbol": "TSLA",
+      "interval": "1d"
+    },
+    {
+      "symbol": "SPY",
+      "interval": "1d"
+    },
+    {
+      "symbol": "QQQ",
+      "interval": "1d"
+    },
+    {
+      "symbol": "IWM",
+      "interval": "1d"
+    }
+  ],
+  "results_summary": {
+    "AAPL": 3,
+    "MSFT": 3,
+    "GOOGL": 3,
+    "AMZN": 3,
+    "META": 3,
+    "NVDA": 3,
+    "TSLA": 3,
+    "SPY": 3,
+    "QQQ": 3,
+    "IWM": 3
+  }
+}

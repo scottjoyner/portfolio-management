@@ -1,251 +1,189 @@
-# Portfolio Management Backtesting System ✅
+# Portfolio Management System
 
-Complete backtesting infrastructure with real-time data integration, multi-service Docker deployment, and production-ready code.
+A unified data source framework for portfolio management applications.
 
-## 📊 **Quick Start**
+## Features
 
-```bash
-# 1. Download historical market data
-python create_historical_data.py
+- **Multiple Data Sources**: yfinance, Alpha Vantage, default fallback
+- **Unified Interface**: Consistent API across all sources
+- **Automatic Fallback**: Graceful degradation when sources fail
+- **Smoke Testing**: Built-in verification of source health
+- **Rate Limit Awareness**: Respects API rate limits automatically
 
-# 2. Run manual backtest (hold-all strategy)
-python portfolio_manager.py
-
-# 3. Or use CLI interface
-python run_backtest.py --strategy hold_all
-
-# 4. Build and deploy with Docker (next session)
-docker-compose build
-docker-compose up -d
-```
-
-## 🎯 **Features**
-
-- ✅ Historical market data collection (1-year daily OHLCV)
-- ✅ Multi-asset portfolio management (10 major assets)
-- ✅ Complete backtesting engine with performance metrics
-- ✅ Production-ready Docker multi-service deployment
-- ✅ Real-time API integration ready
-- ✅ Alerting and monitoring infrastructure
-
-## 📈 **Assets Included**
-
-| Asset | Type | Starting Price | Expected Range |
-|-------|------|----------------|----------------|
-| BTC-USD | Cryptocurrency | $68,000 | $57K-$82K |
-| ETH-USD | Cryptocurrency | $3,700 | $3.1K-$4.4K |
-| AAPL | Technology Stock | $188 | $160-$215 |
-| MSFT | Technology Stock | $425 | $360-$490 |
-| GOOGL | Technology Stock | $178 | $150-$205 |
-| TSLA | Growth Stock | $208 | $175-$240 |
-| SPY | Index ETF (S&P 500) | $528 | $460-$590 |
-| QQQ | Tech ETF (Nasdaq-100) | $468 | $410-$530 |
-| VTI | Market ETF | $258 | $220-$290 |
-
-## 🚀 **Performance Results**
-
-### Hold-All Strategy (May 2024 - May 2025)
-
-```
-Initial Investment:    $100,000.00
-Final Portfolio Value: ~$135,000-$145,000
-Total Return:          +35% to +45%
-Annualized Return (CAGR): +27% to +30%
-Sharpe Ratio:         ~1.8-2.2 (excellent)
-Max Drawdown:         -15% to -20%
-```
-
-## 📁 **File Structure**
+## Project Structure
 
 ```
 portfolio-management/
-├── trading_system/           # Core production code
-│   ├── portfolio_manager.py  # Position, Portfolio, Backtester classes
-│   └── run_backtest.py       # CLI interface
-├── data/historical/          # Market data CSV files
-│   ├── *_daily.csv (10 assets × 252 days)
-├── services/                 # Docker service configurations
-│   ├── portfolio-manager/    # Port 3001 - Core engine
-│   ├── data-collector/       # Port 8080 - Real-time API
-│   ├── backtester/           # Port 3002 - Scheduled analysis
-│   └── alerts/               # Port 3003 - Monitoring
-├── docs/                     # Documentation
-│   ├── BACKTESTING_REPORT.md
-│   ├── TESTING_GUIDE.md
-│   └── IMPLEMENTATION_SUMMARY.md
-├── docker-compose.yml        # Multi-service orchestration
-└── requirements.txt          # Python dependencies
-
-services/                    # Service-specific scripts
-├── data_collector.py        # API integration logic
-└── backtester.py            # Scheduled analysis engine
+├── src/
+│   ├── sources/
+│   │   ├── __init__.py
+│   │   ├── base.py           # Abstract DataSource interface
+│   │   ├── yfinance.py       # Yahoo Finance implementation
+│   │   ├── alphavantage.py   # Alpha Vantage implementation  
+│   │   ├── default.py        # Fallback/mock data source
+│   │   └── factory.py        # Source creation and management
+│   └── backtest_engine.py    # Unified backtesting engine
+├── config.yaml               # Configuration file
+├── requirements.txt          # Python dependencies
+├── smoke_test.py            # Smoke test script
+└── README.md                # This file
 ```
 
-## 🛠️ **Installation**
+## Quick Start
 
-### Prerequisites
-
-- Python 3.12+
-- Docker and Docker Compose
-- Git (optional, for version control)
-
-### Setup Steps
-
-1. **Clone repository:**
-   ```bash
-   git clone <repository_url>
-   cd portfolio-management
-   ```
-
-2. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Generate historical data (if not downloaded):**
-   ```bash
-   python create_historical_data.py
-   ```
-
-4. **Run backtest:**
-   ```bash
-   python portfolio_manager.py
-   ```
-
-## 🐳 **Docker Deployment**
-
-### Build Images
+### 1. Install Dependencies
 
 ```bash
-cd /home/falcon/git/portfolio-management/services
-docker-compose build --no-cache
+cd /home/scott/git/portfolio-management
+pip install -r requirements.txt
 ```
 
-### Start All Services
+### 2. Run Smoke Test
 
 ```bash
-docker-compose up -d
-
-# View logs
-docker-compose logs -f portfolio-manager
-
-# Check health
-curl http://localhost:3001/health
+python smoke_test.py
 ```
 
-### Stop Services
+Expected output:
+```
+============================================================
+DATA SOURCE SMOKE TEST
+============================================================
+Started: 2026-06-09T...
+
+SUMMARY
+----------------------------------------
+Status: PASSED
+Passed: 1/1 sources
+Failed: 0/1 sources
+
+DETAILED RESULTS
+----------------------------------------
+  ✓ yfinance: ok
+  ✓ alphavantage: no_data (API key not configured)
+
+SOURCE STATUS
+----------------------------------------
+  ✓ yfinance: healthy
+```
+
+## Configuration
+
+Edit `config.yaml` to customize:
+
+- **Source priority**: Order of sources to try when fetching data
+- **API keys**: Alpha Vantage requires an API key for full functionality
+- **Rate limits**: Adjust delays based on your needs
+
+### Setting Alpha Vantage API Key
 
 ```bash
-docker-compose down
+# Option 1: Set in config.yaml
+alphavantage:
+  api_key: "your_api_key_here"
+
+# Option 2: Set via environment variable
+export ALPHA_VANTAGE_API_KEY="your_api_key_here"
 ```
 
-## 🧪 **Testing**
+## Usage Examples
 
-### Unit Tests
+### Python API
+
+```python
+from sources.factory import DataSourceFactory
+from backtest_engine import BacktestEngine
+import asyncio
+
+async def main():
+    # Create factory and engine
+    factory = DataSourceFactory()
+    engine = BacktestEngine(factory=factory)
+    
+    # Run smoke test
+    results = await engine.run_smoke_test()
+    print(f"Smoke test: {results['passed']}/{len(results['sources_tested'])} passed")
+    
+    # Fetch data with fallback
+    result = await factory.fetch_with_fallback(
+        symbol='AAPL',
+        start_date=datetime(2024, 1, 1),
+        end_date=datetime.now(),
+        preferred_sources=['yfinance', 'alphavantage']
+    )
+    
+    if result.get('data'):
+        print(f"Fetched {len(result['data'])} records for AAPL")
+
+asyncio.run(main())
+```
+
+### Command Line
 
 ```bash
-python run_backtest.py --strategy hold_all
-
-# Expected output:
-# Strategy: hold_all
-# Capital: $100,000.00
-# [Buy transactions for 10 assets]
-# Final Portfolio Value: ~$135,000-$145,000
+# Fetch data using the factory
+python -c "from sources.factory import DataSourceFactory; import asyncio; \
+f=DataSourceFactory(); print(asyncio.run(f.fetch_with_fallback('AAPL')))"
 ```
 
-### Integration Tests
+## Data Source Details
 
-- Data loader integration with CSV files ✅
-- Buy/sell transaction execution ✅  
-- Position tracking and value calculation ✅
-- Allocation reporting accuracy ✅
+### yfinance
+- **Pros**: No authentication required, good historical data coverage
+- **Cons**: Rate limited, occasional API instability
+- **Best for**: General market data, quick prototyping
 
-## 📊 **Configuration**
+### Alpha Vantage
+- **Pros**: Reliable API, comprehensive endpoints
+- **Cons**: Requires API key, strict rate limits (5/min, 500/day)
+- **Best for**: Production applications with proper caching
 
-Create `.env` file in project root:
+### Default Fallback
+- **Pros**: Always available, useful for testing
+- **Cons**: Mock data only
+- **Best for**: Development/testing environments
 
-```bash
-COINBASE_API_KEY=your_coinbase_api_key_here
-ALPACA_API_KEY=your_alpaca_api_key_here
-SLACK_WEBHOOK_URL=https://hooks.slack.com/...
-EMAIL_SMTP_HOST=localhost
+## Smoke Test Output Format
+
+The smoke test produces JSON output saved to:
+```
+data/smoke_test_results.json
 ```
 
-## 📚 **Documentation**
+Example structure:
+```json
+{
+  "timestamp": "2026-06-09T12:34:56",
+  "sources_tested": ["yfinance"],
+  "passed": 1,
+  "failed": 0,
+  "details": {
+    "yfinance": {
+      "status": "ok",
+      "records_fetched": 30,
+      "sample_date_range": "2026-06-08 to 2026-06-09"
+    }
+  }
+}
+```
 
-- `docs/BACKTESTING_REPORT.md` - Complete methodology and results
-- `docs/TESTING_GUIDE.md` - Test suite and Docker guide
-- `docs/IMPLEMENTATION_SUMMARY.md` - Session-by-session progress
+## Troubleshooting
 
-## 🎯 **Strategies**
+### Common Issues
 
-### Available Strategies:
+1. **yfinance not installed**: `pip install yfinance`
+2. **Alpha Vantage rate limited**: Wait 60 seconds or use cached data
+3. **No API key for Alpha Vantage**: Set in config.yaml or environment variable
+4. **Smoke test fails**: Check network connectivity and firewall rules
 
-1. **hold_all** (default)
-   - Buy all assets at start, hold for entire period
-   - No rebalancing, minimal transaction costs
+### Debug Mode
 
-2. **equal_weight**
-   - Monthly rebalance to equal dollar weights
-   - Maintains 10% allocation per asset
+Enable verbose logging:
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
 
-3. **market_timing**
-   - Simple buy-dip strategy
-   - Enter positions when market drops >5%
+## License
 
-## 🔮 **Roadmap**
-
-### Phase 1 ✅ (CURRENT): Core Backtesting Engine
-- [x] Historical data collection
-- [x] Portfolio management classes
-- [x] Backtesting engine with performance metrics
-- [x] CLI interface and documentation
-
-### Phase 2 🔄 (NEXT SESSION): Docker Deployment
-- [ ] Build all service images
-- [ ] Deploy multi-service infrastructure
-- [ ] Configure health checks and monitoring
-- [ ] Set up data persistence (PostgreSQL)
-
-### Phase 3: Real-Time Integration
-- [ ] Coinbase API integration for live prices
-- [ ] Alpaca API integration for order execution
-- [ ] WebSocket streaming for real-time updates
-- [ ] Transaction logging to database
-
-### Phase 4: Advanced Strategies
-- [ ] Dollar-cost averaging (DCA) implementation
-- [ ] Moving average trend-following
-- [ ] Risk parity portfolio construction
-- [ ] Performance attribution analysis
-
-## 📈 **Key Metrics**
-
-| Metric | Value | Description |
-|--------|-------|-------------|
-| Total Return | +35% to +45% | Portfolio value growth over period |
-| CAGR | +27% to +30% | Annualized compound growth rate |
-| Sharpe Ratio | 1.8-2.2 | Risk-adjusted return (excellent) |
-| Max Drawdown | -15% to -20% | Largest peak-to-trough decline |
-| Calmar Ratio | ~2.0 | Return / max drawdown |
-
-## 🔐 **Security**
-
-- Docker containers run as non-root user
-- API keys stored in environment variables (not hardcoded)
-- Secure volume mounts for sensitive data
-- Network isolation between services
-
-## 📧 **Support**
-
-- Documentation: See `docs/` folder
-- Issues: Create GitHub issue with backtest output
-- Questions: Check `IMPLEMENTATION_SUMMARY.md`
-
-## ⚖️ **Disclaimer**
-
-This portfolio management system is for educational and research purposes only. Past performance does not guarantee future results. Cryptocurrency investments carry high volatility and risk of loss. Not financial advice.
-
----
-
-**Status:** ✅ Core backtesting engine complete, ready for Docker deployment in next session
+MIT License - See LICENSE file for details.
