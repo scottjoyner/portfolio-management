@@ -1,0 +1,38 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    TRADING_MODE=paper \
+    LIVE_TRADING_ENABLED=false \
+    TRADING_EVENTS_PATH=/app/runtime/events/trading-events.jsonl
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    gnupg \
+    libsecret-tools \
+  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get install -y --no-install-recommends nodejs \
+  && npm install -g @coinbase/coinbase-cli \
+  && rm -rf /var/lib/apt/lists/* /root/.npm /var/cache/apt/*
+
+RUN groupadd -r trader && useradd -r -g trader -d /home/trader -m trader
+
+WORKDIR /app
+COPY trading_system/pyproject.toml /app/trading_system/pyproject.toml
+COPY trading_system /app/trading_system
+COPY scripts /app/scripts
+COPY check_balance.py /app/check_balance.py
+
+RUN pip install --no-cache-dir -e /app/trading_system \
+  && mkdir -p /app/runtime/events \
+  && chmod +x /app/scripts/container/trading-entrypoint.sh \
+  && chown -R trader:trader /app /home/trader
+
+USER trader
+ENTRYPOINT ["/app/scripts/container/trading-entrypoint.sh"]
+
+EXPOSE 8000 8501
+CMD ["uvicorn", "trading_system.apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
