@@ -1,107 +1,128 @@
+# Trading System Docker Compose
+# Full deployment with backtester, API, and UI dashboard
+
+version: "3.9"
+
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: trading-postgres
     environment:
-      POSTGRES_USER: trading
-      POSTGRES_PASSWORD: trading_dev_password
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader_secure}
       POSTGRES_DB: trading
+    ports: ["5432:5432"]
     volumes:
-      - trading_postgres:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trading -d trading"]
+      test: ["CMD-SHELL", "pg_isready -U trader"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: trading-redis
+    ports: ["6379:6379"]
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  coinbase-cli:
+    build:
+      context: ./trading_system/connectors
+      dockerfile: Dockerfile.coinbase-cli
+    command: tail -f /dev/null
+    env_file: .env.coinbase
+    volumes:
+      - ~/.coinbase:/root/.coinbase:ro
+      - coinbase_logs:/logs
+    depends_on:
+      - postgres
+      - redis
+
   trading-api:
     build:
-      context: .
-      dockerfile: Dockerfile.trading
-    user: root
-    container_name: trading-api
-    command: ["uvicorn", "trading_system.apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+      context: ./trading_system
+      dockerfile: Dockerfile.api
+    command: uvicorn trading_system.apps.api.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
     environment:
-      TRADING_MODE: paper
-      LIVE_TRADING_ENABLED: "false"
-      TRADING_EVENTS_PATH: /app/runtime/events/trading-events.jsonl
-      DATABASE_URL: postgresql://trading:trading_dev_password@postgres:5432/trading
-      REDIS_URL: redis://redis:6379/0
-    secrets:
-      - coinbase_cdp_api_key
+      - TRADING_MODE=paper
+      - LIVE_TRADING_ENABLED=true
+      - POSTGRES_URL=postgresql://trader:trader_secure@postgres:5432/trading
+      - REDIS_URL=redis://redis:6379
     volumes:
-      - trading_runtime:/app/runtime
-    ports:
-      - "8001:8000"
+      - ..:/app
+      - ~/.coinbase:/root/.coinbase:ro
+    ports: ["8000:8000"]
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
+      redis:
+        condition: service_healthy
+      coinbase-cli:
+        condition: service_started
+    restart: unless-stopped
 
-  trading-ui:
+  backtester:
     build:
-      context: .
-      dockerfile: Dockerfile.trading
-    container_name: trading-ui
-    command: ["uvicorn", "trading_system.apps.ui.main:app", "--host", "0.0.0.0", "--port", "8501"]
+      context: ./trading_system
+      dockerfile: Dockerfile.backtester
+    command: python -m trading_system.backtester --interval=1h --output=/results
+    env_file: .env
     environment:
-      TRADING_MODE: paper
-      LIVE_TRADING_ENABLED: "false"
-      TRADING_API_URL: http://trading-api:8000
-    ports:
-      - "8501:8501"
+      - TRADING_MODE=paper
+      - BACKTESTING_ENABLED=true
+    volumes:
+      - ..:/app
+      - backtest_results:/results
+      - ~/.coinbase:/root/.coinbase:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      trading-api:
+        condition: service_started
+    restart: unless-stopped
+
+  ui-dashboard:
+    build:
+      context: ./trading_system
+      dockerfile: Dockerfile.api
+    command: uvicorn trading_system.apps.ui.main:app --host 0.0.0.0 --port 8501
+    environment:
+      - TRADING_API_URL=http://trading-api:8000
+    ports: ["8501:8501"]
     depends_on:
       trading-api:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8501/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
+        condition: service_started
+    restart: unless-stopped
 
-  trading-worker:
+  strategy-worker:
     build:
-      context: .
-      dockerfile: Dockerfile.trading
-    container_name: trading-worker
-    command: ["python", "-m", "trading_system.apps.worker.main"]
+      context: ./trading_system
+      dockerfile: Dockerfile.api
+    command: python -m trading_system.apps.worker.main --strategies=all
+    env_file: .env
     environment:
-      TRADING_MODE: paper
-      LIVE_TRADING_ENABLED: "false"
-      TRADING_EVENTS_PATH: /app/runtime/events/trading-events.jsonl
-      DATABASE_URL: postgresql://trading:trading_dev_password@postgres:5432/trading
-      REDIS_URL: redis://redis:6379/0
-    secrets:
-      - coinbase_cdp_api_key
+      - TRADING_MODE=paper
+      - LIVE_TRADING_ENABLED=true
     volumes:
-      - trading_runtime:/app/runtime
+      - ..:/app
+      - ~/.coinbase:/root/.coinbase:ro
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
         condition: service_healthy
-
-secrets:
-  coinbase_cdp_api_key:
-    file: /home/scott/.coinbase/cdp_api_key.json
+      redis:
+        condition: service_healthy
+      trading-api:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
-  trading_postgres:
-  trading_runtime:
+  pg_data:
+  redis_data:
+  coinbase_logs:
+  backtest_results:

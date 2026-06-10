@@ -1,0 +1,21 @@
+# Coinbase CLI Container
+# Runs with JWT/ES256 authentication via official Coinbase CLI
+
+FROM node:20-alpine
+
+# Install dependencies
+RUN apk add --no-cache python3 py3-pip gcc musl-dev libffi-dev
+
+# Install Coinbase CLI globally
+RUN npm install -g @coinbase/coinbase-cli
+
+# Set up environment
+ENV COINBASE_CLI_HOME=/root/.coinbase
+
+# Create directories
+RUN mkdir -p /logs
+
+# Health check endpoint
+EXPOSE 8081
+
+CMD ["tail", "-f", "/dev/null"]

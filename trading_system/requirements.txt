@@ -1,0 +1,7 @@
+# Trading System Requirements
+# Coinbase connector, backtester, API service
+coinbase-cli>=0.0.3
+requests>=2.31.0
+pandas>=2.1.0
+numpy>=1.26.0
+python-dateutil>=2.8.0
