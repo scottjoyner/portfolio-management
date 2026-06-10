@@ -1,0 +1,79 @@
+# Trading System Docker Compose
+# Coinbase connector runs in isolated container with JWT/ES256 auth
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader_secure
+      POSTGRES_DB: trading
+    ports: ["5432:5432"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+  
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes:
+      - redis_data:/data
+  
+  coinbase-cli:
+    # Coinbase CLI container for JWT/ES256 authentication
+    build:
+      context: ./connectors
+      dockerfile: Dockerfile.coinbase-cli
+    command: tail -f /dev/null  # Keep container running
+    env_file: .env.coinbase
+    volumes:
+      - ~/.coinbase:/root/.coinbase:ro
+      - coinbase_logs:/logs
+    ports:
+      - "8081:8081"  # Health check endpoint
+    restart: unless-stopped
+  
+  coinbase-api:
+    # Main trading API with Coinbase connector
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    volumes:
+      - .:/app
+      - ~/.coinbase:/root/.coinbase:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - coinbase-cli
+    restart: unless-stopped
+  
+  backtester:
+    # Historical data backtesting service
+    build:
+      context: ..
+      dockerfile: Dockerfile.backtester
+    command: python -m trading_system.backtester --interval=1h
+    env_file: .env
+    volumes:
+      - ./backtest_results:/results
+    depends_on:
+      - postgres
+    restart: unless-stopped
+  
+  market-data-cache:
+    # Cache historical market data for backtesting
+    image: alpine:latest
+    command: sh -c "while true; do sleep 3600; done"
+    volumes:
+      - ./market_data_cache:/cache
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  redis_data:
+  coinbase_logs:
