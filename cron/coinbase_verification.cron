@@ -1,0 +1,8 @@
+# Coinbase Auth Verification Cron Job
+# Runs every 6 hours to verify auth is working before potential restarts
+
+# Verify Coinbase CLI authentication and historical data download
+python3 /home/scott/git/portfolio-management/verify_coinbase_auth.py >> ~/.coinbase/auth_verification.log 2>&1
+
+# Download fresh historical data if needed (every 24 hours)
+0 */24 * * * python3 /home/scott/git/portfolio-management/scripts/download_historical_data.py >> ~/.coinbase/data_download.log 2>&1
