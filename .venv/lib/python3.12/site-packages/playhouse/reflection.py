@@ -1,11 +1,11 @@
-try:
-    from collections import OrderedDict
-except ImportError:
-    OrderedDict = dict
+import datetime
+import decimal
+import re
+import uuid
+import warnings
+from collections import OrderedDict
 from collections import namedtuple
 from inspect import isclass
-import re
-import warnings
 
 from peewee import *
 from peewee import _StringField
@@ -13,7 +13,6 @@ from peewee import _query_val_transform
 from peewee import CommaNodeList
 from peewee import SCOPE_VALUES
 from peewee import make_snake_case
-from peewee import text_type
 try:
     from pymysql.constants import FIELD_TYPE
 except ImportError:
@@ -36,6 +35,32 @@ RESERVED_WORDS = set([
     'import', 'in', 'is', 'lambda', 'not', 'or', 'pass', 'print', 'raise',
     'return', 'try', 'while', 'with', 'yield',
 ])
+
+
+FieldTypeMap = {
+    'AUTO': int,
+    'BIGAUTO': int,
+    'BIGINT': int,
+    'BLOB': bytes,
+    'BOOL': bool,
+    'CHAR': str,
+    'DATE': datetime.date,
+    'DATETIME': datetime.datetime,
+    'DECIMAL': decimal.Decimal,
+    'DOUBLE': float,
+    'FLOAT': float,
+    'INT': int,
+    'SMALLINT': int,
+    'TEXT': str,
+    'TIME': datetime.time,
+    'UUID': uuid.UUID,
+    'UUIDB': bytes,
+    'VARCHAR': str,
+    'JSON': dict,
+    'JSONB': dict,
+    'TIMESTAMPTZ': datetime.datetime,
+    'INTERVAL': datetime.timedelta,
+}
 
 
 class UnknownField(object):
@@ -207,7 +232,7 @@ class Metadata(object):
            default.lower() == 'null':
             return
         if issubclass(field_class, _StringField) and \
-           isinstance(default, text_type) and not default.startswith("'"):
+           isinstance(default, str) and not default.startswith("'"):
             default = "'%s'" % default
         return default or "''"
 

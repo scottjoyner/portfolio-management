@@ -1,0 +1,14 @@
+{
+  "start_time": "2026-06-15T15:50:00.209206",
+  "end_time": "2026-06-15T15:50:00.209221",
+  "duration_hours": 6,
+  "initial_capital": 10000.0,
+  "final_capital": 10000.0,
+  "total_trades": 0,
+  "positions_held": 0,
+  "pnl_absolute": 0.0,
+  "pnl_percent": 0.0,
+  "trades": [],
+  "signal_distribution": {},
+  "tick_count": 360
+}

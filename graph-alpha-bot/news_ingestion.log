@@ -1,0 +1,313 @@
+Starting news ingestion for: BTC-USD, ETH-USD, SOL-USD, DOGE-USD, ADA-USD, XRP-USD, AVAX-USD, LINK-USD, DOT-USD, NEAR-USD, MON-USD, PEPE-USD, BONK-USD, WIF-USD, FET-USD, APT-USD, SUI-USD, SEI-USD, TIA-USD, INJ-USD, ARB-USD, OP-USD, MATIC-USD, LTC-USD, BCH-USD
+Graph server: http://localhost:8080
+Polling every 300 seconds. Ctrl+C to stop.
+/home/scott/git/portfolio-management/graph-alpha-bot/app/data/news_ingest_simple.py:237: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  last_run = datetime.utcnow() - timedelta(seconds=interval)
+/home/scott/git/portfolio-management/graph-alpha-bot/app/data/news_ingest_simple.py:241: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow()
+/home/scott/git/portfolio-management/graph-alpha-bot/app/data/news_ingest_simple.py:83: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  published_at = datetime.utcnow()
+2026-06-14 12:40:02,578 - INFO - Processed 45 articles
+Saved 45 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 12:45:03,443 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 12:50:04,281 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 12:55:05,155 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:00:06,066 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:05:07,255 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:10:08,075 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:15:08,884 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:20:09,856 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:25:10,704 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:30:11,508 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:35:12,272 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:40:13,193 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:45:13,961 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:50:14,807 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 13:55:15,566 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:00:16,371 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:05:17,152 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:10:17,950 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:15:18,671 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:20:19,478 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:25:20,315 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:30:21,241 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:35:21,982 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:40:22,746 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:45:23,677 - INFO - Processed 45 articles
+Saved 1 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:50:24,370 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 14:55:25,189 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:00:26,371 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:05:27,538 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:10:28,340 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:15:29,134 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:20:29,941 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:25:30,739 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:30:31,517 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:35:32,302 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:40:33,238 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:45:34,113 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:50:35,007 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 15:55:35,970 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:00:36,853 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:05:37,840 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:10:38,691 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:15:39,614 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:20:40,370 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:25:41,499 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:30:42,272 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:35:42,989 - INFO - Processed 45 articles
+Saved 1 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:40:43,939 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:45:44,680 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:50:45,453 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 16:55:46,425 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:00:47,242 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:05:47,957 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:10:48,757 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:15:49,606 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:20:50,632 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:25:51,409 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:30:52,120 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:35:53,101 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:40:54,152 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:45:55,315 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:50:56,296 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 17:55:57,214 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:00:58,080 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:05:59,007 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:10:59,981 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:16:00,950 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:21:01,990 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:26:03,393 - INFO - Processed 45 articles
+Saved 1 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:31:04,369 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:36:05,351 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:41:06,355 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:46:07,326 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:51:08,171 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 18:56:09,240 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:01:10,311 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:06:11,350 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:11:12,450 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:16:13,811 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:21:14,829 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:26:15,921 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:31:16,982 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:36:17,930 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:41:18,957 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:46:20,061 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:51:21,265 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 19:56:22,438 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:01:23,288 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:06:24,290 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:11:25,305 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:16:26,438 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:21:27,994 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:26:29,128 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:31:30,229 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:36:31,249 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:41:32,313 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:46:33,312 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:51:34,339 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 20:56:35,659 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:01:37,016 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:06:38,216 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:11:39,338 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:16:40,419 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:21:41,629 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:26:42,833 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:31:43,841 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:36:45,129 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:41:46,336 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:46:47,787 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:51:49,113 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 21:56:50,507 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:01:51,902 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:06:53,062 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:11:53,964 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:16:54,796 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:21:55,942 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:26:56,916 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:31:57,973 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:36:59,093 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:42:00,213 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:47:01,265 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:52:02,494 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 22:57:03,523 - INFO - Processed 45 articles
+Saved 1 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:02:04,538 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:07:05,763 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:12:06,799 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:17:07,881 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:22:08,731 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:27:09,730 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:32:10,858 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:37:11,717 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:42:12,695 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:47:13,529 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:52:14,561 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-14 23:57:15,764 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:02:16,727 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:07:17,702 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:12:18,728 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:17:19,691 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:22:20,681 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:27:21,732 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:32:22,864 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:37:23,812 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:42:24,756 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:47:25,627 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:52:26,627 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 00:57:27,567 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 01:02:28,493 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 01:07:29,358 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 01:12:30,436 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers
+2026-06-15 01:17:31,366 - INFO - Processed 45 articles
+Saved 0 new articles locally; pushed to graph: 0 articles, 0 tickers

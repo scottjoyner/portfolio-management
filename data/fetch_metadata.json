@@ -1,57 +1,47 @@
 {
-  "fetch_time": "2026-06-09T18:35:02.600879",
+  "fetch_time": "2026-06-11T13:32:50.492789",
   "assets_configured": [
     {
-      "symbol": "AAPL",
-      "interval": "1d"
+      "product_id": "BTC-USD",
+      "granularity": "ONE_HOUR"
     },
     {
-      "symbol": "MSFT",
-      "interval": "1d"
+      "product_id": "ETH-USD",
+      "granularity": "ONE_HOUR"
     },
     {
-      "symbol": "GOOGL",
-      "interval": "1d"
+      "product_id": "SOL-USD",
+      "granularity": "ONE_HOUR"
     },
     {
-      "symbol": "AMZN",
-      "interval": "1d"
+      "product_id": "ADA-USD",
+      "granularity": "ONE_DAY"
     },
     {
-      "symbol": "META",
-      "interval": "1d"
+      "product_id": "DOT-USD",
+      "granularity": "ONE_DAY"
     },
     {
-      "symbol": "NVDA",
-      "interval": "1d"
+      "product_id": "MATIC-USD",
+      "granularity": "ONE_DAY"
     },
     {
-      "symbol": "TSLA",
-      "interval": "1d"
+      "product_id": "AVAX-USD",
+      "granularity": "ONE_HOUR"
     },
     {
-      "symbol": "SPY",
-      "interval": "1d"
-    },
-    {
-      "symbol": "QQQ",
-      "interval": "1d"
-    },
-    {
-      "symbol": "IWM",
-      "interval": "1d"
+      "product_id": "LINK-USD",
+      "granularity": "ONE_HOUR"
     }
   ],
   "results_summary": {
-    "AAPL": 3,
-    "MSFT": 3,
-    "GOOGL": 3,
-    "AMZN": 3,
-    "META": 3,
-    "NVDA": 3,
-    "TSLA": 3,
-    "SPY": 3,
-    "QQQ": 3,
-    "IWM": 3
+    "BTC-USD": 0,
+    "ETH-USD": 0,
+    "SOL-USD": 0,
+    "ADA-USD": 0,
+    "DOT-USD": 0,
+    "MATIC-USD": 0,
+    "AVAX-USD": 0,
+    "LINK-USD": 0
   }
 }

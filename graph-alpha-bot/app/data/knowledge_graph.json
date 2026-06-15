@@ -1,0 +1,70 @@
+{
+  "articles": [
+    {
+      "id": "art_0000",
+      "title": "Bitcoin breaks resistance levels as institutional demand surges",
+      "published_at": "2026-06-15T10:16:26.395615Z",
+      "sentiment_score": 0.75,
+      "source": "demo_generator",
+      "tickers": [
+        "bitcoin",
+        "btc"
+      ]
+    },
+    {
+      "id": "art_0001",
+      "title": "Ethereum network upgrades drive price optimism among analysts",
+      "published_at": "2026-06-15T09:46:26.395615Z",
+      "sentiment_score": 0.65,
+      "source": "demo_generator",
+      "tickers": [
+        "ethereum",
+        "eth"
+      ]
+    },
+    {
+      "id": "art_0002",
+      "title": "Market analysts bullish on Bitcoin as ETF inflows accelerate",
+      "published_at": "2026-06-15T09:16:26.395615Z",
+      "sentiment_score": 0.7,
+      "source": "demo_generator",
+      "tickers": [
+        "bitcoin",
+        "btc"
+      ]
+    },
+    {
+      "id": "art_0003",
+      "title": "Bitcoin sentiment remains positive amid growing adoption",
+      "published_at": "2026-06-15T08:46:26.395615Z",
+      "sentiment_score": 0.55,
+      "source": "demo_generator",
+      "tickers": [
+        "bitcoin",
+        "btc"
+      ]
+    }
+  ],
+  "tickers": {
+    "bitcoin": {
+      "count": 3,
+      "avg_sentiment": 0.55
+    },
+    "btc": {
+      "count": 3,
+      "avg_sentiment": 0.55
+    },
+    "ethereum": {
+      "count": 1,
+      "avg_sentiment": 0.55
+    },
+    "eth": {
+      "count": 1,
+      "avg_sentiment": 0.55
+    }
+  },
+  "metadata": {
+    "generated_at": "2026-06-15T14:16:26.395676Z",
+    "total_articles": 4
+  }
+}

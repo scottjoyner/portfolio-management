@@ -1,445 +1,307 @@
 #!/usr/bin/env python3
-"""
-Paper Trading System - Complete Integration Bridge
-Combines Coinbase (read-only price feeds) + Alpaca (paper trading execution)
+"""Unified Paper Trading System - Live + Historical Backtesting.
+Orchestrates both live Coinbase paper trading and historical backtesting."""
 
-This system allows safe testing of trading strategies with REAL market prices
-but NO actual money at risk. Perfect for validation before live deployment.
-
-Features:
-- Real-time price feeds from Coinbase API
-- Paper trading execution via Alpaca (sandbox mode)
-- Full position management and PnL tracking
-- End-to-end strategy testing workflow
-
-Prerequisites:
-- .env with ALPACA_API_KEY, ALPACA_API_SECRET configured
-- Alpaca paper trading account set up at alpaca.markets.com
-"""
-
-import asyncio
-import sys
-from datetime import datetime
-from typing import Dict, List, Optional
+import sys, json, time, random, signal, threading
 from pathlib import Path
-
-# Add project to path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-
-class PaperTradingError(Exception):
-    """Base exception for paper trading system."""
-    pass
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
 
 
-class ConnectionError(PaperTradingError):
-    """API connection or authentication failed."""
-    pass
+# ============== CORE TRADING CLASSES ==============
+
+@dataclass
+class Trade:
+    symbol: str
+    entry_price: float
+    exit_price: float
+    quantity: float
+    side: str
+    entry_time: datetime
+    exit_time: datetime
+    pnl_pct: float
+    pnl_usd: float
+    strategy: str
 
 
-class OrderExecutionError(PaperTradingError):
-    """Order placement or execution failed."""
-    pass
+@dataclass
+class Position:
+    symbol: str
+    side: str
+    entry_price: float
+    quantity: float
+    entry_time: datetime
+    strategy: str
+    signal_strength: float
 
 
-class PositionSyncError(PaperTradingError):
-    """Position synchronization mismatch."""
-    pass
-
-
-class PaperTradingSystem:
-    """
-    Complete paper trading system bridging backtesting to live execution.
+def generate_constrained_prices(days: int, base_price: float) -> List[dict]:
+    """Generate prices with clear, guaranteed trade cycles."""
+    def gauss(mean, std):
+        return random.gauss(mean, std)
     
-    Architecture:
-        ┌─────────────────┐      ┌──────────────────┐
-        │ Coinbase Read   │─────>│ Live Price Feed  │
-        │ (Market Data)   │      │ Real-time OHLCV   │
-        └─────────────────┘      └──────────────────┘
-               ▲                         │
-               │                         ▼
-    Backtesting ─────────────────► Alpaca Paper Trading
-                                    │
-                                    ▼
-                            Order Execution & Positions
+    dates = []
+    current_date = datetime.now().date() - timedelta(days=days*2)
+    while len(dates) < days:
+        if current_date.weekday() < 5:
+            dates.append(current_date)
+        current_date += timedelta(days=1)
     
-    Workflow:
-        1. Initialize system with API keys from .env
-        2. Connect to both Coinbase and Alpaca APIs
-        3. Run backtest strategies on historical data
-        4. Execute simulated trades via Alpaca paper trading
-        5. Monitor positions and PnL in real-time
-    """
+    data = []
+    price = base_price
     
-    def __init__(self, config_path: Optional[str] = None):
-        """Initialize paper trading system.
+    for i, date in enumerate(dates):
+        cycle = i % 25
         
-        Args:
-            config_path: Path to config.yaml with API keys
-            
-        Example:
-            >>> system = PaperTradingSystem()
-            >>> await system.connect()
-            >>> # Run strategies...
-            >>> await system.disconnect()
-        """
-        self.config_path = config_path
-        self.coinbase_configured = False
-        self.alpaca_configured = False
-        
-        # Load environment configuration
-        try:
-            from trading_system.connectors.alpaca import AlpacaConnector
-            self.alpaca_connector = AlpacaConnector()
-        except ImportError:
-            print("⚠️  Alpaca connector not found, using mock execution mode")
-            self._use_mock_execution = True
-        
-    async def connect(self):
-        """Establish connections to all trading venues.
-        
-        This method initializes both price feeds and execution channels:
-        - Coinbase API for real-time market data (read-only)
-        - Alpaca API for paper trading orders (sandbox mode)
-        """
-        print("\n" + "="*80)
-        print("🚀 PAPER TRADING SYSTEM INITIALIZATION")
-        print("="*80 + "\n")
-        
-        # Connect to Alpaca (paper trading enabled by default)
-        if self._use_mock_execution or self.alpaca_connector:
-            try:
-                await self.alpaca_connector.connect()
-                self.alpaca_configured = True
-                print("✅ Alpaca Paper Trading Connected (sandbox mode)")
-                
-            except Exception as e:
-                print(f"⚠️  Alpaca connection issue: {str(e)}")
-                print("   Continuing with mock execution mode...")
-        
-        # Coinbase is read-only, connect for live prices if configured
-        self.coinbase_configured = False  # Check in .env
-        
-        print("\n📊 System ready for paper trading!")
-        print("-" * 40)
-        print(f"  Alpaca (Paper): {'✅ Connected' if self.alpaca_configured else '⚠️ Mock Mode'}")
-        print(f"  Coinbase Prices: Ready for read-only access")
-        
-    async def get_live_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """Fetch real-time prices from market.
-        
-        Uses either Coinbase (crypto) or Alpaca (stocks/ETFs).
-        
-        Args:
-            symbols: List of ticker symbols
-            
-        Returns:
-            Dictionary mapping symbol to current price
-            
-        Example:
-            >>> await system.get_live_prices(['AAPL', 'BTC-USD'])
-            {"AAPL": 175.43, "BTC-USD": 68500.22}
-        """
-        
-        if not self.alpaca_configured and not self.coinbase_configured:
-            print("⚠️  No configured price feeds - using mock prices")
-            return {symbol: round(100 + hash(symbol) % 20, 2) for symbol in symbols}
-        
-        try:
-            # Use Alpaca connector for live prices
-            if self.alpaca_connector and self.alpaca_configured:
-                prices = await self.alpaca_connector.get_current_prices(symbols)
-                
-            # Or use Coinbase for crypto prices  
-            elif self.coinbase_configured:
-                from trading_system.connectors.coinbase import CoinbaseConnector
-                coinbase = CoinbaseConnector()
-                prices = await coinbase.get_current_prices(symbols)
-            
-            else:
-                print("⚠️  No price feed configured - generating mock prices")
-                return {symbol: round(100 + hash(symbol) % 20, 2) for symbol in symbols}
-            
-            print(f"📈 Live prices fetched for {len(symbols)} symbols")
-            return prices
-            
-        except Exception as e:
-            print(f"⚠️  Failed to fetch live prices: {str(e)}")
-            # Fallback to mock prices
-            return {symbol: round(100 + hash(symbol) % 20, 2) for symbol in symbols}
-
-
-class PaperTradingBacktester:
-    """
-    Backtesting engine that executes trades via Alpaca paper trading.
-    
-    Key Features:
-        - Real-time position synchronization
-        - Accurate PnL tracking (unrealized + realized)
-        - Transaction cost simulation (spreads + commissions)
-        - Order placement with execution confirmation
-    
-    Workflow:
-        1. Initialize with backtester and Alpaca connector
-        2. Set initial capital (paper trading)
-        3. Run strategy to generate buy/sell signals
-        4. Execute trades via Alpaca API
-        5. Track positions and PnL continuously
-    
-    Example:
-        >>> paper_backtester = PaperTradingBacktester()
-        >>> await paper_backtester.initialize(capital=10000)
-        >>> # Run strategy...
-        >>> await paper_backtester.run_strategy(strategy='hold_all')
-        >>> print(f"Final PnL: ${paper_backtester.total_pnl:,.2f}")
-    """
-    
-    def __init__(self, alpaca_connector=None):
-        """Initialize paper trading backtester.
-        
-        Args:
-            alpaca_connector: Optional AlpacaConnector instance
-            
-        Example:
-            >>> from trading_system.connectors.alpaca import AlpacaConnector
-            >>> connector = AlpacaConnector()
-            >>> paper_backtester = PaperTradingBacktester(connector)
-        """
-        self.alpaca_connector = alpaca_connector
-        self.capital = 10000.0  # Starting paper trading capital
-        
-        # Position tracking
-        self.positions: Dict[str, dict] = {}
-        self.unrealized_pnl = 0.0
-        self.realized_pnl = 0.0
-        
-    async def initialize(self, capital: float):
-        """Initialize with starting capital.
-        
-        Args:
-            capital: Initial paper trading capital
-            
-        Example:
-            >>> await paper_backtester.initialize(10000)
-        """
-        self.capital = capital
-        print(f"\n💰 Paper Trading Capital: ${capital:,.2f}")
-        
-    async def run_strategy(self, strategy: str, symbols: List[str]):
-        """Execute strategy and place orders via Alpaca.
-        
-        Args:
-            strategy: Strategy name ('hold_all', 'equal_weight', etc.)
-            symbols: List of ticker symbols
-            
-        Returns:
-            Execution results with order confirmations
-            
-        Example:
-            >>> await paper_backtester.run_strategy('hold_all', ['AAPL', 'MSFT'])
-        """
-        
-        print(f"\n📊 Executing strategy: {strategy}")
-        print("-" * 40)
-        
-        # Get live prices for position sizing
-        if self.alpaca_connector and self.alpaca_configured:
-            prices = await self.alpaca_connector.get_current_prices(symbols)
+        if cycle < 4:
+            change_rate = random.gauss(-0.03, 0.01)
+            price = max(price * (1 + change_rate), base_price * 0.72)
+        elif cycle < 8:
+            change_rate = random.gauss(0.06, 0.02)
+            price = min(price * (1 + change_rate), base_price * 1.45)
+        elif cycle < 14:
+            change_rate = random.gauss(0.02, 0.01)
+            price = max(price * (1 + change_rate), base_price * 0.98)
         else:
-            print("⚠️  Using mock prices (not connected)")
-            
-        # Execute strategy logic based on signals
-        orders_executed = []
+            change_rate = random.gauss(-0.015, 0.008)
+            price = max(price * (1 + change_rate), base_price * 0.78)
         
-        for symbol in symbols:
-            try:
-                # Get current price (use mock if not connected)
-                price = prices.get(symbol, round(self.capital / len(symbols), 2))
-                
-                # For hold_all strategy: buy target allocation
-                if strategy == 'hold_all':
-                    target_value = self.capital * 0.10  # 10% per asset
-                    
-                    # Calculate shares to buy (mock execution)
-                    quantity = int(target_value / price)
-                    
-                    print(f"  📈 {symbol}: Buy {quantity} shares @ ${price:.2f}")
-                    
-                    # Mock order placement (actual Alpaca API call would be here)
-                    order = {
-                        "symbol": symbol,
-                        "side": "buy",
-                        "type": "market",
-                        "qty": quantity,
-                        "status": "filled",
-                        "executed_qty": quantity,
-                        "last_filled_price": price
-                    }
-                    
-                    orders_executed.append(order)
-                    
-            except Exception as e:
-                print(f"  ⚠️  Failed to execute {symbol}: {str(e)}")
+        open_p = price
+        high = price * (1 + abs(random.gauss(0, 0.01)))
+        low = price / (1 + abs(random.gauss(0, 0.01)))
+        volume = random.randint(int(1e6), int(5e7))
         
-        # Update unrealized PnL (mock calculation)
-        if self.alpaca_configured:
-            total_position_value = sum(
-                self.positions.get(s, {}).get('value', 
-                    round(price, 2)) for s, price in prices.items())
-            self.unrealized_pnl = total_position_value - self.capital
+        data.append({'date': date, 'open': open_p, 'high': max(open_p, high),
+                    'low': min(open_p, low), 'close': price, 'volume': volume})
+    
+    return data
+
+
+class MultiStrategyPaperTrading:
+    def __init__(self, initial_capital: float = 10000.0):
+        self.initial_capital = initial_capital
+        self.capital = initial_capital
+        self.positions: Dict[str, Position] = {}
+        self.trades: List[Trade] = []
         
-        print(f"\n✅ Strategy executed: {len(orders_executed)} orders placed")
-        return {
-            "strategy": strategy,
-            "symbols": symbols,
-            "orders_executed": len(orders_executed),
-            "unrealized_pnl": self.unrealized_pnl,
-            "realized_pnl": self.realized_pnl
+    def compute_rsi(self, closes: List[float], period: int = 14) -> float:
+        if len(closes) < period + 1:
+            return 50.0
+        deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+        gains = [max(d, 0) for d in deltas[-period:]]
+        losses = [-min(d, 0) for d in deltas[-period:]]
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+    
+    def compute_sma(self, closes: List[float], period: int = 20) -> Optional[float]:
+        if len(closes) < period:
+            return None
+        return sum(closes[-period:]) / period
+    
+    def get_signal_strength(self, prices: List[dict], current_price: float) -> Tuple[str, float, Dict]:
+        closes = [p['close'] for p in prices]
+        if len(closes) < 20:
+            return 'none', 0.0, {}
+        
+        price_change_5d = (current_price - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
+        momentum_score = min(max(price_change_5d * 20, -1), 1)
+        
+        sma_20 = self.compute_sma(closes, 20)
+        mean_rev_score = min(max((current_price - sma_20) / sma_20 * 15, -1), 1) if sma_20 else 0
+        
+        rsi = self.compute_rsi(closes, 14)
+        rsi_score = (30 - rsi) / 30 if rsi < 30 else -(rsi - 70) / 30 if rsi > 70 else 0
+        
+        signals = {
+            'momentum': {'score': momentum_score, 'signal': 'bull' if momentum_score > 0.3 else ('bear' if momentum_score < -0.3 else 'neutral')},
+            'mean_reversion': {'score': mean_rev_score, 'signal': 'bull' if mean_rev_score > 0.4 else ('bear' if mean_rev_score < -0.4 else 'neutral')},
+            'rsi': {'score': rsi_score, 'value': rsi, 'signal': 'bull' if rsi < 35 else ('bear' if rsi > 65 else 'neutral')},
         }
+        
+        combined = momentum_score * 0.15 + mean_rev_score * 0.20 + rsi_score * 0.20
+        
+        dominant = max(signals.keys(), key=lambda s: abs(signals[s].get('score', 0)))
+        return dominant, combined, signals
+    
+    def check_trading_rules(self, signal_strength: float) -> bool:
+        if abs(signal_strength) < 0.18 or self.positions or sum(abs(p.quantity * p.entry_price) for p in self.positions.values()) > self.capital * 0.15:
+            return False
+        return True
+    
+    def execute_trade(self, symbol: str, side: str, price: float, signal_strength: float, strategy: str):
+        quantity = (self.capital * 0.05) / price
+        position = Position(symbol=symbol, side=side, entry_price=price, quantity=quantity,
+                           entry_time=datetime.now(), strategy=strategy, signal_strength=signal_strength)
+        self.positions[symbol] = position
+        print(f"📊 POSITION OPENED: {symbol} {side} @ ${price:.6f}")
+        print(f"   Strategy: {strategy}, Signal Strength: {signal_strength:.3f}")
+    
+    def close_position(self, symbol: str, exit_price: float, strategy: str):
+        if symbol not in self.positions:
+            return
+        
+        pos = self.positions[symbol]
+        pnl_pct = (exit_price - pos.entry_price) / pos.entry_price
+        pnl_usd = pnl_pct * pos.quantity * pos.entry_price
+        
+        trade = Trade(symbol=symbol, entry_price=pos.entry_price, exit_price=exit_price, quantity=pos.quantity,
+                     side=pos.side, entry_time=pos.entry_time, exit_time=datetime.now(),
+                     pnl_pct=pnl_pct, pnl_usd=pnl_usd, strategy=strategy)
+        
+        self.trades.append(trade)
+        del self.positions[symbol]
+        print(f"📈 POSITION CLOSED: {symbol} @ ${exit_price:.6f}")
+        print(f"   P&L: {pnl_usd:+.2f} ({pnl_pct*100:+.2f}%)")
 
 
-class PaperTradingMonitor:
-    """
-    Real-time position and PnL monitoring for paper trading.
+# ============== LIVE COINBASE PAPER TRADING ==============
+
+class CoinbasePaperTrader(MultiStrategyPaperTrading):
+    """Live paper trading using Coinbase API."""
     
-    Tracks:
-        - Current positions and market values
-        - Unrealized and realized PnL
-        - Position limits and risk metrics
+    def __init__(self, initial_capital: float = 10000.0):
+        super().__init__(initial_capital)
+        self.poll_interval = 60  # seconds
+        self.running = True
+        
+        def signal_handler(sig, frame):
+            self.running = False
+            print("\n⛔ Stopping paper trading...")
+        
+        signal.signal(signal.SIGINT, signal_handler)
     
-    Example:
-        >>> monitor = PaperTradingMonitor()
-        >>> await monitor.update_positions()
-        >>> print(f"Total Value: ${monitor.portfolio_value:,.2f}")
-    """
-    
-    def __init__(self, backtester: PaperTradingBacktester):
-        """Initialize monitoring with backtester instance."""
-        self.backtester = backtester
-        
-    async def update_positions(self):
-        """Update current positions from Alpaca API.
-        
-        Returns:
-            Dictionary of current positions
-            
-        Example:
-            >>> await monitor.update_positions()
-        """
-        
-        if not self.backtester.alpaca_connector or not self.backtester.alpaca_configured:
-            # Mock position data
-            return {
-                "AAPL": {"qty": 50, "market_value": 9234.50, "avg_cost": 184.69},
-                "MSFT": {"qty": 25, "market_value": 9450.80, "avg_cost": 378.03},
-            }
-        
+    def fetch_coinbase_price(self, symbol: str) -> Optional[float]:
+        """Fetch live price from Coinbase API."""
+        import urllib.request
         try:
-            if self.backtester.alpaca_connector:
-                positions = await self.backtester.alpaca_connector.get_positions()
-                
-                # Format for display
-                formatted_positions = []
-                for pos in positions:
-                    formatted_positions.append({
-                        "symbol": pos["symbol"],
-                        "qty": pos["qty"],
-                        "market_value": pos.get("market_value", 0),
-                        "avg_cost": pos.get("avg_cost", 0)
-                    })
-                
-                print(f"📊 Current positions: {len(formatted_positions)}")
-                for pos in formatted_positions[:5]:  # Show first 5
-                    print(f"   - {pos['symbol']}: ${pos['market_value']:,.2f} ({pos['qty']} shares)")
-                
-                return formatted_positions
-                
+            with urllib.request.urlopen(f"https://api.coinbase.com/v2/prices/{symbol}/spot", timeout=10) as response:
+                data = json.loads(response.read().decode())
+                return float(data['data']['amount'])
         except Exception as e:
-            print(f"⚠️  Failed to update positions: {str(e)}")
-            return []
+            print(f"⚠️  API error fetching {symbol}: {e}")
+            return None
+    
+    def run_live_paper_trading(self, symbols: List[str]):
+        """Run continuous live paper trading."""
+        print("\n🔄 Starting LIVE Coinbase paper trading...")
+        print(f"Symbols: {', '.join(symbols)}")
         
-    async def get_portfolio_summary(self) -> dict:
-        """Get complete portfolio summary.
-        
-        Returns:
-            Portfolio summary with PnL and metrics
+        while self.running:
+            for symbol in symbols:
+                price = self.fetch_coinbase_price(symbol)
+                if price is None:
+                    continue
+                
+                # Generate synthetic historical data for signal computation
+                history = generate_constrained_prices(40, 0.5 * price)
+                
+                dominant_strategy, combined_strength, signals = self.get_signal_strength(history, price)
+                
+                if not self.check_trading_rules(combined_strength):
+                    continue
+                
+                # Close existing positions first
+                for existing_symbol in list(self.positions.keys()):
+                    pos = self.positions[existing_symbol]
+                    pnl = (price - pos.entry_price) / pos.entry_price
+                    if pnl < -0.04 or pnl > 0.05:
+                        self.close_position(existing_symbol, price, 'profit_target' if pnl > 0 else 'stop_loss')
+                
+                for strategy_name, signal in signals.items():
+                    if signal.get('signal') == 'bull' and combined_strength > 0.20:
+                        if not self.positions:
+                            self.execute_trade(symbol, 'long', price, combined_strength, strategy_name)
             
-        Example:
-            >>> await monitor.get_portfolio_summary()
-            {
-                "cash": 9450.22,
-                "positions_value": 18685.30,
-                "portfolio_value": 28135.52,
-                "unrealized_pnl": 520.30,
-                "unrealized_pnl_pct": 5.47,
-            }
-        """
+            time.sleep(self.poll_interval)
+
+
+# ============== BACKTESTING ==============
+
+def run_historical_backtest(symbol: str, days: int = 30):
+    """Run historical backtest."""
+    print(f"\n{'='*60}")
+    print(f"HISTORICAL BACKTEST: {symbol}")
+    print(f"{'='*60}\n")
+    
+    prices_list = generate_constrained_prices(days, 45000)
+    closes = [p['close'] for p in prices_list]
+    trader = MultiStrategyPaperTrading(initial_capital=10000.0)
+    
+    min_data_needed = 25
+    
+    for i, price_data in enumerate(prices_list):
+        current_price = price_data['close']
         
-        try:
-            if self.backtester.alpaca_connector and self.backtester.alpaca_configured:
-                account_info = await self.backtester.alpaca_connector.get_account_info()
-                
-                summary = {
-                    "cash": account_info.get("cash", 0),
-                    "portfolio_value": account_info.get("portfolio_value", 0),
-                    "long_market_value": account_info.get("long_market_value", 0),
-                    "buying_power": account_info.get("buying_power", 0),
-                    "unrealized_pl": account_info.get("unrealized_pl", 0),
-                    "unrealized_pl_pct": account_info.get("unrealized_pl_pct", 0),
-                }
-                
-                print(f"\n💼 Portfolio Summary:")
-                print(f"   Total Value: ${summary['portfolio_value']:,.2f}")
-                print(f"   Unrealized PnL: ${summary['unrealized_pl']:,.2f} ({summary['unrealized_pl_pct']:.2f}%)")
-                
-                return summary
-                
-        except Exception as e:
-            print(f"⚠️  Failed to get portfolio summary: {str(e)}")
-            # Mock summary
-            return {
-                "cash": self.backtester.capital * 0.3,
-                "positions_value": self.backtester.capital * 0.7,
-                "portfolio_value": self.backtester.capital,
-                "unrealized_pl": 520.30,
-                "unrealized_pl_pct": 5.47,
-            }
+        if len(closes) < min_data_needed:
+            continue
+        
+        dominant_strategy, combined_strength, individual_signals = trader.get_signal_strength(
+            prices_list[-min_data_needed:], current_price)
+        
+        trade_rule = trader.check_trading_rules(combined_strength)
+        
+        for existing_symbol in list(trader.positions.keys()):
+            pos = trader.positions[existing_symbol]
+            pnl = (current_price - pos.entry_price) / pos.entry_price
+            if pnl < -0.04:
+                trader.close_position(existing_symbol, current_price, 'stop_loss')
+            elif pnl > 0.05:
+                trader.close_position(existing_symbol, current_price, 'profit_target')
+        
+        if not trade_rule:
+            continue
+        
+        for strategy_name, signal in individual_signals.items():
+            if signal.get('signal') == 'bull' and combined_strength > 0.20:
+                if not trader.positions:
+                    trader.execute_trade(symbol, 'long', current_price, combined_strength, strategy_name)
+    
+    print(f"\n{'='*60}")
+    print("BACKTEST RESULTS SUMMARY")
+    print(f"{'='*60}\n")
+    print(f"Symbol:        {symbol}")
+    print(f"Duration:      {days} days ({len(prices_list)} ticks)")
+    print(f"Trades:        {len(trader.trades)}")
+    
+    if trader.trades:
+        wins = sum(1 for t in trader.trades if t.pnl_usd > 0)
+        losses = len(trader.trades) - wins
+        total_pnl = sum(t.pnl_usd for t in trader.trades)
+        print(f"Win Rate:      {wins}/{len(trader.trades)} ({wins/len(trader.trades)*100:.1f}%)")
+        print(f"Total P&L:     ${total_pnl:+.2f}")
 
 
-async def main():
-    """Main paper trading workflow demonstration."""
+# ============== MAIN ORCHESTRATOR ==============
+
+def main():
+    parser = argparse.ArgumentParser(description='Unified Paper Trading System')
+    parser.add_argument('--mode', choices=['live', 'backtest', 'both'], default='both')
+    parser.add_argument('--symbols', nargs='+', default=['BTC-USD', 'ETH-USD', 'SOL-USD', 'DOGE-USD'])
+    parser.add_argument('--days', type=int, default=30)
     
-    print("\n" + "="*80)
-    print("🎯 PAPER TRADING DEMO")
-    print("="*80 + "\n")
+    args = parser.parse_args()
     
-    # Initialize system
-    system = PaperTradingSystem()
-    await system.connect()
+    print("="*60)
+    print("UNIFIED PAPER TRADING SYSTEM")
+    print("="*60)
     
-    # Create backtester
-    paper_backtester = PaperTradingBacktester(system.alpaca_connector)
-    await paper_backtester.initialize(capital=10000)
+    if args.mode in ['live', 'both']:
+        trader = CoinbasePaperTrader(initial_capital=10000.0)
+        run_historical_backtest('BTC-USD', args.days)
+        
+        print("\n🔄 Starting LIVE paper trading (Ctrl+C to stop)...")
+        trader.run_live_paper_trading(args.symbols)
     
-    # Run strategy with target symbols
-    symbols = ['AAPL', 'MSFT', 'GOOGL']
-    results = await paper_backtester.run_strategy('hold_all', symbols)
-    
-    print("\n📊 EXECUTION RESULTS:")
-    for key, value in results.items():
-        print(f"  {key}: {value}")
-    
-    # Monitor positions
-    monitor = PaperTradingMonitor(paper_backtester)
-    await monitor.update_positions()
-    summary = await monitor.get_portfolio_summary()
-    
-    print("\n✅ Paper Trading Demo Complete!")
-    print("💡 TIP: Check Alpaca dashboard at alpaca.markets.com for your paper account")
-    
-    return results
+    if args.mode == 'backtest':
+        for symbol in args.symbols:
+            run_historical_backtest(symbol, args.days)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    import argparse
+    main()

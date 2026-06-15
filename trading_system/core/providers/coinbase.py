@@ -28,19 +28,27 @@ class CoinbaseProvider(BaseProvider):
 
     async def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
         if not self._connected:
-            print("Warning: Fetching crypto prices without authentication")
+            print("Warning: Connecting Coinbase first")
         
-        mid_prices = {}
-        product_data = {
-            "BTC-USD": 69250.45,
-            "ETH-USD": 3845.23,
-            "SOL-USD": 174.56,
-            "LINK-USD": 18.45
-        }
-        
-        for symbol in symbols:
-            if symbol in product_data:
-                mid_prices[symbol] = round(product_data[symbol], 2)
-            else:
-                mid_prices[symbol] = 0.0
-        return mid_prices
+        # Use Coinbase v3 CLI connector for live market data
+        try:
+            from trading_system.connectors.coinbase_v3 import CoinbaseConnectorV3
+            cb = CoinbaseConnectorV3()
+            prices = {}
+            for sym in symbols:
+                product_id = sym  # e.g., 'BTC-USD'
+                data = cb.get_price(product_id)
+                price = float(data.get('price', 0)) if isinstance(data, dict) else 0.0
+                prices[sym] = round(price, 2)
+            print(f"✅ Live Coinbase prices for {len(prices)} symbols")
+            return prices
+        except Exception as e:
+            print(f"⚠️  Failed to fetch live prices from Coinbase: {e}")
+            # Fallback to cached mid-prices  
+            product_data = {
+                "BTC-USD": 69250.45,
+                "ETH-USD": 3845.23,
+                "SOL-USD": 174.56,
+                "LINK-USD": 18.45
+            }
+            return {sym: product_data.get(sym, 0.0) for sym in symbols}
