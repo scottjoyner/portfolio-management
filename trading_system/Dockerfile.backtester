@@ -1,0 +1,31 @@
+# Backtesting Service Dockerfile
+FROM python:3.12-slim
+
+# Install dependencies for backtesting
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libffi-dev libpq-dev redis-client curl jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment
+RUN python -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# Install Python packages including pandas for data analysis
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY trading_system/ ./trading_system/
+COPY backtester.py ./backtester.py
+
+# Set working directory
+WORKDIR /app
+
+# Create results directory
+RUN mkdir -p /results
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import backtester; print('OK')" || exit 1
+
+CMD ["python", "-m", "trading_system.backtester"]
