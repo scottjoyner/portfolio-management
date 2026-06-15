@@ -1,0 +1,495 @@
+{
+  "articles": [
+    {
+      "id": "d2fc258389bd2d79",
+      "title": "Merger Cleared, David Ellison to Join Trump at U.F.C. Bouts",
+      "url": "https://www.nytimes.com/2026/06/14/business/media/trump-ufc-david-ellison.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576524",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "ac474b3cb9fdf387",
+      "title": "The G7 Summit Is Dogged by Chaos and Divided by Trump",
+      "url": "https://www.nytimes.com/2026/06/14/world/europe/g7-summit-evian-trump.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576538",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "cd360b81f3e0f5d0",
+      "title": "How to Run a News Company in the Age of Polarization and A.I. Slop",
+      "url": "https://www.nytimes.com/2026/06/14/business/nbc-news-cesar-conde.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576544",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "5458c706a9ea50e4",
+      "title": "Kash Patel Keeps Suing the Press",
+      "url": "https://www.nytimes.com/2026/06/14/business/media/kash-patel-defamation-lawsuits.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576548",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "c32ff6cd46c68f99",
+      "title": "Medicare Enrollment 101: What You Need to Know",
+      "url": "https://www.nytimes.com/2026/06/14/business/medicare-enrollment.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576553",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "e82e11cd19d89985",
+      "title": "Everyone Wants to Tax A.I. The Big Disagreement: How?",
+      "url": "https://www.nytimes.com/2026/06/13/business/dealbook/ai-tax-proposals.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576557",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "f0ca1f00d5bb3858",
+      "title": "Wages Are Falling. Wealth Is Surging. No Wonder Americans Are Unhappy.",
+      "url": "https://www.nytimes.com/2026/06/13/business/economy-trillionaire-wealth-wages.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576560",
+      "sentiment_score": -1.0,
+      "sentiment_label": "negative",
+      "tickers": []
+    },
+    {
+      "id": "8466f1f318c137e6",
+      "title": "Mega I.P.O. Frenzy Could Be a Harbinger of a Stock Bubble",
+      "url": "https://www.nytimes.com/2026/06/13/business/spacex-ipo-musk-stock-bubble.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576563",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "84f5f48b790fccff",
+      "title": "Despite US Help, Little Oil Has Gone Through Strait of Hormuz",
+      "url": "https://www.nytimes.com/2026/06/13/business/oil-strait-of-hormuz.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576567",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "13ba0b399a6377de",
+      "title": "At the Canadian Screen Awards, the Industry Steps Outside Hollywood\u2019s Shadow",
+      "url": "https://www.nytimes.com/2026/06/13/world/canada/canadian-screen-awards-heated-rivalry-toronto.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576570",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "0dfd9548c36d463a",
+      "title": "Musk Is the World\u2019s First Trillionaire. Who Was the First Billionaire?",
+      "url": "https://www.nytimes.com/2026/06/12/us/musk-trillionaire-first-billionaire.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576573",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "d9fb37c1c4ec02c1",
+      "title": "Justice Dept. Clears Way for Paramount-Warner Bros. Merger",
+      "url": "https://www.nytimes.com/2026/06/12/business/media/paramount-warner-bros-merger.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576576",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "8e5a0dd5fc0f1cb3",
+      "title": "SpaceX\u2019s Unlikely Journey From Far-Out Idea to $2 Trillion Juggernaut",
+      "url": "https://www.nytimes.com/2026/06/12/technology/spacex-ipo-journey.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576580",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "83f33438dbd1edd4",
+      "title": "The steady hand at SpaceX is not Elon Musk\u2019s.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/the-steady-hand-at-spacex-is-not-elon-musks",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576583",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "4a85b9cfdb3ec939",
+      "title": "SpaceX is structured in a way that appears to benefit Musk at the expense of other shareholders.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/spacex-is-structured-in-a-way-that-appears-to-benefit-musk-at-the-expense-of-other-shareholders",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576587",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "148d50774b4cebd7",
+      "title": "Elon Musk laid out 602 goals. We counted how many he hit.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/elon-musk-laid-out-602-goals-we-counted-how-many-he-hit",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576590",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "d3bab5b96eb202f6",
+      "title": "Elon Musk\u2019s Big Bet for SpaceX",
+      "url": "https://www.nytimes.com/video/business/100000010953560/elon-musk-spacex-initial-public-offering.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576593",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "f549a118d5c87063",
+      "title": "If You Have a 401(k), How Much SpaceX Stock Will You Own?",
+      "url": "https://www.nytimes.com/2026/06/12/upshot/spacex-stock-ipo.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576596",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "2700d8bc4bad749a",
+      "title": "Musk posted about politics, race and the culture wars, even as he took SpaceX public.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/musk-posted-about-politics-race-and-the-culture-wars-even-as-he-took-spacex-public",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576599",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "758b95efa2869025",
+      "title": "SpaceX is about to be in your 401(k) whether you like it or not.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/spacex-is-about-to-be-in-your-401-k-whether-you-like-it-or-not",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576603",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "978124ab283d35c4",
+      "title": "About 20 New Billionaires Could Be Minted by 3 Mega-I.P.O.s",
+      "url": "https://www.nytimes.com/2026/06/12/business/economy/spacex-openai-anthropic-billionaires-ipos.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576607",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "36d904d778a0903e",
+      "title": "Blake Lively Awarded Legal Fees in Ruling After Justin Baldoni Settlement",
+      "url": "https://www.nytimes.com/2026/06/12/movies/blake-lively-legal-fees-ruling-justin-baldoni-settlement.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576610",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "83e9f4b5177e4128",
+      "title": "Elon Musk Becomes World\u2019s First Trillionaire as SpaceX Stock Begins Trading",
+      "url": "https://www.nytimes.com/2026/06/12/technology/elon-musk-trillionaire.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576613",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "54ac35faee03d133",
+      "title": "SpaceX Stock Rises 11% in Largest IPO Ever",
+      "url": "https://www.nytimes.com/2026/06/12/technology/spacex-ipo-elon-musk.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576616",
+      "sentiment_score": 1.0,
+      "sentiment_label": "positive",
+      "tickers": []
+    },
+    {
+      "id": "9537f69bce2bd891",
+      "title": "Is SpaceX worth $1.77 trillion? It\u2019s a pie in the sky, some investors say.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/is-spacex-worth-1-77-trillion-its-a-pie-in-the-sky-some-investors-say",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576620",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "ccf05b14596dfeb3",
+      "title": "The World Cup Could Be the Biggest Sports Gambling Event Ever",
+      "url": "https://www.nytimes.com/2026/06/12/business/world-cup-gambling.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576622",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "15a9e565ecb7d6ac",
+      "title": "When will SpaceX start trading?",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/when-will-spacex-start-trading",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576626",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "83d5eefdb473c21d",
+      "title": "Americans Aren\u2019t Money Savvy, and They\u2019re Only Getting Worse",
+      "url": "https://www.nytimes.com/2026/06/12/your-money/americans-financial-knowledge.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576629",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "8719cfe9afbe4c1f",
+      "title": "Here\u2019s the latest.",
+      "url": "https://www.nytimes.com/live/2026/06/12/business/spacex-ipo-elon-musk/heres-the-latest",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576632",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "e4d19208b2e3ea9c",
+      "title": "The Consequences of SpaceX\u2019s Trillion-Dollar I.P.O.",
+      "url": "https://www.nytimes.com/2026/06/12/business/dealbook/musks-spacex-ipo-playbook.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576634",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "0474c82d00952266",
+      "title": "Risk Strait of Hormuz or Wait? Shipping Companies Face a Costly Dilemma.",
+      "url": "https://www.nytimes.com/2026/06/12/business/strait-hormuz-ships-iran.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576638",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "1fc1fac6b0fc8df5",
+      "title": "How SpaceX\u2019s IPO Compares With Saudi Aramco, Uber and Others",
+      "url": "https://www.nytimes.com/2026/06/12/business/spacex-biggest-ipos-elon-musk.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576641",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "976d10a9c0b1e441",
+      "title": "The World Is Draining Oil Reserves, Raising Pressure for a Peace Deal",
+      "url": "https://www.nytimes.com/2026/06/12/business/energy-environment/iran-war-oil-reserves.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576645",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "25781064713dfa69",
+      "title": "A Guide to Chicago\u2019s South Side, Home of the New Obama Center",
+      "url": "https://www.nytimes.com/2026/06/12/travel/chicago-south-side-obama-center.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576648",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "663725e4f1fac771",
+      "title": "Oil Falls, Stocks Rise as Trump Signals Iran Peace Deal Takes Shape",
+      "url": "https://www.nytimes.com/2026/06/11/business/oil-gas-price-iran.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576651",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "21451a3e3c1f2976",
+      "title": "SpaceX IPO: How Our Reporters Assess the Sky-High Valuation and Potential Economic Impact",
+      "url": "https://www.nytimes.com/2026/06/11/insider/spacex-ipo-coverage-facts-price.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576654",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "3117d2d2ef11b8bc",
+      "title": "Cleve Moler, Who Unlocked the Power of Computing for Millions, Dies at 86",
+      "url": "https://www.nytimes.com/2026/06/11/science/cleve-moler-dead.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576657",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "586c8727247644f6",
+      "title": "SpaceX Finalizes IPO Price at $135 a Share in World\u2019s Largest Public Offering",
+      "url": "https://www.nytimes.com/2026/06/11/technology/spacex-ipo-price.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576660",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "f2f3958a3481f917",
+      "title": "Absent From the SpaceX and OpenAI I.P.O.s? Chinese Investors.",
+      "url": "https://www.nytimes.com/2026/06/11/business/spacex-openai-ipo-china.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576663",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "62982c67f036b67b",
+      "title": "Skeptics Question Whether SpaceX Is Worth $1.77 Trillion",
+      "url": "https://www.nytimes.com/2026/06/11/technology/spacex-valuation-skeptics.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576667",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "a6cffdf8e6fa6fe3",
+      "title": "The SpaceX Shareholder at the Helm of a Multibillion-Dollar Payout",
+      "url": "https://www.nytimes.com/2026/06/11/business/spacex-ipo-137-ventures.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576670",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "1052cdd876d56456",
+      "title": "Boston Symphony in Crisis Over Dismissal of Andris Nelsons",
+      "url": "https://www.nytimes.com/2026/06/11/arts/music/boston-symphony-andris-nelsons-chad-smith.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576673",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "13dde7d0c7a2f1c1",
+      "title": "The Joy of Missing Out on SpaceX\u2019s I.P.O.",
+      "url": "https://www.nytimes.com/2026/06/11/business/spacex-ipo-investing.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576677",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "02263c2bf87f96cf",
+      "title": "Can\u2019t Pay Medical Bills? Trump Administration Suggests Getting a Loan",
+      "url": "https://www.nytimes.com/2026/06/11/business/aca-health-care-costs-medical-debt.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576680",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "fa67cfe17f8d1805",
+      "title": "World Bank Warns Iran War Is Slowing Global Growth",
+      "url": "https://www.nytimes.com/2026/06/11/business/economy/globa-economy-iran-war.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T16:40:02.576683",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "ff2bc814b372f721",
+      "title": "\u2018Disclosure Day\u2019 Ends Spielberg\u2019s Summer Box Office Drought",
+      "url": "https://www.nytimes.com/2026/06/14/business/media/disclosure-day-steven-spielberg-box-office.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T18:45:23.675721",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "7d9ec60295fec8e7",
+      "title": "Jean Ziegler, Swiss Gadfly Who Provoked His Countrymen, Dies at 92",
+      "url": "https://www.nytimes.com/2026/06/14/obituaries/jean-ziegler-dead.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T20:35:42.987705",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "88cc3750ec5cc2ba",
+      "title": "Oil Prices Tumble After Trump Announces Deal With Iran",
+      "url": "https://www.nytimes.com/2026/06/14/business/oil-stocks-gas-iran.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-14T22:26:03.392544",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    },
+    {
+      "id": "efa4125ddadebf21",
+      "title": "Hormuz Reopening Would Offer Relief for Asia, but Economic Scars Will Remain",
+      "url": "https://www.nytimes.com/2026/06/14/business/hormuz-reopen-iran.html",
+      "source": "NYT Business",
+      "published_at": "2026-06-15T02:57:03.520519",
+      "sentiment_score": 0.0,
+      "sentiment_label": "neutral",
+      "tickers": []
+    }
+  ],
+  "tickers": {}
+}

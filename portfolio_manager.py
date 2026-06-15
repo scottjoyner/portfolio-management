@@ -10,7 +10,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 from collections import defaultdict
 
-BASE_PATH = '/home/falcon/git/portfolio-management'
+BASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if os.path.exists(os.path.join(BASE_PATH, 'data/historical')):
+    pass
+else:
+    BASE_PATH = os.getcwd()
 DATA_DIR = os.path.join(BASE_PATH, 'data/historical')
 
 
@@ -90,7 +94,7 @@ class Portfolio:
     
     def get_summary(self) -> dict:
         """Get portfolio summary."""
-        total_positions_value = sum(pos.get_value(position.average_cost_basis if hasattr(pos, 'average_cost_basis') else 1.0) for pos in self.positions.values())
+        total_positions_value = sum(pos.get_value(pos.average_cost_basis if hasattr(pos, 'average_cost_basis') else 1.0) for pos in self.positions.values())
         
         return {
             "cash": round(self.cash, 2),
