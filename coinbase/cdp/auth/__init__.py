@@ -8,7 +8,7 @@ Provides comprehensive authentication functionality for CDP APIs including:
 - Environment-based configuration
 """
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 import os
 import json
 import time

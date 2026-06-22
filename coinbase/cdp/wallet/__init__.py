@@ -9,6 +9,7 @@ Provides comprehensive wallet operations for Coinbase Developer Platform:
 - Transaction history
 """
 
+import os
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
@@ -16,6 +17,19 @@ from pathlib import Path
 class CDPWalletError(Exception):
     """Exception for wallet operations"""
     pass
+
+
+def _transfers_enabled() -> bool:
+    return os.getenv("COINBASE_ENABLE_TRANSFERS", "false").lower() == "true"
+
+
+def _transfer_disabled_response(operation: str) -> Dict[str, Any]:
+    return {
+        "ok": False,
+        "enabled": False,
+        "operation": operation,
+        "error": "coinbase transfers disabled; set COINBASE_ENABLE_TRANSFERS=true to enable",
+    }
 
 
 class MockWalletClient:
@@ -261,6 +275,9 @@ class CDPWallet:
                 "account_type": account_type or "wallet",
                 "mock": True
             }
+
+        if not _transfers_enabled():
+            return _transfer_disabled_response("transfer")
         
         try:
             result = subprocess.run(
@@ -288,8 +305,8 @@ class CDPWallet:
             print("CDP CLI not installed")
             return {"error": "CDP CLI not installed", "mock_mode": self.mock_mode}
     
-    def deposit_funds(self, wallet_id: str, method: str = "bank",
-                     amount: float, currency: str) -> Dict[str, Any]:
+    def deposit_funds(self, wallet_id: str, amount: float, currency: str,
+                     method: str = "bank") -> Dict[str, Any]:
         """
         Deposit funds to wallet
         
@@ -312,6 +329,9 @@ class CDPWallet:
                 "currency": currency,
                 "mock": True
             }
+
+        if not _transfers_enabled():
+            return _transfer_disabled_response("deposit")
         
         try:
             result = subprocess.run(
@@ -336,8 +356,8 @@ class CDPWallet:
             print("CDP CLI not installed")
             return {"error": "CDP CLI not installed", "mock_mode": self.mock_mode}
     
-    def withdraw_funds(self, wallet_id: str, method: str = "bank",
-                      amount: float, currency: str) -> Dict[str, Any]:
+    def withdraw_funds(self, wallet_id: str, amount: float, currency: str,
+                      method: str = "bank") -> Dict[str, Any]:
         """
         Withdraw funds from wallet
         
@@ -360,6 +380,9 @@ class CDPWallet:
                 "currency": currency,
                 "mock": True
             }
+
+        if not _transfers_enabled():
+            return _transfer_disabled_response("withdraw")
         
         try:
             result = subprocess.run(

@@ -61,28 +61,7 @@ export class PolymarketWatchAdapter extends StaticMarketDataAdapter {
       venue: 'polymarket-watch',
       assetClass: 'prediction_market',
       source: 'polymarket-watch-adapter',
-      snapshots: options.snapshots || [
-        {
-          id: 'md-polymarket-demo-turnout',
-          symbol: 'POLY:TURNOUT-BASELINE',
-          bid: 0.42,
-          ask: 0.45,
-          volume24h: 241000,
-          liquidityScore: 71,
-          volatilityScore: 52,
-          status: 'research_candidate'
-        },
-        {
-          id: 'md-polymarket-demo-rates',
-          symbol: 'POLY:RATES-CUT-Q3',
-          bid: 0.31,
-          ask: 0.35,
-          volume24h: 98000,
-          liquidityScore: 64,
-          volatilityScore: 48,
-          status: 'watching'
-        }
-      ]
+      snapshots: options.snapshots || [],
     });
   }
 }
@@ -93,10 +72,7 @@ export class PaperCryptoMarketAdapter extends StaticMarketDataAdapter {
       venue: 'coinbase-paper',
       assetClass: 'crypto',
       source: 'paper-crypto-market-adapter',
-      snapshots: options.snapshots || [
-        { id: 'md-btc-usd', symbol: 'BTC-USD', bid: 68250, ask: 68268, volume24h: 18420000000, liquidityScore: 82, volatilityScore: 61, status: 'watching' },
-        { id: 'md-eth-usd', symbol: 'ETH-USD', bid: 3712, ask: 3715, volume24h: 9120000000, liquidityScore: 79, volatilityScore: 58, status: 'eligible' }
-      ]
+      snapshots: options.snapshots || [],
     });
   }
 }

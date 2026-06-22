@@ -27,7 +27,7 @@ sys.path.insert(0, _project_root)
 
 def generate_mock_data(days: int = 1500) -> list:
     """Generate realistic Bitcoin price data spanning ~4 years."""
-    from coinbase.src.backtest.new_strategies import OHLCVBar
+    from coinbase.src.backtest.coinbase_niche_strategies import OHLCVBar
     
     base_price = 27_000  # Late 2023 BTC price
     bars = []
@@ -75,7 +75,7 @@ def generate_mock_data(days: int = 1500) -> list:
 
 def run_backtest(symbol: str, bars: list, strategy_name: str):
     """Run a single strategy against historical data."""
-    from coinbase.src.backtest.new_strategies import (
+    from coinbase.src.backtest.coinbase_niche_strategies import (
         MultiTimeframeRSIMomentumStrategy,
         BollingerSqueezeBreakoutStrategy,
         CrossExchangeMicrostructureArbStrategy,
@@ -83,6 +83,12 @@ def run_backtest(symbol: str, bars: list, strategy_name: str):
         OnChainRegimeWhaleFlowStrategy,
         SentimentMomentumCompositeStrategy,
         VolRegimeSwitchStrategy,
+        AnchoredVWAPMeanReversionStrategy,
+        LiquidityVacuumReversalStrategy,
+        DonchianPullbackContinuationStrategy,
+        RSIFailureSwingReversalStrategy,
+        VolatilityCompressionBreakoutStrategy,
+        ImpulseExhaustionReversalStrategy,
     )
     
     # Map strategy name to instance - use correct init params matching new_strategies.py
@@ -94,28 +100,35 @@ def run_backtest(symbol: str, bars: list, strategy_name: str):
         "whale_flow": OnChainRegimeWhaleFlowStrategy(whale_threshold=1e6),
         "sentiment_momentum": SentimentMomentumCompositeStrategy(trend_period=20, short_period=5),
         "vol_regime_switch": VolRegimeSwitchStrategy(atr_period=14),
+        "anchored_vwap_reversion": AnchoredVWAPMeanReversionStrategy(window=30, z_entry=1.8),
+        "liquidity_vacuum_reversal": LiquidityVacuumReversalStrategy(lookback=25, volume_spike=1.8),
+        "donchian_pullback_continuation": DonchianPullbackContinuationStrategy(channel_period=20, pullback_period=8),
+        "rsi_failure_swing": RSIFailureSwingReversalStrategy(period=14),
+        "volatility_compression_breakout": VolatilityCompressionBreakoutStrategy(compression_window=24, breakout_window=6),
+        "impulse_exhaustion_reversal": ImpulseExhaustionReversalStrategy(impulse_threshold=0.018),
     }
     
     strategy = strategies.get(strategy_name)
     if not strategy:
         return None
-    
+
     # Run backtest
-    from coinbase.src.backtest.new_strategies import OHLCVBar, backtest_strategy
-    metrics = backtest_strategy(strategy, bars[:500])  # First 500 days for initial test
-    
-    if not metrics.get('win_rate'):
+    from coinbase.src.backtest.coinbase_niche_strategies import OHLCVBar, backtest_strategy
+    result = backtest_strategy(strategy, bars[:500])  # First 500 days for initial test
+    metrics = result.get('metrics')
+    if not metrics:
         return None
-    
+
     result = {
         'symbol': symbol,
         'strategy_name': strategy_name,
         'period': f"{bars[0].timestamp[:10]} to {bars[-1].timestamp[:10]}",
-        **metrics,
+        **result,
+        'no_trades': metrics.total_trades == 0,
     }
     
     # Validate against target (>60% win rate)
-    strong = metrics.get('win_rate', 0) >= 60
+    strong = metrics.win_rate >= 60
     
     return result
 
@@ -140,7 +153,7 @@ def main():
     strong_strats = []  # Collect strong performers for summary
     
     if not simulate:
-        from coinbase.src.backtest.new_strategies import OHLCVBar
+        from coinbase.src.backtest.coinbase_niche_strategies import OHLCVBar
         
         csv_files = list(Path(data_dir).glob("*.csv"))
         
@@ -171,6 +184,12 @@ def main():
         ("whale_flow", "On-Chain Regime Whale Flow"),
         ("sentiment_momentum", "Sentiment-Momentum Composite"),
         ("vol_regime_switch", "Volatility Regime Switching"),
+        ("anchored_vwap_reversion", "Anchored VWAP Mean Reversion"),
+        ("liquidity_vacuum_reversal", "Liquidity Vacuum Reversal"),
+        ("donchian_pullback_continuation", "Donchian Pullback Continuation"),
+        ("rsi_failure_swing", "RSI Failure Swing Reversal"),
+        ("volatility_compression_breakout", "Volatility Compression Breakout"),
+        ("impulse_exhaustion_reversal", "Impulse Exhaustion Reversal"),
     ]
     
     for strat_name, strat_display in strategies:

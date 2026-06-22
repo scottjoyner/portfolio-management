@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Signal generation module using news sentiment + price data."""
+"""Signal generation module using news sentiment + BTC-XXX volatility strategies.
+
+This module is now integrated with the unified signal generator system.
+For enhanced functionality, use the unified_signal_generator.py instead.
+"""
 
 import sys, os, json, time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
+
+# Import unified signal generator for enhanced functionality
+from app.strategies.unified_signal_generator import UnifiedSignalGenerator, UnifiedSignalConfig
 
 
 @dataclass
@@ -22,7 +29,7 @@ class SignalConfig:
 class TradingSignal:
     """Represents a trading signal."""
     symbol: str
-    direction: str  # 'LONG', 'SHORT', or 'CLOSE'
+    direction: str  # "LONG", "SHORT", or "CLOSE"
     confidence: float  # 0.0 to 1.0
     sentiment_score: float  # -1.0 to +1.0
     price_change_pct: float
@@ -42,12 +49,26 @@ class TradingSignal:
 
 
 class SignalGenerator:
-    """Generates trading signals from news sentiment and price data."""
+    """Generates trading signals from news sentiment and price data.
+    
+    This is now a wrapper around the unified signal generator for backward compatibility.
+    For enhanced functionality with BTC-XXX pairs and strategy integration, use
+    the UnifiedSignalGenerator class.
+    """
     
     def __init__(self, config: Optional[SignalConfig] = None):
         self.config = config or SignalConfig()
         self.signal_cache_file = '.signal_cache.json'
         self.last_signal_times: Dict[str, datetime] = {}
+        
+        # Initialize unified signal generator for enhanced functionality
+        self.unified_config = UnifiedSignalConfig(
+            symbols=self.config.symbols,
+            sentiment_threshold=0.25,
+            enable_strategy_signals=True,
+            enable_news_signals=True
+        )
+        self.unified_generator = UnifiedSignalGenerator(self.unified_config)
         
         # Load cached signals
         self._load_cache()

@@ -9,6 +9,10 @@ import time
 import json
 from datetime import datetime
 from typing import Dict, Optional
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+HISTORICAL_DIR = ROOT / "data" / "historical"
 
 class DataCollector:
     """Collects real-time market data from cryptocurrency and stock exchanges."""
@@ -39,7 +43,8 @@ class DataCollector:
         """Save price history to CSV file."""
         import os
         
-        filepath = f"/home/falcon/git/portfolio-management/data/historical/{symbol}_daily.csv"
+        HISTORICAL_DIR.mkdir(parents=True, exist_ok=True)
+        filepath = HISTORICAL_DIR / f"{symbol}_daily.csv"
         
         with open(filepath, 'w') as f:
             f.write("date,open,high,low,close,volume\n")
@@ -60,7 +65,8 @@ class DataCollector:
         """Save current prices to CSV."""
         import os
         
-        filepath = f"/home/falcon/git/portfolio-management/data/historical/{symbol}_daily.csv"
+        HISTORICAL_DIR.mkdir(parents=True, exist_ok=True)
+        filepath = HISTORICAL_DIR / f"{symbol}_daily.csv"
         
         # Get last available date and append new price
         if hasattr(self, 'prices_data'):

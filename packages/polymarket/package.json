@@ -1,1 +1,1 @@
-{"name":"@pkg/polymarket","version":"0.1.0","type":"module","scripts":{"build":"tsc -p tsconfig.json","test":"vitest run"}}
+{"name":"@pkg/polymarket","version":"0.1.0","type":"module","scripts":{"build":"tsc -p tsconfig.json","test":"vitest run"},"dependencies":{"viem":"^2.34.0"}}

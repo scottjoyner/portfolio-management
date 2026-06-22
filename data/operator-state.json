@@ -1,0 +1,1998 @@
+{
+  "schemaVersion": 3,
+  "accounts": [
+    {
+      "id": "acct-coinbase-primary",
+      "name": "Coinbase Account",
+      "provider": "coinbase",
+      "status": "connected",
+      "currency": "USD",
+      "cash": 22788.38484642059,
+      "nav": 22788.38484642059,
+      "availableBalance": 22788.38484642059,
+      "buyingPower": 22788.38484642059,
+      "marginUsed": 0,
+      "updatedAt": "2026-06-16T01:11:06.101Z",
+      "capabilities": [
+        "spot"
+      ],
+      "mode": "paper"
+    }
+  ],
+  "instruments": [
+    {
+      "symbol": "BTC-USD",
+      "name": "Bitcoin / USD",
+      "assetClass": "crypto",
+      "venue": "paper",
+      "status": "active",
+      "minOrderSize": 0.0001,
+      "pricePrecision": 2
+    },
+    {
+      "symbol": "ETH-USD",
+      "name": "Ether / USD",
+      "assetClass": "crypto",
+      "venue": "paper",
+      "status": "active",
+      "minOrderSize": 0.001,
+      "pricePrecision": 2
+    },
+    {
+      "symbol": "SOL-USD",
+      "name": "Solana / USD",
+      "assetClass": "crypto",
+      "venue": "paper",
+      "status": "active",
+      "minOrderSize": 0.01,
+      "pricePrecision": 2
+    },
+    {
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "assetClass": "equity",
+      "venue": "paper",
+      "status": "active",
+      "minOrderSize": 1,
+      "pricePrecision": 2
+    }
+  ],
+  "strategyTemplates": [
+    {
+      "id": "template-ema-crossover",
+      "name": "EMA Crossover",
+      "description": "Trend-following template using fast and slow EMA crossover signals.",
+      "riskLevel": "medium",
+      "parameterSchema": {
+        "symbol": {
+          "type": "instrument",
+          "required": true,
+          "default": "BTC-USD"
+        },
+        "timeframe": {
+          "type": "enum",
+          "values": [
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "1h"
+        },
+        "fastPeriod": {
+          "type": "number",
+          "min": 2,
+          "max": 100,
+          "default": 9
+        },
+        "slowPeriod": {
+          "type": "number",
+          "min": 3,
+          "max": 250,
+          "default": 21
+        }
+      }
+    },
+    {
+      "id": "template-zscore-mean-reversion",
+      "name": "Z-Score Mean Reversion",
+      "description": "Mean-reversion template using rolling z-score entry and exit thresholds.",
+      "riskLevel": "low",
+      "parameterSchema": {
+        "symbol": {
+          "type": "instrument",
+          "required": true,
+          "default": "ETH-USD"
+        },
+        "timeframe": {
+          "type": "enum",
+          "values": [
+            "15m",
+            "1h",
+            "4h",
+            "1d"
+          ],
+          "default": "1h"
+        },
+        "lookback": {
+          "type": "number",
+          "min": 5,
+          "max": 250,
+          "default": 20
+        },
+        "entryZ": {
+          "type": "number",
+          "min": -5,
+          "max": 5,
+          "default": -2
+        },
+        "exitZ": {
+          "type": "number",
+          "min": -2,
+          "max": 2,
+          "default": 0
+        }
+      }
+    }
+  ],
+  "strategies": [
+    {
+      "id": "strategy-ema-cross-v1",
+      "templateId": "template-ema-crossover",
+      "name": "EMA Crossover",
+      "version": 1,
+      "status": "draft",
+      "riskLevel": "medium",
+      "parameters": {
+        "fastPeriod": 9,
+        "slowPeriod": 21,
+        "symbol": "BTC-USD",
+        "timeframe": "1h"
+      },
+      "createdAt": "2026-05-29T00:00:00.000Z",
+      "updatedAt": "2026-05-29T00:00:00.000Z"
+    },
+    {
+      "id": "strategy-zscore-v1",
+      "templateId": "template-zscore-mean-reversion",
+      "name": "Z-Score Mean Reversion",
+      "version": 1,
+      "status": "draft",
+      "riskLevel": "low",
+      "parameters": {
+        "lookback": 20,
+        "entryZ": -2,
+        "exitZ": 0,
+        "symbol": "ETH-USD",
+        "timeframe": "1h"
+      },
+      "createdAt": "2026-05-29T00:00:00.000Z",
+      "updatedAt": "2026-05-29T00:00:00.000Z"
+    }
+  ],
+  "backtests": [
+    {
+      "id": "bt-demo-001",
+      "strategyId": "strategy-ema-cross-v1",
+      "status": "completed",
+      "startedAt": "2026-05-29T00:00:00.000Z",
+      "completedAt": "2026-05-29T00:00:01.000Z",
+      "assumptions": {
+        "initialCapitalUsd": 100000,
+        "feeBps": 5,
+        "slippageBps": 10,
+        "dataSource": "demo-fixture"
+      },
+      "metrics": {
+        "totalReturnPct": 3.42,
+        "maxDrawdownPct": 1.18,
+        "sharpe": 1.12,
+        "totalTrades": 14,
+        "winRatePct": 57.14
+      },
+      "equityCurve": [
+        100000,
+        100800,
+        100150,
+        101250,
+        103420
+      ],
+      "trades": [
+        {
+          "timestamp": "2026-01-02T10:00:00.000Z",
+          "symbol": "BTC-USD",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 45000
+        },
+        {
+          "timestamp": "2026-01-03T15:00:00.000Z",
+          "symbol": "BTC-USD",
+          "side": "sell",
+          "quantity": 0.1,
+          "price": 46539
+        }
+      ],
+      "report": {
+        "artifactId": "artifact-bt-demo-001",
+        "summary": "Demo deterministic backtest artifact."
+      }
+    }
+  ],
+  "approvals": [
+    {
+      "id": "approval-demo-001",
+      "strategyId": "strategy-ema-cross-v1",
+      "backtestId": "bt-demo-001",
+      "status": "approved",
+      "tier": "canary",
+      "reason": "Backtest evidence required before paper incubation.",
+      "createdAt": "2026-05-29T00:00:00.000Z",
+      "resolved_at": "2026-06-18T17:53:10Z"
+    }
+  ],
+  "opportunities": [],
+  "riskBreakdowns": [],
+  "researchJobs": [],
+  "agentBudgets": [
+    {
+      "agentId": "market-research-agent",
+      "dailyTokenLimit": 200000,
+      "dailyCostLimit": 35,
+      "perJobTokenLimit": 50000,
+      "perMarketCostLimit": 12,
+      "requireApprovalAboveCost": 10,
+      "enabled": true
+    },
+    {
+      "agentId": "liquidity-scanner",
+      "dailyTokenLimit": 150000,
+      "dailyCostLimit": 20,
+      "perJobTokenLimit": 40000,
+      "perMarketCostLimit": 8,
+      "requireApprovalAboveCost": 8,
+      "enabled": true
+    }
+  ],
+  "budgetApprovals": [],
+  "agentCostLedger": [],
+  "marketDataSnapshots": [
+    {
+      "id": "md-coinbase-btc-usd",
+      "symbol": "BTC-USD",
+      "venue": "coinbase",
+      "assetClass": "crypto",
+      "bid": 66261.3,
+      "ask": 66261.31,
+      "spreadBps": 0.0015091763194481531,
+      "volume24h": 0,
+      "liquidityScore": 90,
+      "volatilityScore": 50,
+      "status": "connected",
+      "timestamp": "2026-06-16T01:11:06.959Z",
+      "source": "coinbase-bridge"
+    },
+    {
+      "id": "md-coinbase-eth-usd",
+      "symbol": "ETH-USD",
+      "venue": "coinbase",
+      "assetClass": "crypto",
+      "bid": 1791.56,
+      "ask": 1791.57,
+      "spreadBps": 0.055816965008293876,
+      "volume24h": 0,
+      "liquidityScore": 90,
+      "volatilityScore": 50,
+      "status": "connected",
+      "timestamp": "2026-06-16T01:11:06.959Z",
+      "source": "coinbase-bridge"
+    }
+  ],
+  "positions": [
+    {
+      "symbol": "MON-USD",
+      "venue": "coinbase",
+      "quantity": 14944.10433438,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "MON",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "NOM-USD",
+      "venue": "coinbase",
+      "quantity": 67.80821918,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "NOM",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "ZEC-USD",
+      "venue": "coinbase",
+      "quantity": 0.00174471,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "ZEC",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "ALLO-USD",
+      "venue": "coinbase",
+      "quantity": 3.39157246,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "ALLO",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "TRUST-USD",
+      "venue": "coinbase",
+      "quantity": 4.93396462,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "TRUST",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "XLM-USD",
+      "venue": "coinbase",
+      "quantity": 3107.8449,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "XLM",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "CORECHAIN-USD",
+      "venue": "coinbase",
+      "quantity": 9.748497874462679,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "CORECHAIN",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "NEAR-USD",
+      "venue": "coinbase",
+      "quantity": 0.8884506851305412,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "NEAR",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "DOT-USD",
+      "venue": "coinbase",
+      "quantity": 9.80706781,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "DOT",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "ETH-USD",
+      "venue": "coinbase",
+      "quantity": 0.40237929,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "ETH",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "AVAX-USD",
+      "venue": "coinbase",
+      "quantity": 2.27950904,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "AVAX",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "ATOM-USD",
+      "venue": "coinbase",
+      "quantity": 10.78083,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "ATOM",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "SOL-USD",
+      "venue": "coinbase",
+      "quantity": 0.2085492,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "SOL",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "ADA-USD",
+      "venue": "coinbase",
+      "quantity": 141.606035,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "ADA",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    },
+    {
+      "symbol": "BTC-USD",
+      "venue": "coinbase",
+      "quantity": 0.05434833,
+      "averagePrice": 0,
+      "markPrice": 0,
+      "unrealizedPnl": 0,
+      "realizedPnl": 0,
+      "currency": "BTC",
+      "status": "open",
+      "openedAt": "2026-06-16T01:11:06.101Z"
+    }
+  ],
+  "paperExecutions": [],
+  "executions": [
+    {
+      "id": "exec-1781570587939-mdan",
+      "strategyId": "test-preview",
+      "mode": "paper",
+      "status": "draft",
+      "orders": [
+        {
+          "marketId": "ETH-USD",
+          "symbol": "ETH-USD",
+          "side": "sell",
+          "quantity": 0.0001,
+          "venue": "coinbase",
+          "confidenceScore": 0.8
+        }
+      ],
+      "fills": [],
+      "confidenceScore": 0.8,
+      "convictionWeight": 0.9,
+      "riskDecision": {
+        "approved": true,
+        "reasons": []
+      },
+      "startedAt": "2026-06-16T00:43:07.940Z",
+      "lastHeartbeatAt": "2026-06-16T00:43:07.940Z",
+      "preview": {
+        "estimatedPrice": 1799.89,
+        "estimatedFee": 0,
+        "estimatedSlippage": 0.000179989,
+        "estimatedTotal": 0.179989,
+        "liquidity": "taker",
+        "slippageBps": 10,
+        "validUntil": "2026-06-16T00:43:23.899Z"
+      }
+    },
+    {
+      "id": "exec-1781570612952-dlxk",
+      "strategyId": "test-preview",
+      "mode": "paper",
+      "status": "draft",
+      "orders": [
+        {
+          "marketId": "ETH-USD",
+          "symbol": "ETH-USD",
+          "side": "sell",
+          "quantity": 0.001,
+          "venue": "coinbase",
+          "confidenceScore": 0.8
+        }
+      ],
+      "fills": [],
+      "confidenceScore": 0.8,
+      "convictionWeight": 0.9,
+      "riskDecision": {
+        "approved": true,
+        "reasons": []
+      },
+      "startedAt": "2026-06-16T00:43:32.952Z",
+      "lastHeartbeatAt": "2026-06-16T00:43:32.952Z",
+      "preview": {
+        "estimatedPrice": 1798.2,
+        "estimatedFee": 0.0215784,
+        "estimatedSlippage": 0.0017982,
+        "estimatedTotal": 1.7982,
+        "liquidity": "taker",
+        "slippageBps": 10,
+        "validUntil": "2026-06-16T00:43:48.899Z"
+      }
+    }
+  ],
+  "audit": [
+    {
+      "id": "audit-001",
+      "action": "system_bootstrap",
+      "actor": "system",
+      "at": "2026-05-29T00:00:00.000Z",
+      "details": "Mock/paper operator surface initialized."
+    },
+    {
+      "id": "audit-002",
+      "action": "coinbase_synced",
+      "actor": "coinbase-bridge",
+      "at": "2026-06-16T00:33:47.432Z",
+      "details": "1 accounts, 15 positions, 2 quotes",
+      "payload": {
+        "accountCount": 1,
+        "positionCount": 15,
+        "quoteCount": 2
+      }
+    },
+    {
+      "id": "audit-003",
+      "action": "coinbase_synced",
+      "actor": "coinbase-bridge",
+      "at": "2026-06-16T00:37:37.846Z",
+      "details": "1 accounts, 15 positions, 2 quotes",
+      "payload": {
+        "accountCount": 1,
+        "positionCount": 15,
+        "quoteCount": 2
+      }
+    },
+    {
+      "id": "audit-004",
+      "action": "execution_submitted",
+      "actor": "operator",
+      "at": "2026-06-16T00:43:08.899Z",
+      "details": "exec-1781570587939-mdan",
+      "payload": {
+        "strategyId": "test-preview",
+        "status": "draft",
+        "confidenceScore": 0.8
+      }
+    },
+    {
+      "id": "audit-005",
+      "action": "execution_submitted",
+      "actor": "operator",
+      "at": "2026-06-16T00:43:33.900Z",
+      "details": "exec-1781570612952-dlxk",
+      "payload": {
+        "strategyId": "test-preview",
+        "status": "draft",
+        "confidenceScore": 0.8
+      }
+    },
+    {
+      "id": "audit-006",
+      "action": "coinbase_synced",
+      "actor": "coinbase-bridge",
+      "at": "2026-06-16T00:43:42.254Z",
+      "details": "1 accounts, 15 positions, 2 quotes",
+      "payload": {
+        "accountCount": 1,
+        "positionCount": 15,
+        "quoteCount": 2
+      }
+    },
+    {
+      "id": "audit-007",
+      "action": "coinbase_synced",
+      "actor": "coinbase-bridge",
+      "at": "2026-06-16T01:11:06.960Z",
+      "details": "1 accounts, 15 positions, 2 quotes",
+      "payload": {
+        "accountCount": 1,
+        "positionCount": 15,
+        "quoteCount": 2
+      }
+    }
+  ],
+  "killSwitch": {
+    "enabled": false,
+    "reason": null,
+    "updatedAt": null
+  },
+  "config": {
+    "confidenceThreshold": 0.6,
+    "approvalThreshold": 0.8,
+    "maxPositionSizeUsd": 50000,
+    "defaultHoldingPeriodDays": 7,
+    "maxConcurrentTrades": 5,
+    "coinbaseApiKey": "",
+    "coinbaseApiSecret": "",
+    "kalshiEmail": "",
+    "kalshiPassword": "",
+    "polymarketApiKey": "",
+    "polymarketWalletAddress": "",
+    "polymarketPrivateKey": "",
+    "updatedAt": null
+  },
+  "marketIntelligence": {
+    "updated_at": "2026-06-22T14:41:22Z",
+    "coinbase": {
+      "products": [
+        "BTC-USD",
+        "ETH-USD",
+        "SOL-USD"
+      ],
+      "last_updates": {
+        "BTC-USD": {
+          "price": 64819.78,
+          "channel": "ticker",
+          "timestamp": "2026-06-22T14:41:22.225605673Z"
+        },
+        "ETH-USD": {
+          "price": 1751.84,
+          "channel": "ticker",
+          "timestamp": "2026-06-22T14:41:21.703886652Z"
+        },
+        "SOL-USD": {
+          "price": 73.41,
+          "channel": "ticker",
+          "timestamp": "2026-06-22T14:41:21.739505066Z"
+        }
+      }
+    },
+    "prediction_markets": {
+      "markets": [
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9be56371f6a29d12769b2f196847ee825b9585ebb8bfa042136be031b081eba1",
+          "question": "Will Netherlands win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61349716.66734562,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": true,
+          "heat_score": 76380627.3122828
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9be56371f6a29d12769b2f196847ee825b9585ebb8bfa042136be031b081eba1",
+          "question": "Will Netherlands win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61349716.66734562,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": true,
+          "heat_score": 76380627.3122828
+        }
+      ],
+      "rankings": [
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0xcdb1f0400949238a63d3e88243d2ada08cd9c2a71985ced9f0cfd5e66354cf90",
+          "question": "Will USA win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 93609657.36649886,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 116544374.45750621
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x5ccfe1b69a582d2985db08a8481a0d74c314b1fce9b4711ae2efb2c6467fe6aa",
+          "question": "Will Mexico win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 81898888.44995332,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 101964423.24102357
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x7876851632c295043c66536150a304cb785abdf712ba8489d298c6e6926be106",
+          "question": "Will Uruguay win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 70722013.3868773,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 88049171.87421244
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x32cfa52198e85e070d1b17d1b53c5c3a6aaae7736cdc33fa6aa04d353f0c2811",
+          "question": "Will Belgium win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 68883891.1614466,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 85760702.81059287
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9b6fef249040fd17e9c107955b37ac2c3e923509b6b0ff01cc463a331ddeb894",
+          "question": "Will France win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66931861.74020982,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 83330418.86104275
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x0c4cd2055d6ea89354ffddc55d6dbcef9355748112ea952fc925f3db6a5c457f",
+          "question": "Will Argentina win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 66133852.0328978,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 82336893.78290288
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x1595b4818eeb1ea1e0bec5de6f057218e557feee9b405a0e930d290384fa1d16",
+          "question": "Will Germany win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61731190.68483461,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76855563.89458415
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x4f3421fb2daf5cca7430ed8d8132463963081572d75434393a1808fdb8829fe8",
+          "question": "Will Portugal win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61355820.16590499,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": false,
+          "heat_score": 76388226.19087733
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9be56371f6a29d12769b2f196847ee825b9585ebb8bfa042136be031b081eba1",
+          "question": "Will Netherlands win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61349716.66734562,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": true,
+          "heat_score": 76380627.3122828
+        },
+        {
+          "platform": "polymarket",
+          "market_id": "0x9be56371f6a29d12769b2f196847ee825b9585ebb8bfa042136be031b081eba1",
+          "question": "Will Netherlands win the 2026 FIFA World Cup?",
+          "category": "sports",
+          "volume": 61349716.66734562,
+          "spread": 0.001,
+          "liquidity_score": 0.997,
+          "mid_price": 0.5,
+          "probability_extremity": 0.0,
+          "is_relevant": true,
+          "heat_score": 76380627.3122828
+        }
+      ],
+      "categories": {
+        "crypto": 25,
+        "sports": 111,
+        "politics": 26,
+        "entertainment": 26,
+        "economics": 25,
+        "technology": 25
+      },
+      "total_markets": 238
+    },
+    "arbitrage": {
+      "opportunities": [],
+      "total_opportunities": 0
+    },
+    "paper_trade_count": 0,
+    "summary": {
+      "coinbase_updates": 3,
+      "prediction_markets": 238,
+      "arbitrage_opportunities": 0,
+      "paper_trades": 0
+    }
+  }
+}

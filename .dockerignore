@@ -6,7 +6,9 @@ coverage
 dist
 build
 backups
-data
+data/*
+!data/*.py
+!data/**/*.py
 *.log
 .env
 .env.*

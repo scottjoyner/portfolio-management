@@ -29,11 +29,14 @@ def rebalance_plan(
     # we convert them here.
     return [
         {
+            "strategy_id": intent.strategy_id,
             "product_id": intent.product_id,
             "side": intent.side,
             "base_size": intent.size,
-            "quote_size": intent.size * prices.get(intent.product_id, 0.0) if intent.side == "buy" else intent.size * prices.get(intent.product_id, 0.0), # Note: Simplified
-            "rationale": intent.reason
+            "quote_size": intent.size * prices.get(intent.product_id, 0.0),
+            "rationale": intent.rationale,
+            "order_type": intent.order_type,
+            "bucket": getattr(intent, "bucket", None),
         }
         for intent in intents
     ]

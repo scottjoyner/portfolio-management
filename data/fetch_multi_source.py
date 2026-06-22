@@ -20,6 +20,7 @@ import csv
 import logging
 import os
 import sys
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +28,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/home/scott/git/portfolio-management/data/fetch_multi_source.log')
+        logging.FileHandler(str(Path(__file__).resolve().parent / 'fetch_multi_source.log'))
     ]
 )
 logger = logging.getLogger(__name__)
@@ -73,6 +74,13 @@ class MultiSourceDataFetcher:
         if end_date is None:
             end_date = datetime.now()
         
+        # Coinbase public candle endpoint expects granularity in seconds.
+        granularity_sec = {
+            'minute': 60,
+            'hour': 3600,
+            'day': 86400,
+        }.get(granularity, 3600)
+
         # Calculate step size for pagination (max 300 candles per request)
         if granularity == 'minute':
             step_delta = timedelta(minutes=12)  # ~720 minutes
@@ -96,7 +104,7 @@ class MultiSourceDataFetcher:
             params = {
                 "start": int(current_start.timestamp()),
                 "end": int(current_end.timestamp()),
-                "granularity": granularity
+                "granularity": granularity_sec
             }
             
             logger.info(
@@ -115,28 +123,45 @@ class MultiSourceDataFetcher:
                     })
                     
                     with urlopen(req, timeout=30) as response:
-                        data = json.loads(response.read().decode('utf-8'))
-                        candles = data.get('candles', [])
-                        
-                        if candles:
-                            all_candles.extend(candles)
+                        body = response.read().decode('utf-8')
+                        data = json.loads(body)
+                        candles = data.get('candles', []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+
+                        normalized = []
+                        for candle in candles:
+                            try:
+                                if isinstance(candle, dict):
+                                    ts = int(candle.get('start', candle.get('time', 0)))
+                                    normalized.append({
+                                        'start': ts,
+                                        'open': float(candle.get('open', 0)),
+                                        'high': float(candle.get('high', 0)),
+                                        'low': float(candle.get('low', 0)),
+                                        'close': float(candle.get('close', 0)),
+                                        'volume': float(candle.get('volume', 0)),
+                                    })
+                                elif isinstance(candle, (list, tuple)) and len(candle) >= 6:
+                                    ts, low, high, open_, close, volume = candle[:6]
+                                    normalized.append({
+                                        'start': int(ts),
+                                        'open': float(open_),
+                                        'high': float(high),
+                                        'low': float(low),
+                                        'close': float(close),
+                                        'volume': float(volume),
+                                    })
+                            except Exception:
+                                continue
+
+                        if normalized:
+                            all_candles.extend(normalized)
+                            first_ts = min(c['start'] for c in normalized)
                             logger.info(
-                                f"Fetched {len(candles)} candles "
-                                f"({current_start.date()} -> {min(c['start'] for c in candles).date()})"
+                                f"Fetched {len(normalized)} candles "
+                                f"({current_start.date()} -> {datetime.fromtimestamp(first_ts).date()})"
                             )
                         else:
                             logger.warning("No candles returned from API")
-                    
-                    if response.status_code == 429:  # Rate limited
-                        retry_after = int(response.headers.get('Retry-After', 60))
-                        logger.warning(f"Rate limited. Waiting {retry_after}s...")
-                        time.sleep(retry_after)
-                        continue
-                    
-                    else:
-                        error_msg = response.read().decode('utf-8')[:200] if response.read() else "No details"
-                        logger.error(f"API Error [{response.status_code}]: {error_msg}")
-                        break
                     
                     success = True
                     break

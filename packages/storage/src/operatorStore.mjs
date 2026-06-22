@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { DEFAULT_ACCOUNTS, DEFAULT_INSTRUMENTS, DEFAULT_STRATEGY_TEMPLATES } from './defaultOperatorState.mjs';
+import { DEFAULT_ACCOUNTS } from './defaultOperatorState.mjs';
 
 export const CURRENT_SCHEMA_VERSION = 3;
 
@@ -8,60 +8,11 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     accounts: DEFAULT_ACCOUNTS.map(account => ({ ...account, updatedAt: account.updatedAt || now })),
-    instruments: DEFAULT_INSTRUMENTS,
-    strategyTemplates: DEFAULT_STRATEGY_TEMPLATES,
-    strategies: [
-      {
-        id: 'strategy-ema-cross-v1',
-        templateId: 'template-ema-crossover',
-        name: 'EMA Crossover',
-        version: 1,
-        status: 'draft',
-        riskLevel: 'medium',
-        parameters: { fastPeriod: 9, slowPeriod: 21, symbol: 'BTC-USD', timeframe: '1h' },
-        createdAt: now,
-        updatedAt: now
-      },
-      {
-        id: 'strategy-zscore-v1',
-        templateId: 'template-zscore-mean-reversion',
-        name: 'Z-Score Mean Reversion',
-        version: 1,
-        status: 'draft',
-        riskLevel: 'low',
-        parameters: { lookback: 20, entryZ: -2, exitZ: 0, symbol: 'ETH-USD', timeframe: '1h' },
-        createdAt: now,
-        updatedAt: now
-      }
-    ],
-    backtests: [
-      {
-        id: 'bt-demo-001',
-        strategyId: 'strategy-ema-cross-v1',
-        status: 'completed',
-        startedAt: now,
-        completedAt: '2026-05-29T00:00:01.000Z',
-        assumptions: { initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10, dataSource: 'demo-fixture' },
-        metrics: { totalReturnPct: 3.42, maxDrawdownPct: 1.18, sharpe: 1.12, totalTrades: 14, winRatePct: 57.14 },
-        equityCurve: [100000, 100800, 100150, 101250, 103420],
-        trades: [
-          { timestamp: '2026-01-02T10:00:00.000Z', symbol: 'BTC-USD', side: 'buy', quantity: 0.1, price: 45000 },
-          { timestamp: '2026-01-03T15:00:00.000Z', symbol: 'BTC-USD', side: 'sell', quantity: 0.1, price: 46539 }
-        ],
-        report: { artifactId: 'artifact-bt-demo-001', summary: 'Demo deterministic backtest artifact.' }
-      }
-    ],
-    approvals: [
-      {
-        id: 'approval-demo-001',
-        strategyId: 'strategy-ema-cross-v1',
-        backtestId: 'bt-demo-001',
-        status: 'pending_review',
-        tier: 'canary',
-        reason: 'Backtest evidence required before paper incubation.',
-        createdAt: now
-      }
-    ],
+    instruments: [],
+    strategyTemplates: [],
+    strategies: [],
+    backtests: [],
+    approvals: [],
     opportunities: [],
     riskBreakdowns: [],
     researchJobs: [],
@@ -71,10 +22,32 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
     marketDataSnapshots: [],
     positions: [],
     paperExecutions: [],
-    audit: [
-      { id: 'audit-001', action: 'system_bootstrap', actor: 'system', at: now, details: 'Mock/paper operator surface initialized.' }
-    ],
-    killSwitch: { enabled: false, reason: null, updatedAt: null }
+    executions: [],
+    audit: [],
+    killSwitch: { enabled: false, reason: null, updatedAt: null },
+    config: {
+      confidenceThreshold: 0.60,
+      approvalThreshold: 0.80,
+      maxPositionSizeUsd: 50000,
+      defaultHoldingPeriodDays: 7,
+      maxConcurrentTrades: 5,
+      capitalPolicy: {
+        presetName: 'balanced',
+        targets: { reserve: 0.50, core: 0.20, opportunity: 0.30 },
+        coreAllowlist: ['BTC', 'ETH'],
+        coreMinAllocationPct: 10,
+        coreBatchFraction: 0.05,
+        opportunityBatchFraction: 0.03,
+      },
+      coinbaseApiKey: '',
+      coinbaseApiSecret: '',
+      kalshiEmail: '',
+      kalshiPassword: '',
+      polymarketApiKey: '',
+      polymarketWalletAddress: '',
+      polymarketPrivateKey: '',
+      updatedAt: null
+    }
   };
 }
 
@@ -83,22 +56,24 @@ export function normalizeOperatorState(input = {}) {
   return {
     schemaVersion: Number(input.schemaVersion || CURRENT_SCHEMA_VERSION),
     accounts: Array.isArray(input.accounts) ? input.accounts : seeded.accounts,
-    instruments: Array.isArray(input.instruments) ? input.instruments : seeded.instruments,
-    strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : seeded.strategyTemplates,
-    strategies: Array.isArray(input.strategies) ? input.strategies : seeded.strategies,
-    backtests: Array.isArray(input.backtests) ? input.backtests : seeded.backtests,
-    approvals: Array.isArray(input.approvals) ? input.approvals : seeded.approvals,
-    opportunities: Array.isArray(input.opportunities) ? input.opportunities : seeded.opportunities,
-    riskBreakdowns: Array.isArray(input.riskBreakdowns) ? input.riskBreakdowns : seeded.riskBreakdowns,
-    researchJobs: Array.isArray(input.researchJobs) ? input.researchJobs : seeded.researchJobs,
-    agentBudgets: Array.isArray(input.agentBudgets) ? input.agentBudgets : seeded.agentBudgets,
-    budgetApprovals: Array.isArray(input.budgetApprovals) ? input.budgetApprovals : seeded.budgetApprovals,
-    agentCostLedger: Array.isArray(input.agentCostLedger) ? input.agentCostLedger : seeded.agentCostLedger,
-    marketDataSnapshots: Array.isArray(input.marketDataSnapshots) ? input.marketDataSnapshots : seeded.marketDataSnapshots,
-    positions: Array.isArray(input.positions) ? input.positions : seeded.positions,
-    paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : seeded.paperExecutions,
-    audit: Array.isArray(input.audit) ? input.audit : seeded.audit,
-    killSwitch: input.killSwitch && typeof input.killSwitch === 'object' ? input.killSwitch : seeded.killSwitch
+    instruments: Array.isArray(input.instruments) ? input.instruments : [],
+    strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : [],
+    strategies: Array.isArray(input.strategies) ? input.strategies : [],
+    backtests: Array.isArray(input.backtests) ? input.backtests : [],
+    approvals: Array.isArray(input.approvals) ? input.approvals : [],
+    opportunities: Array.isArray(input.opportunities) ? input.opportunities : [],
+    riskBreakdowns: Array.isArray(input.riskBreakdowns) ? input.riskBreakdowns : [],
+    researchJobs: Array.isArray(input.researchJobs) ? input.researchJobs : [],
+    agentBudgets: Array.isArray(input.agentBudgets) ? input.agentBudgets : [],
+    budgetApprovals: Array.isArray(input.budgetApprovals) ? input.budgetApprovals : [],
+    agentCostLedger: Array.isArray(input.agentCostLedger) ? input.agentCostLedger : [],
+    marketDataSnapshots: Array.isArray(input.marketDataSnapshots) ? input.marketDataSnapshots : [],
+    positions: Array.isArray(input.positions) ? input.positions : [],
+    paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : [],
+    executions: Array.isArray(input.executions) ? input.executions : [],
+    audit: Array.isArray(input.audit) ? input.audit : [],
+    killSwitch: input.killSwitch && typeof input.killSwitch === 'object' ? input.killSwitch : seeded.killSwitch,
+    config: input.config && typeof input.config === 'object' ? { ...seeded.config, ...input.config } : seeded.config
   };
 }
 

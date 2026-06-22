@@ -1,13 +1,5 @@
 export const DEFAULT_ACCOUNTS = [
-  { id: 'acct-paper-primary', name: 'Primary Paper Portfolio', provider: 'paper', status: 'connected', currency: 'USD', cash: 100000, nav: 100000 },
-  { id: 'acct-plaid-sandbox', name: 'Plaid Sandbox Placeholder', provider: 'plaid_sandbox', status: 'mock', currency: 'USD', cash: 25000, nav: 25000 }
-];
-
-export const DEFAULT_INSTRUMENTS = [
-  { symbol: 'BTC-USD', name: 'Bitcoin / USD', assetClass: 'crypto', venue: 'paper', status: 'active', minOrderSize: 0.0001, pricePrecision: 2 },
-  { symbol: 'ETH-USD', name: 'Ether / USD', assetClass: 'crypto', venue: 'paper', status: 'active', minOrderSize: 0.001, pricePrecision: 2 },
-  { symbol: 'SOL-USD', name: 'Solana / USD', assetClass: 'crypto', venue: 'paper', status: 'active', minOrderSize: 0.01, pricePrecision: 2 },
-  { symbol: 'AAPL', name: 'Apple Inc.', assetClass: 'equity', venue: 'paper', status: 'active', minOrderSize: 1, pricePrecision: 2 }
+  { id: 'acct-paper-primary', name: 'Paper Trading', provider: 'paper', status: 'connected', currency: 'USD', cash: 100000, nav: 100000 }
 ];
 
 export const DEFAULT_STRATEGY_TEMPLATES = [

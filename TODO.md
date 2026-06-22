@@ -20,10 +20,20 @@ Completed or partially completed:
 - Production-paper readiness and smoke commands
 - First-production certification validation scaffolding
 - Deployment docs and runbooks
+- Unified execution engine with state machine, confidence scoring, approval workflow
+- Broker adapters (Coinbase bridge via Python, Kalshi REST, Polymarket CLOB, Paper)
+- Graph-alpha-bot signal integration into opportunity pipeline
+- Reconciliation and settlement tracking
+- Postgres store support for execution persistence
+- CLI for execution management
+- UI execution dashboard with approve/cancel/reconcile/retry
+- Dashboard-configurable capital policy with reserve/core/opportunity presets
+- Operator shell overview with capital policy summary and collapsible opportunity risk breakdowns
 
 Still missing for the product we actually want:
 
 - Real trading dashboard UX
+- Broader Settings tab beyond capital policy
 - Opportunity review feed
 - Polymarket-focused research and opportunity tab
 - Live P/L and liquidity dashboard
@@ -205,6 +215,44 @@ Risk breakdown must include:
 - [ ] Show liquidity risk, resolution ambiguity risk, time-to-resolution risk, and slippage risk.
 - [ ] Add approve/reject/defer/request-more-research controls.
 - [ ] Keep live Polymarket order submission blocked.
+
+### P1.7b Execution engine
+- [x] Build runtime execution engine with state machine (draft→approved→submitted→filled|cancelled|failed)
+- [x] Implement confidence scoring with configurable threshold (default 0.60)
+- [x] Add approval workflow (draft → approve/reject/cancel)
+- [x] Create paper broker adapter with cash/position tracking and fee/slippage simulation
+- [x] Create Coinbase broker adapter via Python bridge subprocess
+- [x] Create Kalshi broker adapter (REST client, demo fallback)
+- [x] Create Polymarket broker adapter (CLOB integration, readonly)
+- [x] Build adapter registry for lazy-initialized venue adapters
+- [x] Add execution event emission and retrieval
+- [x] Add plan endpoint (preview without execution)
+- [x] Support execution retry logic
+- [x] Persist executions in operator store (postgres+file)
+- [x] Add execution metrics to operator summary (filled/pending/failed counts)
+
+### P1.7c Graph-alpha-bot signal pipeline
+- [x] Create GraphAlphaBotAdapter consuming Neo4j signals
+- [x] Implement signal-to-OrderIntent conversion
+- [x] Add `POST /api/execution/graph-signals/ingest` route
+- [x] Add `GET /api/execution/graph-signals` route
+- [x] Wire signals into opportunity pipeline (creates opportunities via createOpportunity)
+- [x] Add UI Graph Signals panel with signal table and ingest button
+- [x] Add CLI graph-signals and graph-ingest commands
+
+### P1.7d Reconciliation and settlement
+- [x] Build ExecutionReconciler for fill-mismatch detection and audit events
+- [x] Build SettlementTracker for pending/settled/failed fill lifecycle
+- [x] Add reconciliation routes (reconcile, settle fill, retry settlement)
+- [x] Emit audit events for reconciliation runs and settlement outcomes
+- [x] Show settlement status in UI execution table
+- [x] Add settlement KPI cards (total fills, settled, pending)
+
+### P1.7e Broker adapter UI
+- [x] Add broker adapter registry panel in UI
+- [x] Show adapter name, venue, mode, connected status
+- [x] Add CLI adapters command
+- [x] Add `GET /api/execution/adapters` API route
 
 ### P1.6 Risk breakdown model
 

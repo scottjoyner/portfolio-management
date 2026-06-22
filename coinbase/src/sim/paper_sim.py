@@ -3,7 +3,15 @@ import pandas as pd
 from dataclasses import dataclass
 from typing import Dict, List
 from ..data import fetch_candles_df
-from ..alpha.alpha import donchian_breakout_setup, trend_rsi_pullback_setup, donchian_breakdown_setup, trend_rsi_rip_setup
+from ..alpha.alpha import (
+    donchian_breakout_setup,
+    trend_rsi_pullback_setup,
+    donchian_breakdown_setup,
+    trend_rsi_rip_setup,
+    rsi_failure_swing_setup,
+    volatility_compression_breakout_setup,
+    impulse_exhaustion_reversal_setup,
+)
 from ..tcost import effective_fill_price
 from ..analytics import log_trade
 
@@ -82,8 +90,25 @@ def simulate(cb, products: List[str], start_days: int, granularity: str, cfg: Si
             window = df.loc[:t].tail(240)
             if len(window) < 220: continue
             cands = []
-            for fn in (donchian_breakout_setup, trend_rsi_pullback_setup, donchian_breakdown_setup, trend_rsi_rip_setup):
-                s = fn(window) if fn in (donchian_breakout_setup, donchian_breakdown_setup) else fn(window, cfg.stop_k)
+            for fn in (
+                donchian_breakout_setup,
+                trend_rsi_pullback_setup,
+                donchian_breakdown_setup,
+                trend_rsi_rip_setup,
+                rsi_failure_swing_setup,
+                volatility_compression_breakout_setup,
+                impulse_exhaustion_reversal_setup,
+            ):
+                if fn in (donchian_breakout_setup, donchian_breakdown_setup):
+                    s = fn(window)
+                elif fn is volatility_compression_breakout_setup:
+                    s = fn(window, cfg.stop_k, cfg.target_k)
+                elif fn is impulse_exhaustion_reversal_setup:
+                    s = fn(window, cfg.stop_k, cfg.target_k)
+                elif fn is rsi_failure_swing_setup:
+                    s = fn(window, cfg.stop_k, cfg.target_k)
+                else:
+                    s = fn(window, cfg.stop_k)
                 if s: cands.append(s)
             if not cands: continue
             best = max(cands, key=lambda x: x["rr"])

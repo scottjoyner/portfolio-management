@@ -71,6 +71,9 @@ function isP1Route(pathname) {
     || pathname === '/api/market-data/snapshots'
     || pathname === '/api/connectors/market-data/ingest'
     || pathname === '/api/opportunities/generate-from-connectors'
+    || pathname === '/api/opportunities/generate-from-strategies'
+    || pathname === '/api/opportunities/generate-from-prediction-markets'
+    || pathname === '/api/opportunities/generate-from-arbitrage'
     || pathname === '/api/polymarket/opportunities'
     || /^\/api\/agents\/budget-approvals\/[^/]+\/decision$/.test(pathname)
     || /^\/api\/opportunities\/[^/]+$/.test(pathname)
@@ -78,10 +81,45 @@ function isP1Route(pathname) {
     || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
     || /^\/api\/backtests\/[^/]+\/report$/.test(pathname)
     || /^\/api\/approvals\/[^/]+\/decision$/.test(pathname)
-    || /^\/api\/paper-executions\/[^/]+\/(stop|signal)$/.test(pathname);
+    || /^\/api\/paper-executions\/[^/]+\/(stop|signal)$/.test(pathname)
+    || pathname === '/api/execution/plan'
+    || pathname === '/api/execution/execute'
+    || pathname === '/api/executions'
+    || pathname === '/api/execution/adapters'
+    || pathname === '/api/execution/events'
+    || /^\/api\/executions\/[^/]+$/.test(pathname)
+    || /^\/api\/executions\/[^/]+\/events$/.test(pathname)
+    || /^\/api\/execution\/[^/]+\/(approve|reject|cancel)$/.test(pathname)
+    || pathname === '/api/config'
+    || pathname === '/api/coinbase/sync'
+    || pathname === '/api/execution/graph-signals'
+    || pathname === '/api/execution/strategy-signals'
+    || /^\/api\/execution\/[^/]+\/(reconcile|settle|retry-settlement)$/.test(pathname)
+    || /^\/api\/execution\/graph-signals\/ingest$/.test(pathname)
+    || pathname === '/api/kalshi/markets'
+    || pathname === '/api/kalshi/balance'
+    || pathname === '/api/prediction-markets/scan'
+    || pathname === '/api/polymarket/markets'
+    || pathname === '/api/polymarket/balance'
+    || /^\/api\/polymarket\/orderbook\/[^/]+$/.test(pathname)
+    || pathname === '/api/activity-feed'
+    || pathname === '/api/arbitrage/scan'
+    || pathname === '/api/arbitrage/opportunities'
+    || pathname === '/api/arbitrage/opportunities/persist'
+    || pathname === '/api/paper/sweep'
+    || pathname === '/api/paper/sweep/history'
+    || pathname === '/api/market-data/live-quotes';
 }
 
 function makeSummary(state, store, runtime) {
+  const execs = state.executions || [];
+  const execFilled = execs.filter(e => e.status === 'filled').length;
+  const execPending = execs.filter(e => e.status === 'draft' || e.status === 'submitted').length;
+  const execFailed = execs.filter(e => e.status === 'failed').length;
+  const execFills = execs.flatMap(e => e.fills || []);
+  const execSettled = execFills.filter(f => f.settlementStatus === 'settled').length;
+  const execPendingSettlement = execFills.filter(f => f.settlementStatus === 'pending' || !f.settlementStatus).length;
+
   return {
     counts: {
       accounts: state.accounts.length,
@@ -94,6 +132,13 @@ function makeSummary(state, store, runtime) {
       researchJobs: state.researchJobs?.length || 0,
       budgetApprovals: state.budgetApprovals?.length || 0,
       paperExecutions: state.paperExecutions.length,
+      executions: execs.length,
+      executions_filled: execFilled,
+      executions_pending: execPending,
+      executions_failed: execFailed,
+      settlement_fills: execFills.length,
+      settlement_settled: execSettled,
+      settlement_pending: execPendingSettlement,
       positions: state.positions.length,
       auditEvents: state.audit.length
     },

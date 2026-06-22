@@ -1,5 +1,30 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@pkg/arbitrage": ["packages/arbitrage/src/index.ts"],
+      "@pkg/arbitrage/*.js": ["packages/arbitrage/src/*.ts"],
+      "@pkg/adapters": ["packages/adapters/src/index.ts"],
+      "@pkg/adapters/*.js": ["packages/adapters/src/*.ts"],
+      "@pkg/config": ["packages/config/src/index.ts"],
+      "@pkg/config/*.js": ["packages/config/src/*.ts"],
+      "@pkg/confidence": ["packages/confidence/src/index.ts"],
+      "@pkg/confidence/*.js": ["packages/confidence/src/*.ts"],
+      "@pkg/core": ["packages/core/src/index.ts"],
+      "@pkg/core/*.js": ["packages/core/src/*.ts"],
+      "@pkg/execution": ["packages/execution/src/index.ts"],
+      "@pkg/execution/*.js": ["packages/execution/src/*.ts"],
+      "@pkg/kalshi": ["packages/kalshi/src/index.ts"],
+      "@pkg/kalshi/*.js": ["packages/kalshi/src/*.ts"],
+      "@pkg/observability": ["packages/observability/src/index.ts"],
+      "@pkg/observability/*.js": ["packages/observability/src/*.ts"],
+      "@pkg/polymarket": ["packages/polymarket/src/index.ts"],
+      "@pkg/polymarket/*.js": ["packages/polymarket/src/*.ts"],
+      "@pkg/risk": ["packages/risk/src/index.ts"],
+      "@pkg/risk/*.js": ["packages/risk/src/*.ts"],
+      "@pkg/storage": ["packages/storage/src/index.ts"],
+      "@pkg/storage/*.js": ["packages/storage/src/*.ts"]
+    },
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -8,6 +33,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
+    "typeRoots": ["./types"],
     "declaration": true,
     "outDir": "dist"
   }

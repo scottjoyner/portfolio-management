@@ -1,10 +1,10 @@
-const MODES=new Set(['mock','paper','kalshi-demo','polymarket-readonly','staging','live']);
+const MODES=new Set(['paper','kalshi-demo','polymarket-readonly','staging','live']);
 const req=(v)=>v==='true';
 export function validateModeConfig(env){
-  const mode=env.MODE||'mock';
+  const mode=env.MODE||'paper';
   if(!MODES.has(mode)) return {ok:false,reasons:['invalid_mode']};
   const reasons=[];
-  if(mode==='mock'||mode==='paper'){
+  if(mode==='paper'){
     if(req(env.LIVE_TRADING)) reasons.push('live_must_be_false');
   }
   if(mode==='polymarket-readonly' && req(env.ALLOW_POLYMARKET_ORDER_SUBMISSION)) reasons.push('readonly_cannot_submit_orders');

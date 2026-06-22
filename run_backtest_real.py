@@ -13,7 +13,7 @@ def generate_clean_btc_data(days: int = 1200) -> list:
     regime cycles and volatility clustering.
     Returns OHLCVBar objects directly.
     """
-    from coinbase.src.backtest.new_strategies import OHLCVBar
+    from coinbase.src.backtest.coinbase_niche_strategies import OHLCVBar
     
     random.seed(42)
     
@@ -74,7 +74,7 @@ def generate_clean_btc_data(days: int = 1200) -> list:
 
 def main():
     """Run backtests on all strategies."""
-    from coinbase.src.backtest.new_strategies import (
+    from coinbase.src.backtest.coinbase_niche_strategies import (
         OHLCVBar,
         MultiTimeframeRSIMomentumStrategy,
         BollingerSqueezeBreakoutStrategy,
@@ -83,6 +83,12 @@ def main():
         OnChainRegimeWhaleFlowStrategy,
         SentimentMomentumCompositeStrategy,
         VolRegimeSwitchStrategy,
+        AnchoredVWAPMeanReversionStrategy,
+        LiquidityVacuumReversalStrategy,
+        DonchianPullbackContinuationStrategy,
+        RSIFailureSwingReversalStrategy,
+        VolatilityCompressionBreakoutStrategy,
+        ImpulseExhaustionReversalStrategy,
         backtest_strategy,
     )
     
@@ -103,6 +109,12 @@ def main():
         ("On-Chain Whale Flow", OnChainRegimeWhaleFlowStrategy(whale_threshold=1e6)),
         ("Sentiment Momentum Composite", SentimentMomentumCompositeStrategy(trend_period=20, short_period=5)),
         ("Vol Regime Switch", VolRegimeSwitchStrategy(atr_period=14)),
+        ("Anchored VWAP Mean Reversion", AnchoredVWAPMeanReversionStrategy(window=30, z_entry=1.8)),
+        ("Liquidity Vacuum Reversal", LiquidityVacuumReversalStrategy(lookback=25, volume_spike=1.8)),
+        ("Donchian Pullback Continuation", DonchianPullbackContinuationStrategy(channel_period=20, pullback_period=8)),
+        ("RSI Failure Swing Reversal", RSIFailureSwingReversalStrategy(period=14)),
+        ("Volatility Compression Breakout", VolatilityCompressionBreakoutStrategy(compression_window=24, breakout_window=6)),
+        ("Impulse Exhaustion Reversal", ImpulseExhaustionReversalStrategy(impulse_threshold=0.018)),
     ]
     
     results = []

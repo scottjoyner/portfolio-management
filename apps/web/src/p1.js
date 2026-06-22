@@ -34,12 +34,17 @@ function ensureP1Panels() {
       <div class="panel-heading"><div><p class="eyebrow">P1.6</p><h2>Paper execution</h2></div><button id="start-paper">Start paper execution</button></div>
       <div class="cards" id="paper-cards"></div>
     </section>
+    <section class="panel" id="execution-adapters">
+      <div class="panel-heading"><div><p class="eyebrow">Execution Adapters</p><h2>Broker adapter registry</h2></div><button id="refresh-adapters">Refresh</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Adapter</th><th>Venue</th><th>Mode</th><th>Status</th></tr></thead><tbody id="adapter-rows"></tbody></table></div>
+    </section>
   `;
   anchor.parentNode.insertBefore(wrapper, anchor);
   const nav = document.querySelector('.tabs');
   addNavLink(nav, '#accounts', 'Accounts', 'afterbegin');
   addNavLink(nav, '#templates', 'Templates', 'afterbegin');
   addNavLink(nav, '#paper', 'Paper');
+  addNavLink(nav, '#execution-adapters', 'Adapters');
 }
 
 function renderAccounts(accounts) {
@@ -85,18 +90,31 @@ function renderPaper(executions) {
   });
 }
 
+function renderAdapters(adapters) {
+  qs('#adapter-rows').innerHTML = (adapters || []).map(a => `
+    <tr>
+      <td>${a.name}</td>
+      <td><span class="badge">${a.venue}</span></td>
+      <td><span class="badge">${a.mode}</span></td>
+      <td><span class="badge ${a.connected ? 'success' : 'blocked'}">${a.connected ? 'Connected' : 'Not connected'}</span></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="label">No adapters registered.</td></tr>';
+}
+
 export async function refreshP1() {
   ensureP1Panels();
-  const [accounts, instruments, templates, paper] = await Promise.all([
+  const [accounts, instruments, templates, paper, adapters] = await Promise.all([
     api('/api/accounts'),
     api('/api/instruments'),
     api('/api/strategy-templates'),
-    api('/api/paper-executions')
+    api('/api/paper-executions'),
+    api('/api/execution/adapters').catch(() => ({ adapters: [] }))
   ]);
   renderAccounts(accounts.accounts || []);
   renderInstruments(instruments.instruments || []);
   renderTemplates(templates.templates || []);
   renderPaper(paper.executions || []);
+  renderAdapters(adapters.adapters || []);
 }
 
 export function wireP1Actions(baseRefresh) {
@@ -109,6 +127,7 @@ export function wireP1Actions(baseRefresh) {
     await baseRefresh();
     await refreshP1();
   });
+  qs('#refresh-adapters')?.addEventListener('click', async () => { await refreshP1(); });
   qs('#start-paper')?.addEventListener('click', async () => {
     const strategies = await api('/api/strategies');
     const approvals = await api('/api/approvals');

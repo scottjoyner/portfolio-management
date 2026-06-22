@@ -276,7 +276,8 @@ export class PostgresOperatorStore extends MemoryOperatorStore {
         details: row.details,
         payload: rowJson(row.payload_json, {})
       })),
-      killSwitch: flags.rows[0] ? rowJson(flags.rows[0].value_json, { enabled: false, reason: null, updatedAt: null }) : { enabled: false, reason: null, updatedAt: null }
+      killSwitch: flags.rows[0] ? rowJson(flags.rows[0].value_json, { enabled: false, reason: null, updatedAt: null }) : { enabled: false, reason: null, updatedAt: null },
+      executions: rowJson(flags.rows.find(f => f.key === 'executions')?.value_json, [])
     });
 
     if (this.bootstrap && state.strategies.length === 0 && state.audit.length === 0) {
@@ -391,6 +392,12 @@ export class PostgresOperatorStore extends MemoryOperatorStore {
         'INSERT INTO operator_flags (key, value_json, updated_at) VALUES ($1,$2,$3)',
         ['kill_switch', JSON.stringify(state.killSwitch || { enabled: false, reason: null, updatedAt: null }), state.killSwitch?.updatedAt || new Date().toISOString()]
       );
+      if (state.executions?.length) {
+        await this.query(
+          'INSERT INTO operator_flags (key, value_json, updated_at) VALUES ($1,$2,$3)',
+          ['executions', JSON.stringify(state.executions), new Date().toISOString()]
+        );
+      }
 
       await this.query('COMMIT');
       this.state = state;

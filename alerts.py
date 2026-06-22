@@ -8,6 +8,10 @@ import os
 import time
 from datetime import datetime
 from typing import Dict, Optional
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+HISTORICAL_DIR = ROOT / "data" / "historical"
 
 class AlertsService:
     """Performance monitoring and alerting service."""
@@ -26,7 +30,7 @@ class AlertsService:
         from portfolio_manager import Backtester
         
         backtester = Backtester()
-        backtester.load_historical_data("/home/falcon/git/portfolio-management/data/historical")
+        backtester.load_historical_data(str(HISTORICAL_DIR))
         results = backtester.run_backtest(strategy="hold_all")
         
         alerts = []
@@ -76,7 +80,7 @@ class AlertsService:
         from portfolio_manager import Backtester
         
         backtester = Backtester()
-        backtester.load_historical_data("/home/falcon/git/portfolio-management/data/historical")
+        backtester.load_historical_data(str(HISTORICAL_DIR))
         results = backtester.run_backtest(strategy="hold_all")
         
         return {

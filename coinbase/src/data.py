@@ -1,13 +1,33 @@
 from __future__ import annotations
 import time
 import math
+import logging
 import pandas as pd
 from .cb_client import CBClient
+
+log = logging.getLogger(__name__)
 
 _SEC_PER = {
     "ONE_MINUTE":60, "FIVE_MINUTE":300, "FIFTEEN_MINUTE":900, "THIRTY_MINUTE":1800,
     "ONE_HOUR":3600, "TWO_HOUR":7200, "FOUR_HOUR":14400, "SIX_HOUR":21600, "ONE_DAY":86400
 }
+
+# In-memory cache: {(product_id, granularity, lookback_days): (expiry_ts, DataFrame)}
+_CACHE: dict = {}
+_CACHE_TTL: int = 300  # 5 minutes default
+
+def _cache_key(product_id: str, granularity: str, lookback_days: int) -> tuple:
+    return (product_id, granularity, lookback_days)
+
+
+def invalidate_cache(product_id: str | None = None) -> None:
+    """Invalidate cached candles for a product, or all products."""
+    global _CACHE
+    if product_id is None:
+        _CACHE.clear()
+    else:
+        _CACHE = {k: v for k, v in _CACHE.items() if k[0] != product_id}
+
 
 def fetch_candles_df(
     client: CBClient,
@@ -18,9 +38,18 @@ def fetch_candles_df(
     chunk_bars: int = 200,        # smaller than 300 to reduce payload
     max_retries: int = 6,
     backoff_base_s: float = 1.5,
-    backoff_cap_s: float = 30.0
+    backoff_cap_s: float = 30.0,
+    cache_ttl_s: int = _CACHE_TTL,
 ) -> pd.DataFrame:
-    end = int(time.time())
+    # Check cache first
+    key = _cache_key(product_id, granularity, lookback_days)
+    now = time.time()
+    cached = _CACHE.get(key)
+    if cached and (now - cached[0]) < cache_ttl_s:
+        log.debug(f"[candles] cache hit {product_id} {granularity} {lookback_days}d")
+        return cached[1].copy()
+
+    end = int(now)
     start = end - int(lookback_days) * 86400
     spb = _SEC_PER[granularity]
 
@@ -45,8 +74,7 @@ def fetch_candles_df(
                 wait = min(backoff_cap_s, backoff_base_s * (2 ** att))
                 time.sleep(wait)
                 if att == max_retries - 1:
-                    # give up on this window, move on so the run can continue
-                    print(f"[candles] skip {product_id} {cursor}->{chunk_end} after retries: {e}")
+                    log.warning(f"[candles] skip {product_id} {cursor}->{chunk_end} after retries: {e}")
         if raw:
             rows = []
             payload = raw.get("candles", raw if isinstance(raw, list) else [])
@@ -66,12 +94,20 @@ def fetch_candles_df(
         cursor = chunk_end
 
     if not frames:
-        return pd.DataFrame(columns=["open","high","low","close","volume"])
+        empty = pd.DataFrame(columns=["open","high","low","close","volume"])
+        _CACHE[key] = (now, empty)
+        return empty
 
     out = pd.concat(frames, ignore_index=True).drop_duplicates("ts").sort_values("ts")
     out["datetime"] = pd.to_datetime(out["ts"], unit="s", utc=True)
     out.set_index("datetime", inplace=True)
-    return out[["open","high","low","close","volume"]]
+    result = out[["open","high","low","close","volume"]]
+
+    # Store in cache
+    _CACHE[key] = (now, result)
+    log.debug(f"[candles] cached {product_id} {granularity} {lookback_days}d ({len(result)} rows)")
+
+    return result.copy()
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     hi, lo, cl = df["high"], df["low"], df["close"]

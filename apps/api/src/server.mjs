@@ -12,7 +12,7 @@ export const createInitialState = createInitialOperatorState;
 
 function defaultEnv(overrides = {}) {
   return {
-    MODE: process.env.MODE || 'mock',
+    MODE: process.env.MODE || 'paper',
     LIVE_TRADING: process.env.LIVE_TRADING || 'false',
     PAPER_TRADING: process.env.PAPER_TRADING || 'true',
     REQUIRE_RUNTIME_CONFIRMATION: process.env.REQUIRE_RUNTIME_CONFIRMATION || 'true',
@@ -134,7 +134,7 @@ export async function handleRequest(req, options = {}) {
   if (loadError) return json(503, { ok: false, error: 'operator_store_unavailable', reason: loadError.message, storage: storeStatus(store) });
 
   if (method === 'GET' && url.pathname === '/metrics') {
-    return json(200, { strategies_total: state.strategies.length, backtests_total: state.backtests.length, approvals_pending: state.approvals.filter(a => a.status === 'pending_review').length, positions_open: state.positions.length, kill_switch_enabled: state.killSwitch.enabled ? 1 : 0, durable_storage_enabled: storeStatus(store).durable ? 1 : 0, sql_storage_enabled: storeStatus(store).sql ? 1 : 0, live_trading_certified: 0 });
+    return json(200, { strategies_total: state.strategies.length, backtests_total: state.backtests.length, approvals_pending: state.approvals.filter(a => a.status === 'pending_review').length, positions_open: state.positions.length, executions_total: (state.executions || []).length, kill_switch_enabled: state.killSwitch.enabled ? 1 : 0, durable_storage_enabled: storeStatus(store).durable ? 1 : 0, sql_storage_enabled: storeStatus(store).sql ? 1 : 0, live_trading_certified: 0 });
   }
 
   if (method === 'GET' && url.pathname === '/api/operator/summary') {

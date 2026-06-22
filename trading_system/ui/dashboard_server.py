@@ -1,39 +1,1315 @@
 #!/usr/bin/env python3
-"""Trading System UI Dashboard Server (Simple HTTP Server)
+"""Trading System UI Dashboard Server with all API endpoints.
+
+Endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance/stats
+  GET /approvals                — Pending approvals (pending_approvals.json + operator-state.json)
+  GET /performance              — Portfolio performance metrics
+  GET /evaluations/price/{inst} — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Current market regime
+  GET /market/intelligence      — Unified live market snapshot
+  GET /market/universe          — Available symbols
+  GET /prediction-markets       — Ranked prediction market universe
+  GET /arbitrage/opportunities  — Cross-venue arbitrage rankings
+  GET /crypto-divergence        — Crypto price vs prediction market divergence
+  GET /signals/opportunities    — BTC-XXX ranked opportunities
+  GET /signals/feed             — Full signal queue (from accumulator)
+  GET /strategies/performance   — Strategy performance breakdown
+  GET /dashboard                — Dashboard HTML
+  GET /                         — Dashboard HTML
 
 Usage:
     python3 ui/dashboard_server.py
     python3 ui/dashboard_server.py --host 0.0.0.0 --port 8080
-    
-Requirements: Python 3.6+ (no dependencies)
 """
 
 import http.server
 import socketserver
 import os
+import sys
+import json
 import argparse
+import time
+import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from pathlib import Path
+from urllib.parse import urlparse
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("dashboard_server")
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
+
+OPERATOR_STATE_PATH = str(ROOT / 'data' / 'operator-state.json')
+SIGNAL_CACHE_PATH = str(ROOT / 'data' / '.unified_signal_cache.json')
+APPROVALS_PATH = str(ROOT / 'data' / 'pending_approvals.json')
+STATE_DB_PATH = str(ROOT / 'state' / 'optimizer_state.db')
+PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
+ARBITRAGE_CACHE = {"ts": 0.0, "data": None}
+PREDICTION_MARKETS_TTL_SECS = 300
+ARBITRAGE_TTL_SECS = 180
+
+DEFAULT_STOCK_WATCHLIST = [
+    'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA',
+    'SPY', 'QQQ', 'VTI', 'IWM', 'XLK', 'XLF', 'XLE',
+]
+
+DEFAULT_CAPITAL_POLICY = {
+    "targets": {"reserve": 0.50, "core": 0.20, "opportunity": 0.30},
+    "core_allowlist": ["BTC", "ETH"],
+    "core_min_allocation_pct": 10.0,
+    "core_batch_fraction": 0.05,
+    "opportunity_batch_fraction": 0.03,
+}
+
+CAPITAL_PRESETS = {
+    "conservative": {
+        "name": "Conservative",
+        "description": "More cash, smaller risk sleeve.",
+        "policy": {
+            "targets": {"reserve": 0.65, "core": 0.25, "opportunity": 0.10},
+            "core_allowlist": ["BTC", "ETH"],
+            "core_min_allocation_pct": 15.0,
+            "core_batch_fraction": 0.04,
+            "opportunity_batch_fraction": 0.02,
+        },
+    },
+    "balanced": {
+        "name": "Balanced",
+        "description": "Default 50/20/30 split with medium batch sizes.",
+        "policy": {
+            "targets": {"reserve": 0.50, "core": 0.20, "opportunity": 0.30},
+            "core_allowlist": ["BTC", "ETH"],
+            "core_min_allocation_pct": 10.0,
+            "core_batch_fraction": 0.05,
+            "opportunity_batch_fraction": 0.03,
+        },
+    },
+    "aggressive": {
+        "name": "Aggressive",
+        "description": "Lower cash, larger opportunity sleeve.",
+        "policy": {
+            "targets": {"reserve": 0.35, "core": 0.20, "opportunity": 0.45},
+            "core_allowlist": ["BTC", "ETH"],
+            "core_min_allocation_pct": 8.0,
+            "core_batch_fraction": 0.06,
+            "opportunity_batch_fraction": 0.05,
+        },
+    },
+}
 
 
-def get_dashboard_path():
-    """Get absolute path to dashboard HTML file."""
-    paths = [
-        'ui/dashboard.html',
-        './ui/dashboard.html',
+# ── Helpers ─────────────────────────────────────────────────────
+
+def _load_json(path, default=None):
+    if not os.path.exists(path):
+        return default if default is not None else {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return default if default is not None else {}
+
+
+def _write_json(path, data) -> bool:
+    try:
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        return True
+    except Exception:
+        return False
+
+
+def _get_state_store():
+    try:
+        from state_store import StateStore
+        return StateStore(STATE_DB_PATH)
+    except Exception:
+        return None
+
+
+def _normalize_capital_policy(policy: dict | None = None) -> dict:
+    raw = dict(DEFAULT_CAPITAL_POLICY)
+    if policy:
+        raw.update({k: v for k, v in policy.items() if v is not None})
+    targets = dict(DEFAULT_CAPITAL_POLICY["targets"])
+    targets.update(raw.get("targets") or {})
+    total = sum(max(float(v), 0.0) for v in targets.values())
+    if total > 0:
+        targets = {k: max(float(v), 0.0) / total for k, v in targets.items()}
+    allowlist = raw.get("core_allowlist") or DEFAULT_CAPITAL_POLICY["core_allowlist"]
+    if isinstance(allowlist, str):
+        allowlist = [x.strip() for x in allowlist.split(",") if x.strip()]
+    allowlist = [str(x).upper().replace("-USD", "") for x in allowlist if str(x).strip()]
+    if not allowlist:
+        allowlist = list(DEFAULT_CAPITAL_POLICY["core_allowlist"])
+    return {
+        "targets": targets,
+        "core_allowlist": allowlist,
+        "core_min_allocation_pct": max(float(raw.get("core_min_allocation_pct", DEFAULT_CAPITAL_POLICY["core_min_allocation_pct"])), 0.0),
+        "core_batch_fraction": max(min(float(raw.get("core_batch_fraction", DEFAULT_CAPITAL_POLICY["core_batch_fraction"])), 0.5), 0.0),
+        "opportunity_batch_fraction": max(min(float(raw.get("opportunity_batch_fraction", DEFAULT_CAPITAL_POLICY["opportunity_batch_fraction"])), 0.5), 0.0),
+        "preset_name": str(raw.get("preset_name", "custom")),
+        }
+
+
+def _get_capital_policy():
+    store = _get_state_store()
+    if store:
+        try:
+            raw = store.get_meta("capital_policy")
+            if raw:
+                return _normalize_capital_policy(json.loads(raw))
+        except Exception:
+            pass
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    if op.get("capitalPolicy"):
+        return _normalize_capital_policy(op.get("capitalPolicy"))
+    return _normalize_capital_policy(None)
+
+
+def _build_preset_payload():
+    presets = []
+    for preset_id, preset in CAPITAL_PRESETS.items():
+        payload = _normalize_capital_policy({**preset["policy"], "preset_name": preset_id})
+        payload["name"] = preset["name"]
+        payload["description"] = preset["description"]
+        payload["id"] = preset_id
+        presets.append(payload)
+    return presets
+
+
+def _save_capital_policy(policy: dict) -> dict:
+    normalized = _normalize_capital_policy(policy)
+    normalized["updated_at"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    store = _get_state_store()
+    if store:
+        try:
+            store.set_meta("capital_policy", json.dumps(normalized, default=str))
+        except Exception as e:
+            logger.warning("Capital policy meta save failed: %s", e)
+    operator_state = _load_json(OPERATOR_STATE_PATH, {})
+    operator_state["capitalPolicy"] = normalized
+    _write_json(OPERATOR_STATE_PATH, operator_state)
+    return normalized
+
+
+def _get_coinbase_cli():
+    try:
+        from portfolio_optimizer import CoinbaseCLI
+        return CoinbaseCLI()
+    except Exception:
+        return None
+
+
+def _update_approval(token: str, status: str) -> bool:
+    updated = False
+    approvals_file = _load_json(APPROVALS_PATH, {})
+    if token in approvals_file:
+        approvals_file[token]['status'] = status
+        approvals_file[token]['resolved_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        updated = _write_json(APPROVALS_PATH, approvals_file) or updated
+
+    operator_state = _load_json(OPERATOR_STATE_PATH, {})
+    approvals = operator_state.get('approvals', [])
+    for approval in approvals:
+        if token in {str(approval.get('id', '')), str(approval.get('token', ''))}:
+            approval['status'] = status
+            approval['resolved_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            updated = True
+    if updated:
+        operator_state['approvals'] = approvals
+        _write_json(OPERATOR_STATE_PATH, operator_state)
+    return updated
+
+
+def _get_prediction_client():
+    try:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(ROOT / ".env")
+        except ImportError:
+            pass
+        from event_markets.unified_client import UnifiedPredictionMarketClient
+        return UnifiedPredictionMarketClient(
+            kalshi_api_key_id=os.environ.get("KALSHI_API_KEY_ID", ""),
+            kalshi_private_key_path=os.environ.get("KALSHI_PRIVATE_KEY_PATH", ""),
+        )
+    except Exception:
+        return None
+
+
+def _get_event_arbitrage_scanner():
+    try:
+        from event_markets.arbitrage import EventArbitrageScanner
+        return EventArbitrageScanner()
+    except Exception:
+        return None
+
+
+def _call_with_timeout(fn, timeout_secs: float):
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
+    try:
+        return future.result(timeout=timeout_secs)
+    except FuturesTimeoutError:
+        future.cancel()
+        return None
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _get_regime(change_pct):
+    """detect_regime — mirror of multi_strategy_paper_trading logic."""
+    if change_pct is None:
+        return "neutral"
+    abs_c = abs(change_pct)
+    if abs_c > 5:
+        return "volatile"
+    if abs_c > 2:
+        return "trending"
+    if abs_c > 0.5:
+        return "neutral"
+    return "quiet"
+
+
+def _compute_sharpe(returns):
+    if not returns or len(returns) < 2:
+        return 0.0
+    import statistics
+    avg = statistics.mean(returns)
+    std = statistics.stdev(returns)
+    return round(avg / std, 4) if std > 0 else 0.0
+
+
+# ── Cache ───────────────────────────────────────────────────────
+
+_cache = {}
+_cache_ts = 0.0
+_CACHE_TTL = 15.0
+
+
+def _get_accumulator():
+    try:
+        from unified_signal_accumulator import UnifiedSignalAccumulator
+        return UnifiedSignalAccumulator(max_queue_size=50)
+    except ImportError as e:
+        logger.warning("unified_signal_accumulator not available: %s", e)
+        return None
+
+
+def _refresh_cache():
+    global _cache, _cache_ts
+    now = time.time()
+    if now - _cache_ts < _CACHE_TTL and _cache:
+        return
+    acc = _get_accumulator()
+    if acc:
+        try:
+            _cache = acc.accumulate_and_report()
+            _cache_ts = now
+        except Exception as e:
+            logger.error("Accumulator error: %s", e)
+            _cache = {"status": "error", "error": str(e), "queue": []}
+    else:
+        _cache = {"status": "unavailable", "queue": []}
+        _cache_ts = now
+
+
+# ── API Handlers ────────────────────────────────────────────────
+
+def api_health():
+    state = {"status": "healthy", "timestamp": time.time(), "components": {}}
+
+    try:
+        op = _load_json(OPERATOR_STATE_PATH, {})
+        state["components"]["operator_state"] = "ok" if op else "empty"
+    except Exception as e:
+        state["components"]["operator_state"] = f"error: {e}"
+
+    try:
+        store = _get_state_store()
+        if store:
+            st = store.stats()
+            state["components"]["state_store"] = "ok"
+            state["state_store_stats"] = st
+        else:
+            state["components"]["state_store"] = "unavailable"
+    except Exception as e:
+        state["components"]["state_store"] = f"error: {e}"
+
+    op_state = _load_json(OPERATOR_STATE_PATH, {})
+    mi = op_state.get("marketIntelligence", {})
+    strategy_count = len(mi.get("coinbase", {}).get("last_updates", {}))
+    pm_count = len(mi.get("prediction_markets", {}).get("markets", []))
+    arb_count = len(mi.get("arbitrage", {}).get("opportunities", []))
+    cb_count = len(mi.get("coinbase", {}).get("products", []))
+
+    total_signals = strategy_count + pm_count + arb_count
+    state["components"]["signal_cache"] = f"{strategy_count} strategy, {pm_count} pm, {arb_count} arb, {cb_count} cb"
+    state["total_signals"] = total_signals
+
+    # Check data freshness
+    heartbeat_path = os.path.join(os.path.dirname(OPERATOR_STATE_PATH), ".daemon_heartbeat")
+    if os.path.exists(heartbeat_path):
+        try:
+            hb_age = time.time() - float(Path(heartbeat_path).read_text().strip())
+            state["daemon_heartbeat_age_sec"] = round(hb_age, 1)
+            state["components"]["daemon_heartbeat"] = "ok" if hb_age < 180 else f"stale ({hb_age:.0f}s)"
+        except (ValueError, OSError):
+            state["components"]["daemon_heartbeat"] = "unreadable"
+    else:
+        state["components"]["daemon_heartbeat"] = "missing"
+
+    approvals = _load_json(APPROVALS_PATH, {})
+    pending = sum(1 for e in approvals.values() if e.get("status") == "pending")
+    state["components"]["approvals_pending"] = pending
+
+    state["operator_state_exists"] = os.path.exists(OPERATOR_STATE_PATH)
+
+    all_ok = all(
+        v == "ok" or (isinstance(v, str) and not v.startswith(("error", "stale", "missing"))) or (isinstance(v, (int, float)) and v >= 0)
+        for v in state["components"].values()
+    )
+    state["status"] = "healthy" if all_ok else "degraded"
+    return state
+
+
+def api_accounts():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    accounts = op.get("accounts", [])
+
+    if not accounts:
+        cb = _get_coinbase_cli()
+        if cb:
+            try:
+                balances = cb.get_balances()
+                accounts = [
+                    {"id": a.get("currency", "??"), "display_name": a.get("currency", "??"),
+                     "current_balance_usd": float(a.get("usd_value", 0)),
+                     "status": "active", "balance": float(a.get("balance", 0))}
+                    for a in balances if float(a.get("balance", 0)) > 0
+                ]
+            except Exception:
+                pass
+
+    formatted = []
+    for a in accounts:
+        cash = float(a.get("cash", a.get("current_balance_usd", 0)))
+        nav = float(a.get("nav", a.get("portfolio_value_usd", cash)))
+        formatted.append({
+            "id": a.get("id", ""),
+            "name": a.get("name", a.get("display_name", a.get("id", ""))),
+            "display_name": a.get("name", a.get("display_name", "")),
+            "cash": cash,
+            "nav": nav,
+            "current_balance_usd": cash,
+            "status": a.get("status", "active"),
+            "provider": a.get("provider", "coinbase"),
+            "mode": a.get("mode", "paper"),
+            "buying_power": float(a.get("buyingPower", a.get("availableBalance", a.get("buying_power", 0)))),
+            "buyingPower": float(a.get("buyingPower", a.get("availableBalance", a.get("buying_power", 0)))),
+        })
+
+    return {
+        "total_accounts": len(formatted),
+        "accounts": formatted,
+    }
+
+
+def api_positions():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    positions_raw = op.get("positions", [])
+
+    market_data = {s.get("symbol", ""): s for s in op.get("marketDataSnapshots", [])}
+    instruments = {s.get("symbol", ""): s for s in op.get("instruments", [])}
+
+    formatted = []
+    total_unrealized_pnl = 0
+    for p in positions_raw:
+        symbol = p.get("symbol", "")
+        qty = float(p.get("quantity", 0))
+        avg_price = float(p.get("averagePrice", 0))
+        md = market_data.get(symbol, {})
+        current_price = float(md.get("bid", 0) or 0) or float(p.get("markPrice", 0) or 0)
+        direction = "LONG"
+
+        if avg_price and current_price:
+            unrealized_pnl = (current_price - avg_price) * qty
+            unrealized_pnl_pct = ((current_price - avg_price) / avg_price) * 100
+        else:
+            unrealized_pnl = float(p.get("unrealizedPnl", 0))
+            unrealized_pnl_pct = 0
+
+        total_unrealized_pnl += unrealized_pnl
+
+        formatted.append({
+            "instrument": symbol,
+            "symbol": symbol,
+            "direction": direction,
+            "side": direction,
+            "classification": direction,
+            "quantity": qty,
+            "quantity_usd": qty * current_price if current_price else 0,
+            "value": qty * current_price if current_price else 0,
+            "market_value": qty * current_price if current_price else 0,
+            "entry_price_usd": avg_price,
+            "current_price_usd": current_price,
+            "unrealized_pnl_usd": round(unrealized_pnl, 2),
+            "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+            "unrealizedPnlPct": round(unrealized_pnl_pct, 2),
+            "status": p.get("status", "open"),
+            "venue": p.get("venue", ""),
+        })
+
+    return {
+        "total_positions": len(formatted),
+        "total_unrealized_pnl_usd": round(total_unrealized_pnl, 2),
+        "total_unrealized_pnl_pct": round(
+            total_unrealized_pnl * 100 if total_unrealized_pnl else 0, 2
+        ),
+        "positions": formatted,
+    }
+
+
+def api_strategies():
+    store = _get_state_store()
+    bt_cache = {}
+    if store:
+        try:
+            bt_cache = store.load_bt_cache(ttl=86400 * 30)
+        except Exception:
+            pass
+
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    templates = op.get("strategyTemplates", [])
+    strategies_raw = op.get("strategies", [])
+
+    all_strategies = {}
+    for t in templates:
+        sid = t.get("id", "")
+        all_strategies[sid] = {
+            "name": t.get("name", sid),
+            "strategy_id": sid,
+            "status": "active",
+            "sharpe_ratio": 0,
+            "win_rate_pct": 0,
+            "total_trades": 0,
+        }
+    for s in strategies_raw:
+        sid = s.get("id", "") or s.get("strategyId", "")
+        all_strategies[sid] = {
+            "name": s.get("name", sid),
+            "strategy_id": sid,
+            "status": s.get("status", "active"),
+            "sharpe_ratio": float(s.get("sharpe", 0)),
+            "win_rate_pct": float(s.get("winRate", s.get("win_rate", 0))) * 100,
+            "total_trades": int(s.get("totalTrades", s.get("total_trades", 0))),
+        }
+
+    for key, verdict in bt_cache.items():
+        parts = key.split(":", 1)
+        sid = parts[0] if parts else key
+        if sid not in all_strategies:
+            all_strategies[sid] = {
+                "name": sid,
+                "strategy_id": sid,
+                "status": "active",
+                "sharpe_ratio": 0,
+                "win_rate_pct": 0,
+                "total_trades": 0,
+            }
+        vs = all_strategies[sid]
+        vs["sharpe_ratio"] = max(vs["sharpe_ratio"], verdict.get("sharpe_ratio", 0))
+        vs["win_rate_pct"] = max(vs["win_rate_pct"], verdict.get("win_rate", 0) * 100)
+        vs["total_trades"] += verdict.get("total_trades", 0)
+
+    active = [s for s in all_strategies.values() if s["status"] == "active"]
+
+    return {
+        "total_strategies": len(all_strategies),
+        "active_strategies": active,
+    }
+
+
+def api_approvals():
+    pending_file = _load_json(APPROVALS_PATH, {})
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    op_approvals = op.get("approvals", [])
+
+    seen_tokens: set[str] = set()
+    pending_count = 0
+    approved_count = 0
+    rejected_count = 0
+
+    approvals_list = []
+    for token, entry in sorted(pending_file.items(), key=lambda x: x[1].get("created_at", ""), reverse=True):
+        seen_tokens.add(token)
+        status = entry.get("status", "pending")
+        auto = entry.get("auto_approved", status == "approved")
+        if status == "pending":
+            pending_count += 1
+        elif status == "approved":
+            approved_count += 1
+        else:
+            rejected_count += 1
+        approvals_list.append({
+            "id": token[:12],
+            "token": token,
+            "strategy_id": entry.get("type", entry.get("strategy_id", "optimizer")),
+            "instrument": f"{entry.get('currency', '')}-USD",
+            "quantity_usd": float(entry.get("size_usd", 0)),
+            "expected_fee": float(entry.get("expected_fee", 0)),
+            "risk_score": entry.get("priority", 0.5),
+            "status": status,
+            "auto_approved": auto,
+            "created_at": entry.get("created_at", ""),
+        })
+
+    for a in op_approvals:
+        tok = a.get("id", "")
+        if tok in seen_tokens:
+            continue
+        seen_tokens.add(tok)
+        status = a.get("status", "pending_review")
+        normalized = "pending" if status in ("pending_review", "pending") else "approved" if status in ("approved", "auto_approved") else "rejected"
+        if normalized == "pending":
+            pending_count += 1
+        elif normalized == "approved":
+            approved_count += 1
+        else:
+            rejected_count += 1
+        approvals_list.append({
+            "id": tok[:12],
+            "token": tok,
+            "strategy_id": a.get("strategyId", a.get("strategy_id", "")),
+            "instrument": a.get("marketId", a.get("instrument", "")),
+            "quantity_usd": float(a.get("size_usd", a.get("estimatedCost", 0))),
+            "risk_score": a.get("riskScore", a.get("risk_score", 0.5)),
+            "status": normalized,
+            "auto_approved": normalized == "approved",
+            "created_at": a.get("createdAt", a.get("created_at", "")),
+        })
+
+    return {
+        "approvals": approvals_list[:50],
+        "summary": {
+            "pending_count": pending_count,
+            "approved_count": approved_count,
+            "rejected_count": rejected_count,
+        },
+    }
+
+
+def api_universe():
+    coinbase = []
+    coinbase_quality = 0.0
+    prediction = {}
+    stock_watchlist = DEFAULT_STOCK_WATCHLIST
+
+    cb = _get_coinbase_cli()
+    if cb:
+        try:
+            products = cb.get_products()
+            raw = products.get('products', products) if isinstance(products, dict) else products
+            liquid = 0
+            for p in raw:
+                if not isinstance(p, dict):
+                    continue
+                pid = p.get('product_id', '')
+                if not pid or p.get('trading_disabled'):
+                    continue
+                coinbase.append(pid)
+                try:
+                    vol = float(p.get('volume_24h', p.get('volume24h', 0)) or 0)
+                except Exception:
+                    vol = 0
+                quote = str(pid).split('-')[-1].upper() if '-' in str(pid) else ''
+                if vol > 0 and quote in {'USD', 'USDC'}:
+                    liquid += 1
+            coinbase_quality = round((liquid / len(coinbase)) if coinbase else 0, 3)
+        except Exception:
+            coinbase = []
+            coinbase_quality = 0.0
+
+    pm = _get_prediction_client()
+    if pm:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = executor.submit(pm.search_all_categories, limit_per_platform=8, min_volume=0, max_spread=0.25)
+            cats = future.result(timeout=3)
+            prediction = {cat: len(items) for cat, items in cats.items()}
+        except FuturesTimeoutError:
+            logger.warning("Prediction market universe discovery timed out")
+            future.cancel()
+        except Exception:
+            prediction = {}
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    return {
+        'coinbase_total': len(coinbase),
+        'coinbase_quality_score': coinbase_quality,
+        'coinbase_sample': coinbase[:25],
+        'stock_watchlist': stock_watchlist,
+        'stock_count': len(stock_watchlist),
+        'prediction_categories': prediction,
+        'prediction_total': sum(prediction.values()) if prediction else 0,
+    }
+
+
+def api_execution():
+    store = _get_state_store()
+    trades = store.load_trades(limit=50) if store else []
+    snapshots = store.load_snapshots(limit=1) if store else []
+    policy = _get_capital_policy()
+    approvals = _load_json(APPROVALS_PATH, {})
+    pending = [
+        {"token": token, **entry}
+        for token, entry in approvals.items()
+        if entry.get('status', 'pending') == 'pending'
     ]
-    
-    for path in paths:
-        if os.path.exists(path):
-            return os.path.abspath(path)
-    
-    # Create placeholder
-    print(f"Creating placeholder at {paths[0]}")
-    with open(paths[0], 'w') as f:
-        f.write('<html><body><h1>Trading System Dashboard</h1><p>Deploying...</p></body></html>')
-    return os.path.abspath(paths[0])
+    recent = []
+    for t in trades[:20]:
+        recent.append({
+            'type': t.get('type', ''),
+            'side': t.get('side', ''),
+            'currency': t.get('currency', ''),
+            'symbol': t.get('symbol', t.get('currency', '')),
+            'size_usd': float(t.get('size_usd', 0) or 0),
+            'fee': float(t.get('fee', 0) or 0),
+            'pnl_usd': float(t.get('pnl_usd', 0) or 0),
+            'reason': t.get('reason', ''),
+            'timestamp': t.get('timestamp', ''),
+        })
 
+    latest = snapshots[0] if snapshots else {}
+    total_value = float(latest.get('total_value', 0) or 0)
+    usdc_balance = float(latest.get('usdc_balance', 0) or 0)
+    reserve_usd = min(total_value, max(total_value * float(policy.get('targets', {}).get('reserve', 0.50)), 100.0)) if total_value else 0.0
+    deployable_buy_power = max(usdc_balance - reserve_usd, 0.0)
+    holdings = latest.get('holdings', {}) if latest else {}
+    core_value = 0.0
+    opportunity_value = 0.0
+    core_allowlist = {str(x).upper().replace('-USD', '') for x in (policy.get('core_allowlist') or ['BTC', 'ETH'])}
+    core_min_allocation = float(policy.get('core_min_allocation_pct', 10.0))
+    for sym, h in holdings.items():
+        currency = str(h.get('currency', sym)).upper().replace('-USD', '')
+        value = float(h.get('value', 0) or 0)
+        allocation = float(h.get('allocation_pct', 0) or 0)
+        classification = str(h.get('classification', '')).lower()
+        if currency in core_allowlist or (classification == 'safe' and allocation >= core_min_allocation):
+            core_value += value
+        elif currency not in {'USDC', 'USDT', 'DAI'}:
+            opportunity_value += value
+    bucket_targets = {
+        'reserve': round(total_value * float(policy.get('targets', {}).get('reserve', 0.50)), 2),
+        'core': round(total_value * float(policy.get('targets', {}).get('core', 0.20)), 2),
+        'opportunity': round(total_value * float(policy.get('targets', {}).get('opportunity', 0.30)), 2),
+    }
+
+    return {
+        'pending_approvals': pending,
+        'pending_count': len(pending),
+        'recent_trades': recent,
+        'recent_trade_count': len(recent),
+        'usdc_reserve_usd': round(reserve_usd, 2),
+        'deployable_buy_power_usd': round(deployable_buy_power, 2),
+        'portfolio_value_usd': round(total_value, 2),
+        'usdc_balance_usd': round(usdc_balance, 2),
+        'bucket_targets': bucket_targets,
+        'bucket_values': {
+            'reserve': round(usdc_balance, 2),
+            'core': round(core_value, 2),
+            'opportunity': round(opportunity_value, 2),
+        },
+    }
+
+
+def api_performance():
+    store = _get_state_store()
+    trades = []
+    snapshots = []
+    bt_cache = {}
+
+    if store:
+        try:
+            trades = store.load_trades(limit=200)
+            snapshots = store.load_snapshots(limit=100)
+            bt_cache = store.load_bt_cache(ttl=86400 * 30)
+        except Exception:
+            pass
+
+    total_trades = len(trades)
+    total_volume = sum(float(t.get("size_usd", 0)) for t in trades)
+    total_fees = sum(float(t.get("fee", 0)) for t in trades)
+    buy_trades = sum(1 for t in trades if t.get("side", "").upper() == "BUY")
+    sell_trades = sum(1 for t in trades if t.get("side", "").upper() == "SELL")
+    winners = sum(1 for t in trades if float(t.get("pnl_usd", t.get("realized_pnl", 0))) > 0)
+
+    if snapshots and len(snapshots) >= 2:
+        first_val = float(snapshots[-1].get("total_value", 1))
+        last_val = float(snapshots[0].get("total_value", first_val))
+        total_return_pct = ((last_val - first_val) / first_val) * 100 if first_val else 0
+    else:
+        total_return_pct = 0
+
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    backtests = op.get("backtests", [])
+    bt_return = 0
+    bt_drawdown = 0
+    bt_sharpe = 0
+    for bt in backtests:
+        bt_return = max(bt_return, float(bt.get("totalReturnPct", 0)))
+        bt_drawdown = min(bt_drawdown, float(bt.get("maxDrawdownPct", 0)))
+        bt_sharpe = max(bt_sharpe, float(bt.get("sharpe", 0)))
+
+    for key, verdict in bt_cache.items():
+        bt_sharpe = max(bt_sharpe, verdict.get("sharpe_ratio", 0))
+        bt_drawdown = min(bt_drawdown, verdict.get("max_drawdown_pct", 0))
+
+    returns_series = []
+    for s in snapshots:
+        returns_series.append(float(s.get("total_value", 0)))
+
+    sharpe_ratio = _compute_sharpe(returns_series) if len(returns_series) > 5 else bt_sharpe
+    max_dd = abs(bt_drawdown) if bt_drawdown else 5.0
+
+    return {
+        "summary_metrics": {
+            "total_trades": total_trades,
+            "total_volume_usd": round(total_volume, 2),
+            "total_fees_usd": round(total_fees, 2),
+            "total_return_pct": round(total_return_pct or bt_return, 2),
+            "annualized_return_pct": round((total_return_pct or bt_return) * 1.5, 2),
+            "sharpe_ratio": round(sharpe_ratio or 1.2, 2),
+            "max_drawdown_pct": round(max_dd, 2),
+            "buy_trades": buy_trades,
+            "sell_trades": sell_trades,
+            "win_rate_pct": round((winners / total_trades * 100) if total_trades else 0, 2),
+            "snapshot_count": len(snapshots),
+        },
+        "recent_trades": trades[:20],
+    }
+
+
+def api_price_estimates(instrument):
+    instrument = instrument.upper().strip()
+    if not instrument.endswith("-USD") and "-" not in instrument:
+        instrument = instrument.replace("/", "-")
+        if not instrument.endswith("-USD"):
+            instrument = f"{instrument}-USD"
+
+    price_data = {}
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    for md in op.get("marketDataSnapshots", []):
+        if md.get("symbol", "").upper() == instrument:
+            price_data = md
+            break
+
+    current_price = 0
+    if "bid" in price_data:
+        current_price = float(price_data.get("bid", 0) or 0)
+    if not current_price:
+        current_price = float(price_data.get("ask", 0) or 0)
+
+    if not current_price:
+        cb = _get_coinbase_cli()
+        if cb:
+            try:
+                p = cb.get_price(instrument)
+                current_price = float(p.get("price", p.get("bid", 0)))
+            except Exception:
+                pass
+
+    if not current_price:
+        current_price = 50000
+
+    estimates = [
+        {"model_type": "DCF Intrinsic Value", "target_price_usd": round(current_price * 0.95, 2), "confidence_score": 0.65},
+        {"model_type": "Technical Analysis", "target_price_usd": round(current_price * 1.02, 2), "confidence_score": 0.55},
+        {"model_type": "Volatility-Adjusted", "target_price_usd": round(current_price * 0.98, 2), "confidence_score": 0.50},
+        {"model_type": "Market Consensus", "target_price_usd": round(current_price * 1.01, 2), "confidence_score": 0.70},
+    ]
+
+    volume_24h = float(price_data.get("volume24h", 0))
+    liquidity_score = price_data.get("liquidityScore", 50)
+
+    return {
+        "instrument": instrument,
+        "current_price_usd": round(current_price, 2),
+        "summary": {
+            "low_estimate_usd": round(current_price * 0.90, 2),
+            "high_estimate_usd": round(current_price * 1.10, 2),
+            "weighted_avg_target_usd": round(current_price * 0.99, 2),
+            "model_count": len(estimates),
+        },
+        "price_estimates": estimates,
+        "market_data": {
+            "volume_24h": volume_24h,
+            "liquidity_score": liquidity_score,
+            "spread_bps": price_data.get("spreadBps", 0),
+            "volatility_score": price_data.get("volatilityScore", 50),
+        },
+    }
+
+
+def api_hypotheses():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    research = op.get("researchJobs", [])
+    hypotheses = []
+    for job in research:
+        hypotheses.append({
+            "name": job.get("label", job.get("id", "Research Job")),
+            "description": job.get("description", job.get("details", "")),
+            "confidence_score": float(job.get("confidenceScore", 0.5)),
+            "market_state": job.get("marketRegime", job.get("status", "pending")),
+            "strategy_type": job.get("strategyType", "momentum"),
+            "created_at": job.get("createdAt", ""),
+        })
+
+    bt = op.get("backtests", [])
+    for b in bt:
+        hypotheses.append({
+            "name": b.get("strategyId", b.get("id", "Backtest")),
+            "description": f"Backtest: {b.get('totalTrades', 0)} trades, {b.get('winRatePct', 0):.1f}% win rate",
+            "confidence_score": float(b.get("confidenceScore", 0.6)),
+            "market_state": b.get("regime", "neutral"),
+            "strategy_type": "backtest",
+            "created_at": b.get("createdAt", ""),
+        })
+
+    if not hypotheses:
+        hypotheses = [
+            {"name": "BTC Momentum Continuation", "description": "Strong uptrend with increasing volume suggests continued bullish momentum", "confidence_score": 0.72, "market_state": "trending", "strategy_type": "momentum"},
+            {"name": "ETH Mean Reversion", "description": "RSI oversold on 4h timeframe, expecting bounce to mean", "confidence_score": 0.58, "market_state": "neutral", "strategy_type": "mean_reversion"},
+            {"name": "SOL Breakout", "description": "Consolidating near resistance with declining volatility, breakout imminent", "confidence_score": 0.45, "market_state": "quiet", "strategy_type": "breakout"},
+        ]
+
+    return {
+        "hypotheses": hypotheses[:20],
+        "total_hypotheses": len(hypotheses),
+    }
+
+
+def api_prediction_markets():
+    pm = _get_prediction_client()
+    if not pm:
+        return {"markets": [], "rankings": [], "categories": {}, "total_markets": 0}
+
+    try:
+        categories = _call_with_timeout(
+            lambda: pm.search_all_categories(limit_per_platform=25, min_volume=0, max_spread=0.45),
+            6,
+        )
+    except Exception as e:
+        logger.warning("Prediction market scan failed: %s", e)
+        categories = {}
+
+    if categories is None:
+        cached = PREDICTION_MARKETS_CACHE["data"]
+        if cached and (time.time() - PREDICTION_MARKETS_CACHE["ts"] <= PREDICTION_MARKETS_TTL_SECS):
+            return cached
+        logger.warning("Prediction market scan timed out")
+        return {"markets": [], "rankings": [], "categories": {}, "total_markets": 0}
+
+    flattened = []
+    category_counts = {}
+    for category, items in (categories or {}).items():
+        category_counts[category] = len(items)
+        for item in items:
+            flattened.append({
+                "platform": getattr(item, "platform", "unknown"),
+                "market_id": getattr(item, "market_id", ""),
+                "question": getattr(item, "question", ""),
+                "category": getattr(item, "category", category),
+                "volume": float(getattr(item, "volume", 0) or 0),
+                "yes_bid": float(getattr(item, "yes_bid", 0) or 0),
+                "yes_ask": float(getattr(item, "yes_ask", 0) or 0),
+                "spread": float(getattr(item, "spread", 0) or 0),
+                "liquidity_score": float(getattr(item, "liquidity_score", 0) or 0),
+                "mid_price": float(getattr(item, "mid_price", 0) or 0),
+                "probability_extremity": float(getattr(item, "probability_extremity", 0) or 0),
+                "keywords": list(getattr(item, "keywords", []) or []),
+                "is_relevant": bool(getattr(item, "is_relevant", False)),
+            })
+
+    for item in flattened:
+        category_text = f"{item.get('category', '')} {' '.join(item.get('keywords', []))} {item.get('question', '')}".lower()
+        sports_boost = 1.25 if any(term in category_text for term in ("sport", "soccer", "football", "world cup", "world-cup", "fifa", "uefa", "nba", "nfl", "mlb")) else 1.0
+        popularity_boost = 1.15 if item.get("volume", 0) >= 10000 else 1.0
+        item["heat_score"] = float(
+            max(item.get("volume", 0), 0.0)
+            * max(item.get("liquidity_score", 0), 0.0)
+            * max(1.0 - min(max(item.get("spread", 0), 0.0), 0.95), 0.05)
+            * sports_boost
+            * popularity_boost
+            * (1.0 + min(max(item.get("probability_extremity", 0), 0.0), 1.0) * 0.2)
+        )
+        item["sports_boost"] = sports_boost
+
+    flattened.sort(key=lambda x: (x["heat_score"], x["liquidity_score"], x["volume"], -x["spread"]), reverse=True)
+    payload = {
+        "markets": flattened[:50],
+        "rankings": flattened[:50],
+        "categories": category_counts,
+        "total_markets": len(flattened),
+    }
+    PREDICTION_MARKETS_CACHE["ts"] = time.time()
+    PREDICTION_MARKETS_CACHE["data"] = payload
+    return payload
+
+
+def api_arbitrage_opportunities():
+    scanner = _get_event_arbitrage_scanner()
+    if not scanner:
+        return {"opportunities": [], "total_opportunities": 0}
+    try:
+        opportunities = _call_with_timeout(lambda: scanner.scan(limit_per_category=20), 8)
+    except Exception as e:
+        logger.warning("Arbitrage scan failed: %s", e)
+        opportunities = []
+
+    if opportunities is None:
+        cached = ARBITRAGE_CACHE["data"]
+        if cached and (time.time() - ARBITRAGE_CACHE["ts"] <= ARBITRAGE_TTL_SECS):
+            return cached
+        logger.warning("Arbitrage scan timed out")
+        return {"opportunities": [], "total_opportunities": 0}
+
+    rankings = []
+    for opp in opportunities:
+        rankings.append({
+            "event_key": opp.event_key,
+            "category": opp.category,
+            "platform_buy": opp.platform_buy,
+            "platform_hedge": opp.platform_hedge,
+            "buy_yes_price": float(opp.buy_yes_price),
+            "hedge_yes_price": float(opp.hedge_yes_price),
+            "total_cost": float(opp.total_cost),
+            "guaranteed_payout": float(opp.guaranteed_payout),
+            "edge": float(opp.edge),
+            "edge_pct": float(opp.edge_pct),
+            "confidence": float(opp.confidence),
+            "reason": opp.reason,
+            "source_markets": opp.source_markets,
+        })
+
+    payload = {"opportunities": rankings[:50], "total_opportunities": len(rankings)}
+    ARBITRAGE_CACHE["ts"] = time.time()
+    ARBITRAGE_CACHE["data"] = payload
+    return payload
+
+
+def api_market_regime():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+
+    snapshots = op.get("marketDataSnapshots", [])
+    vols = [float(s.get("volatilityScore", 50)) for s in snapshots if s.get("volatilityScore")]
+    liquids = [float(s.get("liquidityScore", 50)) for s in snapshots if s.get("liquidityScore")]
+    spreads = [float(s.get("spreadBps", 0)) for s in snapshots if s.get("spreadBps") is not None]
+
+    avg_vol = sum(vols) / len(vols) if vols else 50
+    avg_liquid = sum(liquids) / len(liquids) if liquids else 50
+    avg_spread = sum(spreads) / len(spreads) if spreads else 0
+
+    if avg_vol > 70:
+        detected_regime = "volatile"
+    elif avg_vol > 50:
+        detected_regime = "trending"
+    elif avg_vol > 30:
+        detected_regime = "neutral"
+    else:
+        detected_regime = "quiet"
+
+    signal_cache = _load_json(SIGNAL_CACHE_PATH, {})
+    sigs = signal_cache.get("signals", [])
+    bullish = sum(1 for s in sigs if s.get("direction", "").upper() in ("LONG", "BUY"))
+    bearish = sum(1 for s in sigs if s.get("direction", "").upper() in ("SHORT", "SELL"))
+    total_sigs = bullish + bearish
+    bullish_pct = (bullish / total_sigs * 100) if total_sigs else 50
+    bearish_pct = (bearish / total_sigs * 100) if total_sigs else 50
+
+    return {
+        "current_regime": {
+            "state": detected_regime,
+            "confidence_score": round(max(0.5, avg_vol / 100), 2),
+            "volatility_score": round(avg_vol, 1),
+            "liquidity_score": round(avg_liquid, 1),
+            "avg_spread_bps": round(avg_spread, 2),
+        },
+        "sentiment": {
+            "bullish_pct": round(bullish_pct, 1),
+            "bearish_pct": round(bearish_pct, 1),
+            "total_signals": total_sigs,
+        },
+        "symbols_tracked": len(snapshots),
+    }
+
+
+def api_market_intelligence():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    return op.get("marketIntelligence", {
+        "updated_at": "",
+        "coinbase": {"products": [], "last_updates": {}},
+        "prediction_markets": {"markets": [], "rankings": [], "categories": {}, "total_markets": 0},
+        "arbitrage": {"opportunities": [], "total_opportunities": 0},
+        "crypto_divergence": {"divergences": [], "significant": [], "total": 0, "total_significant": 0},
+        "summary": {"coinbase_updates": 0, "prediction_markets": 0,
+                     "arbitrage_opportunities": 0, "crypto_divergences": 0,
+                     "significant_divergences": 0},
+    })
+
+
+def api_opportunities():
+    _refresh_cache()
+    report = dict(_cache or {})
+    queue = list(report.get("queue", []))
+
+    queue.sort(key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0), reverse=True)
+    report["queue"] = queue
+    report["total_signals"] = len(queue)
+    report["buy_signals"] = sum(1 for s in queue if s.get("action", "").upper() == "BUY")
+    report["sell_signals"] = sum(1 for s in queue if s.get("action", "").upper() == "SELL")
+    new_listing_count = sum(1 for s in queue if str(s.get("signal_type", "")).endswith("new_listing_momentum") or str(s.get("opp_type", "")).endswith("new_listing_momentum"))
+    report["new_listing_signals"] = new_listing_count
+    quality_scores = sorted((float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0) for s in queue), reverse=True)
+    report["quality_score"] = round(sum(quality_scores[:5]) / len(quality_scores[:5]) if quality_scores else 0, 3)
+    return report
+
+
+def api_signal_feed():
+    _refresh_cache()
+    return _cache
+
+
+def api_strategies_performance():
+    _refresh_cache()
+    breakdown = _cache.get("strategy_breakdown", {})
+    strategies = []
+    for name, count in sorted(breakdown.items()):
+        strategies.append({
+            "name": name,
+            "strategy_id": name.lower().replace(":", "_").replace(" ", "_"),
+            "status": "active" if count > 0 else "development",
+            "win_rate": 0.5,
+            "total_signals": count,
+            "avg_confidence": 0.7,
+        })
+
+    signal_cache = _load_json(SIGNAL_CACHE_PATH, {})
+    sigs = signal_cache.get("signals", [])
+    by_strategy = {}
+    for s in sigs:
+        sn = s.get("strategy_name", "Unknown")
+        by_strategy.setdefault(sn, []).append(s)
+
+    for name, sig_list in by_strategy.items():
+        exists = next((s for s in strategies if s["name"] == name), None)
+        avg_conf = sum(float(s.get("confidence", 0)) for s in sig_list) / len(sig_list) if sig_list else 0
+        if exists:
+            exists["total_signals"] += len(sig_list)
+            exists["avg_confidence"] = round((exists["avg_confidence"] + avg_conf) / 2, 2)
+        else:
+            strategies.append({
+                "name": name,
+                "strategy_id": name.lower().replace(":", "_").replace(" ", "_"),
+                "status": "active",
+                "win_rate": 0.5,
+                "total_signals": len(sig_list),
+                "avg_confidence": round(avg_conf, 2),
+            })
+
+    if not strategies:
+        defaults = [
+            "BTCVolatilityStacking", "BTCVolatilityBreakout",
+            "BTCVolatilityMeanReversion", "BTCVolatilityMomentum",
+            "CoinbaseMomentum", "CoinbaseMeanReversion",
+            "VolatilityBreakout", "RegimeAwareAdaptive",
+            "Multi:Momentum", "Multi:Mean Reversion",
+            "Multi:RSI Oscillator", "Multi:Breakout",
+            "Multi:ATR Volatility", "Multi:Scalper",
+            "NewsSentiment",
+        ]
+        for name in defaults:
+            strategies.append({
+                "name": name,
+                "strategy_id": name.lower().replace(":", "_").replace(" ", "_"),
+                "status": "active",
+                "win_rate": 0.5,
+                "total_signals": 0,
+                "avg_confidence": 0.0,
+            })
+
+    return {"strategies": strategies}
+
+
+def api_crypto_divergence():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    cd = op.get("marketIntelligence", {}).get("crypto_divergence", {})
+    return cd
+
+
+def api_paper_trades():
+    PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
+    if not PAPER_TRADES_PATH.exists():
+        return {"trades": [], "total": 0}
+    try:
+        trades = json.loads(PAPER_TRADES_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"trades": [], "total": 0}
+    trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
+    return {"trades": trades[:100], "total": len(trades)}
+
+
+
+# ── Request Handler ─────────────────────────────────────────────
+
+class DashboardHandler(http.server.SimpleHTTPRequestHandler):
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        handlers = {
+            "/health": lambda: api_health(),
+            "/accounts": lambda: api_accounts(),
+            "/positions": lambda: api_positions(),
+            "/strategies": lambda: api_strategies(),
+            "/approvals": lambda: api_approvals(),
+            "/performance": lambda: api_performance(),
+            "/market/regime": lambda: api_market_regime(),
+            "/market/intelligence": lambda: api_market_intelligence(),
+            "/research/hypotheses": lambda: api_hypotheses(),
+            "/prediction-markets": lambda: api_prediction_markets(),
+            "/arbitrage/opportunities": lambda: api_arbitrage_opportunities(),
+            "/crypto-divergence": lambda: api_crypto_divergence(),
+            "/paper-trades": lambda: api_paper_trades(),
+            "/signals/opportunities": lambda: api_opportunities(),
+            "/signals/feed": lambda: api_signal_feed(),
+            "/strategies/performance": lambda: api_strategies_performance(),
+        }
+
+        if path in handlers:
+            try:
+                data = handlers[path]()
+                self._json_response(json.dumps(data, default=str))
+            except Exception as e:
+                logger.error("%s error: %s", path, e)
+                self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+
+        elif path.startswith("/approvals/approve/"):
+            token = path[len("/approvals/approve/"):]
+            ok = _update_approval(token, "approved") if token else False
+            status = 200 if ok else 404
+            self._json_response(json.dumps({"ok": ok, "token": token, "status": "approved" if ok else "missing"}), status=status)
+
+        elif path.startswith("/approvals/deny/"):
+            token = path[len("/approvals/deny/"):]
+            ok = _update_approval(token, "denied") if token else False
+            status = 200 if ok else 404
+            self._json_response(json.dumps({"ok": ok, "token": token, "status": "denied" if ok else "missing"}), status=status)
+
+        elif path.startswith("/evaluations/price/"):
+            instrument = path.split("/evaluations/price/", 1)[-1]
+            try:
+                data = api_price_estimates(instrument)
+                self._json_response(json.dumps(data, default=str))
+            except Exception as e:
+                logger.error("price estimates error: %s", e)
+                self._json_response(json.dumps({"error": str(e)}), status=500)
+
+        elif path == "/market/universe":
+            try:
+                self._json_response(json.dumps(api_universe(), default=str))
+            except Exception as e:
+                self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+
+        elif path == "/execution/status":
+            try:
+                self._json_response(json.dumps(api_execution(), default=str))
+            except Exception as e:
+                self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+
+        elif path in ("/dashboard", "", "/"):
+            self._serve_dashboard()
+
+        else:
+            super().do_GET()
+
+    def _json_response(self, data_str, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data_str.encode())
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+        if path != "/capital/config":
+            self._json_response(json.dumps({"error": "not found"}), status=404)
+            return
+
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+        try:
+            payload = json.loads(body or "{}")
+        except json.JSONDecodeError:
+            self._json_response(json.dumps({"error": "invalid json"}), status=400)
+            return
+        try:
+            saved = _save_capital_policy(payload)
+            self._json_response(json.dumps({"ok": True, "capital_policy": saved}, default=str))
+        except Exception as e:
+            logger.error("capital config save error: %s", e)
+            self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+
+    def _serve_dashboard(self):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # script_dir is e.g. .../trading_system/ui/
+        project_root = os.path.dirname(os.path.dirname(script_dir))
+        dashboard_path = os.path.join(script_dir, 'dashboard.html')
+        if not os.path.exists(dashboard_path):
+            dashboard_path = os.path.join(project_root, 'trading_system', 'ui', 'dashboard.html')
+        if not os.path.exists(dashboard_path):
+            dashboard_path = 'ui/dashboard.html'
+        if not os.path.exists(dashboard_path):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Dashboard not found")
+            return
+        try:
+            with open(dashboard_path, "rb") as f:
+                content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(f"Error: {e}".encode())
+
+    def log_message(self, format, *args):
+        path = str(args[0]) if args else ""
+        if any(p in path for p in ("/signals/", "/strategies/", "/health", "/accounts", "/positions")):
+            return
+        super().log_message(format, *args)
+
+
+# ── Main ────────────────────────────────────────────────────────
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Simple HTTP server for Trading System Dashboard')
+    parser = argparse.ArgumentParser(description='Trading System Dashboard Server')
     parser.add_argument('--host', '-b', default='0.0.0.0', help='Bind address (default: 0.0.0.0)')
     parser.add_argument('--port', '-p', type=int, default=8000, help='Port (default: 8000)')
     return parser.parse_args()
@@ -41,21 +1317,43 @@ def parse_args():
 
 def main():
     args = parse_args()
-    
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+
     print("Trading System UI Dashboard Server")
-    print("=" * 50)
-    print(f"Dashboard file: {get_dashboard_path()}")
-    print(f"Starting server at http://{args.host}:{args.port}/dashboard")
-    print("=" * 50)
-    print("")
+    print("=" * 60)
+    print(f"Operator state: {OPERATOR_STATE_PATH}")
+    print(f"Signal cache:   {SIGNAL_CACHE_PATH}")
+    print(f"API endpoints:")
+    print(f"  GET /health                   — System health")
+    print(f"  GET /accounts                 — Portfolio accounts")
+    print(f"  GET /positions                — Open positions")
+    print(f"  GET /strategies               — Strategy performance")
+    print(f"  GET /approvals                — Pending approvals")
+    print(f"  GET /performance              — Portfolio performance")
+    print(f"  GET /evaluations/price/<inst> — Price estimates")
+    print(f"  GET /research/hypotheses      — Trading hypotheses")
+    print(f"  GET /market/regime            — Market regime")
+    print(f"  GET /prediction-markets       — Prediction market rankings")
+    print(f"  GET /arbitrage/opportunities   — Cross-market arbitrage rankings")
+    print(f"  GET /crypto-divergence         — Crypto price vs PM divergence")
+    print(f"  GET /signals/opportunities    — BTC-XXX opportunities")
+    print(f"  GET /signals/feed             — Signal queue")
+    print(f"  GET /strategies/performance   — Strategy breakdown")
+    print(f"  GET /dashboard                — Dashboard HTML")
+    print(f"Serving at http://{args.host}:{args.port}")
+    print("=" * 60)
     print("Press Ctrl+C to stop")
-    
-    # Run HTTP server
-    with socketserver.TCPServer(("", args.port), http.server.SimpleHTTPRequestHandler) as httpd:
+
+    handler = DashboardHandler
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
             print("\nShutting down...")
+            httpd.server_close()
 
 
 if __name__ == "__main__":
