@@ -1,0 +1,59 @@
+Supervisor started (PID 1762008)
+Starting production system...
+  daemon: PID 1762009
+  dashboard: PID 1762010
+Monitoring (Ctrl+C to stop)...
+Supervisor: RUNNING (PID 1762008)
+  daemon: RUNNING (PID 1762009)
+  dashboard: RUNNING (PID 1762010)
+
+Signal 15 received, shutting down...
+  dashboard: stopped
+Sent SIGTERM to supervisor (PID 1762008)
+Sent SIGTERM to dashboard (PID 1762010)
+Sent SIGTERM to daemon (PID 1762009)
+Force killed PID 1762008
+Force killed PID 1762009
+Stopped.
+Supervisor started (PID 1765863)
+Starting production system...
+  daemon: PID 1765867
+  dashboard: PID 1765875
+Monitoring (Ctrl+C to stop)...
+Supervisor: RUNNING (PID 1765863)
+  daemon: RUNNING (PID 1765867)
+  dashboard: RUNNING (PID 1765875)
+
+Signal 15 received, shutting down...
+  dashboard: stopped
+Sent SIGTERM to supervisor (PID 1765863)
+Sent SIGTERM to dashboard (PID 1765875)
+Sent SIGTERM to daemon (PID 1765867)
+Force killed PID 1765863
+Stopped.
+Supervisor started (PID 1793734)
+Starting production system...
+  daemon: PID 1793735
+  dashboard: PID 1793736
+Monitoring (Ctrl+C to stop)...
+Supervisor: RUNNING (PID 1793734)
+  daemon: RUNNING (PID 1793735)
+  dashboard: RUNNING (PID 1793736)
+  Heartbeat: 0s ago
+
+Signal 15 received, shutting down...
+  dashboard: stopped
+Sent SIGTERM to supervisor (PID 1793734)
+Sent SIGTERM to dashboard (PID 1793736)
+Sent SIGTERM to daemon (PID 1793735)
+Force killed PID 1793734
+Stopped.
+Supervisor started (PID 1932564)
+Starting production system...
+  daemon: PID 1932566
+  dashboard: PID 1932569
+Monitoring (Ctrl+C to stop)...
+Supervisor: RUNNING (PID 1932564)
+  daemon: RUNNING (PID 1932566)
+  dashboard: RUNNING (PID 1932569)
+  Heartbeat: 30s ago

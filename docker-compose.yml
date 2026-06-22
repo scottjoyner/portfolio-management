@@ -1,76 +1,138 @@
-# Portfolio Management Multi-Service Deployment
-version: '3.8'
-
+# Portfolio Management — API Server
 services:
-  portfolio-manager:
+  api:
     build:
-      context: ./services/portfolio-manager
+      context: .
       dockerfile: Dockerfile
-    container_name: portfolio_manager
+    container_name: portfolio-api
     ports:
-      - "3001:3001"
+      - "3000:3000"
     volumes:
       - ./data:/app/data
-      - ./logs/portfolio:/app/logs
+      - ./state:/app/state
+      - ~/.coinbase:/root/.coinbase:ro
     environment:
-      - PYTHONUNBUFFERED=1
-      - PORTFOLIO_CAPITAL=100000
+      - NODE_ENV=production
+      - PORT=3000
+      - API_TOKEN=${API_TOKEN:-op-token-001}
+      - STRICT_RUNTIME_VALIDATION=false
+      - OPERATOR_AUTH_REQUIRED=false
+      - OPERATOR_ADMIN_TOKEN=${API_TOKEN:-op-token-001}
+      - COINBASE_API_KEY=${COINBASE_API_KEY:-}
+      - COINBASE_API_SECRET=${COINBASE_API_SECRET:-}
+      - COINBASE_DRY_RUN=${COINBASE_DRY_RUN:-true}
+      - COINBASE_CLI_BRIDGE=coinbase/src/bridge_cli.mjs
+      - OPERATOR_STATE_PATH=/app/data/operator-state.json
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.path.insert(0, '/app'); from portfolio_manager import *; b=Backtester(); print('OK')"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
+      start_period: 20s
 
-  data-collector:
+  dashboard:
     build:
-      context: ./services/data-collector
+      context: .
       dockerfile: Dockerfile
-    container_name: data_collector
+    container_name: portfolio-dashboard
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./data:/app/data
+      - ./state:/app/state
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python3 -u trading_system/ui/dashboard_server.py --host 0.0.0.0 --port 8099
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3).status < 400 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  approval-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio-approval-server
     ports:
       - "8080:8080"
     volumes:
       - ./data:/app/data
-      - ./logs/collector:/app/logs
+      - ./state:/app/state
     environment:
-      - COINBASE_API_KEY=${COINBASE_API_KEY:-test}
-      - ALPACA_API_KEY=${ALPACA_API_KEY:-test}
+      - PYTHONUNBUFFERED=1
+    command: python3 -u approval_server.py --host 0.0.0.0 --port 8080 --pending-file /app/data/pending_approvals.json
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=3).status < 400 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
-  backtester:
+  optimizer:
     build:
-      context: ./services/backtester
+      context: .
       dockerfile: Dockerfile
-    container_name: backtester
-    ports:
-      - "3002:3002"
+    container_name: portfolio-optimizer
     volumes:
       - ./data:/app/data
-      - ./logs/backtest:/app/logs
+      - ./state:/app/state
+      - ~/.coinbase:/root/.coinbase:ro
     environment:
-      - BACKTEST_INTERVAL=6h
-    depends_on:
-      - portfolio-manager
+      - PYTHONUNBUFFERED=1
+      - COINBASE_CLI_PATH=coinbase
+    command: python3 -u portfolio_optimizer.py --interval 300 --db /app/state/optimizer_state.db --pending-file /app/data/pending_approvals.json --approval-base-url http://approval-server:8080
     restart: unless-stopped
+    healthcheck:
+      disable: true
+
+  data-collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio-data-collector
+    volumes:
+      - ./data:/app/data
+      - ./state:/app/state
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: sh -lc 'while true; do python3 -u data_collector.py; sleep 300; done'
+    restart: unless-stopped
+    healthcheck:
+      disable: true
 
   alerts:
     build:
-      context: ./services/alerts
+      context: .
       dockerfile: Dockerfile
-    container_name: alerts
-    ports:
-      - "3003:3003"
+    container_name: portfolio-alerts
     volumes:
       - ./data:/app/data
-      - ./logs/alerts:/app/logs
+      - ./state:/app/state
     environment:
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-test}
-      - EMAIL_SMTP_HOST=${EMAIL_SMTP_HOST:-localhost}
-    depends_on:
-      - portfolio-manager
+      - PYTHONUNBUFFERED=1
+    command: sh -lc 'while true; do python3 -u alerts.py; sleep 900; done'
     restart: unless-stopped
+    healthcheck:
+      disable: true
 
-# Network configuration
-networks:
-  default:
-    driver: bridge
+  backtester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portfolio-backtester
+    volumes:
+      - ./data:/app/data
+      - ./state:/app/state
+      - ~/.coinbase:/root/.coinbase:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - COINBASE_CLI_PATH=coinbase
+    command: sh -lc 'while true; do python3 -u backtester.py; sleep 21600; done'
+    restart: unless-stopped
+    healthcheck:
+      disable: true

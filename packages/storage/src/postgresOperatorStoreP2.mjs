@@ -23,9 +23,6 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
 
   async load() {
     const base = await super.load();
-    const [opportunities, riskBreakdowns, budgetApprovals, researchJobs, agentCostLedger] = await Promise.all([
-      this.opportunityRows.listOpportunities(),
-      this.opportunityRows.listRiskBreakdowns(),
     const [marketDataSnapshots, budgetApprovals, researchJobs, opportunities, riskBreakdowns, agentCostLedger] = await Promise.all([
       this.opportunityRows.listMarketDataSnapshots(),
       this.opportunityRows.listBudgetApprovals(),
@@ -107,6 +104,8 @@ export class PostgresOperatorStoreP2 extends PostgresOperatorStoreP1 {
   async upsertRiskBreakdown(riskBreakdown) {
     await this.opportunityRows.upsertRiskBreakdown(riskBreakdown);
     return riskBreakdown;
+  }
+
   async upsertOpportunityBundle(bundle) {
     return this.opportunityRows.upsertOpportunityBundle(bundle);
   }

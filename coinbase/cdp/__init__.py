@@ -45,18 +45,80 @@ Documentation: https://docs.cdp.coinbase.com
 
 from typing import Dict, Any, Optional
 
-# Import main CLI wrapper
-from .cdp_cli_wrapper import (
-    CDPCLI,
-    CDPCLIError,
-    MockCDPClient,
-    quick_wallet_operations,
-    verify_webhook_signature,
-    subscribe_to_events
-)
+# Import main CLI wrapper, but keep the package importable if the wrapper
+# module is absent in this checkout.
+try:
+    from .cdp_cli_wrapper import (
+        CDPCLI,
+        CDPCLIError,
+        MockCDPClient,
+        quick_wallet_operations,
+        verify_webhook_signature,
+        subscribe_to_events,
+    )
+except ImportError:
+    class CDPCLIError(Exception):
+        pass
+
+    class MockCDPClient:
+        pass
+
+    def quick_wallet_operations(*args, **kwargs):
+        return {"ok": False, "error": "cdp_cli_wrapper unavailable"}
+
+    def verify_webhook_signature(*args, **kwargs):
+        return False
+
+    def subscribe_to_events(*args, **kwargs):
+        return {"ok": False, "error": "cdp_cli_wrapper unavailable"}
+
+    class CDPCLI:
+        def __init__(self, mock_mode: bool = False):
+            self.mock_mode = mock_mode
+
+        def get_wallet_balance(self, *args, **kwargs):
+            return {"ok": False, "error": "cdp_cli_wrapper unavailable"}
 
 # Import wallet module
 from .wallet import CDPWallet, CDPWalletError
+
+# Import transfers module
+try:
+    from .transfers import (
+        CDPTransferError,
+        build_crypto_transfer,
+        create_transfer,
+        execute_transfer,
+        get_transfer,
+        list_accounts,
+        list_balances,
+        list_transfers,
+        preview_crypto_transfer,
+        submit_crypto_transfer,
+        validate_crypto_transfer,
+    )
+except ImportError:
+    CDPTransferError = None
+    def build_crypto_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def create_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def execute_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def get_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def list_accounts(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def list_balances(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def list_transfers(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def preview_crypto_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def submit_crypto_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
+    def validate_crypto_transfer(*args, **kwargs):
+        return {"ok": False, "error": "transfers module unavailable"}
 
 # Import auth module
 try:
@@ -136,6 +198,30 @@ class CDPCoreClient:
                     currency: str, account_type: Optional[str] = None) -> Dict[str, Any]:
         """Send payment"""
         return self.wallet.transfer(from_wallet, to_account, amount, currency, account_type)
+
+    def create_transfer(self, payload_json: str, dry_run: bool = True) -> Dict[str, Any]:
+        """Create or preview a transfer."""
+        return create_transfer(payload_json, dry_run=dry_run)
+
+    def execute_transfer(self, transfer_id: str) -> Dict[str, Any]:
+        """Execute a previously created transfer."""
+        return execute_transfer(transfer_id)
+
+    def build_crypto_transfer(self, **kwargs) -> Dict[str, Any]:
+        """Build a crypto transfer payload."""
+        return build_crypto_transfer(**kwargs)
+
+    def preview_crypto_transfer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview a crypto transfer."""
+        return preview_crypto_transfer(payload)
+
+    def validate_crypto_transfer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate a crypto transfer without initiating it."""
+        return validate_crypto_transfer(payload)
+
+    def submit_crypto_transfer(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit a crypto transfer."""
+        return submit_crypto_transfer(payload)
     
     def create_payment_link(self, amount: float, currency: str,
                            webhook_url: Optional[str] = None) -> Dict[str, Any]:
@@ -177,10 +263,21 @@ __all__ = [
     "CDPCoreClient",
     "get_balance",
     "send_payment",
+    "build_crypto_transfer",
+    "create_transfer",
+    "execute_transfer",
+    "list_accounts",
+    "list_balances",
+    "list_transfers",
+    "get_transfer",
+    "preview_crypto_transfer",
+    "submit_crypto_transfer",
+    "validate_crypto_transfer",
     
     # Module classes (for explicit imports)
     "CDPWallet",
     "CDPWalletError",
+    "CDPTransferError",
     "CDPAuthentication",
     "Onramp",
     "Paymaster",

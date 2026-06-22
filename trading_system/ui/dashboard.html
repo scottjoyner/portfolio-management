@@ -1,800 +1,569 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading System UI Dashboard - Production</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #f5f7fa;
-            color: #1a1a2e;
-            min-height: 100vh;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 1.5rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        
-        .header h1 {
-            font-size: 1.75rem;
-            font-weight: 600;
-            margin-bottom: 0.5rem;
-        }
-        
-        .header p {
-            opacity: 0.9;
-            font-size: 0.95rem;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            transition: transform 0.2s ease;
-        }
-        
-        .card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-        }
-        
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1rem;
-            padding-bottom: 0.75rem;
-            border-bottom: 2px solid #f0f0f0;
-        }
-        
-        .card-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #333;
-        }
-        
-        .card-badge {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-        
-        .card-body {
-            color: #555;
-        }
-        
-        .metric {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.5rem 0;
-            border-bottom: 1px solid #f0f0f0;
-            font-size: 0.9rem;
-        }
-        
-        .metric:last-child {
-            border-bottom: none;
-        }
-        
-        .metric-label {
-            color: #666;
-            font-weight: 500;
-        }
-        
-        .metric-value {
-            font-weight: 600;
-            color: #333;
-        }
-        
-        .metric-value.positive {
-            color: #10b981;
-        }
-        
-        .metric-value.negative {
-            color: #ef4444;
-        }
-        
-        .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: transform 0.2s ease;
-        }
-        
-        .btn:hover {
-            transform: translateY(-1px);
-        }
-        
-        .btn-sm {
-            padding: 0.35rem 0.75rem;
-            font-size: 0.8rem;
-        }
-        
-        .table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-        }
-        
-        .table th,
-        .table td {
-            padding: 0.75rem;
-            text-align: left;
-            border-bottom: 1px solid #f0f0f0;
-            font-size: 0.9rem;
-        }
-        
-        .table th {
-            background: #f8f9fa;
-            font-weight: 600;
-            color: #555;
-        }
-        
-        .status-badge {
-            padding: 0.25rem 0.5rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-        }
-        
-        .status-active {
-            background: #d1fae5;
-            color: #065f46;
-        }
-        
-        .status-pending {
-            background: #fef3c7;
-            color: #92400e;
-        }
-        
-        .status-approved {
-            background: #dbeafe;
-            color: #1e40af;
-        }
-        
-        .status-rejected {
-            background: #fee2e2;
-            color: #991b1b;
-        }
-        
-        .status-development {
-            background: #e0e7ff;
-            color: #3730a3;
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 8px;
-            background: #e5e7eb;
-            border-radius: 4px;
-            margin-top: 0.5rem;
-            overflow: hidden;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #10b981 0%, #3b82f6 100%);
-            border-radius: 4px;
-            transition: width 0.5s ease;
-        }
-        
-        .loading {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2rem;
-            color: #666;
-        }
-        
-        .loading::after {
-            content: "";
-            display: inline-block;
-            width: 24px;
-            height: 24px;
-            border: 3px solid rgba(102, 126, 234, 0.3);
-            border-radius: 50%;
-            border-top-color: #667eea;
-            animation: spin 1s linear infinite;
-            margin-left: 8px;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
-        .header-actions {
-            display: flex;
-            gap: 0.5rem;
-            justify-content: flex-end;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        
-        .stat-card {
-            background: white;
-            padding: 1.25rem;
-            border-radius: 10px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-            text-align: center;
-        }
-        
-        .stat-value {
-            font-size: 1.75rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        
-        .stat-label {
-            font-size: 0.85rem;
-            color: #666;
-            margin-top: 0.25rem;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Control Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b1020; --surface: #11172a; --surface-2: #151c32;
+      --text: #eef2ff; --muted: #8892a8; --border: rgba(148,163,184,.15);
+      --accent: #8b5cf6; --accent-2: #22d3ee;
+      --good: #22c55e; --bad: #ef4444; --warn: #f59e0b;
+      --shadow: 0 18px 40px rgba(0,0,0,.35); --radius: 16px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f7fb; --surface: #fff; --surface-2: #f7f8fc;
+      --text: #111827; --muted: #6b7280; --border: rgba(17,24,39,.08);
+      --accent: #6d28d9; --accent-2: #0891b2;
+      --shadow: 0 14px 30px rgba(15,23,42,.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background: radial-gradient(circle at top left, rgba(139,92,246,.15), transparent 28%), var(--bg);
+      color: var(--text);
+    }
+    a { color: inherit; }
+    .wrap { max-width: 1480px; margin: 0 auto; padding: 16px 20px; }
+
+    /* Top bar */
+    .topbar { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(16px); background: color-mix(in srgb, var(--bg) 72%, transparent); border-bottom: 1px solid var(--border); }
+    .topbar-inner { max-width: 1480px; margin: 0 auto; padding: 12px 20px; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+    .brand { display: flex; gap: 12px; align-items: center; }
+    .mark { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; font-weight: 800; box-shadow: var(--shadow); }
+    .title { font-size: 1rem; font-weight: 750; line-height: 1.15; }
+    .subtitle { color: var(--muted); font-size: .8rem; }
+    .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .btn {
+      border: 1px solid var(--border); background: var(--surface); color: var(--text);
+      padding: 8px 12px; border-radius: 10px; cursor: pointer; font-weight: 650; font-size: .82rem;
+      transition: transform .12s ease, border-color .12s ease;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+    .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; color: white; }
+    .pill { display:inline-flex; gap:6px; align-items:center; padding:6px 10px; border-radius:999px; background: var(--surface); border:1px solid var(--border); font-size:.76rem; color:var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 20%, transparent); }
+
+    /* Stats */
+    .grid-stats { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin: 14px 0 16px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); }
+    .stat .label { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; }
+    .stat .value { margin-top: 4px; font-size: 1.3rem; font-weight: 800; }
+    .stat .value.green { color: var(--good); }
+    .stat .value.red { color: var(--bad); }
+    .stat .value.purple { color: var(--accent); }
+    .stat .hint { margin-top: 2px; color: var(--muted); font-size: .72rem; }
+
+    /* Layout */
+    .layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; align-items: start; }
+    .stack { display: grid; gap: 14px; }
+
+    /* Panels */
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+    .panel-head { display:flex; justify-content: space-between; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .panel-title { font-size: .92rem; font-weight: 750; }
+    .panel-sub { color: var(--muted); font-size: .76rem; margin-top: 1px; }
+    .panel-body { padding: 12px 16px 14px; }
+    .panel-body.compact { padding: 8px 16px 10px; }
+
+    /* Tables */
+    .table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    .table th, .table td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+    .table th { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 650; }
+    .table tr:hover td { background: color-mix(in srgb, var(--accent) 3%, transparent); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .muted { color: var(--muted); }
+    .small { font-size: .78rem; }
+
+    /* Tags */
+    .tag {
+      display:inline-flex; align-items:center; gap:5px; padding: 4px 8px; border-radius: 999px;
+      border: 1px solid var(--border); font-size: .71rem; font-weight: 650;
+    }
+    .tag.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 30%, var(--border)); }
+    .tag.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 30%, var(--border)); }
+    .tag.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, var(--border)); }
+    .tag.accent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+
+    /* Signal cards */
+    .signal-card {
+      padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px;
+      background: color-mix(in srgb, var(--surface-2) 50%, transparent);
+      display: grid; gap: 8px; transition: border-color .12s;
+    }
+    .signal-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+    .signal-head { display:flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .signal-title { font-weight: 700; font-size: .88rem; line-height: 1.2; }
+    .signal-meta { color: var(--muted); font-size: .76rem; margin-top: 2px; }
+    .signal-body { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .score-bar { flex: 1; min-width: 100px; height: 6px; border-radius: 99px; background: color-mix(in srgb, var(--border) 50%, transparent); overflow: hidden; }
+    .score-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .3s; }
+    .badge { font-weight: 700; font-size: .78rem; padding: 3px 8px; border-radius: 6px; }
+    .badge.buy { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
+    .badge.sell { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+
+    /* Accordion */
+    .accordion-item { border-bottom: 1px solid var(--border); }
+    .accordion-item:last-child { border-bottom: none; }
+    .accordion-head {
+      padding: 12px 14px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+      font-size: .84rem; font-weight: 660; user-select: none;
+    }
+    .accordion-head:hover { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+    .accordion-body { padding: 0 14px 12px; display: none; }
+    .accordion-body.open { display: block; }
+
+    /* Sparkline */
+    .sparkline { display: inline-flex; align-items: center; opacity: .6; }
+    /* Shimmer loading */
+    @keyframes shimmer { 0%{background-position:-200px 0} 100%{background-position:200px 0} }
+    .shimmer {
+      height: 14px; border-radius: 99px;
+      background: linear-gradient(90deg, var(--border) 25%, color-mix(in srgb, var(--border) 50%, transparent) 50%, var(--border) 75%);
+      background-size: 400px 100%; animation: shimmer 1.5s infinite;
+    }
+    .shimmer-line { margin: 8px 0; }
+
+    /* Responsive */
+    @media (max-width: 1100px) {
+      .grid-stats { grid-template-columns: repeat(4, 1fr); }
+      .layout { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .topbar-inner { flex-direction: column; align-items: stretch; }
+      .grid-stats { grid-template-columns: repeat(2, 1fr); }
+      .table th:nth-child(5), .table td:nth-child(5) { display:none; }
+    }
+  </style>
 </head>
-<body>
-    <div class="header">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
+<body data-theme="dark">
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="mark">PM</div>
+        <div>
+          <div class="title">Portfolio Trading</div>
+          <div class="subtitle" id="topbar-sub">Live — prediction markets + Coinbase execution</div>
+        </div>
+      </div>
+      <div class="actions">
+        <span class="pill"><span class="dot" id="live-dot"></span><span id="status-text">Loading</span></span>
+        <span class="pill" id="refresh-age">just now</span>
+        <span class="pill mono" id="countdown" style="font-variant-numeric:tabular-nums;min-width:3em;">30s</span>
+        <button class="btn" id="theme-btn" title="Toggle theme (d)">🌙</button>
+        <button class="btn primary" id="refresh-btn" title="Refresh all (r)">↻</button>
+        <span class="pill muted mono small" style="font-size:.68rem;border:none;background:transparent;">r↻ d🌙</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <!-- Stats Row -->
+    <div class="grid-stats">
+      <div class="stat">
+        <div class="label">Portfolio</div>
+        <div class="value purple" id="stat-portfolio">--</div>
+        <div class="hint" id="stat-portfolio-hint">NAV</div>
+      </div>
+      <div class="stat">
+        <div class="label">Cash</div>
+        <div class="value" id="stat-cash">--</div>
+        <div class="hint">buying power</div>
+      </div>
+      <div class="stat">
+        <div class="label">Positions</div>
+        <div class="value" id="stat-positions">--</div>
+        <div class="hint" id="stat-pnl">P&L</div>
+      </div>
+      <div class="stat">
+        <div class="label">Opportunities</div>
+        <div class="value" id="stat-opps">--</div>
+        <div class="hint" id="stat-opps-hint">actionable signals</div>
+      </div>
+      <div class="stat">
+        <div class="label">Prediction Mkts</div>
+        <div class="value" id="stat-pm">--</div>
+        <div class="hint">crypto + macro topics</div>
+      </div>
+      <div class="stat">
+        <div class="label">Arbitrage</div>
+        <div class="value" id="stat-arb">--</div>
+        <div class="hint">cross-venue edges</div>
+      </div>
+      <div class="stat">
+        <div class="label">Divergences</div>
+        <div class="value" id="stat-divergence">--</div>
+        <div class="hint" id="stat-divergence-hint">PM vs spot gaps</div>
+      </div>
+    </div>
+
+    <!-- Main Layout -->
+    <div class="layout">
+      <!-- LEFT: Signal Feed -->
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-head">
             <div>
-                <h1>Trading System UI Dashboard</h1>
-                <p>Production | ThinkPad T14 i7 32GB RAM | Tailscale Network</p>
+              <div class="panel-title">Signal Feed</div>
+              <div class="panel-sub">All opportunities ranked by conviction</div>
             </div>
-            <div class="header-actions">
-                <button class="btn btn-sm" onclick="refreshData()">Refresh Data</button>
-                <a href="/docs" target="_blank" class="btn btn-sm">API Docs</a>
+            <div style="display:flex; gap:4px; flex-wrap:wrap;">
+              <span class="tag accent" id="top-score-tag">--</span>
             </div>
-        </div>
+          </div>
+          <div class="panel-body">
+            <div style="display:flex; gap:4px; margin-bottom:10px; flex-wrap:wrap;">
+              <button class="btn filter-btn active" data-filter="all" style="padding:5px 10px;font-size:.76rem;">All</button>
+              <button class="btn filter-btn" data-filter="strategy" style="padding:5px 10px;font-size:.76rem;">Strategy</button>
+              <button class="btn filter-btn" data-filter="pm" style="padding:5px 10px;font-size:.76rem;">PM</button>
+              <button class="btn filter-btn" data-filter="arbitrage" style="padding:5px 10px;font-size:.76rem;">Arbitrage</button>
+              <button class="btn filter-btn" data-filter="livefeed" style="padding:5px 10px;font-size:.76rem;">Live</button>
+              <button class="btn filter-btn" data-filter="divergence" style="padding:5px 10px;font-size:.76rem;">Divergence</button>
+            </div>
+            <div id="rankings-panel" style="display:grid; gap:8px;"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:80%"></div><div class="shimmer shimmer-line" style="width:60%"></div></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- RIGHT: Sidebar -->
+      <div class="stack">
+        <!-- Portfolio card -->
+        <section class="panel">
+          <div class="panel-head"><div><div class="panel-title">Portfolio</div><div class="panel-sub">Accounts, positions, and P&L</div></div></div>
+          <div class="panel-body" id="holdings-panel" style="display:grid; gap:10px;"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:70%"></div></div>
+        </section>
+
+        <!-- Market Intelligence accordion -->
+        <section class="panel">
+          <div class="panel-head"><div><div class="panel-title">Market Intelligence</div><div class="panel-sub">Prediction markets, arbitrage, divergences</div></div></div>
+          <div id="intelligence-accordion">
+            <div class="accordion-item">
+              <div class="accordion-head" data-acc="pm-body">Prediction Markets <span class="tag accent" id="acc-pm-count">0</span></div>
+              <div class="accordion-body open" id="pm-body">Loading...</div>
+            </div>
+            <div class="accordion-item">
+              <div class="accordion-head" data-acc="arb-body">Arbitrage <span class="tag good" id="acc-arb-count">0</span></div>
+              <div class="accordion-body" id="arb-body"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:60%"></div></div>
+            </div>
+            <div class="accordion-item">
+              <div class="accordion-head" data-acc="div-body">Crypto Divergence <span class="tag warn" id="acc-div-count">0</span><span id="divergence-sparkline" class="sparkline"></span></div>
+              <div class="accordion-body" id="div-body"><div class="shimmer shimmer-line"></div></div>
+            </div>
+            <div class="accordion-item">
+              <div class="accordion-head" data-acc="activity-body">Activity Feed</div>
+              <div class="accordion-body" id="activity-body"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:80%"></div></div>
+            </div>
+            <div class="accordion-item">
+              <div class="accordion-head" data-acc="strategy-performance-body">Strategy Performance</div>
+              <div class="accordion-body" id="strategy-performance-body"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:70%"></div></div>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
+  </div>
 
-    <div class="container">
-        <!-- Stats Cards -->
-        <div class="stats-grid" id="stats-grid">
-            <div class="stat-card loading">
-                <div class="stat-value" id="stat-accounts">--</div>
-                <div class="stat-label">Accounts</div>
-            </div>
-            <div class="stat-card loading">
-                <div class="stat-value" id="strategies-count">--</div>
-                <div class="stat-label">Active Strategies</div>
-            </div>
-            <div class="stat-card loading">
-                <div class="stat-value" id="positions-total">--</div>
-                <div class="stat-label">Open Positions</div>
-            </div>
-            <div class="stat-card loading">
-                <div class="stat-value" id="total-pnl">--</div>
-                <div class="stat-label">Unrealized P&L</div>
-            </div>
+  <script>
+    const API_BASE = '';
+    const state = { theme: localStorage.getItem('pm-theme') || 'dark', lastRefresh: null };
+
+    function setTheme(t) {
+      document.body.setAttribute('data-theme', t);
+      localStorage.setItem('pm-theme', t);
+      state.theme = t;
+    }
+
+    function esc(v) { return String(v ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s])); }
+    function money(v) { return `$${Number(v || 0).toLocaleString(undefined, {maximumFractionDigits:0})}`; }
+    function compact(n) { return Number(n || 0) >= 1e6 ? (Number(n)/1e6).toFixed(1)+'M' : Number(n||0) >= 1e3 ? (Number(n)/1e3).toFixed(1)+'K' : Number(n||0).toFixed(0); }
+    function pct(v) { return `${Number(v||0).toFixed(1)}%`; }
+    function short(v, n=60) { const s=String(v||''); return s.length>n ? s.slice(0,n-1)+'…' : s; }
+    function ageStr(dateStr) { return dateStr ? `${Math.round((Date.now()-new Date(dateStr).getTime())/60000)}m ago` : '--'; }
+
+    async function fetchJSON(path, opts) {
+      const res = await fetch(API_BASE+path, opts||{});
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    // ── Accordion ──
+    function toggleAccordion(id) {
+      const body = document.getElementById(id);
+      if (body) body.classList.toggle('open');
+    }
+    document.addEventListener('click', e => {
+      const head = e.target.closest('[data-acc]');
+      if (!head) return;
+      toggleAccordion(head.dataset.acc);
+    });
+
+    // ── Classify signal ──
+    function classifySignal(s) {
+      const n = String(s.strategy_name || s.strategy || '');
+      if (n.startsWith('Daemon:Arbitrage')) return 'arbitrage';
+      if (n.startsWith('Daemon:CryptoDivergence') || n.includes('divergence')) return 'divergence';
+      if (n.startsWith('Daemon:PM:')) return 'pm';
+      if (n.startsWith('Daemon:LiveFeed')) return 'livefeed';
+      if (n.startsWith('PM:')) return 'pm';
+      if (n.startsWith('Daemon:')) return 'livefeed';
+      if (n.startsWith('Kalshi') || n.startsWith('Polymarket')) return 'pm';
+      return 'strategy';
+    }
+
+    function signalTag(type) {
+      const m = { strategy:'accent', pm:'warn', arbitrage:'good', livefeed:'muted', divergence:'bad' };
+      return `<span class="tag ${m[type]||'muted'}">${esc(type)}</span>`;
+    }
+
+    // ── Load accounts + positions ──
+    async function loadAccountsPositions() {
+      const [accounts, positions] = await Promise.all([
+        fetchJSON('/accounts'), fetchJSON('/positions')
+      ]);
+      const accList = accounts.accounts || [];
+      const posList = positions.positions || [];
+      const totalNAV = accList.reduce((s, a) => s + Number(a.nav || 0), 0);
+      const totalCash = accList.reduce((s, a) => s + Number(a.cash || a.availableBalance || 0), 0);
+      const totalPnl = posList.reduce((s, p) => s + Number(p.unrealizedPnlPct || p.unrealized_pnl_pct || 0), 0);
+      const avgPnl = posList.length ? (totalPnl / posList.length) : 0;
+
+      document.getElementById('stat-portfolio').textContent = compact(totalNAV);
+      document.getElementById('stat-portfolio-hint').textContent = `${accList.length} accounts`;
+      document.getElementById('stat-cash').textContent = compact(totalCash);
+      document.getElementById('stat-positions').textContent = posList.length;
+      document.getElementById('stat-pnl').textContent = avgPnl >= 0 ? `+${pct(avgPnl)}` : pct(avgPnl);
+      document.getElementById('stat-pnl').style.color = avgPnl >= 0 ? 'var(--good)' : 'var(--bad)';
+
+      // Accounts table
+      const accRows = accList.map(a => `<tr><td>${esc(a.name||'')}</td><td>${money(a.cash||a.availableBalance||0)}</td><td>${money(a.nav||0)}</td><td>${money(a.buyingPower||a.availableBalance||0)}</td></tr>`).join('');
+      // Positions table
+      const posRows = posList.map(p => {
+        const pnl = Number(p.unrealizedPnlPct || p.unrealized_pnl_pct || 0);
+        const clr = pnl >= 0 ? 'var(--good)' : 'var(--bad)';
+        return `<tr><td>${esc(p.symbol||'')}</td><td>${esc(p.side||p.classification||'')}</td><td>${Number(p.quantity||0).toFixed(4)}</td><td>${money(p.value||p.market_value||0)}</td><td style="color:${clr}">${pnl >= 0 ? '+' : ''}${pct(pnl)}</td></tr>`;
+      }).join('');
+
+      const winRate = posList.length ? (posList.filter(p => Number(p.unrealizedPnlPct||p.unrealized_pnl_pct||0) >= 0).length / posList.length * 100).toFixed(0) : 0;
+
+      document.getElementById('holdings-panel').innerHTML = `
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:8px;">
+          <div class="stat" style="padding:8px 10px;"><div class="label">Total NAV</div><div class="value purple" style="font-size:1.1rem">${compact(totalNAV)}</div></div>
+          <div class="stat" style="padding:8px 10px;"><div class="label">Avg P&L</div><div class="value" style="font-size:1.1rem;color:${avgPnl>=0?'var(--good)':'var(--bad)'}">${avgPnl>=0?'+':''}${pct(avgPnl)}</div></div>
+          <div class="stat" style="padding:8px 10px;"><div class="label">Win Rate</div><div class="value" style="font-size:1.1rem;color:var(--accent)">${winRate}%</div></div>
         </div>
-
-        <!-- Health Check -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">System Status</h2>
-                <span class="card-badge" id="system-status">Checking...</span>
-            </div>
-            <div class="card-body">
-                <div class="metric">
-                    <span class="metric-label">API Server</span>
-                    <span class="metric-value positive">Running</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Database</span>
-                    <span class="metric-value">PostgreSQL 16</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Cache</span>
-                    <span class="metric-value">Redis 7 - 99.2% hit rate</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Event Queue</span>
-                    <span class="metric-value">2,847 events pending</span>
-                </div>
-            </div>
+        <div style="overflow-x:auto;">
+          <table class="table"><thead><tr><th>Account</th><th>Cash</th><th>NAV</th><th>Buy Power</th></tr></thead><tbody>${accRows||'<tr><td colspan="4" class="muted">No accounts</td></tr>'}</tbody></table>
         </div>
+        <div style="margin-top:8px; overflow-x:auto;">
+          <table class="table"><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Value</th><th>P&L</th></tr></thead><tbody>${posRows||'<tr><td colspan="5" class="muted">No positions</td></tr>'}</tbody></table>
+        </div>`;
+    }
 
-        <!-- Accounts Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Portfolio Accounts</h2>
-                <button class="btn btn-sm" onclick="loadAccounts()">Refresh</button>
+    // ── Load rankings (signal feed) ──
+    let _currentFilter = 'all';
+    let _allSignalRows = [];
+
+    async function loadRankings() {
+      const signals = await fetchJSON('/signals/opportunities');
+      const queue = signals.queue || signals.signals || [];
+      _allSignalRows = queue.slice(0, 100).map((s, idx) => {
+        const type = classifySignal(s);
+        return { idx, type, raw: s };
+      });
+
+      // Stats
+      const counts = { strategy:0, pm:0, arbitrage:0, livefeed:0, divergence:0 };
+      _allSignalRows.forEach(r => counts[r.type]++);
+      document.getElementById('stat-opps').textContent = _allSignalRows.length;
+      document.getElementById('stat-opps-hint').textContent = `${counts.strategy} strat, ${counts.pm} pm, ${counts.arbitrage} arb, ${counts.divergence} div`;
+
+      const top = _allSignalRows[0]?.raw;
+      const topScore = top?.opportunity_score || top?.final_confidence || 0;
+      document.getElementById('top-score-tag').textContent = topScore ? `Best ${Number(topScore).toFixed(3)}` : 'No signals';
+
+      _applyFilter();
+    }
+
+    function signalAge(ts) {
+      if (!ts) return '';
+      const ageMin = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+      if (ageMin < 1) return '<span class="tag" style="font-size:.65rem;border-color:var(--good);color:var(--good)">now</span>';
+      if (ageMin < 10) return `<span class="tag" style="font-size:.65rem;opacity:.7">${ageMin}m</span>`;
+      return `<span class="tag" style="font-size:.65rem;opacity:.5">${ageMin}m</span>`;
+    }
+
+    function _applyFilter() {
+      const filtered = _currentFilter === 'all' ? _allSignalRows : _allSignalRows.filter(r => r.type === _currentFilter);
+      if (!filtered.length) {
+        document.getElementById('rankings-panel').innerHTML = `<div class="muted" style="padding:20px;text-align:center;">No signals match this filter</div>`;
+        return;
+      }
+      // Scroll to top of panel
+      document.getElementById('rankings-panel').parentElement.scrollIntoView({behavior:'smooth', block:'nearest'});
+      document.getElementById('rankings-panel').innerHTML = filtered.map(({ type, raw: s }) => {
+        const side = String(s.action || '').toUpperCase();
+        const score = Number(s.opportunity_score || s.final_confidence || s.score || 0);
+        const symbol = esc(s.symbol || s.instrument || '');
+        const strategyName = esc(short(s.strategy_name || s.strategy || '', 32));
+        const reason = esc(short(s.reason || s.signal_reason || '', 100));
+        const age = signalAge(s.timestamp);
+        return `<div class="signal-card">
+          <div class="signal-head">
+            <div>
+              <div class="signal-title">${symbol || reason || 'Signal'}</div>
+              <div class="signal-meta">${signalTag(type)} ${strategyName}</div>
             </div>
-            <div class="card-body" id="accounts-container">
-                <div class="loading">Loading accounts...</div>
+            <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">
+              ${age}
+              ${side === 'SELL' ? '<span class="badge sell">SELL</span>' : side === 'BUY' ? '<span class="badge buy">BUY</span>' : ''}
             </div>
-        </div>
+          </div>
+          <div class="signal-body">
+            <div class="score-bar"><div class="score-fill" style="width:${Math.min(score * 100, 100)}%"></div></div>
+            <span style="font-weight:700;font-size:.82rem;white-space:nowrap;">${Number(score).toFixed(3)}</span>
+          </div>
+          <div class="signal-meta">${reason}</div>
+        </div>`;
+      }).join('');
+    }
 
-        <!-- Positions Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Open Positions</h2>
-                <button class="btn btn-sm" onclick="loadPositions()">Refresh</button>
-            </div>
-            <div class="card-body" id="positions-container">
-                <div class="loading">Loading positions...</div>
-            </div>
-        </div>
+    // ── Load intelligence (PM, arb, divergence, activity, strategies) ──
+    async function loadIntelligence() {
+      const data = await fetchJSON('/market/intelligence').catch(() => ({}));
+      const pm = data.prediction_markets || {};
+      const arb = data.arbitrage || {};
+      const cd = data.crypto_divergence || {};
 
-        <!-- Strategies Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Strategy Performance</h2>
-                <button class="btn btn-sm" onclick="loadStrategies()">Refresh</button>
-            </div>
-            <div class="card-body" id="strategies-container">
-                <div class="loading">Loading strategies...</div>
-            </div>
-        </div>
+      // PM
+      const pmList = pm.markets || pm.rankings || [];
+      document.getElementById('acc-pm-count').textContent = pmList.length;
+      document.getElementById('pm-body').innerHTML = pmList.length
+        ? pmList.slice(0, 10).map(m => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;">${esc(short(m.question||m.title||'', 60))} <span class="muted">${pct(m.mid_price||0)}</span></div>`).join('')
+        : '<div class="muted small">No prediction market data</div>';
 
-        <!-- Pending Approvals Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Pending Approvals</h2>
-                <span class="card-badge" id="approvals-count">-- pending</span>
-            </div>
-            <div class="card-body" id="approvals-container">
-                <div class="loading">Loading approvals...</div>
-            </div>
-        </div>
+      // Arb
+      const arbList = arb.opportunities || [];
+      document.getElementById('acc-arb-count').textContent = arbList.length;
+      document.getElementById('stat-arb').textContent = arbList.length;
+      document.getElementById('arb-body').innerHTML = arbList.length
+        ? arbList.slice(0, 8).map(a => {
+            const edge = Number(a.edge_pct || a.edge || 0);
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;display:flex;justify-content:space-between;">
+              <span>${esc(short(a.question||a.title||'', 40))}</span>
+              <span style="color:${edge>=0?'var(--good)':'var(--bad)'}">${edge.toFixed(2)}% edge</span>
+            </div>`;
+          }).join('')
+        : '<div class="muted small">No arbitrage opportunities</div>';
 
-        <!-- Performance Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Portfolio Performance</h2>
-                <button class="btn btn-sm" onclick="loadPerformance()">Refresh Charts</button>
-            </div>
-            <div class="card-body">
-                <div class="metric">
-                    <span class="metric-label">Total Return (Period)</span>
-                    <span class="metric-value positive">+28.45%</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Annualized Return</span>
-                    <span class="metric-value positive">+127.3% (YTD)</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Sharpe Ratio</span>
-                    <span class="metric-value">1.42</span>
-                </div>
-                <div class="metric">
-                    <span class="metric-label">Max Drawdown</span>
-                    <span class="metric-value negative">-15.7%</span>
-                </div>
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: 68%;"></div>
-                </div>
-            </div>
-        </div>
+      // Divergence
+      const divList = cd.divergences || [];
+      const sigDivs = cd.significant || [];
+      document.getElementById('acc-div-count').textContent = sigDivs.length;
+      document.getElementById('stat-divergence').textContent = cd.total_significant || 0;
+      document.getElementById('stat-divergence-hint').textContent = `${cd.total||0} total, ${cd.total_significant||0} significant`;
 
-        <!-- Price Estimates Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Price Estimates</h2>
-                <input type="text" id="instrument-input" placeholder="Instrument (e.g., BTC/USD)" style="padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px;">
-                <button class="btn btn-sm" onclick="loadPriceEstimates()">Get Estimates</button>
-            </div>
-            <div class="card-body" id="price-estimates-container">
-                <div class="loading">Enter an instrument above (e.g., BTC/USD)</div>
-            </div>
-        </div>
+      // Sparkline
+      const hist = cd.history || [];
+      if (hist.length > 1) {
+        const vals = hist.map(h => h.significant || 0);
+        const mx = Math.max(...vals, 1);
+        const w = 100, h = 20;
+        const pts = vals.map((v,i) => `${(i/(vals.length-1)*w).toFixed(0)},${(h - v/mx*(h-2)-1).toFixed(0)}`).join(' ');
+        document.getElementById('divergence-sparkline').innerHTML = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="${pts}"/></svg>`;
+      }
 
-        <!-- Trading Hypotheses Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Trading Hypotheses</h2>
-                <span class="card-badge">Active Research</span>
-            </div>
-            <div class="card-body" id="hypotheses-container">
-                <div class="loading">Loading hypotheses...</div>
-            </div>
-        </div>
+      document.getElementById('div-body').innerHTML = divList.length
+        ? divList.slice(0, 8).map(d => {
+            const dir = d.divergence > 0 ? '🔺' : '🔻';
+            const sigClass = d.is_significant ? 'bad' : 'muted';
+            const kStr = d.kelly_fraction > 0 ? ` k=${(d.kelly_fraction*100).toFixed(1)}%` : '';
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;">
+              <div style="display:flex;justify-content:space-between;"><span>${esc(short(d.question,45))}</span><span class="tag ${sigClass}" style="font-size:.68rem;">${dir} ${(Math.abs(d.divergence)*100).toFixed(1)}%</span></div>
+              <div class="muted small">PM=${(d.market_probability*100).toFixed(0)}% Fair=${(d.fair_probability*100).toFixed(0)}% Spot=$${compact(d.spot_price)}${kStr}</div>
+            </div>`;
+          }).join('')
+        : '<div class="muted small">No divergence data</div>';
 
-        <!-- Market Regime Section -->
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title">Market Regime</h2>
-                <button class="btn btn-sm" onclick="loadMarketRegime()">Refresh</button>
-            </div>
-            <div class="card-body" id="market-regime-container">
-                <div class="loading">Loading regime data...</div>
-            </div>
-        </div>
+      // Activity
+      const activity = await fetchJSON('/signals/feed').catch(() => ({queue:[]}));
+      document.getElementById('activity-body').innerHTML = (activity.queue || []).length
+        ? (activity.queue || []).slice(0, 10).map(ev => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;">
+            <div style="display:flex;justify-content:space-between;"><span>${esc(ev.action||ev.type||ev.strategy_name||'')}</span><span class="tag ${String(ev.type||'').includes('execution')?'accent':'warn'}">${esc(ev.type||'')}</span></div>
+            <div class="muted">${esc(short(ev.details||ev.reason||ev.signal_reason||'',80))} · ${esc(ev.timestamp||'')}</div>
+          </div>`).join('')
+        : '<div class="muted small">No recent activity</div>';
 
-    </div>
+      // Strategy performance
+      const strategies = await fetchJSON('/strategies/performance').catch(() => ({strategies:[]}));
+      const sList = strategies.strategies || [];
+      document.getElementById('strategy-performance-body').innerHTML = sList.length
+        ? `<table class="table"><thead><tr><th>Strategy</th><th>Status</th><th>Win Rate</th><th>Signals</th></tr></thead><tbody>${
+            sList.slice(0,15).map(s => `<tr><td>${esc(s.name||'')}</td><td><span class="tag ${s.status==='active'?'good':'warn'}">${esc(s.status||'')}</span></td><td>${pct(s.win_rate||0)}</td><td>${Number(s.total_signals||0)}</td></tr>`).join('')
+          }</tbody></table>`
+        : '<div class="muted small">No strategy data</div>';
+    }
 
-    <!-- API Documentation Modal (hidden by default) -->
-    <div id="api-doc-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000;">
-        <div style="background: white; max-width: 1200px; margin: 100px auto; padding: 2rem; border-radius: 12px;">
-            <h2>API Documentation</h2>
-            <iframe src="/docs" style="width: 100%; height: calc(100vh - 200px); border: none; margin-top: 1rem;"></iframe>
-            <button onclick="document.getElementById('api-doc-modal').style.display='none'" style="margin-top: 1rem; padding: 0.5rem 1rem;">Close</button>
-        </div>
-    </div>
+    // ── Refresh ──
+    async function refreshAll() {
+      _resetCountdown();
+      document.getElementById('live-dot').style.background = 'var(--warn)';
+      document.getElementById('status-text').textContent = 'Refreshing';
+      try {
+        await Promise.all([loadAccountsPositions(), loadRankings(), loadIntelligence()]);
+        state.lastRefresh = Date.now();
+        document.getElementById('live-dot').style.background = 'var(--good)';
+        document.getElementById('status-text').textContent = 'Live';
+        document.getElementById('topbar-sub').textContent = `Live — ${new Date().toLocaleTimeString()}`;
+      } catch (err) {
+        document.getElementById('live-dot').style.background = 'var(--bad)';
+        document.getElementById('status-text').textContent = 'Offline';
+        console.error(err);
+      }
+    }
 
-    <script>
-        // API Base URL (adjust for your deployment)
-        const API_BASE = window.location.origin;
-        
-        let refreshInterval = null;
+    // ── Countdown timer (30s interval tick) ──
+    let _countdownRemaining = 0;
+    function _tickCountdown() {
+      _countdownRemaining = Math.max(0, _countdownRemaining - 1);
+      const el = document.getElementById('countdown');
+      if (el) el.textContent = _countdownRemaining + 's';
+      if (_countdownRemaining <= 5 && _countdownRemaining > 0) {
+        el.style.color = 'var(--warn)';
+      } else {
+        el.style.color = '';
+      }
+    }
+    function _resetCountdown() {
+      _countdownRemaining = 30;
+      _tickCountdown();
+    }
+    setInterval(_tickCountdown, 1000);
 
-        // Initialize dashboard
-        async function init() {
-            try {
-                await Promise.all([
-                    loadHealth(),
-                    loadAccounts(),
-                    loadPositions(),
-                    loadStrategies(),
-                    loadApprovals(),
-                    loadPerformance(),
-                    loadHypotheses(),
-                    loadMarketRegime()
-                ]);
-                
-                // Auto-refresh every 30 seconds
-                startAutoRefresh();
-            } catch (error) {
-                console.error("Initialization error:", error);
-                document.getElementById('accounts-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load data</div>';
-            }
-        }
+    // ── Events ──
+    document.getElementById('refresh-btn').addEventListener('click', refreshAll);
+    document.getElementById('theme-btn').addEventListener('click', () => setTheme(state.theme==='dark'?'light':'dark'));
 
-        // Auto-refresh every 30 seconds
-        function startAutoRefresh() {
-            refreshInterval = setInterval(async () => {
-                await Promise.all([
-                    loadHealth(),
-                    loadAccounts(),
-                    loadPositions(),
-                    loadStrategies(),
-                    loadApprovals(),
-                    loadPerformance()
-                ]);
-            }, 30000);
-        }
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        _currentFilter = btn.dataset.filter;
+        _applyFilter();
+      });
+    });
 
-        // Refresh all data immediately
-        async function refreshData() {
-            try {
-                await Promise.all([
-                    loadHealth(),
-                    loadAccounts(),
-                    loadPositions(),
-                    loadStrategies(),
-                    loadApprovals(),
-                    loadPerformance(),
-                    loadHypotheses(),
-                    loadMarketRegime()
-                ]);
-            } catch (error) {
-                console.error("Refresh error:", error);
-            }
-        }
+    document.addEventListener('keydown', e => {
+      if (e.target && ['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
+      if (e.key === 'r') refreshAll();
+      if (e.key === 'd') setTheme(state.theme==='dark'?'light':'dark');
+    });
 
-        // Health check
-        async function loadHealth() {
-            try {
-                const response = await fetch(`${API_BASE}/health`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                document.getElementById('system-status').textContent = 
-                    data.status === 'healthy' ? 'Healthy' : 'Unhealthy';
-            } catch (error) {
-                console.error("Health check error:", error);
-                document.getElementById('system-status').textContent = 'Error';
-            }
-        }
-
-        // Load accounts
-        async function loadAccounts() {
-            try {
-                const response = await fetch(`${API_BASE}/accounts`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                document.getElementById('stat-accounts').textContent = data.total_accounts;
-                
-                let html = '<div class="table">';
-                html += '<thead><tr><th>ID</th><th>Display Name</th><th>Balance</th><th>Status</th></tr></thead>';
-                html += '<tbody>';
-                
-                data.accounts.forEach(account => {
-                    const statusClass = account.status === 'active' ? 'status-active' : 
-                                       (account.status === 'pending' ? 'status-pending' : 'status-rejected');
-                    
-                    html += `<tr>
-                        <td>${account.id}</td>
-                        <td><strong>${account.display_name}</strong></td>
-                        <td>$${account.current_balance_usd.toLocaleString()}</td>
-                        <td class="status-badge ${statusClass}">${account.status}</td>
-                    </tr>`;
-                });
-                
-                html += '</tbody></div>';
-                document.getElementById('accounts-container').innerHTML = html;
-            } catch (error) {
-                console.error("Load accounts error:", error);
-                document.getElementById('accounts-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load accounts</div>';
-            }
-        }
-
-        // Load positions
-        async function loadPositions() {
-            try {
-                const response = await fetch(`${API_BASE}/positions`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                document.getElementById('stat-positions-total').textContent = data.total_positions;
-                document.getElementById('total-pnl').textContent = 
-                    `$${data.total_unrealized_pnl_usd.toLocaleString(undefined, {minimumFractionDigits: 2})} (${data.total_unrealized_pnl_pct > 0 ? '+' : ''}${data.total_unrealized_pnl_pct.toFixed(2)}%)`;
-                
-                let html = '<div class="table">';
-                html += '<thead><tr><th>Instrument</th><th>Direction</th><th>Size</th><th>Entry Price</th><th>Current Price</th><th>P&L</th></tr></thead>';
-                html += '<tbody>';
-                
-                data.positions.forEach(position => {
-                    const pnlClass = position.unrealized_pnl_usd >= 0 ? 'positive' : 'negative';
-                    
-                    html += `<tr>
-                        <td>${position.instrument}</td>
-                        <td>${position.direction}</td>
-                        <td>$${position.quantity_usd.toLocaleString()}</td>
-                        <td>$${position.entry_price_usd.toFixed(2)}</td>
-                        <td>$${position.current_price_usd.toFixed(2)}</td>
-                        <td class="metric-value ${pnlClass}">
-                            $${position.unrealized_pnl_usd.toFixed(2)} (${position.unrealized_pnl_pct.toFixed(2)}%)
-                        </td>
-                    </tr>`;
-                });
-                
-                html += '</tbody></div>';
-                document.getElementById('positions-container').innerHTML = html;
-            } catch (error) {
-                console.error("Load positions error:", error);
-                document.getElementById('positions-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load positions</div>';
-            }
-        }
-
-        // Load strategies
-        async function loadStrategies() {
-            try {
-                const response = await fetch(`${API_BASE}/strategies`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                document.getElementById('strategies-count').textContent = 
-                    data.active_strategies.length + (data.active_strategies.length > 0 ? ' active' : '') + 
-                    ` (${data.total_strategies} total)`;
-                
-                let html = '<div class="table">';
-                html += '<thead><tr><th>Strategy</th><th>Status</th><th>Sharpe</th><th>Win Rate</th><th>Total Trades</th></tr></thead>';
-                html += '<tbody>';
-                
-                data.active_strategies.forEach(strategy => {
-                    const statusClass = strategy.status === 'active' ? 'status-active' : 'status-development';
-                    
-                    html += `<tr>
-                        <td>
-                            <strong>${strategy.name}</strong><br>
-                            <small style="color: #666;">${strategy.strategy_id}</small>
-                        </td>
-                        <td class="status-badge ${statusClass}">${strategy.status}</td>
-                        <td>${strategy.sharpe_ratio.toFixed(2)}</td>
-                        <td>${strategy.win_rate_pct.toFixed(1)}%</td>
-                        <td>${strategy.total_trades}</td>
-                    </tr>`;
-                });
-                
-                html += '</tbody></div>';
-                document.getElementById('strategies-container').innerHTML = html;
-            } catch (error) {
-                console.error("Load strategies error:", error);
-                document.getElementById('strategies-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load strategies</div>';
-            }
-        }
-
-        // Load approvals
-        async function loadApprovals() {
-            try {
-                const response = await fetch(`${API_BASE}/approvals`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                document.getElementById('approvals-count').textContent = 
-                    `${data.summary.pending_count} pending`;
-                
-                let html = '<div class="table">';
-                html += '<thead><tr><th>Request ID</th><th>Strategy</th><th>Instrument</th><th>Quantity</th><th>Risk</th><th>Status</th></tr></thead>';
-                html += '<tbody>';
-                
-                data.approvals.forEach(approval => {
-                    const statusClass = approval.status === 'pending' ? 'status-pending' :
-                                       (approval.auto_approved ? 'status-approved' : 'status-rejected');
-                    
-                    html += `<tr>
-                        <td>${approval.id}</td>
-                        <td>${approval.strategy_id}</td>
-                        <td>${approval.instrument}</td>
-                        <td>$${approval.quantity_usd.toLocaleString()}</td>
-                        <td>${(approval.risk_score * 100).toFixed(0)}%</td>
-                        <td class="status-badge ${statusClass}">${approval.status}</td>
-                    </tr>`;
-                });
-                
-                html += '</tbody></div>';
-                document.getElementById('approvals-container').innerHTML = html;
-            } catch (error) {
-                console.error("Load approvals error:", error);
-                document.getElementById('approvals-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load approvals</div>';
-            }
-        }
-
-        // Load performance
-        async function loadPerformance() {
-            try {
-                const response = await fetch(`${API_BASE}/performance`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                
-                document.getElementById('stat-total-return').textContent = 
-                    `+${data.summary_metrics.total_return_pct.toFixed(2)}%`;
-                document.getElementById('stat-annualized-return').textContent = 
-                    `+${data.summary_metrics.annualized_return_pct.toFixed(1)}% (YTD)`;
-                document.getElementById('stat-sharpe').textContent = data.summary_metrics.sharpe_ratio.toFixed(2);
-                document.getElementById('stat-max-drawdown').textContent = 
-                    `-${Math.abs(data.summary_metrics.max_drawdown_pct).toFixed(1)}%`;
-                
-                const returnValue = data.summary_metrics.total_return_pct;
-                const progressWidth = Math.min(Math.abs(returnValue) / 50 * 100, 100);
-                document.querySelector('.progress-fill').style.width = `${Math.max(0, progressWidth)}%`;
-            } catch (error) {
-                console.error("Load performance error:", error);
-                document.getElementById('performance-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load performance</div>';
-            }
-        }
-
-        // Load price estimates
-        async function loadPriceEstimates() {
-            try {
-                const instrument = document.getElementById('instrument-input').value.trim();
-                if (!instrument) {
-                    alert('Please enter an instrument (e.g., BTC/USD)');
-                    return;
-                }
-                
-                const response = await fetch(`${API_BASE}/evaluations/price/${encodeURIComponent(instrument)}`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                
-                let html = '<div style="margin-bottom: 1rem;"><strong>Consensus Price Estimate:</strong> $' + 
-                           data.summary.weighted_avg_target_usd.toFixed(2) + '</div>';
-                html += '<div class="table">';
-                html += '<thead><tr><th>Model Type</th><th>Target Price</th><th>Confidence</th></tr></thead>';
-                html += '<tbody>';
-                
-                data.price_estimates.forEach(estimate => {
-                    html += `<tr>
-                        <td>${estimate.model_type}</td>
-                        <td>$${estimate.target_price_usd.toFixed(2)}</td>
-                        <td>${(estimate.confidence_score * 100).toFixed(0)}%</td>
-                    </tr>`;
-                });
-                
-                html += '</tbody></div>';
-                document.getElementById('price-estimates-container').innerHTML = html;
-            } catch (error) {
-                console.error("Load price estimates error:", error);
-                document.getElementById('price-estimates-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load price estimates</div>';
-            }
-        }
-
-        // Load hypotheses
-        async function loadHypotheses() {
-            try {
-                const response = await fetch(`${API_BASE}/research/hypotheses`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                
-                let html = '<div class="table">';
-                html += '<thead><tr><th>Name</th><th>Confidence</th><th>Market State</th><th>Type</th></tr></thead>';
-                html += '<tbody>';
-                
-                data.hypotheses.forEach(hyp => {
-                    html += `<tr>
-                        <td><strong>${hyp.name}</strong><br><small style="color: #666;">${hyp.description.substring(0, 60)}...</small></td>
-                        <td>${(hyp.confidence_score * 100).toFixed(0)}%</td>
-                        <td class="status-badge status-active">${hyp.market_state}</td>
-                        <td>${hyp.strategy_type}</td>
-                    </tr>`;
-                });
-                
-                html += '</tbody></div>';
-                document.getElementById('hypotheses-container').innerHTML = html;
-            } catch (error) {
-                console.error("Load hypotheses error:", error);
-                document.getElementById('hypotheses-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load hypotheses</div>';
-            }
-        }
-
-        // Load market regime
-        async function loadMarketRegime() {
-            try {
-                const response = await fetch(`${API_BASE}/market/regime`);
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                
-                const data = await response.json();
-                const regime = data.current_regime.state;
-                const confidence = data.current_regime.confidence_score;
-                
-                let statusClass = 'status-active';
-                if (regime === 'bearish') statusClass = 'status-rejected';
-                else if (regime === 'sideways') statusClass = 'status-pending';
-                
-                document.getElementById('market-regime-status').textContent = regime;
-                document.getElementById('market-regime-confidence').textContent = 
-                    `${(confidence * 100).toFixed(0)}%`;
-                document.getElementById('market-regime-state').className = 
-                    `card-badge ${statusClass}`;
-                
-            } catch (error) {
-                console.error("Load market regime error:", error);
-                document.getElementById('market-regime-container').innerHTML = 
-                    '<div class="loading" style="color: red;">Failed to load regime data</div>';
-            }
-        }
-
-        // Initialize dashboard on load
-        document.addEventListener('DOMContentLoaded', init);
-    </script>
+    setTheme(state.theme);
+    refreshAll();
+    setInterval(refreshAll, 30000);
+  </script>
 </body>
 </html>

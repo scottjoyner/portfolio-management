@@ -23,21 +23,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import Any, Callable, List, Optional
 
-# Import hub module (relative path from trading_system root)
-sys.path.insert(0, '.')
-
 try:
-    from sys import real_modules, modules
-    if 'hub.pubsub' in modules:
-        # Module already loaded
-        pass
-    else:
-        from hub.pubsub import WebSocketPubSubHub as MarketHub
+    from trading_system.hub.pubsub import WebSocketPubSubHub as MarketHub
 except ImportError:
-    # Fallback to local reference if pubsub.py exists alongside apps/
-    from apps.worker.market_hub import MarketHub
+    try:
+        from hub.pubsub import WebSocketPubSubHub as MarketHub
+    except ImportError:
+        MarketHub = None
 
 
 class MarketHubSubscriber:
@@ -79,8 +74,9 @@ class MarketHubSubscriber:
         
         # Initialize hub with optional Redis URL
         try:
-            self._hub = MarketHub(redis_url=redis_url)
-            log.info("market_hub_subscriber initialized")
+            if MarketHub is not None:
+                self._hub = MarketHub(redis_url=redis_url)
+                log.info("market_hub_subscriber initialized")
         except Exception as e:
             log.warning("MarketHub subscriber initialization failed (optional): %s", e)
     

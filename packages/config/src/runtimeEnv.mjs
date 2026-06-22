@@ -15,7 +15,8 @@ function hasValue(value) {
 
 export function validateRuntimeEnv(env = process.env) {
   const deploymentEnv = env.DEPLOYMENT_ENV || env.NODE_ENV || 'development';
-  const strict = bool(env.STRICT_RUNTIME_VALIDATION) || deploymentEnv === 'production';
+  const strictOverride = env.STRICT_RUNTIME_VALIDATION !== undefined && env.STRICT_RUNTIME_VALIDATION !== null && env.STRICT_RUNTIME_VALIDATION !== '';
+  const strict = strictOverride ? bool(env.STRICT_RUNTIME_VALIDATION) : deploymentEnv === 'production';
   const errors = [];
   const warnings = [];
 

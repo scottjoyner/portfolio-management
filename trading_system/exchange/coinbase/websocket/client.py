@@ -5,10 +5,17 @@ import json
 import logging
 from typing import Any, Callable, Coroutine
 
-from websockets import WebSocketClientProtocol
-import websockets
+try:
+    from websockets import WebSocketClientProtocol
+    import websockets
+except ImportError:
+    WebSocketClientProtocol = Any  # type: ignore[assignment]
+    websockets = None
 
-from exchange.coinbase.auth.jwt import build_jwt_token
+try:
+    from ..auth.jwt import build_jwt_token
+except ImportError:
+    from exchange.coinbase.auth.jwt import build_jwt_token
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +40,8 @@ class CoinbaseWebSocketClient:
         return build_jwt_token(self.api_key, self.api_secret, "GET", "/ws")
 
     async def connect(self) -> None:
+        if websockets is None:
+            raise RuntimeError("websockets package is not installed")
         token = self._build_token()
         uri = f"{self.WS_URL}?token={token}"
         self._ws = await websockets.connect(uri, ping_interval=20, ping_timeout=10)
@@ -75,10 +84,13 @@ class CoinbaseWebSocketClient:
                         await self._emit(channel, msg)
                     except json.JSONDecodeError:
                         log.warning("invalid ws message: %s", raw[:200])
-            except websockets.ConnectionClosed:
-                log.info("ws disconnected, reconnecting...")
-                self._ws = None
-                await asyncio.sleep(2)
+            except Exception as e:
+                if websockets is not None and isinstance(e, websockets.ConnectionClosed):
+                    log.info("ws disconnected, reconnecting...")
+                    self._ws = None
+                    await asyncio.sleep(2)
+                    continue
+                raise
 
     async def stop(self) -> None:
         self._running = False

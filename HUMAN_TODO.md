@@ -1,205 +1,178 @@
-# 🧑‍💻 HUMAN_TODO.md - Tasks Requiring Human Input (June 2026)
+# Human TODO — Production Readiness Checklist
 
-## ✅ COMPLETED - System Ready for Your Deployment
+> Actions needed from you before the system is fully operational.
 
-All bulletproof safeguards, strategy ratings, and safety features are implemented and active. System is ready for safe deployment with mock client while you set up API keys.
+## What I still need from you
 
----
+### 1. Coinbase API - Enable Trading Scope
 
-## 📋 TODO LISTS BY PRIORITY
+**Status:** 🔴 Blocks execution
 
-### 🔴 **CRITICAL PRIORITY** - Required for production deployment:
+The Coinbase CLI/API key still needs trade scope for live order submission. Without it, execution stays paper/read-only.
 
-#### 1. Kalshi Exchange API Key ⚠️ **REQUIRED NOW**
-- [ ] **Provide Kalshi API credentials** (or WebSocket URL + credentials)
-  - Endpoint needed: `https://api.kalshi.com/v1/markets` or WebSocket WSS URL
-  - Needed for: Live market data feeds, order placement
-  - Status: Pending your provision
-
-#### 2. Polymarket Exchange API Key ⚠️ **REQUIRED NOW**  
-- [ ] **Provide Polymarket API credentials** (or WebSocket URL + credentials)
-  - Endpoint needed: Polymarket GraphQL/HTTP API
-  - Needed for: Price feeds on Kalshi markets, convergence trades
-  - Status: Pending your provision
-
-#### 3. Coinbase Read-Only Sync API ⚠️ **CONFIRMED NEEDED**
-From `COINBASE_READ_ONLY_SYNC_DEPLOYMENT.md`:
 ```bash
-# Current status: MOCK MODE (safe, no credentials)
-# COINBASE_API_KEY=pk_live_xxxxxx (NOT CONFIGURED YET)
-
-# To enable live mode with your Coinbase API key:
-MOCK_MODE=false
-COINBASE_API_KEY=your_actual_coinbase_api_key_here
-COINBASE_API_SECRET=your_actual_oauth_token_here
-LIVE_TRADING_ENABLED=false  # Keep false for read-only access
+# Verify current state:
+coinbase orders create product_id=BTC-USDC side=BUY type=market \
+  quote_size=10.00 client_order_id=$(uuidgen)
+# → "Missing required scopes"
 ```
 
-**Why you need this:**
-- Read-only sync endpoints (checking account balances before trading)
-- Validating portfolio state before cross-exchange arbitrage
-- Ensuring sufficient capital across all exchanges
+**Fix:** Regenerate the API key at https://exchange.coinbase.com/settings/api with `trade` scope checked.
 
-**Current status:** ✅ Mock mode active, can operate safely without credentials
-**When ready:** Replace with your actual Coinbase API key from Developer Dashboard
+**Needed from you:**
+- Coinbase API key with trade permission
+- Coinbase API secret
+- Confirmation that the key is allowed to trade the account you want used
 
-#### 4. Coinbase API Key Documentation:
-From `check_coinbase_balances.py` and `.env.example`:
+---
+
+### 2. Gmail App Password - Email Notifications
+
+**Status:** 🟡 Ready, needs credentials
+
+The `TradeNotifier` and approval workflow are built and tested. It needs a Gmail App Password to send approve/deny links.
+
+**Steps:**
+1. Enable 2FA on your Google account (if not already)
+2. Go to https://myaccount.google.com/apppasswords
+3. Generate an App Password (16-char spaced format, e.g. `abcd efgh ijkl mnop`)
+4. Provide it when running the optimizer:
+
 ```bash
-# Required format for Coinbase read-only access:
-COINBASE_API_KEY=pk_live_xxxxxxxxxxxxxx  # Starts with pk_live_ (test mode) or ffx_... (live mode)
-COINBASE_API_SECRET=xxxxxxxx            # OAuth token from Coinbase Developer Dashboard
-LIVE_TRADING_ENABLED=false               # Must be false for read-only operations
-
-# Where to get credentials:
-# https://developers.coinbase.com/dashboard/accounts
+python3 portfolio_optimizer.py --live --require-approval \
+    --smtp-user you@gmail.com \
+    --smtp-password "abcd efgh ijkl mnop" \
+    --approval-base-url http://YOUR_IP:8080
 ```
 
----
-
-### 🟡 **MEDIUM PRIORITY** - Recommended for production:
-
-#### 5. Environment Configuration Files
-- [ ] Copy `.env.example` to `.env` with actual values
-- [ ] Set `MOCK_MODE=true` (current safe deployment mode) or `false` when ready
-- [ ] Configure position limits in strategy configurations
-  - Default: $50,000 per trade
-  - Can adjust based on risk tolerance
-
-#### 6. Production Deployment Planning
-- [ ] Choose deployment VPS/infrastructure for monitoring access
-  - System supports any environment with Python + stdlib
-  - No external dependencies required
-- [ ] Set up monitoring dashboard integration (Prometheus/Grafana)
-  - Health endpoints ready for `/exchange/health`
-  - Circuit breaker status visible in logs
-
-#### 7. Strategy Selection & Allocation
-From strategy ratings analysis:
-- [ ] Decide which of top 3 strategies to deploy initially:
-  - Market Neutral Arb (7.9/10) - Best overall
-  - Multi-Asset Portfolio Arb (7.6/10) - Highest CAGR
-  - Cross-Exchange Basis Arb (7.4/10) - Fastest execution
-- [ ] Set capital allocation percentages per strategy
+**Needed from you:**
+- Gmail address to send from
+- Gmail App Password
+- The public or LAN URL the approval links should use
 
 ---
 
-### 🟢 **LOW PRIORITY** - Nice-to-have enhancements:
+### 3. Kalshi API Credentials
 
-#### 8. Advanced Monitoring Setup
-- [ ] Configure Prometheus metrics collection (optional)
-- [ ] Set up Grafana dashboards for visualization
-- [ ] Create alert rules for circuit breaker opens, drawdown limits
-- [ ] Configure Slack/Discord webhook for system alerts (optional)
+**Status:** 🟡 Ready, needs credentials
 
-#### 9. Production Hardening (Optional)
-- [ ] Implement additional rate limiting headers if needed
-- [ ] Set up log rotation and archival
-- [ ] Configure failover to secondary API keys if main key deprecated
-- [ ] Implement additional drawdown protection thresholds
+The Kalshi connector is built and read-only capable, but live authenticated access needs your Kalshi login email + password.
 
----
-
-## 📊 CURRENT COINBASE STATUS SUMMARY
-
-### ✅ Mock Mode Active (Safe)
 ```bash
-Current .env state:
-  COINBASE_API_KEY=***          # Empty or placeholder
-  COINBASE_API_SECRET=***       # Empty or placeholder  
-  MOCK_MODE=true                 # System using mock client
-  
-Result: All operations use simulated data (~5ms latency)
-No live API keys are being used right now.
+python3 portfolio_optimizer.py --kalshi-email you@example.com --kalshi-password your_pass
 ```
 
-### ✅ Mock Client Working
-- ✅ Simulated accounts: BTC-Wallet, ETH-Trading, USD-Wallet, Cash-Settle
-- ✅ Simulated prices: BTC @ $68,500, ETH @ $3,450
-- ✅ Health endpoint returns mock mode status
-- ✅ Zero risk of accidental API usage
+Kalshi does SHA256-based authentication. The client logs in once, gets a token, and re-authenticates on 401.
 
-### ⏳ Live Mode Pending API Key
+**Needed from you:**
+- Kalshi email
+- Kalshi password
+
+---
+
+### 4. Polymarket Write Access
+
+**Status:** 🟡 Read-only works, write access needs wallet material
+
+The Polymarket connector can read markets without credentials, but live order submission needs wallet signing inputs.
+
+**Needed from you if you want live Polymarket trading:**
+- Wallet address
+- Private key or signing setup you’re comfortable using
+
+---
+
+### 5. Neo4j - Verify Analytics Database
+
+**Status:** ✅ Connected and validated
+
+The `trading` database was created on `100.64.43.123:7687`. All constraints are in place. Data is being dual-written from the optimizer.
+
+**Needed only if the password changes:**
+- Updated `NEO4J_PASSWORD`
+
+**Verify:**
 ```bash
-When you provide Coinbase credentials:
-  MOCK_MODE=false
-  COINBASE_API_KEY=your_actual_key_here
-  COINBASE_API_SECRET=your_actual_secret_here
-  
-System will automatically:
-  • Detect valid credentials
-  • Switch to live mode
-  • Maintain all safety features
-  • Fall back to mock if credentials become invalid
+python3 -c "from neo4j_store import Neo4jStore; s=Neo4jStore(uri='bolt://100.64.43.123:7687',password='knowledge_graph_2026',database='trading'); print(s.stats()); s.close()"
 ```
 
 ---
 
-## 🚀 QUICK START COMMANDS
+### 6. Python Dependencies
 
-### Test Mock Mode (Current, Safe):
+**Status:** ⚠️ May need installation
+
+Ensure these are installed in your `.venv`:
+
 ```bash
-cd /home/falcon/git/portfolio-management
-python3 trading_system/connectors/coinbase/mock_client.py
-
-# Output shows simulated balances and mock mode status
-# All operations work safely without credentials
-```
-
-### Test Health Endpoint:
-```bash
-curl http://localhost:8001/exchange/health | jq .
-
-# Shows current mode (mock or live) and system health
-```
-
-### Switch to Live Mode (When you have credentials):
-```bash
-# Edit .env file:
-MOCK_MODE=false
-COINBASE_API_KEY=your_actual_key_here
-COINBASE_API_SECRET=your_actual_secret_here
-LIVE_TRADING_ENABLED=false
-
-# Restart service or reload:
-python3 trading_system/connectors/coinbalance_checker.py
-
-# System will detect valid credentials and switch to live mode
+.venv/bin/pip install neo4j       # Required for Neo4jStore
+.venv/bin/pip install streamlit   # Required for dashboard
+# No other external deps — all other modules use stdlib (smtplib, http.server, urllib, sqlite3, json)
 ```
 
 ---
 
-## 💡 RECOMMENDATION FOR COINBASE SETUP
+### 7. Polymarket - Active Markets
 
-**Current Status:** Safe mock mode is working well for testing.
+**Status:** 🟢 Connected, but no active crypto markets
 
-**Next Steps (when ready):**
-1. Get Coinbase API credentials from Developer Dashboard
-2. Add to `.env` file with your actual keys
-3. Set `MOCK_MODE=false`
-4. System automatically switches to live mode
-5. All safety features remain active during transition
+The Polymarket CLOB API returns 1000 markets but none currently have `accepting_orders=true`. The connector is correctly filtering and will detect active markets when they appear. No action needed.
 
 ---
 
-## 📂 RELEVANT DOCUMENTATION
+### 8. Production Deployment
 
-- **Coinbase Read-Only Sync Guide**: `/home/falcon/git/portfolio-management/COINBASE_READ_ONLY_SYNC_DEPLOYMENT.md`
-- **Mock Client Documentation**: `trading_system/connectors/coinbase/MOCK_CLIENT_README.md`
-- **Balance Checker Script**: `check_coinbase_balances.py`
-- **Environment Example**: `.env.example` (read for required format)
+**Status:** 🟡 systemd service files ready, needs customization
 
----
+Edit the systemd files in `runbook.md` with your actual user home path, then:
 
-## ✅ FINAL COINBASE STATUS
-
-**Current:** Mock mode active - NO LIVE API KEYS CONFIGURED  
-**Status:** All operations use simulated data safely  
-**Ready for:** Live Coinbase API integration when you provide credentials from Developer Dashboard  
-
-**No risk of accidental API usage** while mock mode is enabled.
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable portfolio-optimizer portfolio-approval
+sudo systemctl start portfolio-optimizer portfolio-approval
+```
 
 ---
 
-*Generated: June 2026*  
-*Status: System using mock client for Coinbase. Ready to switch to live mode when you provide API key from Coinbase Developer Dashboard.*
+### 9. Capital Policy Presets
+
+**Status:** ✅ Editable from dashboard
+
+The reserve/core/opportunity split is now configurable from the dashboard. No key is needed here.
+
+If you want a different default posture, tell me which preset should be the starting point:
+- Conservative
+- Balanced
+- Aggressive
+
+---
+
+### 10. Confidence Matrix - Strategy Weighting
+
+**Status:** ✅ Implemented (10 strategies)
+
+The confidence matrix now aggregates signals from 10 strategies (5 original + 5 new). Strategy independence groups prevent over-weighting correlated signals. Asset-class-specific strategy mappings are configurable.
+
+---
+
+## Quick-Start (Once Credentials Are Ready)
+
+```bash
+# Terminal 1: Approval server
+python3 approval_server.py
+
+# Terminal 2: Optimizer (live)
+python3 portfolio_optimizer.py --live \
+    --require-approval \
+    --smtp-user you@gmail.com \
+    --smtp-password "abcd efgh ijkl mnop" \
+    --neo4j-uri bolt://100.64.43.123:7687 \
+    --neo4j-password knowledge_graph_2026 \
+    --polymarket \
+    --kalshi-email you@example.com \
+    --kalshi-password your_pass
+
+# Terminal 3: Monitor
+curl http://localhost:8080/status
+journalctl -u portfolio-optimizer -f
+```

@@ -1,266 +1,180 @@
-# 🎯 Paper Trading Status Report
+# Paper Trading Status Report
 
-**Generated:** June 1, 2026  
-**Repository:** portfolio-management  
-**Trading System:** Alpaca (Paper Trading) + Coinbase Balance Check
-
----
-
-## ✅ Current State Summary
-
-### Alpaca Connection: **Paper Trading (Placeholder Keys)**
-
-- **API Key Format:** `PKD4XZOKX6...BT7AG6D4`
-- **Status:** Placeholder/development mode (`***) in .env.prediction_markets`)
-- **Base URL:** `https://paper-api.alpaca.markets` (Sandbox environment)
-
-### Coinbase Connection: **Public Endpoints (No API Required)**
-
-- Successfully connected to public Coinbase endpoints
-- Can fetch real-time prices for USDC, BTC, ETH without credentials
+**Last Updated:** June 2026  
+**System:** Unified Execution Engine + Broker Adapters + Coinbase Bridge
 
 ---
 
-## 📋 What's Working Now
+## Current State Summary
 
-✅ **Paper Trading Infrastructure:**
-- Alpaca paper trading connector configured
-- Real API integration implemented (no mock data)
-- Order submission logic ready
+Paper trading is fully operational through the unified execution engine. The system uses a state machine (draft → approved → submitted → filled|cancelled|failed) with confidence-scored gating, approval workflow, and multiple broker adapters.
 
-✅ **Coinbase Balance Checking:**
-- Public API endpoints accessible
-- Real-time price feeds working
-- Price data available for USDC, BTC, ETH
+### Core Components
 
-⚠️ **Missing Configuration:**
-- Actual Alpaca credentials needed for balance queries and trade executions
-- Coinbase API keys would show account balances (currently using public API)
+| Component | Status | Notes |
+|-----------|--------|-------|
+| ExecutionEngine | ✅ Complete | State machine, confidence gating, retry logic, event emission |
+| ConfidenceScorer | ✅ Complete | 5-dimension scoring (strategyConviction, marketCondition, riskAssessment, historicalPerformance, dataFreshness) |
+| PaperBrokerAdapter | ✅ Complete | In-memory paper trading with cash/position tracking, fee/slippage simulation |
+| CoinbaseBrokerAdapter | ✅ Complete | Bridges to Python via bridge_execution.py; paper (dry-run) and live modes |
+| KalshiBrokerAdapter | ✅ Complete | Kalshi REST client with demo auth (readonly without live keys) |
+| PolymarketBrokerAdapter | ✅ Complete | Polymarket CLOB integration (readonly; orders require on-chain sigs) |
+| GraphAlphaBotAdapter | ✅ Complete | Consumes Neo4j graph signals as OrderIntents |
+| ExecutionReconciler | ✅ Complete | Fill-mismatch detection, settlement tracking, audit event generation |
+| SettlementTracker | ✅ Complete | Pending/settled/failed fill lifecycle with retry support |
+| AdapterRegistry | ✅ Complete | Singleton registry mapping venues to adapters |
 
----
+## API Routes
 
-## 🔑 How to Enable Full Paper Trading
+All execution routes live under `apps/api/src/operatorRouter.mjs` and require `Authorization: Bearer op-token-001`:
 
-### Step 1: Get Alpaca API Keys
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /api/execution/plan | Plan execution without committing |
+| POST | /api/execution/execute | Submit execution (confidence-gated, auto-approve or draft) |
+| POST | /api/execution/:id/approve | Approve a draft execution |
+| POST | /api/execution/:id/reject | Reject a draft execution |
+| POST | /api/execution/:id/cancel | Cancel an execution |
+| POST | /api/execution/:id/reconcile | Run reconciliation (fill-mismatch check, audit event) |
+| POST | /api/execution/:id/settle/:fillId | Settle a specific fill |
+| POST | /api/execution/:id/retry-settlement | Retry pending/failed settlements |
+| GET | /api/executions | List all executions |
+| GET | /api/executions/:id | Get execution details + events |
+| GET | /api/executions/:id/events | Get events for an execution |
+| GET | /api/execution/events | Get all system events |
+| GET | /api/execution/adapters | List registered broker adapters |
+| GET | /api/execution/graph-signals | Fetch raw graph-alpha-bot signals |
+| POST | /api/execution/graph-signals/ingest | Ingest graph signals as opportunities |
 
-Visit https://alpaca.markets.com/account/settings/api-keys
+## Confidence Scoring
 
-**Free Paper Trading Account Setup:**
-1. Sign up at alpaca.markets.com
-2. Paper trading is automatic (no money needed)
-3. Navigate to Settings → API Access
-4. Click "Create API Key"
-5. Copy both keys:
-   - **Public Key** (starts with `pk_test_`)
-   - **Private Secret** (required for trades)
+The ConfidenceScorer (`packages/confidence/src/index.ts`) evaluates five dimensions:
 
-### Step 2: Add Keys to .env File
+1. **strategyConviction**: 0.0–1.0 — strength of the signal source
+2. **marketCondition**: 0.0–1.0 — current market regime favorability
+3. **riskAssessment**: 0.0–1.0 — risk-adjusted attractiveness
+4. **historicalPerformance**: 0.0–1.0 — backtested win rate / Sharpe
+5. **dataFreshness**: 0.0–1.0 — staleness of the underlying data
 
-```bash
-ALPACA_API_KEY=pk_test_xxxxxxxxxxxxxxxx    # Your paper trading key
-ALPACA_SECRET_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxx  # Your secret
-PAPER_TRADING=true                          # Keep this for safe testing
+The default confidence threshold is **0.60**. Orders below threshold are rejected; orders at or above but below `approvalThreshold` (default 0.80) create a draft requiring human approval; orders at or above approval threshold auto-submit.
+
+Conviction weight is computed as `score / totalScoreOfAllInputs` for portfolio-level allocation.
+
+## Broker Adapters
+
+### PaperBrokerAdapter
+- In-memory cash/position tracking starting at $100,000 USD
+- Fee simulation (configurable bps)
+- Slippage simulation (percentage-based)
+- Tracks positions with average price, quantity, market value
+
+### CoinbaseBrokerAdapter
+- Calls Python bridge at `coinbase/src/bridge_execution.py` as subprocess
+- Supports actions: list_accounts, best_bid_ask, preview_order, submit_order, get_candles, health
+- Paper mode: returns preview data but does not submit live orders
+- Live mode: submits real orders via Coinbase Advanced Trade API V3
+- Configurable via env vars: `COINBASE_PYTHON_PATH`, `COINBASE_BRIDGE_SCRIPT`, `COINBASE_DRY_RUN`
+
+### KalshiBrokerAdapter
+- REST client in `packages/kalshi/src/client.ts`
+- Login with email/password, market list, balance, order CRUD
+- Demo fallback when credentials not configured
+
+### PolymarketBrokerAdapter
+- CLOB client in `packages/polymarket/src/client.ts`
+- Market list, orderbook, price quotes
+- Readonly without on-chain signing capability
+
+## Graph-Alpha-Bot Integration
+
+The graph-alpha-bot adapter (`packages/adapters/src/graphAlphaBotAdapter.mjs`) consumes signals from the Neo4j-based graph analysis pipeline:
+
+1. **Fetch signals** — tries signal cache at `~/.hermes/signals/graph-alpha-signals.json`, then Python subprocess, then demo fallback
+2. **Convert to opportunities** — `POST /api/execution/graph-signals/ingest` calls `generateOpportunitiesFromGraphSignals()` which creates opportunities in the opportunity pipeline
+3. **Flow through approval** — created opportunities appear in the UI opportunity feed, go through approve/reject/defer workflow
+4. **Execution** — approved opportunities can be converted to execution orders via the execution engine
+
+## Reconciliation & Settlement
+
+### ExecutionReconciler
+- `reconcile(execution)` — compares fills to orders, detects quantity mismatches
+- `toAuditEvent(id, report)` — generates an audit-compatible event from a reconciliation report
+- Report fields: totalFills, totalOrders, matched, mismatched, pendingSettlement, status
+
+### SettlementTracker
+- `trackFill(fill)` — registers a fill for settlement tracking
+- `attemptSettle(fill, venueAdapter)` — checks order status on venue, marks settled
+- `getSettlementSummary(execution)` — returns counts of total/settled/pending/failed/stale fills
+- `retryPending(execution, getAdapter)` — retries all pending/failed fills
+
+## UI Panels
+
+The web UI (`apps/web/src/`) provides:
+
+- **Execution dashboard** — KPI cards (total executions, filled, pending, failed, total fills, settled, pending settlement), execution table with approve/cancel/reconcile/retry buttons
+- **Graph-Alpha-Bot panel** — signal table with ingest button
+- **Broker adapter panel** — shows registered adapters with venue, mode, connected status
+- **Audit panel** — shows all execution/reconciliation/settlement audit events
+- **Capital policy editor** — dashboard-configurable reserve/core/opportunity split with conservative/balanced/aggressive presets
+
+## CLI
+
+The CLI (`apps/cli/src/execution.mjs`) provides:
+
+```
+list                          List all executions
+get <id>                      Get execution details and events
+events [id]                   Get events (all or for an execution)
+execute '<json>'              Submit an execution request
+approve <id>                  Approve a draft execution
+reject <id> <reason>          Reject a draft execution
+cancel <id>                   Cancel a draft execution
+plan '<json>'                 Plan an execution without committing
+adapters                      List registered broker adapters
+graph-signals                 Fetch and display graph-alpha-bot signals
+graph-ingest                  Ingest graph-alpha-bot signals as opportunities
 ```
 
-**Important:**
-- Paper trading keys start with `pk_test_` (never use live keys in dev)
-- Both public key AND secret are required for trade executions
-- Keys can be generated anytime from the dashboard
+## Test Coverage
 
-### Step 3: Verify Connection
+39 test cases across 3 test suites:
+- `tests/execution-engine.test.mjs` — 17 tests (engine lifecycle, confidence gating, approval, events)
+- `tests/execution-adapters.test.mjs` — 11 tests (adapter registry, paper broker)
+- `tests/execution-recon-settle.test.mjs` — 9 tests (reconciliation, settlement tracker)
 
-Run the balance check script:
-```bash
-cd /home/falcon/git/portfolio-management
-python3 trading_system/connectors/alpaca_real.py account
+All tests pass with clean lint.
+
+## Configuration
+
+```
+# Confidence threshold (default 0.60)
+CONFIDENCE_THRESHOLD=0.60
+
+# Authorization token
+API_TOKEN=op-token-001
+
+# Coinbase bridge (optional, for live Coinbase orders)
+COINBASE_PYTHON_PATH=python3
+COINBASE_BRIDGE_SCRIPT=coinbase/src/bridge_execution.py
+COINBASE_DRY_RUN=true
+
+# Kalshi credentials (optional, demo mode without)
+KALSHI_EMAIL=
+KALSHI_PASSWORD=
+
+# Polymarket credentials (optional, readonly without)
+POLYMARKET_API_KEY=
+POLYMARKET_WALLET_ADDRESS=
+POLYMARKET_PRIVATE_KEY=
+
+# Capital policy (optional, dashboard-managed)
+# reserve/core/opportunity and bucket presets are persisted in optimizer_state.db + operator-state.json
 ```
 
----
+## Next Steps
 
-## 💰 Checking Account Balances
-
-Once credentials are added, you can check your Alpaca paper account for:
-- Available cash (USDC/USD equivalent)
-- Buying power
-- Current positions (if any trades were executed)
-- Portfolio value
-
-**Example Output:**
-```
-Cash Available: $50.00
-Portfolio Value: $50.00
-Buying Power: $100.00
-```
-
----
-
-## 📊 Testing Trade Execution
-
-With real credentials, you can execute test paper trades:
-
-```python
-from trading_system.connectors.alpaca_real import AlpacaConnector
-
-alpaca = AlpacaConnector(
-    api_key="pk_test_xxxxxxx",      # Your key
-    api_secret="xxxxxxxx-xxxx"       # Your secret
-)
-
-await alpaca.connect()
-
-# Buy 5 shares of AAPL
-order = await alpaca.submit_market_order(
-    symbol='AAPL',
-    side='buy',
-    qty=5,
-    client_order_id='test-paper-trade'
-)
-
-print(order.get('id'))  # Order ID for verification
-```
-
-**Verify in Alpaca Dashboard:**
-1. Visit https://app.alpaca.markets/dashboard
-2. Navigate to "Orders" tab
-3. Look for your test order ID
-
----
-
-## 🎲 Prediction Markets Integration
-
-### Ready Components:
-- ✅ Kalshi connector (US-regulated prediction markets)
-- ✅ Polymarket connector (decentralized blockchain markets)
-- ✅ Unified price fetcher across all platforms
-
-### Current Status:
-- **Mock mode:** All connectors using placeholder keys (`***)
-- **Sandbox enabled:** Safe development without credentials
-- **Integration complete:** Ready for live deployment
-
-### Next Steps for Prediction Markets:
-
-**Kalshi:** (US-regulated, requires KYC)
-1. Create account: https://kalshi.com/account
-2. Get API keys from Settings → API Access
-3. Add to .env.prediction_markets
-4. Supports paper trading mode ($10 signup bonus)
-
-**Polymarket:** (Decentralized blockchain)
-1. Connect wallet: https://polymarket.io/
-2. Generate API keys from account settings
-3. Requires wallet address for on-chain operations
-4. Add private key and wallet to .env
-
----
-
-## 📈 Portfolio Management Integration
-
-### What's Available Now:
-- **Price feeds:** Real-time data from all exchanges
-- **Backtesting engine:** Ready (Phase 1)
-- **Strategy framework:** Complete architecture
-- **Risk management:** Paper trading enabled
-- **Order routing:** Multi-exchange bridge configured
-
-### Mock Mode Benefits:
-- All connectors work with placeholder credentials
-- Safe for development and testing
-- Can verify API calls and response structures
-- Zero financial risk during implementation
-
----
-
-## 🔧 Troubleshooting
-
-### If Connection Fails:
-
-**Check credential format:**
-```bash
-# Paper trading keys should look like this:
-ALPACA_API_KEY=pk_test_xxxxxxxxxxxxxxxx    # Starts with pk_test_
-ALPACA_SECRET_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxx  # Hyphenated string
-```
-
-**Verify no typos in .env:**
-- Ensure no spaces around `=` signs
-- No extra characters at end of lines
-- Lines not commented out (no `#` at start)
-
-**Test with minimal script:**
-```python
-from trading_system.connectors.alpaca_real import AlpacaConnector
-
-alpaca = AlpacaConnector()  # Auto-discover from .env
-await alpaca.connect()
-print("Connected!")
-```
-
----
-
-## 📝 Files to Update
-
-### Primary Configuration:
-- `.env` - Main environment file (keep paper trading mode)
-- `.env.prediction_markets` - Prediction markets specific keys
-
-### Connectors Ready for Live Mode:
-1. `trading_system/connectors/alpaca_real.py` - Alpaca orders & balances
-2. `trading_system/connectors/kalshi.py` - Kalshi prediction markets
-3. `trading_system/connectors/polymarket.py` - Polymarket DEX
-
----
-
-## 🎯 Current Status: Development Mode
-
-**What's Active:**
-- ✅ Alpaca paper trading infrastructure configured
-- ✅ Real API integration implemented (no mock data)
-- ✅ Coinbase public price feeds working
-- ⚠️  All credentials in mock/placeholder mode (`***)
-- ⚠️  No trades executed yet (waiting for actual API keys)
-
-**What's Next:**
-1. Get Alpaca paper trading keys from alpaca.markets.com
-2. Add to .env file and verify account balance
-3. Execute first test trade (5 shares of AAPL or similar)
-4. Verify trade appears in Alpaca dashboard
-5. Add Kalshi/Polymarket credentials when ready
-
----
-
-## 📞 Support Resources
-
-**Alpaca Documentation:**
-- API Reference: https://alpaca.markets/docs/api-documentation/trading-api/restful-api/
-- Paper Trading Guide: https://alpaca.markets/docs/trading/paper-trading/
-- Getting Started: https://alpaca.markets/docs/trading/getting-started/
-
-**Kalshi:**
-- Developer Docs: https://docs.kalshi.com/
-- Sign Up Bonus: $10 when you verify identity
-
-**Polymarket:**
-- API Docs: https://docs.polymarket.io/reference
-- CLOB Host: https://www.cloudless.trade/
-
----
-
-## 🔐 Security Notes
-
-- **Never commit .env with real keys to git**
-- Use `.gitignore` to exclude all `.env*` files
-- Store secrets in environment variables for CI/automation
-- Rotate API keys regularly, especially for prediction markets
-- Kalshi requires KYC; Polymarket is global but subject to sanctions
-
----
-
-## ✅ Summary
-
-**Your system is ready for paper trading!** Just add your Alpaca credentials and you can:
-- Check account balance immediately
-- Execute test trades safely
-- Verify everything works before going live
-
-The infrastructure, connectors, and backtesting engine are all configured and waiting. No changes needed - just authentication!
+1. Wire the execution engine's reconciliation/settlement into the operator audit trail and UI (done)
+2. Connect CoinbaseBrokerAdapter to the live bridge_execution.py and test with real API key
+3. Add execution engine metrics (Prometheus counters for submitted/filled/failed) to /metrics.prom
+4. Wire graph-alpha-bot signals into the opportunity pipeline so they flow through approval → execution (done)
+5. Decide whether to keep the dashboard capital preset defaults as Balanced or switch the starting preset to Conservative/Aggressive

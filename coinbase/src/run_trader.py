@@ -4,9 +4,17 @@ from .config import SETTINGS, BRACKETS, KELLY, KELLY_CAPS, BANDIT, TCOST
 from .cb_client import CBClient
 from .data import fetch_candles_df
 from .strategy import trend_signal, target_weight
-from .portfolio import rebalance_plan
+from .portfolio_rebalance import rebalance_plan
 from .risk import apply_risk_checks, RiskState
-from .alpha.alpha import donchian_breakout_setup, trend_rsi_pullback_setup, donchian_breakdown_setup, trend_rsi_rip_setup
+from .alpha.alpha import (
+    donchian_breakout_setup,
+    trend_rsi_pullback_setup,
+    donchian_breakdown_setup,
+    trend_rsi_rip_setup,
+    rsi_failure_swing_setup,
+    volatility_compression_breakout_setup,
+    impulse_exhaustion_reversal_setup,
+)
 from .execution import place_bracket_long, place_bracket_short, manage_brackets
 from .bandit import ucb1_scores, thompson_scores
 from .analytics import rolling_stats, kelly_from_history
@@ -14,8 +22,14 @@ from .tcost import effective_fill_price
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 BARS_PER_YEAR = {"ONE_MINUTE": 60*24*365, "FIVE_MINUTE": 12*24*365, "FIFTEEN_MINUTE": 4*24*365,
-                 "THIRTY_MINUTE": 2*24*365, "ONE_HOUR": 24*365, "TWO_HOUR": 12*365,
-                 "FOUR_HOUR": 6*365, "SIX_HOUR": 4*365, "ONE_DAY": 365}
+                  "THIRTY_MINUTE": 2*24*365, "ONE_HOUR": 24*365, "TWO_HOUR": 12*365,
+                  "FOUR_HOUR": 6*365, "SIX_HOUR": 4*365, "ONE_DAY": 365}
+
+def _fmt_base(v: float) -> str:
+    return f"{float(v):.8f}".rstrip("0").rstrip(".") or "0"
+
+def _fmt_quote(v: float) -> str:
+    return f"{float(v):.2f}".rstrip("0").rstrip(".") or "0"
 
 def get_portfolio_value_and_holdings(cb: CBClient, products: list[str], cash_ccy: str):
     acct = cb.list_accounts()
@@ -66,14 +80,14 @@ def place_or_preview(cb: CBClient, intents: list[dict], dry_run: bool):
     for it in intents:
         pid = it["product_id"]; side = it["side"]
         if dry_run:
-            prev = cb.preview_order(side=side, product_id=pid, base_size=str(it["base_size"]) if side=="sell" else None, quote_size=str(it["quote_size"]) if side=="buy" else None)
+            prev = cb.preview_order(side=side, product_id=pid, base_size=_fmt_base(it["base_size"]) if side=="sell" else None, quote_size=_fmt_quote(it["quote_size"]) if side=="buy" else None)
             results.append({"intent": it, "preview": prev})
         else:
             cid = str(uuid.uuid4())
             if side == "buy":
-                res = cb.market_order("buy", product_id=pid, quote_size=str(it["quote_size"]), client_order_id=cid)
+                res = cb.market_order("buy", product_id=pid, quote_size=_fmt_quote(it["quote_size"]), client_order_id=cid)
             else:
-                res = cb.market_order("sell", product_id=pid, base_size=str(it["base_size"]), client_order_id=cid)
+                res = cb.market_order("sell", product_id=pid, base_size=_fmt_base(it["base_size"]), client_order_id=cid)
             results.append({"intent": it, "order": res})
     return results
 
@@ -101,6 +115,9 @@ def signal_brackets(cb: CBClient, products: list[str], granularity: str, lookbac
         s2 = trend_rsi_pullback_setup(df, stop_atr_mult=stop_k);                           cands += [s2] if s2 else []
         s3 = donchian_breakdown_setup(df, stop_atr_mult=stop_k, target_atr_mult=target_k); cands += [s3] if s3 else []
         s4 = trend_rsi_rip_setup(df, stop_atr_mult=stop_k);                                cands += [s4] if s4 else []
+        s5 = rsi_failure_swing_setup(df, stop_atr_mult=stop_k, target_atr_mult=target_k);  cands += [s5] if s5 else []
+        s6 = volatility_compression_breakout_setup(df, stop_atr_mult=stop_k, target_atr_mult=target_k); cands += [s6] if s6 else []
+        s7 = impulse_exhaustion_reversal_setup(df, stop_atr_mult=stop_k, target_atr_mult=target_k);    cands += [s7] if s7 else []
         if not cands: continue
         best = max(cands, key=lambda x: x["rr"])
         if best["rr"] >= min_rr: ideas[p] = best

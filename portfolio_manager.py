@@ -25,6 +25,7 @@ class Position:
         self.symbol = symbol
         self.quantity = quantity
         self.average_cost_basis = 0.0
+        self.current_price: float = 0.0
     
     def add(self, shares: float, price: float) -> float:
         """Add position at given price."""
@@ -33,17 +34,35 @@ class Position:
         else:
             current_value = self.quantity * self.average_cost_basis
             new_shares_value = shares * price
-            self.quantity += shares
-            self.average_cost_basis = (current_value + new_shares_value) / self.quantity
+            self.average_cost_basis = (current_value + new_shares_value) / (self.quantity + shares)
+        self.quantity += shares
+        self.current_price = price
         return shares * price
     
     def subtract(self, shares: float):
         """Remove position."""
         self.quantity -= abs(shares)
     
-    def get_value(self, current_price: float) -> float:
-        """Get current value of position."""
-        return self.quantity * current_price
+    def get_value(self, current_price: float | None = None) -> float:
+        """Get current market value of position."""
+        price = current_price if current_price is not None else self.current_price
+        return self.quantity * price
+    
+    def cost_basis(self) -> float:
+        """Get total cost basis."""
+        return self.quantity * self.average_cost_basis
+    
+    def unrealized_pnl(self, current_price: float | None = None) -> float:
+        """Get unrealized P&L."""
+        price = current_price if current_price is not None else self.current_price
+        return (price - self.average_cost_basis) * self.quantity
+    
+    def unrealized_pnl_pct(self, current_price: float | None = None) -> float:
+        """Get unrealized P&L as percentage."""
+        price = current_price if current_price is not None else self.current_price
+        if self.average_cost_basis == 0:
+            return 0.0
+        return (price / self.average_cost_basis - 1) * 100
 
 
 class Portfolio:
@@ -82,24 +101,32 @@ class Portfolio:
         allocation = {}
         
         for symbol, position in self.positions.items():
-            current_value = position.get_value(position.average_cost_basis if hasattr(position, 'average_cost_basis') else 1.0)
+            current_value = position.get_value()
+            cost = position.cost_basis()
             
             allocation[symbol] = {
-                "position": round(position.quantity, 4),
+                "quantity": round(position.quantity, 4),
                 "average_cost": round(position.average_cost_basis, 2) if position.average_cost_basis else 0,
-                "current_value": round(current_value, 2)
+                "current_price": round(position.current_price, 2),
+                "market_value": round(current_value, 2),
+                "cost_basis": round(cost, 2),
+                "unrealized_pnl": round(position.unrealized_pnl(), 2),
+                "unrealized_pnl_pct": round(position.unrealized_pnl_pct(), 2),
             }
         
         return allocation
     
     def get_summary(self) -> dict:
-        """Get portfolio summary."""
-        total_positions_value = sum(pos.get_value(pos.average_cost_basis if hasattr(pos, 'average_cost_basis') else 1.0) for pos in self.positions.values())
+        """Get portfolio summary with correct market values."""
+        total_positions_value = sum(pos.get_value() for pos in self.positions.values())
+        total_cost = sum(pos.cost_basis() for pos in self.positions.values())
         
         return {
             "cash": round(self.cash, 2),
             "total_positions_value": round(total_positions_value, 2),
-            "total_portfolio_value": round(self.cash + total_positions_value, 2)
+            "total_cost_basis": round(total_cost, 2),
+            "total_portfolio_value": round(self.cash + total_positions_value, 2),
+            "unrealized_pnl": round(total_positions_value - total_cost, 2),
         }
 
 
@@ -237,10 +264,27 @@ class Backtester:
         print("🚀 BACKTESTING ENGINE")
         print("="*80)
         
-        # Strategy 1: Hold All Assets (baseline)
-        if strategy == "hold_all":
+        strategies = {
+            "hold_all": self._strategy_hold_all,
+        }
+        
+        impl = strategies.get(strategy)
+        if impl:
+            impl()
+        else:
+            print(f"  ⚠️  Unknown strategy '{strategy}', falling back to hold_all")
             self._strategy_hold_all()
         
+        return self._compute_final_summary()
+    
+    def _compute_final_summary(self):
+        """Compute final portfolio summary with correct PnL using last prices."""
+        for symbol, prices_list in self.prices_data.items():
+            if len(prices_list) > 0:
+                last_price = prices_list[-1]["close"]
+                position = self.portfolio.positions.get(symbol)
+                if position:
+                    position.current_price = last_price
         return self.portfolio.get_summary()
     
     def _strategy_hold_all(self):
@@ -261,20 +305,26 @@ class Backtester:
         print("\n📊 STRATEGY: Hold All Assets (Buy & Hold)")
         print("="*70)
         
-        total_capital = 100000
+        total_capital = self.portfolio.cash
         
         for symbol, prices_list in self.prices_data.items():
             if len(prices_list) == 0:
                 continue
             
             first_price = prices_list[0]["close"]
+            last_price = prices_list[-1]["close"]
             
             allocation_per_asset = total_capital / len(self.prices_data)
             shares_to_buy = allocation_per_asset / first_price
             
             transaction = self.portfolio.buy(symbol, shares_to_buy, first_price)
             
-            print(f"  {symbol}: Buy {shares_to_buy:.4f} @ ${first_price:,.2f}")
+            buy_value = shares_to_buy * first_price
+            current_value = shares_to_buy * last_price
+            pnl_pct = (current_value - buy_value) / buy_value * 100
+            
+            print(f"  {symbol}: Buy {shares_to_buy:.4f} @ ${first_price:,.2f} "
+                  f"→ ${last_price:,.2f} ({pnl_pct:+.2f}%)")
         
         print("\n📊 BUYING COMPLETE!")
         print("="*70)
@@ -285,27 +335,33 @@ class Backtester:
         
         for symbol, prices_list in self.prices_data.items():
             if len(prices_list) > 0:
-                current_price = prices_list[0]["close"]
+                last_price = prices_list[-1]["close"]
                 position = self.portfolio.positions.get(symbol)
                 
                 if position:
-                    position_value = position.quantity * current_price
+                    position_value = position.quantity * last_price
+                    cost_basis = position.quantity * position.average_cost_basis
+                    pnl = position_value - cost_basis
+                    pnl_pct = (pnl / cost_basis) * 100 if cost_basis > 0 else 0
                     
                     print(f"  {symbol}:")
                     print(f"    Quantity: {round(position.quantity, 4)}")
                     print(f"    Avg Cost: ${position.average_cost_basis:.2f}")
-                    print(f"    Current Price: ${current_price:,.2f}")
+                    print(f"    Last Price: ${last_price:,.2f}")
                     print(f"    Position Value: ${round(position_value, 2):,.2f}")
+                    print(f"    P&L: ${pnl:+.2f} ({pnl_pct:+.2f}%)")
                 else:
                     print(f"  {symbol}: No position")
         
         # Calculate total PnL
         summary = self.portfolio.get_summary()
+        initial_investment = total_capital
+        total_pnl = summary['total_portfolio_value'] - initial_investment
         
         print("\n📊 PERFORMANCE METRICS:")
         print("="*70)
-        print(f"  Total Portfolio Value: ${summary['total_portfolio_value']:,.2f}")
-        print(f"  Initial Investment:    $100,000.00")
-        print(f"  Final Value:           ${summary['total_portfolio_value']:,.2f}")
+        print(f"  Initial Investment:    ${initial_investment:,.2f}")
+        print(f"  Final Portfolio Value: ${summary['total_portfolio_value']:,.2f}")
+        print(f"  Total P&L:             ${total_pnl:+,.2f}")
         
         print("\n✅ BACKTESTING COMPLETE!")

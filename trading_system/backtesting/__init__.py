@@ -29,17 +29,13 @@ print(f"Final Balance: ${results.final_balance:.2f}")
 
 from .engine import (
     BacktestEngine,
-    OHLCVDataLoader,
-    PerformanceMetrics,
+    BacktestConfig,
     BacktestResult,
-    Transaction,
 )
 
 __version__ = "0.1.0"
 __all__ = [
     "BacktestEngine",
-    "OHLCVDataLoader",
-    "PerformanceMetrics",
+    "BacktestConfig",
     "BacktestResult",
-    "Transaction",
 ]

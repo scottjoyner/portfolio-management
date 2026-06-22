@@ -1,0 +1,394 @@
+
+--- Started at 2026-06-19T10:51:45 ---
+
+--- Started at 2026-06-19T10:52:45 ---
+
+--- Started at 2026-06-19T10:55:11 ---
+2026-06-21 13:42:24,870 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:42:26,090 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:42:26,456 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:42:29,738 [INFO] No active Polymarket economics markets found
+2026-06-21 13:42:30,013 [INFO] No active Polymarket technology markets found
+127.0.0.1 - - [21/Jun/2026 13:42:33] "GET /prediction-markets HTTP/1.1" 200 -
+2026-06-21 13:42:33,877 [ERROR] /prediction-markets error: [Errno 32] Broken pipe
+127.0.0.1 - - [21/Jun/2026 13:42:33] "GET /prediction-markets HTTP/1.1" 500 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 57710)
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1238, in do_GET
+    self._json_response(json.dumps(data, default=str))
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1300, in _json_response
+    self.wfile.write(data_str.encode())
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.12/http/server.py", line 672, in __init__
+    super().__init__(*args, **kwargs)
+  File "/usr/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/usr/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1241, in do_GET
+    self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1299, in _json_response
+    self.end_headers()
+  File "/usr/lib/python3.12/http/server.py", line 538, in end_headers
+    self.flush_headers()
+  File "/usr/lib/python3.12/http/server.py", line 542, in flush_headers
+    self.wfile.write(b"".join(self._headers_buffer))
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+2026-06-21 13:42:48,592 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:42:49,687 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:42:50,263 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:42:52,311 [ERROR] /signals/opportunities error: [Errno 32] Broken pipe
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 34574)
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1238, in do_GET
+    self._json_response(json.dumps(data, default=str))
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1300, in _json_response
+    self.wfile.write(data_str.encode())
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.12/http/server.py", line 672, in __init__
+    super().__init__(*args, **kwargs)
+  File "/usr/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/usr/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1241, in do_GET
+    self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1299, in _json_response
+    self.end_headers()
+  File "/usr/lib/python3.12/http/server.py", line 538, in end_headers
+    self.flush_headers()
+  File "/usr/lib/python3.12/http/server.py", line 542, in flush_headers
+    self.wfile.write(b"".join(self._headers_buffer))
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+2026-06-21 13:43:16,062 [INFO] No active Polymarket economics markets found
+2026-06-21 13:43:16,368 [INFO] No active Polymarket technology markets found
+127.0.0.1 - - [21/Jun/2026 13:43:20] "GET /prediction-markets HTTP/1.1" 200 -
+
+--- Started at 2026-06-21T13:45:01 ---
+2026-06-21 13:50:06,485 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:50:07,605 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:50:07,946 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:50:11,280 [ERROR] /health error: [Errno 32] Broken pipe
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 47102)
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1248, in do_GET
+    self._json_response(json.dumps(data, default=str))
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1310, in _json_response
+    self.wfile.write(data_str.encode())
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/socketserver.py", line 318, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 349, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.12/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.12/http/server.py", line 672, in __init__
+    super().__init__(*args, **kwargs)
+  File "/usr/lib/python3.12/socketserver.py", line 761, in __init__
+    self.handle()
+  File "/usr/lib/python3.12/http/server.py", line 436, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.12/http/server.py", line 424, in handle_one_request
+    method()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1251, in do_GET
+    self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1309, in _json_response
+    self.end_headers()
+  File "/usr/lib/python3.12/http/server.py", line 538, in end_headers
+    self.flush_headers()
+  File "/usr/lib/python3.12/http/server.py", line 542, in flush_headers
+    self.wfile.write(b"".join(self._headers_buffer))
+  File "/usr/lib/python3.12/socketserver.py", line 840, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+2026-06-21 13:53:20,064 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:53:21,059 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:53:21,413 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:55:06,457 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:55:07,795 [WARNING] Kalshi: no credentials configured
+2026-06-21 13:55:08,152 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:00:06,582 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:00:07,760 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:00:08,103 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:05:06,808 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:05:07,866 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:05:08,277 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:10:06,560 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:10:07,432 [WARNING] Kalshi: no credentials configured
+2026-06-21 14:10:07,959 [WARNING] Kalshi: no credentials configured
+
+--- Started at 2026-06-21T14:13:31 ---
+
+--- Started at 2026-06-22T06:36:45 ---
+Trading System UI Dashboard Server
+============================================================
+Operator state: /home/scott/git/portfolio-management/data/operator-state.json
+Signal cache:   /home/scott/git/portfolio-management/data/.unified_signal_cache.json
+API endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance
+  GET /approvals                — Pending approvals
+  GET /performance              — Portfolio performance
+  GET /evaluations/price/<inst> — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Market regime
+  GET /prediction-markets       — Prediction market rankings
+  GET /arbitrage/opportunities   — Cross-market arbitrage rankings
+  GET /signals/opportunities    — BTC-XXX opportunities
+  GET /signals/feed             — Signal queue
+  GET /strategies/performance   — Strategy breakdown
+  GET /dashboard                — Dashboard HTML
+Serving at http://0.0.0.0:8002
+============================================================
+Press Ctrl+C to stop
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1353, in <module>
+    main()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1344, in main
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+
+--- Started at 2026-06-22T06:36:50 ---
+Trading System UI Dashboard Server
+============================================================
+Operator state: /home/scott/git/portfolio-management/data/operator-state.json
+Signal cache:   /home/scott/git/portfolio-management/data/.unified_signal_cache.json
+API endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance
+  GET /approvals                — Pending approvals
+  GET /performance              — Portfolio performance
+  GET /evaluations/price/<inst> — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Market regime
+  GET /prediction-markets       — Prediction market rankings
+  GET /arbitrage/opportunities   — Cross-market arbitrage rankings
+  GET /signals/opportunities    — BTC-XXX opportunities
+  GET /signals/feed             — Signal queue
+  GET /strategies/performance   — Strategy breakdown
+  GET /dashboard                — Dashboard HTML
+Serving at http://0.0.0.0:8002
+============================================================
+Press Ctrl+C to stop
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1353, in <module>
+    main()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1344, in main
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+
+--- Started at 2026-06-22T06:36:55 ---
+Trading System UI Dashboard Server
+============================================================
+Operator state: /home/scott/git/portfolio-management/data/operator-state.json
+Signal cache:   /home/scott/git/portfolio-management/data/.unified_signal_cache.json
+API endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance
+  GET /approvals                — Pending approvals
+  GET /performance              — Portfolio performance
+  GET /evaluations/price/<inst> — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Market regime
+  GET /prediction-markets       — Prediction market rankings
+  GET /arbitrage/opportunities   — Cross-market arbitrage rankings
+  GET /signals/opportunities    — BTC-XXX opportunities
+  GET /signals/feed             — Signal queue
+  GET /strategies/performance   — Strategy breakdown
+  GET /dashboard                — Dashboard HTML
+Serving at http://0.0.0.0:8002
+============================================================
+Press Ctrl+C to stop
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1353, in <module>
+    main()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1344, in main
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+
+--- Started at 2026-06-22T06:37:00 ---
+Trading System UI Dashboard Server
+============================================================
+Operator state: /home/scott/git/portfolio-management/data/operator-state.json
+Signal cache:   /home/scott/git/portfolio-management/data/.unified_signal_cache.json
+API endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance
+  GET /approvals                — Pending approvals
+  GET /performance              — Portfolio performance
+  GET /evaluations/price/<inst> — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Market regime
+  GET /prediction-markets       — Prediction market rankings
+  GET /arbitrage/opportunities   — Cross-market arbitrage rankings
+  GET /signals/opportunities    — BTC-XXX opportunities
+  GET /signals/feed             — Signal queue
+  GET /strategies/performance   — Strategy breakdown
+  GET /dashboard                — Dashboard HTML
+Serving at http://0.0.0.0:8002
+============================================================
+Press Ctrl+C to stop
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1353, in <module>
+    main()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1344, in main
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+
+--- Started at 2026-06-22T06:37:05 ---
+Trading System UI Dashboard Server
+============================================================
+Operator state: /home/scott/git/portfolio-management/data/operator-state.json
+Signal cache:   /home/scott/git/portfolio-management/data/.unified_signal_cache.json
+API endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance
+  GET /approvals                — Pending approvals
+  GET /performance              — Portfolio performance
+  GET /evaluations/price/<inst> — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Market regime
+  GET /prediction-markets       — Prediction market rankings
+  GET /arbitrage/opportunities   — Cross-market arbitrage rankings
+  GET /signals/opportunities    — BTC-XXX opportunities
+  GET /signals/feed             — Signal queue
+  GET /strategies/performance   — Strategy breakdown
+  GET /dashboard                — Dashboard HTML
+Serving at http://0.0.0.0:8002
+============================================================
+Press Ctrl+C to stop
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1353, in <module>
+    main()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1344, in main
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+
+--- Started at 2026-06-22T06:37:10 ---
+Trading System UI Dashboard Server
+============================================================
+Operator state: /home/scott/git/portfolio-management/data/operator-state.json
+Signal cache:   /home/scott/git/portfolio-management/data/.unified_signal_cache.json
+API endpoints:
+  GET /health                   — System health
+  GET /accounts                 — Portfolio accounts
+  GET /positions                — Open positions
+  GET /strategies               — Strategy performance
+  GET /approvals                — Pending approvals
+  GET /performance              — Portfolio performance
+  GET /evaluations/price/<inst> — Price estimates
+  GET /research/hypotheses      — Trading hypotheses
+  GET /market/regime            — Market regime
+  GET /prediction-markets       — Prediction market rankings
+  GET /arbitrage/opportunities   — Cross-market arbitrage rankings
+  GET /signals/opportunities    — BTC-XXX opportunities
+  GET /signals/feed             — Signal queue
+  GET /strategies/performance   — Strategy breakdown
+  GET /dashboard                — Dashboard HTML
+Serving at http://0.0.0.0:8002
+============================================================
+Press Ctrl+C to stop
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1353, in <module>
+    main()
+  File "/home/scott/git/portfolio-management/trading_system/ui/dashboard_server.py", line 1344, in main
+    with socketserver.TCPServer(("", args.port), handler) as httpd:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socketserver.py", line 457, in __init__
+    self.server_bind()
+  File "/usr/lib/python3.12/socketserver.py", line 473, in server_bind
+    self.socket.bind(self.server_address)
+OSError: [Errno 98] Address already in use
+
+--- Started at 2026-06-22T06:37:42 ---
+
+--- Started at 2026-06-22T06:39:56 ---
+
+--- Started at 2026-06-22T06:43:55 ---
+
+--- Started at 2026-06-22T06:53:32 ---
+
+--- Started at 2026-06-22T06:54:08 ---
+
+--- Started at 2026-06-22T06:58:32 ---
+
+--- Started at 2026-06-22T07:20:01 ---

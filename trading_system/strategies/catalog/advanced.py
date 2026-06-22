@@ -353,7 +353,7 @@ def advanced_specs() -> list[StrategySpec]:
                 family=family,
                 purpose=f"{family} alpha or execution objective for {name.lower()}",
                 regime_suitability="regime-aware with disable-on-stress controls",
-                supported_products=["BTC-USD", "ETH-USD"],
+                supported_products=["BTC-USD", "BTC-ETH", "BTC-SOL", "BTC-DOGE", "BTC-XRP"],
                 risk_tier=tier,
                 required_data=["candles", "trades", "orderbook"],
                 required_indicators=["atr", "rsi", "realized_vol"],

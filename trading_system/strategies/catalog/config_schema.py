@@ -44,7 +44,7 @@ class StrategyRuntimeFlags(BaseModel):
 class StrategyConfig(BaseModel):
     strategy_id: str
     enabled: bool = False
-    supported_products: list[str] = Field(default_factory=lambda: ["BTC-USD"])
+    supported_products: list[str] = Field(default_factory=lambda: ["BTC-USD", "BTC-ETH", "BTC-SOL", "BTC-DOGE", "BTC-XRP"])
     risk_tier: str
     max_capital_fraction: float = Field(ge=0.0, le=1.0)
     sizing_model: str

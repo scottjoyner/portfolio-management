@@ -5,10 +5,17 @@ import json
 import logging
 from typing import Any, Callable, Coroutine
 
-from websockets import WebSocketClientProtocol
-import websockets
+try:
+    from websockets import WebSocketClientProtocol
+    import websockets
+except ImportError:
+    WebSocketClientProtocol = Any  # type: ignore[assignment]
+    websockets = None
 
-from exchange.coinbase.auth.jwt import build_jwt_token
+try:
+    from ..auth.jwt import build_jwt_token
+except ImportError:
+    from exchange.coinbase.auth.jwt import build_jwt_token
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +37,7 @@ class CoinbaseWebSocketMarketClient:
         self.api_secret = api_secret
         self._ws: WebSocketClientProtocol | None = None
         self._handlers: dict[str, list[MessageHandler]] = {}
+        self._any_handlers: list[MessageHandler] = []
         self._running = False
         self._subscribed_channels: list[dict[str, Any]] = []
         self._auth_token: str | None = None
@@ -39,37 +47,40 @@ class CoinbaseWebSocketMarketClient:
         """Register a message handler for a specific channel."""
         self._handlers.setdefault(channel, []).append(handler)
 
-    def subscribe(self, product_id: str, channel_type: str = "snapshot_and_updates") -> dict[str, Any]:
+    def on_any(self, handler: MessageHandler) -> None:
+        """Register a handler for every decoded websocket message."""
+        self._any_handlers.append(handler)
+
+    def subscribe(self, product_id: str, channel: str = "ticker") -> dict[str, Any]:
         """
-        Build subscription object for specified product and channel type.
-        
+        Build subscription object for specified product and channel.
+
         Args:
             product_id: e.g., "BTC-USD", "ETH-USD"
-            channel_type: "snapshot_and_updates", "candles", or "orderbook"
-            
+            channel: "ticker", "level2", "heartbeats", or "candles"
+
         Returns:
             Subscription dict ready to send to Coinbase WS
         """
         if self.api_key and self.api_secret:
             token = build_jwt_token(self.api_key, self.api_secret, "GET", "/ws")
         else:
-            # No auth for public market data (candles, orderbook)
-            return {
-                "type": "subscribe",
-                "channel": channel_type,
-                "product_ids": [product_id],
-                "token": "",  # Empty for public endpoints
-            }
+            token = ""
 
-        return {
+        sub = {
             "type": "subscribe",
-            "channel": channel_type,
+            "channel": channel,
             "product_ids": [product_id],
-            "token": self._auth_token or "",
         }
+        if token:
+            sub["token"] = token
+        self._subscribed_channels.append(sub)
+        return sub
 
     async def _ensure_connected(self) -> None:
         """Ensure websocket is connected."""
+        if websockets is None:
+            raise RuntimeError("websockets package is not installed")
         async with self._connection_lock:
             if not self._ws or self._ws.closed:
                 log.info("connecting to Coinbase WS...")
@@ -95,8 +106,18 @@ class CoinbaseWebSocketMarketClient:
             except Exception as e:
                 log.exception("handler error on channel %s: %s", channel, e)
 
+    async def _emit_any(self, message: dict[str, Any]) -> None:
+        """Emit message to raw-message handlers."""
+        for handler in self._any_handlers:
+            try:
+                await handler(message)
+            except Exception as e:
+                log.exception("raw handler error: %s", e)
+
     async def connect(self) -> None:
         """Connect to Coinbase WebSocket."""
+        if websockets is None:
+            raise RuntimeError("websockets package is not installed")
         async with self._connection_lock:
             if not self._ws or self._ws.closed:
                 token = build_jwt_token(
@@ -120,9 +141,16 @@ class CoinbaseWebSocketMarketClient:
                 if self._subscribed_channels and not self._subscribed_channels[-1].get("token"):
                     log.warning("public channel subscriptions detected, no auth token")
 
+                for sub in self._subscribed_channels:
+                    try:
+                        await ws.send(json.dumps(sub))
+                    except Exception:
+                        log.exception("failed to send subscription")
+
                 async for raw in ws:
                     try:
                         msg = json.loads(raw)
+                        await self._emit_any(msg)
                         
                         # Emit to all channels
                         channel = msg.get("channel", msg.get("type", "unknown"))
@@ -140,10 +168,13 @@ class CoinbaseWebSocketMarketClient:
                     except json.JSONDecodeError:
                         log.warning("invalid ws message: %s", raw[:200])
 
-            except websockets.ConnectionClosed:
-                log.info("ws disconnected, will reconnect...")
-                self._ws = None
-                await asyncio.sleep(2)
+            except Exception as e:
+                if websockets is not None and isinstance(e, websockets.ConnectionClosed):
+                    log.info("ws disconnected, will reconnect...")
+                    self._ws = None
+                    await asyncio.sleep(2)
+                    continue
+                raise
                 
     async def stop(self) -> None:
         """Stop the websocket client."""

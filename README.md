@@ -2,6 +2,20 @@
 
 A unified data source framework for portfolio management applications.
 
+## Operational Notes
+
+- Coinbase/CDP transfer testing was attempted with two new credential files from `Downloads`:
+  - `cdp_api_key_all_test_a.json`
+  - `cdp_api_key_all_test_b.json`
+- Both credentials authenticated successfully for read-only checks:
+  - `cdp env live --plaintext ...`
+  - `cdp evm accounts list`
+- Both credentials failed on transfer validation with the same CDP error:
+  - `403 Forbidden: Must use a CDP Entity scoped API key`
+- `coinbase_debug.txt` confirms the failure is in the CDP forbidden/signing-sending bucket, not a local CLI parse issue.
+- No wallet secret file was found in `Downloads` during the investigation, so the write-path remains unresolved and is deferred for later.
+- Trading execution work should continue on Kalshi, Polymarket, and the rest of the market wiring while Coinbase transfer auth remains pending.
+
 ## Features
 
 - **Multiple Data Sources**: yfinance, Alpha Vantage, default fallback

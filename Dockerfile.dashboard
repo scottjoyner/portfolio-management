@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+ENV DASHBOARD_PORT=8099
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY trading_system ./trading_system
+COPY event_markets ./event_markets
+COPY state_store.py ./state_store.py
+COPY market_universe.py ./market_universe.py
+COPY portfolio_optimizer.py ./portfolio_optimizer.py
+COPY coinbase ./coinbase
+
+RUN mkdir -p /app/data /app/state
+
+EXPOSE 8099
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -sf http://127.0.0.1:${DASHBOARD_PORT:-8099}/health || exit 1
+
+CMD ["python3", "-u", "trading_system/ui/dashboard_server.py", "--host", "0.0.0.0", "--port", "8099"]

@@ -34,23 +34,20 @@ class YfinanceDataFetcher:
             Dictionary with ticker info or None if unavailable
         """
         try:
-            from yfinance.ticker import Ticker
-            
+            import yfinance as yf
+
             # Use cached instance if available
             if ticker not in self._ticker_cache:
-                self._ticker_cache[ticker] = Ticker(ticker)
-                
+                self._ticker_cache[ticker] = yf.Ticker(ticker)
+
             ticker_obj = self._ticker_cache[ticker]
-            # yfinance Ticker doesn't have proper typing annotations
-            from typing import cast
-            typed_ticker = cast(Ticker, ticker_obj)
-            info = typed_ticker.get_info()
+            info = getattr(ticker_obj, "info", {}) or {}
             
             return {
                 'symbol': ticker,
                 'name': info.get('info', {}).get('company_name', '') if info else '',
                 'sector': info.get('info', {}).get('sector', '') if info else '',
-                'market_capital': info.get('info', {}).get('capitalization', 0) if info else 0,
+                'market_capital': info.get('marketCap', info.get('market_capital', info.get('capitalization', 0))) if info else 0,
             }
             
         except Exception as e:
@@ -82,48 +79,37 @@ class YfinanceDataFetcher:
                 - volume: float (volume traded)
         """
         try:
-            from yfinance.ticker import Ticker
-            
-            # Use cached instance if available
-            if ticker not in self._ticker_cache:
-                self._ticker_cache[ticker] = Ticker(ticker)
-                
-            ticker_obj = self._ticker_cache[ticker]
-            
-            # Get historical data using the history_metadata method  
-            metadata = ticker_obj.history_metadata(
-                start_date.strftime('%Y-%m-%d'), 
-                end_date.strftime('%Y-%m-%d')
+            import yfinance as yf
+
+            df = yf.download(
+                ticker,
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d'),
+                interval='1d',
+                auto_adjust=False,
+                progress=False,
+                threads=False,
             )
-            
-            if not metadata:
+
+            if df is None or df.empty:
                 logger.warning(f"No historical data available for {ticker}")
                 return []
-                
-            # Parse the metadata to extract price information
+
             prices = []
-            for item in metadata.get('history', []):
+            for ts, row in df.iterrows():
                 try:
-                    ts_str = item.get('date', '')
-                    if not ts_str:
-                        continue
-                        
-                    ts = datetime.strptime(ts_str, '%Y-%m-%d')
-                    
-                    # Extract price data from the history record
                     prices.append({
-                        'timestamp': ts,
-                        'open': float(item.get('open', 0)),
-                        'high': float(item.get('high', 0)),
-                        'low': float(item.get('low', 0)),
-                        'close': float(item.get('close', 0)),
-                        'volume': float(item.get('volume', 0))
+                        'timestamp': ts.to_pydatetime() if hasattr(ts, 'to_pydatetime') else ts,
+                        'open': float(row.get('Open', 0)),
+                        'high': float(row.get('High', 0)),
+                        'low': float(row.get('Low', 0)),
+                        'close': float(row.get('Close', 0)),
+                        'volume': float(row.get('Volume', 0))
                     })
-                    
                 except (ValueError, TypeError) as e:
-                    logger.warning(f"Failed to parse history record for {ticker}: {e}")
+                    logger.warning(f"Failed to parse history row for {ticker}: {e}")
                     continue
-                    
+
             return prices
             
         except Exception as e:
@@ -147,43 +133,7 @@ class YfinanceDataFetcher:
             List of dictionaries with ETF price data
         """
         try:
-            from yfinance import ETFQuery
-            
-            # Create a query instance for the ETF
-            query = ETFQuery(etf_symbol)
-            
-            # Get tickers (should work without authentication)  
-            result = query.get_tickers()
-            
-            if not result or 'tickers' not in result:
-                logger.warning(f"No ticker data available for ETF {etf_symbol}")
-                return []
-                
-            # Extract price information from the ticker data
-            prices = []
-            for ticker_data in result['tickers']:
-                try:
-                    ts_str = ticker_data.get('date', '')
-                    if not ts_str:
-                        continue
-                        
-                    ts = datetime.strptime(ts_str, '%Y-%m-%d')
-                    
-                    # Extract price data from the ticker record  
-                    prices.append({
-                        'timestamp': ts,
-                        'open': float(ticker_data.get('open', 0)),
-                        'high': float(ticker_data.get('high', 0)),
-                        'low': float(ticker_data.get('low', 0)),
-                        'close': float(ticker_data.get('close', 0)),
-                        'volume': float(ticker_data.get('volume', 0))
-                    })
-                    
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Failed to parse ETF ticker record for {etf_symbol}: {e}")
-                    continue
-                    
-            return prices
+            return self.get_historical_prices(etf_symbol, start_date, end_date)
             
         except Exception as e:
             logger.warning(f"Failed to get ETF data for {etf_symbol}: {e}")

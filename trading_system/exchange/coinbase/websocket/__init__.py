@@ -1,3 +1,6 @@
-from exchange.coinbase.websocket.client import CoinbaseWebSocketClient
+try:
+    from .client import CoinbaseWebSocketClient
+except ImportError:
+    CoinbaseWebSocketClient = None
 
 __all__ = ["CoinbaseWebSocketClient"]

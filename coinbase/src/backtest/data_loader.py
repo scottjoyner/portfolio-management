@@ -26,7 +26,7 @@ def load_btc_ohlcv(
         FileNotFoundError: If CSV doesn't exist
         ValueError: If insufficient data (< min_days rows after header)
     """
-    from coinbase.src.backtest.new_strategies import OHLCVBar
+    from coinbase.src.backtest.coinbase_niche_strategies import OHLCVBar
     
     path = Path(csv_path)
     if not path.exists():

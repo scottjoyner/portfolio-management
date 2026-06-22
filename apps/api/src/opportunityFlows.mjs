@@ -42,19 +42,12 @@ export function ensureOpportunityState(state) {
   state.agentBudgets ||= [];
   state.budgetApprovals ||= [];
   state.agentCostLedger ||= [];
+
   state.marketDataSnapshots ||= [];
   if (!state.agentBudgets.length) {
     state.agentBudgets.push(
       { agentId: 'market-research-agent', dailyTokenLimit: 200000, dailyCostLimit: 35, perJobTokenLimit: 50000, perMarketCostLimit: 12, requireApprovalAboveCost: 10, enabled: true },
       { agentId: 'liquidity-scanner', dailyTokenLimit: 150000, dailyCostLimit: 20, perJobTokenLimit: 40000, perMarketCostLimit: 8, requireApprovalAboveCost: 8, enabled: true }
-    );
-  }
-  if (!state.marketDataSnapshots.length) {
-    const now = new Date().toISOString();
-    state.marketDataSnapshots.push(
-      { id: 'md-btc-usd', symbol: 'BTC-USD', venue: 'coinbase-paper', assetClass: 'crypto', bid: 68250, ask: 68268, spreadBps: 2.64, volume24h: 18420000000, liquidityScore: 82, volatilityScore: 61, status: 'watching', timestamp: now, source: 'demo-market-feed' },
-      { id: 'md-eth-usd', symbol: 'ETH-USD', venue: 'coinbase-paper', assetClass: 'crypto', bid: 3712, ask: 3715, spreadBps: 8.08, volume24h: 9120000000, liquidityScore: 79, volatilityScore: 58, status: 'eligible', timestamp: now, source: 'demo-market-feed' },
-      { id: 'md-prediction-demo', symbol: 'PREDICTION:DEMO', venue: 'polymarket-watch', assetClass: 'prediction_market', bid: 0.42, ask: 0.45, spreadBps: 697, volume24h: 241000, liquidityScore: 71, volatilityScore: 52, status: 'research_candidate', timestamp: now, source: 'demo-market-feed' }
     );
   }
   return state;
@@ -280,6 +273,22 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
   if (errors.length) return { errors };
   const job = body.researchJobId ? state.researchJobs.find(j => j.id === body.researchJobId) : null;
   const winProbability = clampPercent(body.winProbability, 0.5);
+
+  // --- Position sizing (Kelly-based estimate) ---
+  const winProb = winProbability;
+  const lossProb = clampPercent(body.lossProbability ?? (1 - winProb), 1 - winProb);
+  const avgWin = nonNegative(body.potentialUpside || 0) / Math.max(1, nonNegative(body.totalMoneyRisked || 1));
+  const avgLoss = 1; // 1R = totalMoneyRisked
+  const kellyFraction = winProb > lossProb ? Math.max(0, (winProb * avgWin - lossProb * avgLoss) / avgWin) : 0;
+  const kellyCapped = Math.min(kellyFraction, 0.25); // cap at 25% of capital
+  const config = state.config || {};
+  const maxPosSize = nonNegative(config.maxPositionSizeUsd || 50000);
+  const recommendedSize = Math.min(maxPosSize, Math.round(nonNegative(body.totalMoneyRisked || 1000) * (1 + kellyCapped)));
+
+  // --- Holding period estimate ---
+  const volatilityScore = nonNegative(body.volatilityScore ?? 50);
+  const holdingPeriodDays = Math.max(1, Math.ceil((100 - volatilityScore) / 15));
+
   const opportunity = {
     id: nextId('opp', state.opportunities),
     sourceAgentId: body.sourceAgentId || job?.agentId || 'market-research-agent',
@@ -292,8 +301,8 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     title: body.title || body.market || body.symbol,
     recommendation: body.recommendation || 'review',
     confidenceScore: clampPercent(body.confidenceScore, 0.5),
-    winProbability,
-    lossProbability: clampPercent(body.lossProbability ?? (1 - winProbability), 1 - winProbability),
+    winProbability: winProb,
+    lossProbability: lossProb,
     expectedValue: finiteNumber(body.expectedValue ?? body.grossExpectedValue, 0),
     grossExpectedValue: finiteNumber(body.grossExpectedValue ?? body.expectedValue, 0),
     totalMoneyRisked: nonNegative(body.totalMoneyRisked || 0),
@@ -305,6 +314,13 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     backtestId: body.backtestId || null,
     backtestStatus: body.backtestStatus || (body.backtestId ? 'linked' : 'backtest_missing'),
     riskBreakdownId: null,
+    tradeIntent: body.tradeIntent || null,
+    executionPurpose: body.executionPurpose || null,
+    positionSide: body.positionSide || null,
+    entryPrice: Number(body.entryPrice || 0) || null,
+    takeProfitPrice: Number(body.takeProfitPrice || 0) || null,
+    stopLossPrice: Number(body.stopLossPrice || 0) || null,
+    tradePlan: body.tradePlan || null,
     status: body.status || 'needs_review',
     approvalStatus: body.approvalStatus || body.status || 'needs_review',
     estimatedFees: nonNegative(body.estimatedFees || 0),
@@ -317,7 +333,21 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     evidence: Array.isArray(body.evidence) ? body.evidence : [],
     expiresAt: body.expiresAt || null,
     createdAt: now,
-    updatedAt: now
+    updatedAt: now,
+    // Position sizing & risk-return estimates
+    positionSizing: {
+      kellyFraction: Number(kellyFraction.toFixed(4)),
+      kellyCapped: Number(kellyCapped.toFixed(4)),
+      recommendedSize,
+      maxPositionSize: maxPosSize,
+      capitalAtRisk: nonNegative(body.totalMoneyRisked || 0),
+      riskPerUnit: nonNegative(body.maxLoss || 0) / Math.max(1, recommendedSize),
+    },
+    holdingPeriodDays,
+    expectedReturn: Number(((winProb * nonNegative(body.potentialUpside || 0)) - (lossProb * nonNegative(body.maxLoss || 0))).toFixed(2)),
+    expectedRisk: Number((nonNegative(body.totalMoneyRisked || 0) * (1 - winProb)).toFixed(2)),
+    sharpeEstimate: Number(((winProb * avgWin - lossProb * avgLoss) / Math.max(0.01, (avgWin + avgLoss) * 0.5)).toFixed(2)),
+    volatilityScore,
   };
   opportunity.netExpectedValue = netExpectedValue(opportunity);
   const riskBreakdown = { ...buildRiskBreakdown(opportunity, now), id: nextId('risk', state.riskBreakdowns), scopeId: opportunity.id };
@@ -342,7 +372,66 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
   opportunity.reviewedAt = now;
   opportunity.updatedAt = now;
   state.audit.push({ id: nextId('audit', state.audit), action: `opportunity_${body.status}`, actor: opportunity.reviewer, at: now, details: opportunity.id, payload: { reason: opportunity.decisionReason } });
-  return { opportunity };
+
+  // When approved, auto-create a draft execution
+  let execution = null;
+  if (body.status === 'approved') {
+    const direction = String(opportunity.side || '').toLowerCase() === 'sell' || opportunity.recommendation?.includes('short') || opportunity.executionPurpose === 'take_profit_exit' ? 'sell' : 'buy';
+    const size = opportunity.positionSizing?.recommendedSize || opportunity.totalMoneyRisked || 1000;
+    const estPrice = (() => {
+      if (opportunity.symbol && state.marketDataSnapshots) {
+        const snap = state.marketDataSnapshots.find(s => s.symbol === opportunity.symbol);
+        if (snap && snap.ask) return Number(snap.ask);
+      }
+      return opportunity.symbol ? 100 : 50;
+    })();
+
+    execution = {
+      id: `exec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      opportunityId: opportunity.id,
+      strategyId: opportunity.strategyId || opportunity.sourceAgentId || 'opportunity-driver',
+      symbol: opportunity.symbol || opportunity.marketSlug || 'UNKNOWN',
+      venue: opportunity.venue || 'paper',
+      mode: 'paper',
+      status: 'draft',
+      side: direction,
+      entryPrice: estPrice,
+      takeProfitPrice: opportunity.takeProfitPrice || null,
+      stopLossPrice: opportunity.stopLossPrice || null,
+      quantity: size / Math.max(1, estPrice),
+      price: estPrice,
+      notional: size,
+      tradePlan: opportunity.tradePlan || null,
+      tradeIntent: opportunity.tradeIntent || null,
+      executionPurpose: opportunity.executionPurpose || null,
+      positionSide: opportunity.positionSide || null,
+      orders: [{
+        id: `ord-${Date.now()}`,
+        side: direction,
+        symbol: opportunity.symbol || opportunity.marketSlug,
+        quantity: size / Math.max(1, estPrice),
+        price: estPrice,
+        orderType: 'market',
+        timeInForce: 'GTC',
+        takeProfitPrice: opportunity.takeProfitPrice || null,
+        stopLossPrice: opportunity.stopLossPrice || null,
+        tradePlan: opportunity.tradePlan || null,
+      }],
+      fills: [],
+      confidenceScore: opportunity.confidenceScore || 0.5,
+      convictionWeight: opportunity.confidenceScore || 0.5,
+      riskDecision: { approved: true, reason: 'opportunity_approval' },
+      tags: { source: 'opportunity_approval', opportunityId: opportunity.id, recommendation: opportunity.recommendation },
+      startedAt: now,
+      lastHeartbeatAt: now,
+    };
+
+    state.executions = state.executions || [];
+    state.executions.push(execution);
+    state.audit.push({ id: nextId('audit', state.audit), action: 'execution_draft_from_opportunity', actor: 'system', at: now, details: execution.id, payload: { opportunityId: opportunity.id, symbol: execution.symbol, quantity: execution.quantity } });
+  }
+
+  return { opportunity, execution };
 }
 
 export function summarizeAgentCosts(state) {
