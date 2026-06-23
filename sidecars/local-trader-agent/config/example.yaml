@@ -16,4 +16,14 @@ backtest:
   initial_cash: 10000
   position_size_pct: 1.0
   same_bar_policy: "stop_first"
+  execution_mode: "next_open"
+  commission_per_trade: 0.0
+  commission_pct: 0.0
+  slippage_bps: 5
+  spread_bps: 2
+  price_adjustment: "raw"
+  data_cache: true
+  refresh_cache: false
+  data_cache_dir: "workspace/cache/yfinance"
+  report_embed_plotly_js: true
   output_html: "reports/googl_rsi_report.html"
