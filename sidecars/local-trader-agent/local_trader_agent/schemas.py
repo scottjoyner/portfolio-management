@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Literal, Optional
 
 
 SameBarPolicy = Literal["stop_first", "take_profit_first", "close"]
+ExecutionMode = Literal["signal_close", "next_open", "next_close"]
+PriceAdjustment = Literal["raw", "auto_adjusted"]
 
 
 @dataclass(frozen=True)
@@ -20,6 +22,16 @@ class BacktestConfig:
     initial_cash: float = 10_000.0
     position_size_pct: float = 1.0
     same_bar_policy: SameBarPolicy = "stop_first"
+    execution_mode: ExecutionMode = "next_open"
+    commission_per_trade: float = 0.0
+    commission_pct: float = 0.0
+    slippage_bps: float = 0.0
+    spread_bps: float = 0.0
+    price_adjustment: PriceAdjustment = "raw"
+    data_cache: bool = True
+    refresh_cache: bool = False
+    data_cache_dir: str = "workspace/cache/yfinance"
+    report_embed_plotly_js: bool = True
     output_html: str = "reports/backtest_report.html"
 
     def to_dict(self) -> dict:
@@ -38,6 +50,11 @@ class Trade:
     return_pct: float
     exit_reason: str
     bars_held: int
+    entry_fee: float = 0.0
+    exit_fee: float = 0.0
+    total_fees: float = 0.0
+    mae_pct: float = 0.0
+    mfe_pct: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -59,6 +76,16 @@ class BacktestSummary:
     profit_factor: float
     max_drawdown_pct: float
     average_trade_return_pct: float
+    cagr_pct: float
+    volatility_ann_pct: float
+    sharpe: float
+    sortino: float
+    calmar: float
+    exposure_pct: float
+    average_bars_held: float
+    max_consecutive_wins: int
+    max_consecutive_losses: int
+    total_fees: float
 
     def to_dict(self) -> dict:
         return asdict(self)
