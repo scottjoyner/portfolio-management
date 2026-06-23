@@ -52,8 +52,25 @@ except ImportError:
 from notification import TradeNotifier
 
 # Event market connectors (optional)
-from event_markets.comparison_engine import ComparisonEngine, format_signal
-from event_markets.arbitrage import EventArbitrageScanner, format_arbitrage
+try:
+    from event_markets.comparison_engine import ComparisonEngine as _CE, format_signal as _fs
+    ComparisonEngine = _CE
+    format_signal = _fs
+    _HAS_PM_COMPARISON = True
+except ImportError:
+    ComparisonEngine = None
+    format_signal = None
+    _HAS_PM_COMPARISON = False
+
+try:
+    from event_markets.arbitrage import EventArbitrageScanner as _EAS, format_arbitrage as _fa
+    EventArbitrageScanner = _EAS
+    format_arbitrage = _fa
+    _HAS_PM_ARBITRAGE = True
+except ImportError:
+    EventArbitrageScanner = None
+    format_arbitrage = None
+    _HAS_PM_ARBITRAGE = False
 
 # Confidence matrix (strategy signal aggregation)
 from confidence_matrix import ConfidenceMatrix, format_aggregated

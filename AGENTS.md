@@ -8,7 +8,7 @@ Multi-module algorithmic trading platform spanning Python (primary) and Node.js/
 
 | Path | Purpose |
 |------|---------|
-| `coinbase/src/` | **Execution engine**: `cb_client.py` (RESTClient wrapper), `execution.py` (order placement + bracket management + trailing stop + poll loop), `data.py` (candle fetching + cache), `config.py` (pydantic Settings), `bandit.py` (UCB1 / Thompson), `tcost.py` (transaction cost), `bridge_execution.py` (Node subprocess bridge), `run_trader.py` (main trading loop — rebalance, rr-trades, manage-brackets) |
+| `coinbase/src/` | **Execution engine**: `cb_client.py` (RESTClient wrapper), `execution.py` (order placement + bracket management + trailing stop + poll loop), `data.py` (candle fetching + cache), `config.py` (pydantic Settings), `bandit.py` (UCB1 / Thompson), `tcost.py` (transaction cost), `bridge_execution.py` (Node subprocess bridge), `run_trader.py` (main trading loop — rebalance, rr-trades, manage-brackets), `run_trader_v2.py` (hardened unified trader with startup validation, graceful shutdown, health endpoint, ranking persistence) |
 | `trading_system/` | Core domain: `core/portfolio_manager.py`, `core/state_manager.py`, `core/models/`, `ui/dashboard_server.py` (12 REST endpoints), `ui/dashboard.html`, `signal_confidence.py` (ConfidenceEngine with 8 modifiers) |
 | `graph-alpha-bot/` | Graph-based AI trading bot: ~30 strategies using Neo4j knowledge graph, news ingestion pipeline, MCP server |
 | `backtester.py` | 14+ Coinbase-specific strategies + `MarketDataFetcher` + `Backtester` + benchmark runner |
@@ -179,6 +179,25 @@ Opportunities ranked by `priority * confidence * boost`, max 10 positions, 20% r
 - Uses `cb_client.py` (Coinbase CDP v3 RESTClient wrapper with pagination)
 - Bracket state uses pydantic `Bracket` model; `_get/_set` helpers handle both pydantic and dict for migration safety
 
+### Coinbase v2 Modules (coinbase/src/)
+
+- `product_rotation.py` — `ProductRotator` + `MomentumRotationStrategy` for multi-timeframe ranking and top-N rotation
+- `adaptive_mode.py` — `AdaptiveModeSelector` for SCALP / SWING / TREND / HOLD switching
+- `dual_mm.py` — `DualMarketMaker` + `MarketMakingStrategy` for inventory-skewed market making
+- `ranking.py` — `StrategyRanking` + `StrategyRankingFilter` for rolling performance ranking and persistence
+- `news_risk.py` — `NewsRiskAdjuster` and `NewsAwareRiskStrategy` using knowledge-graph sentiment and MCP guards
+- `market_condition.py` — `MarketConditionProfile` + `MarketConditionStrategySelector` for archetype-based strategy gating
+- `run_trader_v2.py` — unified Coinbase trader with startup validation, graceful shutdown, health endpoint, and tick-stage error boundaries
+
+### Coinbase v2 Hardening (coinbase/src/)
+
+- `run_trader_v2.py` now validates config at startup, seeds price history, and shuts down cleanly on `SIGINT` / `SIGTERM`
+- `run_trader_v2.py` wraps every major tick stage in error boundaries so one broken source does not stop the loop
+- `run_trader_v2.py` can expose `--health-port <port>` and serves `/health` with tick, regime, uptime, and ranking status
+- `StrategyRanking` persists to `data/ranking_state.json` and reloads on startup
+- `run_trader_v2.py` creates a `CBClient` and subscribes configured products so the feed actually polls; `PollingFeed(cb_client=None, ...)` still remains inert for harnesses
+- `Ticker` uses `price` (not `mid_price`) and `TickerCache` uses `get_ticker()`; these are the canonical field/method names in the Coinbase feed stack
+
 ### State Persistence
 
 - **SQLite** (`state_store.py`): trades, snapshots (portfolio state), bt_cache (30-day TTL), position_ages, meta
@@ -233,6 +252,9 @@ YFinance/Alpha Vantage ──→ data/unified_fetcher.py ──→ strategy_engi
 - **Inspecting history** — use `git log --oneline -20` and `git diff` before making changes; never commit unless explicitly asked
 - **Test runner** — `run_all_tests.sh` runs `python3 test_paper_trading_system.py` and `python3 test_unified_signal_accumulator.py`; no pytest installed, tests use `unittest`
 - **Mode defaults** — always `--dry-run` unless `--live` explicitly passed; `MODE=mock` in .env, `PAPER_TRADING=true`
+- **Coinbase trader health** — use `python3 coinbase/src/run_trader_v2.py --mode paper --health-port 9090` to run the hardened loop with a local health endpoint
+- **Live mode validation** — `run_trader_v2.py` refuses non-paper startup if the Coinbase CLI is missing
+- **Ranking persistence** — `data/ranking_state.json` is created automatically; do not hand-edit it unless you know the schema
 
 ## How to Run
 

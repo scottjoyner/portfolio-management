@@ -153,9 +153,78 @@ class CBClient:
             args.append(f"preview_id={preview_id}")
         return self._cli_json(*args)
 
-    # Convenience wrappers (SDK has these too, but this keeps it consistent)
+    # Convenience wrappers
     def market_order(self, side: str, product_id: str, base_size: str | None = None, quote_size: str | None = None, client_order_id: str = "", preview_id: str | None = None) -> dict:
         return self.create_market_order(side, product_id, base_size=base_size, quote_size=quote_size, client_order_id=client_order_id, preview_id=preview_id)
+
+    # ---------- LIMIT ORDER ----------
+    def create_limit_order(
+        self, side: str, product_id: str, *,
+        base_size: str, price: str,
+        client_order_id: str = "", time_in_force: str = "GTC",
+        post_only: bool = False,
+    ) -> dict:
+        side_u = side.upper()
+        args = ["orders", "create", f"product_id={product_id}", f"side={side_u}",
+                "type=limit", f"base_size={base_size}", f"limit_price={price}",
+                f"time_in_force={time_in_force}"]
+        if post_only:
+            args.append("post_only=true")
+        if client_order_id:
+            args.append(f"client_order_id={client_order_id}")
+        return self._cli_json(*args)
+
+    # ---------- STOP-LIMIT ORDER ----------
+    def create_stop_limit_order(
+        self, side: str, product_id: str, *,
+        base_size: str, limit_price: str, stop_price: str,
+        client_order_id: str = "", time_in_force: str = "GTC",
+        stop_direction: str = "stop_direction_stop_up",
+    ) -> dict:
+        side_u = side.upper()
+        args = ["orders", "create", f"product_id={product_id}", f"side={side_u}",
+                "type=limit", f"base_size={base_size}",
+                f"limit_price={limit_price}", f"stop_price={stop_price}",
+                f"stop_direction={stop_direction}",
+                f"time_in_force={time_in_force}"]
+        if client_order_id:
+            args.append(f"client_order_id={client_order_id}")
+        return self._cli_json(*args)
+
+    # ---------- STOP MARKET ORDER ----------
+    def create_stop_market_order(
+        self, side: str, product_id: str, *,
+        base_size: str, stop_price: str,
+        client_order_id: str = "", stop_direction: str = "stop_direction_stop_up",
+    ) -> dict:
+        side_u = side.upper()
+        args = ["orders", "create", f"product_id={product_id}", f"side={side_u}",
+                "type=stop", f"base_size={base_size}", f"stop_price={stop_price}",
+                f"stop_direction={stop_direction}"]
+        if client_order_id:
+            args.append(f"client_order_id={client_order_id}")
+        return self._cli_json(*args)
+
+    # ---------- CANCEL ORDER ----------
+    def cancel_order(self, order_id: str) -> dict:
+        return self._cli_json("orders", "cancel", f"order_id={order_id}")
+
+    # ---------- LIST ORDERS ----------
+    def list_orders(self, product_id: str | None = None, status: str | None = None) -> list[dict]:
+        args = ["orders", "list"]
+        if product_id:
+            args.append(f"product_id={product_id}")
+        if status:
+            args.append(f"order_status={status}")
+        return self._cli_json(*args).get("orders", [])
+
+    # ---------- GET PRODUCTS ----------
+    def get_products(self, product_type: str | None = None) -> list[dict]:
+        args = ["products", "list"]
+        if product_type:
+            args.append(f"product_type={product_type}")
+        return self._cli_json(*args).get("products", [])
+
     # inside class CBClient:
 
     def public_candles(
