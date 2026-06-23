@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-trader-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local LLM-driven trading research agent with deterministic backtesting and HTML reports."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,8 +20,22 @@ dependencies = [
   "PyYAML>=6.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5.0",
+  "mypy>=1.10"
+]
+
 [project.scripts]
 local-trader-agent = "local_trader_agent.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["local_trader_agent*"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
