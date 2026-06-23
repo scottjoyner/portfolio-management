@@ -37640,3 +37640,1574 @@ TimeoutError
 2026-06-22 10:38:21,570 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
 2026-06-22 10:39:51,533 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
 2026-06-22 10:41:22,304 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:42:52,740 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:44:21,265 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:45:32,181 [INFO] ws disconnected, will reconnect...
+2026-06-22 10:45:34,184 [INFO] connecting to Coinbase WS...
+2026-06-22 10:45:34,429 [WARNING] public channel subscriptions detected, no auth token
+2026-06-22 10:45:51,797 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:47:22,047 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:48:53,850 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:50:23,557 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:51:53,692 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:53:19,859 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:54:53,694 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:56:22,051 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:57:50,356 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 10:59:22,352 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:00:52,326 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:02:31,606 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:03:53,519 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:05:21,896 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:06:50,828 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:08:23,611 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:09:52,196 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:11:22,273 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:13:06,412 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 11:14:21,526 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:15:53,613 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:17:22,469 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:18:52,115 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:20:21,022 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:21:51,831 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:23:33,092 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:24:52,117 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:26:22,249 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:27:52,748 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:29:24,904 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:30:51,345 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:32:22,473 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:33:53,376 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:35:23,119 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:36:52,390 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:38:21,799 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:39:56,942 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:41:23,273 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:42:52,971 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:44:22,317 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:45:52,583 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:47:21,813 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:48:52,067 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:50:36,433 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 11:51:51,018 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:53:21,228 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:54:51,062 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:56:20,563 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:57:51,613 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 11:59:23,206 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:01:05,218 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:02:22,724 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:03:51,423 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:05:23,728 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:06:50,539 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:08:22,342 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:09:52,121 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:11:28,038 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:12:52,056 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:14:22,765 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:15:50,471 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:17:22,434 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:18:50,925 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:20:23,474 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:21:52,815 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:23:22,254 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:24:51,816 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:26:22,204 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:28:01,022 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:29:23,688 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:30:51,708 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:32:21,180 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:33:51,121 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:35:22,885 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:36:53,425 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:38:35,193 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:39:51,777 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:41:22,162 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:42:51,957 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:44:22,058 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:45:52,947 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:47:21,878 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:49:05,850 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:50:21,733 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:51:52,568 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:53:22,859 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:54:51,383 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:56:23,584 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:57:50,942 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 12:59:23,799 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:00:52,289 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:02:21,168 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:03:51,596 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:05:25,674 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:06:50,288 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:08:20,902 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:09:51,683 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:11:20,542 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:12:53,121 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:14:20,751 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:16:03,429 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:17:22,654 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:18:52,824 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:20:21,273 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:21:50,644 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:23:22,171 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:24:52,321 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:26:36,486 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 13:27:51,756 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:29:23,040 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:30:52,821 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:32:22,245 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:33:52,961 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:35:23,510 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:37:01,048 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:38:22,415 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:39:52,879 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:41:21,972 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:42:54,549 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:44:21,852 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:45:53,442 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:47:21,988 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:48:50,839 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:50:22,751 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:51:51,992 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:53:26,222 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:54:51,428 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:56:20,324 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:57:52,494 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 13:59:22,407 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:00:52,324 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:02:24,034 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:04:04,219 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:05:23,047 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:06:53,598 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:08:23,422 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:09:53,493 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:11:25,060 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:13:00,205 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:14:36,511 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 14:15:56,642 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:17:26,411 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:18:58,346 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:20:27,382 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:21:56,293 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:23:26,129 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:25:06,517 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 14:26:26,155 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:27:57,725 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:29:36,518 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 14:30:56,874 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:32:30,222 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:33:55,376 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:35:25,491 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:36:54,145 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:38:28,706 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:40:01,898 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:41:36,524 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 14:42:58,457 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:44:30,118 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:45:56,538 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:47:29,830 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:48:58,421 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:50:26,990 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:52:06,528 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 14:53:31,935 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:55:01,664 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:56:27,830 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:57:55,928 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 14:59:26,271 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:00:57,654 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:02:36,536 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 15:03:55,702 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:05:28,749 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:06:57,204 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:08:27,340 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:09:56,417 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:11:23,057 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:12:52,767 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:14:21,895 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:15:51,533 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:17:22,153 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:18:55,721 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:20:22,366 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:21:53,617 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:23:22,691 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:24:51,367 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:26:32,216 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:28:01,149 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:29:27,133 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:30:57,205 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:32:28,474 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:33:57,276 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:35:35,905 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:37:00,062 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:38:27,823 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:39:54,410 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:41:29,132 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:42:59,901 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:44:26,853 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:46:01,654 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:47:31,309 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:48:55,858 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:50:30,070 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:51:56,778 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:53:36,595 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 15:55:05,213 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:56:30,532 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 15:58:06,599 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 15:59:29,729 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:00:57,787 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:02:28,584 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:03:56,912 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:05:27,695 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:06:59,777 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:08:35,974 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:09:59,236 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:11:26,842 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:12:54,596 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:14:32,741 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:16:38,722 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 16:17:34,343 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:19:04,840 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:20:28,322 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:22:04,814 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:23:28,196 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:25:03,492 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:26:24,798 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:28:01,446 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:29:28,151 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:31:01,301 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:32:28,150 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:34:01,568 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:35:30,971 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:36:59,102 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:38:31,307 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:40:01,084 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:41:30,368 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:42:57,458 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:44:28,782 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:45:59,134 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:47:25,612 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:49:01,338 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:50:28,154 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:52:05,734 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:53:30,863 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:55:06,649 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 16:56:32,299 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:58:05,442 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 16:59:26,406 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:01:06,653 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 17:02:36,653 [WARNING] scan cycle failed: 
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 222, in _scan_loop
+    if not self._divergence_history_initialized:
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/scott/git/portfolio-management/trading_system/apps/worker/unified_market_daemon.py", line 121, in _scan_predictions
+    if product_id and price is not None:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 519, in wait_for
+    async with timeouts.timeout(timeout):
+  File "/usr/lib/python3.12/asyncio/timeouts.py", line 115, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+2026-06-22 17:04:00,034 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:05:28,299 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:06:52,419 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:08:29,578 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:09:55,887 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:11:32,258 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:12:59,125 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:14:30,334 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:15:55,316 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:17:26,811 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:18:55,967 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:20:23,369 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:22:03,887 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:23:29,217 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:24:58,275 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:26:24,061 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:27:57,766 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:29:28,601 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:30:55,972 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:32:29,826 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:33:55,476 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:35:25,575 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:36:56,747 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:38:31,492 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:40:00,227 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:41:26,965 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:42:58,079 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:44:26,732 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:45:57,545 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:47:30,150 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:49:04,809 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:50:28,775 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:51:56,959 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:53:29,226 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:54:57,524 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:56:28,292 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:57:49,817 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 17:59:26,651 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:00:50,692 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:02:22,139 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:03:52,113 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:05:22,382 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:06:50,585 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:08:20,729 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:09:56,564 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:11:22,594 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:12:52,041 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:14:20,198 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:15:52,136 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:17:21,482 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:18:52,231 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:20:26,876 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:21:52,836 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:23:21,658 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:24:52,952 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:26:21,562 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:27:51,920 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:29:22,678 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:30:55,731 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:32:20,619 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:33:51,618 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:35:22,012 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:36:52,926 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:38:20,957 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:39:52,536 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:41:26,704 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:42:51,906 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:44:23,746 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:45:52,497 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:47:21,865 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:48:51,818 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:50:22,105 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:51:51,441 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:53:21,681 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:54:51,914 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:56:21,289 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:57:51,094 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 18:59:20,397 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:00:51,439 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:02:23,812 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:03:51,263 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:05:22,051 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:06:52,116 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:08:20,696 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:09:51,752 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:11:21,823 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:12:51,959 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:14:22,217 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:15:52,049 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:17:21,768 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:18:51,854 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:20:22,184 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:21:51,672 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:23:22,230 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:24:53,324 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:26:21,912 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:27:52,579 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:29:23,052 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:30:51,275 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:32:21,955 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:33:51,014 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:35:22,525 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:36:51,486 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:38:22,143 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:39:54,229 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:41:22,075 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:42:51,784 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:44:21,964 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:45:51,301 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:47:22,600 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:48:53,226 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:50:25,205 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:51:51,429 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:53:21,288 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:54:51,380 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:56:22,633 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:57:52,138 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 19:59:22,004 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:00:55,496 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:02:21,513 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:03:52,845 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:05:24,081 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:06:52,258 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:08:22,286 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:09:53,996 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:11:28,821 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:12:52,799 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:14:21,076 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:15:51,264 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:17:22,005 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:18:52,479 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:20:21,576 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:21:57,574 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:23:22,265 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:24:51,955 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:26:22,175 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:27:52,378 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:29:21,405 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:30:52,924 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:32:29,329 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:33:52,835 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:35:23,595 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:36:52,849 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:38:23,885 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:39:53,431 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:41:21,914 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:42:56,688 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:44:21,720 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:45:52,824 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:47:21,945 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:48:53,060 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:50:23,089 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:51:52,335 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:53:22,483 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:54:52,287 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:56:20,264 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:57:54,410 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 20:59:23,363 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:00:52,288 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:02:22,327 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:03:52,810 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:05:25,077 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:06:52,802 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:08:23,339 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:09:52,406 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:11:22,951 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:12:54,444 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:14:22,698 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:15:55,448 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:17:25,781 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:19:00,994 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:20:30,013 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:21:52,328 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:23:22,993 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:24:57,261 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:26:24,495 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:27:55,583 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:29:23,993 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:30:58,358 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:32:23,668 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:33:51,477 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:35:22,051 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:36:51,795 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:38:21,748 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:39:52,125 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:41:25,544 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:42:53,390 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:44:21,737 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:45:51,809 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:47:22,058 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:48:52,977 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:50:22,579 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:51:57,243 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:53:24,546 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:54:52,947 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:56:22,505 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:57:51,707 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 21:59:21,624 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:00:54,106 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:02:28,191 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:03:50,433 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:05:22,037 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:06:52,731 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:08:22,789 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:09:52,828 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:11:22,787 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:12:58,283 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:14:21,923 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:15:51,650 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:17:22,160 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:18:52,391 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:20:21,721 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:21:55,112 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:23:29,099 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:24:52,496 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:26:22,284 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:27:51,006 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:29:21,682 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:30:52,869 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:32:21,840 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:33:54,432 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:35:22,405 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:36:54,486 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:38:24,644 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:39:53,031 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:41:23,925 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:42:54,499 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:44:26,492 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:45:53,260 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:47:23,826 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:48:54,872 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:50:23,898 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:51:54,024 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:53:22,565 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:54:52,946 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:56:22,007 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:57:52,832 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 22:59:25,552 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:00:53,211 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:02:24,946 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:03:52,692 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:05:22,279 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:06:52,554 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:08:23,878 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:09:53,741 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:11:23,895 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:12:54,531 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:14:23,087 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:15:51,896 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:17:22,664 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:18:54,114 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:20:22,709 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:21:55,105 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:23:23,861 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:24:53,784 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:26:23,367 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:27:53,970 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:29:23,645 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:30:52,951 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:32:25,198 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:33:53,093 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:35:22,599 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:36:51,903 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:38:22,276 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:39:52,935 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:41:20,682 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:42:56,853 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:44:22,096 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:45:53,111 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:47:22,916 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:48:51,988 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:50:21,950 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:51:52,476 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:53:26,777 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:54:51,666 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:56:22,378 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:57:54,313 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-22 23:59:24,680 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:00:52,365 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:01:49,987 [INFO] ws disconnected, will reconnect...
+2026-06-23 00:01:51,989 [INFO] connecting to Coinbase WS...
+2026-06-23 00:01:52,238 [WARNING] public channel subscriptions detected, no auth token
+2026-06-23 00:02:22,953 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:03:58,017 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:05:22,469 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:06:53,338 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:08:23,081 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:09:53,627 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:11:25,488 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:12:54,781 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:14:28,003 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:15:52,374 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:17:23,079 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:18:53,343 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:20:22,610 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:21:51,959 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:23:24,954 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:24:55,129 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:26:22,866 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:27:51,872 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:29:22,135 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:30:55,004 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:32:24,263 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:33:53,227 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:35:24,005 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:36:54,702 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:38:22,350 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:39:52,019 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:41:23,621 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:42:53,396 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:44:21,136 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:45:53,751 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:47:22,917 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:48:52,723 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:50:20,697 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:51:53,719 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:53:22,613 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:54:53,145 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:56:22,499 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:57:52,437 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 00:59:21,318 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:00:51,735 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:02:21,486 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:03:51,974 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:05:23,651 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:06:51,663 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:08:21,524 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:09:52,738 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:11:22,952 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:12:52,172 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:14:22,048 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:15:52,276 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:17:22,267 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:18:52,304 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:20:22,801 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:21:51,028 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:23:23,486 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:24:53,543 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:26:22,296 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:27:50,373 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:29:21,523 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:30:53,354 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:32:24,052 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:33:55,934 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:35:21,763 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:36:52,427 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:38:23,280 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:39:51,216 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:41:20,892 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:42:51,018 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:44:25,730 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:45:51,776 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:47:21,212 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:48:54,751 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:50:21,401 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:51:51,657 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:53:21,980 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:54:56,414 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:56:22,071 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:57:52,054 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 01:59:20,914 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:00:53,098 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:02:22,552 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:03:52,494 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:05:26,583 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:06:53,265 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:08:23,119 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:09:52,053 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:11:20,984 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:12:53,518 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:14:22,910 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:15:56,063 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:17:20,882 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:18:52,602 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:20:21,895 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:21:53,023 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:23:21,905 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:24:50,773 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:26:24,072 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:27:52,875 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:29:22,570 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:30:53,818 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:32:20,992 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:33:52,271 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:35:22,901 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:36:55,147 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:38:24,447 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:39:52,437 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:41:23,403 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:42:54,119 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:44:21,331 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:45:51,842 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:47:21,688 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:48:52,943 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:50:22,668 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:51:52,345 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:53:22,497 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:54:51,836 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:56:21,905 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:57:51,590 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 02:59:21,032 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:00:52,591 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:01:46,928 [INFO] ws disconnected, will reconnect...
+2026-06-23 03:01:48,929 [INFO] connecting to Coinbase WS...
+2026-06-23 03:01:49,143 [WARNING] public channel subscriptions detected, no auth token
+2026-06-23 03:02:22,398 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:03:52,293 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:05:21,499 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:06:53,620 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:08:20,716 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:09:52,187 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:11:22,176 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:12:52,878 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:14:23,814 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:15:51,824 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:17:22,179 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:18:52,691 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:20:22,630 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:21:50,447 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:23:22,328 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:24:53,405 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:26:22,736 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:27:53,137 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:29:22,302 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:30:51,906 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:32:22,852 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:33:52,384 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:35:24,370 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:36:52,953 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:38:22,562 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:39:52,330 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:41:23,803 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:42:52,933 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:44:22,679 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:45:57,200 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:47:21,572 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:48:52,209 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:50:21,665 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:51:52,698 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:53:22,356 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:54:52,832 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:56:26,926 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:57:52,906 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 03:59:23,027 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:00:52,525 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:02:21,985 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:03:52,307 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:05:22,331 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:06:54,383 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:08:21,220 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:09:52,553 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:11:21,195 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:12:53,379 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:14:21,855 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:15:52,892 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:17:23,754 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:18:52,579 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:20:20,965 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:21:50,588 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:23:22,953 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:24:51,679 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:26:22,632 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:27:54,037 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:29:21,701 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:30:51,778 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:32:22,824 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:33:53,540 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:35:23,072 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:36:52,859 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:38:23,215 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:39:53,220 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:41:24,270 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:42:52,436 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:44:23,242 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:45:52,224 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:47:22,000 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:48:52,960 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:50:21,524 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:51:51,914 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:53:21,792 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:54:53,051 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:56:23,752 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:57:52,411 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 04:59:20,968 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:00:53,302 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:02:23,027 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:03:53,767 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:05:22,914 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:06:52,976 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:08:20,826 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:09:51,637 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:11:23,596 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:12:52,852 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:14:23,291 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:15:54,086 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:17:22,890 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:18:50,471 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:20:22,611 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:21:51,421 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:23:22,705 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:24:52,387 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:26:23,799 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:27:52,168 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:29:22,974 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:30:54,362 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:32:22,252 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:33:52,806 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:35:22,696 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:36:56,497 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:38:21,277 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:39:52,245 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:41:22,459 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:42:54,070 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:44:22,264 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:45:52,808 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:47:28,167 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:48:53,172 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:50:21,781 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:51:52,944 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:53:21,736 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:54:52,522 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:56:20,596 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:57:56,452 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 05:59:21,769 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:00:52,672 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:02:23,262 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:03:52,774 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:05:21,175 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:06:53,947 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:08:26,396 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:09:51,150 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:11:22,349 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:12:51,873 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:14:20,886 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:15:51,639 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:17:21,610 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:18:55,628 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:20:22,441 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:21:52,412 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:23:23,451 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:24:52,555 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:26:22,710 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:27:51,351 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:29:25,855 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:30:54,518 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:32:21,262 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:33:52,355 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:35:23,528 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:36:53,970 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:38:22,863 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:39:55,084 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:41:21,396 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:42:52,807 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:44:22,010 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:45:52,238 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:47:23,225 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:48:51,429 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:50:22,863 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:51:50,968 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:53:23,019 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:54:51,741 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:56:21,647 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:57:51,875 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 06:59:21,985 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:00:52,580 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:02:22,267 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:03:51,932 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:05:22,124 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:06:53,520 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:08:22,079 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:09:53,651 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:11:21,790 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:12:51,614 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:14:21,556 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:15:51,031 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:17:25,003 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:18:51,744 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:20:22,303 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:21:52,153 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:23:22,003 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:24:51,871 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:26:22,089 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:27:53,893 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:29:23,036 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:30:51,967 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:32:22,763 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:33:51,488 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:35:22,380 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:36:51,831 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:38:24,974 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:39:52,138 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:41:22,738 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:42:52,376 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:44:22,591 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:45:51,446 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:47:23,601 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:48:56,210 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:50:25,776 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:51:52,707 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:53:22,178 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:54:53,125 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:56:22,664 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:57:52,322 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 07:59:27,794 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:00:52,593 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:02:24,971 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:03:51,954 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:05:22,620 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:06:54,292 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:08:21,655 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:09:56,528 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:11:21,648 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:12:54,738 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:14:21,515 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:15:52,180 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:17:22,949 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:18:52,341 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:20:23,961 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:21:51,611 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:23:22,735 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:24:51,993 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:26:20,732 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:27:52,053 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:29:24,262 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:30:53,484 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:32:21,185 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:33:53,752 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:35:21,689 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:36:52,107 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:38:23,311 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:39:51,187 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:41:21,929 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:42:53,259 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:44:22,234 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:45:52,623 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:47:21,578 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:48:52,839 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:50:23,762 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:51:52,959 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:53:22,039 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:54:54,111 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:56:22,765 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:57:51,449 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 08:59:22,869 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:00:53,006 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:02:22,354 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:03:54,011 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:05:22,953 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:06:54,088 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:08:23,874 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:09:53,714 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:11:22,668 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:12:53,445 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:14:23,490 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:15:52,039 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:17:23,004 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:18:53,745 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:20:22,157 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:21:52,781 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:23:23,395 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:24:52,524 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:26:21,274 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:27:50,929 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:29:26,539 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:30:53,267 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:32:22,716 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:33:52,728 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:35:23,394 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:36:52,867 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:38:23,778 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:39:56,740 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:41:21,573 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:42:53,665 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:44:23,813 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:45:53,588 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:47:22,571 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:48:51,891 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:50:28,177 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:51:51,692 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:53:22,050 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:54:54,957 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:56:24,420 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:57:53,475 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 09:59:22,887 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:00:58,455 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:02:24,515 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:03:52,593 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:05:22,735 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:06:52,231 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:08:21,522 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:09:53,725 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:11:26,393 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:12:54,347 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:14:25,123 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:15:55,039 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:17:22,764 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:18:52,727 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:20:23,352 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:21:53,088 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:23:21,799 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:24:51,855 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:26:22,114 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:27:52,521 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:29:22,869 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:30:52,089 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:32:21,269 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:33:51,138 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:35:19,944 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:36:52,653 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:38:21,055 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:39:51,798 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:41:22,107 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:42:52,351 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:44:22,566 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:45:51,420 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:47:22,249 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:48:53,385 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:50:21,413 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:51:51,529 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:53:22,562 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:54:52,267 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:56:22,302 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:57:51,707 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 10:59:22,694 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:00:53,214 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:02:21,705 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:03:53,509 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:05:21,219 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:06:51,539 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:08:20,740 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:09:53,330 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:11:21,708 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:12:52,287 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:14:22,089 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:15:52,891 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:17:20,105 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:18:52,104 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:20:23,393 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:21:52,349 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:23:22,161 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:24:53,002 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:26:21,569 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:27:52,131 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:29:22,163 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:30:55,445 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:32:21,421 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:33:50,354 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:35:24,383 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:36:51,822 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:38:20,417 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:39:51,842 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:41:24,692 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:42:51,672 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:44:21,286 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:45:51,249 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:47:22,211 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:48:52,677 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:50:22,184 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:51:55,370 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:53:20,768 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:54:53,583 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:56:21,306 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:57:52,661 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 11:59:22,974 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:00:51,543 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:02:33,137 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:03:51,878 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:05:22,254 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:06:51,037 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:08:21,532 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:09:51,283 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:11:21,663 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:12:54,444 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:14:20,653 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:15:50,725 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:17:19,659 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:18:52,351 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:20:23,215 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:21:51,116 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:23:22,243 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:24:51,535 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:26:21,507 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:27:50,722 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:29:20,807 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:30:52,808 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:32:21,298 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:33:51,595 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:35:20,733 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:35:38,494 [INFO] ws disconnected, will reconnect...
+2026-06-23 12:35:40,495 [INFO] connecting to Coinbase WS...
+2026-06-23 12:35:41,088 [WARNING] public channel subscriptions detected, no auth token
+2026-06-23 12:36:52,408 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:38:21,271 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:39:50,601 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:41:23,167 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:42:51,849 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:44:22,178 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:45:50,525 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:47:22,350 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:48:51,983 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:50:22,020 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:51:52,210 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:53:22,161 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:54:50,600 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:56:21,432 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:57:51,215 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 12:59:21,039 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:00:52,566 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:02:21,116 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:03:52,118 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:05:22,928 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:06:50,226 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:08:21,879 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:09:52,233 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:11:25,198 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:12:51,859 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:14:20,910 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:15:53,601 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:17:21,747 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:18:52,027 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:20:22,396 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:21:54,982 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:23:22,238 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:24:52,882 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:26:20,270 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:27:51,691 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:29:22,008 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:30:52,627 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:32:27,405 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:33:50,672 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:35:22,685 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:36:52,190 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:38:21,963 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:39:50,758 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:41:22,573 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:42:57,641 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:44:21,704 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:45:51,805 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:47:23,084 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:48:52,830 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:50:22,120 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:51:52,065 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:53:26,533 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:54:51,811 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:56:23,269 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:57:51,638 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 13:59:21,229 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:00:52,082 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:02:21,654 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:03:53,120 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:05:20,809 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:06:58,060 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:08:19,560 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:09:52,320 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:11:21,859 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:12:52,414 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:14:23,608 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:15:53,174 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:17:22,023 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:18:51,960 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:20:22,293 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:21:52,944 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:23:21,061 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:24:52,389 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:26:21,281 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:27:53,152 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:29:21,965 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:30:51,391 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:32:22,401 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:33:53,280 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:35:21,999 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:36:52,242 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:38:21,129 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:39:52,186 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:41:19,854 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:42:56,348 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:44:21,937 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:45:51,179 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:47:23,015 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:48:52,376 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:50:22,024 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:51:52,005 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:53:22,341 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:54:51,502 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:56:21,664 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:57:49,762 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 14:59:20,343 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:00:52,990 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:02:23,986 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:03:51,399 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:05:23,256 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:06:51,755 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:08:20,997 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:09:51,054 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:11:20,320 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:12:54,464 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:14:22,853 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:15:51,501 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:17:22,720 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:18:51,690 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:20:21,790 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:21:53,025 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:23:24,250 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:24:52,321 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:26:21,933 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:27:51,259 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:29:21,250 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:30:53,895 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:32:21,337 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:33:55,869 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:35:23,193 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:36:53,731 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:38:23,811 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:39:52,291 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:41:22,542 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:42:52,799 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:44:26,792 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:45:51,483 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:47:21,360 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:48:53,202 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:50:22,345 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:51:51,814 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:53:20,552 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:54:56,381 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:56:20,889 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:57:52,403 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 15:59:22,381 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:00:52,976 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:02:22,080 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:03:53,073 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:05:24,752 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:06:53,183 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:08:21,327 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:09:53,010 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:11:22,278 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:12:51,111 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:14:23,447 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:15:53,454 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:17:21,459 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:18:51,974 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:20:20,890 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:21:51,083 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:23:21,246 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:24:52,784 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:26:21,257 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:27:53,264 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:29:21,267 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:30:52,449 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:32:24,152 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:33:51,989 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:35:22,057 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:36:53,138 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:38:22,655 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:39:50,875 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:41:21,499 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:42:51,777 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:44:21,045 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:45:51,893 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:47:22,188 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:48:50,691 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:50:22,318 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:51:51,630 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:53:22,508 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:54:50,808 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:56:21,355 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:57:52,636 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 16:59:22,016 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 17:00:51,835 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
+2026-06-23 17:02:22,073 [INFO] scan_cycle complete coinbase=3 markets=238 arbs=0
