@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 
@@ -13,33 +14,57 @@ BLOCKED_SHELL_TOKENS = {
     "docker", "kubectl", "aws", "gcloud", "az", "coinbase", "alpaca", "ib_insync",
 }
 
-ALLOWED_SHELL_PREFIXES = (
-    "python --version",
-    "python -V",
-    "python -m pip list",
-    "python -m pip show",
-    "pip list",
-    "pip show",
-    "where python",
-    "which python",
-    "pwd",
-    "ls",
-    "dir",
-)
+EXACT_COMMANDS = {
+    ("python", "--version"),
+    ("python", "-V"),
+    ("python", "-m", "pip", "list"),
+    ("pip", "list"),
+    ("where", "python"),
+    ("which", "python"),
+    ("pwd",),
+    ("ls",),
+    ("dir",),
+}
+
+PREFIX_COMMANDS = {
+    ("python", "-m", "pip", "show"),
+    ("pip", "show"),
+    ("ls",),
+    ("dir",),
+}
 
 
-def ensure_safe_shell(command: str) -> None:
-    normalized = command.strip().lower()
-    if not normalized:
+def parse_safe_shell(command: str) -> list[str]:
+    """Parse and validate an environment-audit command without using a shell."""
+    if not command.strip():
         raise SafetyError("Empty shell command")
-    if not any(normalized.startswith(prefix) for prefix in ALLOWED_SHELL_PREFIXES):
-        raise SafetyError(
-            "Command blocked by allowlist. Allowed examples: python --version, python -m pip list, pip show PACKAGE, where python, which python, pwd, ls, dir."
-        )
-    tokens = {part.strip(";&|()[]{}<>`$\\\"'") for part in normalized.split()}
-    dangerous = sorted(tokens & BLOCKED_SHELL_TOKENS)
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise SafetyError(f"Could not parse command: {exc}") from exc
+    if not parts:
+        raise SafetyError("Empty shell command")
+
+    lowered = tuple(part.lower() for part in parts)
+    dangerous = sorted(set(lowered) & BLOCKED_SHELL_TOKENS)
     if dangerous:
         raise SafetyError(f"Command contains blocked token(s): {dangerous}")
+
+    if lowered in EXACT_COMMANDS:
+        return parts
+
+    for prefix in PREFIX_COMMANDS:
+        if lowered[: len(prefix)] == prefix:
+            if prefix in {("ls",), ("dir",)} and len(parts) > 2:
+                raise SafetyError("ls/dir allow at most one path argument")
+            if prefix in {("python", "-m", "pip", "show"), ("pip", "show")} and len(parts) < len(prefix) + 1:
+                raise SafetyError("pip show requires a package name")
+            return parts
+
+    raise SafetyError(
+        "Command blocked by allowlist. Allowed examples: python --version, python -m pip list, "
+        "python -m pip show PACKAGE, where python, which python, pwd, ls, dir."
+    )
 
 
 def resolve_workspace_path(workspace: Path, requested: str | Path) -> Path:
