@@ -4,10 +4,13 @@ set -euo pipefail
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip wheel setuptools
-python -m pip install -e .
+python -m pip install -e '.[dev]'
 
 cat <<'MSG'
 Installed local-trader-agent.
+
+Run tests:
+  make test
 
 Run a deterministic backtest:
   local-trader-agent backtest --config config/example.yaml
