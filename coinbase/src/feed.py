@@ -55,6 +55,7 @@ class OrderBookUpdate:
 
 class TickerCache:
     def __init__(self, ttl: float = 1.0):
+        self._lock = threading.Lock()
         self._tickers: Dict[str, Ticker] = {}
         self._candles: Dict[str, List[Candle]] = {}
         self._orderbooks: Dict[str, OrderBookUpdate] = {}
@@ -62,48 +63,57 @@ class TickerCache:
         self._listeners: Dict[str, List[Callable]] = {}
 
     def on(self, event: str, fn: Callable):
-        self._listeners.setdefault(event, []).append(fn)
+        with self._lock:
+            self._listeners.setdefault(event, []).append(fn)
 
     def _emit(self, event: str, data: Any):
-        for fn in self._listeners.get(event, []):
+        fns = []
+        with self._lock:
+            fns = list(self._listeners.get(event, []))
+        for fn in fns:
             try:
                 fn(data)
             except Exception:
                 pass
 
     def update_ticker(self, ticker: Ticker):
-        self._tickers[ticker.product_id] = ticker
+        with self._lock:
+            self._tickers[ticker.product_id] = ticker
         self._emit("ticker", ticker)
 
     def update_candle(self, candle: Candle):
-        self._candles.setdefault(candle.product_id, []).append(candle)
-        max_len = 500
-        if len(self._candles[candle.product_id]) > max_len:
-            self._candles[candle.product_id] = self._candles[candle.product_id][-max_len:]
+        with self._lock:
+            self._candles.setdefault(candle.product_id, []).append(candle)
+            max_len = 500
+            if len(self._candles[candle.product_id]) > max_len:
+                self._candles[candle.product_id] = self._candles[candle.product_id][-max_len:]
         self._emit("candle", candle)
 
     def update_orderbook(self, update: OrderBookUpdate):
-        self._orderbooks[update.product_id] = update
+        with self._lock:
+            self._orderbooks[update.product_id] = update
         self._emit("orderbook", update)
 
     def get_ticker(self, product_id: str) -> Optional[Ticker]:
-        t = self._tickers.get(product_id)
-        if t and time.time() - t.timestamp < self._ttl:
-            return t
-        return None
+        with self._lock:
+            t = self._tickers.get(product_id)
+            if t and time.time() - t.timestamp < self._ttl:
+                return t
+            return None
 
     def get_candles(self, product_id: str, n: int = 100) -> List[Candle]:
-        candles = self._candles.get(product_id, [])
+        with self._lock:
+            candles = list(self._candles.get(product_id, []))
         return candles[-n:]
 
     def get_orderbook(self, product_id: str) -> Optional[OrderBookUpdate]:
-        return self._orderbooks.get(product_id)
+        with self._lock:
+            return self._orderbooks.get(product_id)
 
     def all_prices(self) -> Dict[str, float]:
-        return {
-            pid: t.price for pid, t in self._tickers.items()
-            if time.time() - t.timestamp < self._ttl * 10
-        }
+        with self._lock:
+            cutoff = time.time() - self._ttl * 10
+            return {pid: t.price for pid, t in self._tickers.items() if t.timestamp > cutoff}
 
 
 class PollingFeed:

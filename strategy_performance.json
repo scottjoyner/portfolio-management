@@ -1,9 +1,9 @@
 {
   "volume_generator": {
     "strategy": "volume_generator",
-    "trades": 10,
+    "trades": 12,
     "wins": 0,
-    "losses": 10,
+    "losses": 12,
     "total_pnl": 0.0,
     "total_r": 0.0,
     "total_fees": 0.0,
@@ -16,20 +16,22 @@
     "profit_factor": 0.0,
     "products": {
       "BTC-USD": {
-        "trades": 5,
+        "trades": 6,
         "wins": 0,
         "total_pnl": 0.0
       },
       "ETH-USD": {
-        "trades": 5,
+        "trades": 6,
         "wins": 0,
         "total_pnl": 0.0
       }
     },
     "mode": "paper",
-    "last_trade_ts": 1782234543.2101452,
+    "last_trade_ts": 1782249341.8318515,
     "history": [],
     "_returns": [
+      0.0,
+      0.0,
       0.0,
       0.0,
       0.0,

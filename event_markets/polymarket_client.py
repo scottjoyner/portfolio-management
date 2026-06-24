@@ -161,6 +161,20 @@ class PolymarketClient:
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read().decode())
 
+    def search_markets(self, term: str = "", limit: int = 100, closed: bool = False) -> List[PolymarketMarket]:
+        """Search markets by title keyword via Gamma API."""
+        params = {"limit": min(limit, 100), "closed": str(closed).lower()}
+        if term:
+            params["title"] = term
+        try:
+            data = self._gamma_get("/markets", params)
+        except Exception as e:
+            logger.warning("Polymarket search failed: %s", e)
+            return []
+        if not isinstance(data, list):
+            data = data.get("data", [])
+        return [self._parse_gamma_market(m) for m in data if self._is_valid(m)]
+
     def fetch_markets(self, limit: int = 100, closed: bool = False) -> List[PolymarketMarket]:
         """Fetch all open markets from Gamma API."""
         params = {"limit": min(limit, 100), "closed": str(closed).lower()}
@@ -314,8 +328,22 @@ class PolymarketClient:
         )
 
     def _parse_gamma_market(self, raw: dict) -> PolymarketMarket:
-        outcomes = raw.get("outcomes", ["Yes", "No"])
-        raw_prices = raw.get("outcomePrices", ["0.5", "0.5"])
+        outcomes_raw = raw.get("outcomes", ["Yes", "No"])
+        if isinstance(outcomes_raw, str):
+            try:
+                outcomes = json.loads(outcomes_raw)
+            except (json.JSONDecodeError, TypeError):
+                outcomes = ["Yes", "No"]
+        else:
+            outcomes = outcomes_raw
+        raw_prices_raw = raw.get("outcomePrices", ["0.5", "0.5"])
+        if isinstance(raw_prices_raw, str):
+            try:
+                raw_prices = json.loads(raw_prices_raw)
+            except (json.JSONDecodeError, TypeError):
+                raw_prices = ["0.5", "0.5"]
+        else:
+            raw_prices = raw_prices_raw
         prices = {}
         for i, o in enumerate(outcomes):
             try:
@@ -336,6 +364,14 @@ class PolymarketClient:
         g_spread = float(raw.get("spread", 0) or 0)
         yes_bid = float(raw.get("bestBid", 0) or 0)
         yes_ask = float(raw.get("bestAsk", 1) or 1)
+        token_ids_raw = raw.get("clobTokenIds") or []
+        if isinstance(token_ids_raw, str):
+            try:
+                token_ids = json.loads(token_ids_raw)
+            except (json.JSONDecodeError, TypeError):
+                token_ids = []
+        else:
+            token_ids = token_ids_raw
         return PolymarketMarket(
             condition_id=raw.get("conditionId", raw.get("condition_id", "")),
             question=raw.get("question", ""),
@@ -346,7 +382,7 @@ class PolymarketClient:
             end_date_iso=raw.get("endDateIso", raw.get("end_date_iso", "")),
             closed=bool(raw.get("closed", False)),
             accepting_orders=bool(raw.get("acceptingOrders", raw.get("accepting_orders", True))),
-            tokens=[{"token_id": tid} for tid in (raw.get("clobTokenIds") or [])],
+            tokens=[{"token_id": tid} for tid in token_ids],
             ticker=raw.get("slug", ""),
             event_slug=event_slug,
             yes_bid=yes_bid,

@@ -13,7 +13,7 @@ Multi-module algorithmic trading platform spanning Python (primary) and Node.js/
 | `graph-alpha-bot/` | Graph-based AI trading bot: ~30 strategies using Neo4j knowledge graph, news ingestion pipeline, MCP server |
 | `backtester.py` | 14+ Coinbase-specific strategies + `MarketDataFetcher` + `Backtester` + benchmark runner |
 | `strategy_engine.py` | 25 general strategies + `run_strategies()` + `backtest_strategy()` with pass/fail verdict |
-| `portfolio_optimizer.py` | Continuous daemon: TLH detection, fee-tier optimization, rebalancing (80/15/5), strategy signal integration, uses ConfidenceMatrix + ConfidenceEngine |
+| `portfolio_optimizer.py` | Continuous daemon: TLH detection, fee-tier optimization, rebalancing (80/15/5), strategy signal integration + **unified signal accumulator integration** (news, PM, arb, divergence), uses ConfidenceMatrix + ConfidenceEngine |
 | `portfolio_manager.py` | Backtesting framework: Position/Portfolio classes, run strategies on historical CSV data |
 | `approval_server.py` | Lightweight HTTP server for human-in-the-loop trade approval via email approve/deny links |
 | `state_store.py` | Thread-safe SQLite persistence: trades, snapshots, bt_cache, position_ages, meta tables |
@@ -156,13 +156,16 @@ Raw Signal → ConfidenceMatrix (confidence_matrix.py)
 
 ### Portfolio Optimization (portfolio_optimizer.py)
 
-Continuous daemon with 4 detection dimensions:
+Continuous daemon with 5 detection dimensions:
 1. **TLH** — sell positions with unrealized loss > 5% for 20% tax savings
 2. **Fee-Tier Volume** — generate volume to reach lower Coinbase fee tiers (7 tiers, 0.6%/1.2% → 0.05%/0.15%)
 3. **Rebalancing** — maintain target allocation (safe=80%, growth=15%, speculative=5%)
 4. **Strategy Signals** — run all 25 strategies, apply backtest validation + ConfidenceMatrix + ConfidenceEngine
+5. **Unified Signal Accumulator** — integrates news, PM, arb, divergence signals from the accumulator, mapped to `OpportunityType.ACCUMULATOR_SIGNAL`
 
 Opportunities ranked by `priority * confidence * boost`, max 10 positions, 20% risk per position.
+
+Detection order per tick: TLH → coinbase universe → stock → fee tier → rebalance → strategy signals → volume cycles → **accumulator signals** → event markets.
 
 ### Approval Workflow (approval_server.py)
 
@@ -187,7 +190,11 @@ Opportunities ranked by `priority * confidence * boost`, max 10 positions, 20% r
 - `ranking.py` — `StrategyRanking` + `StrategyRankingFilter` for rolling performance ranking and persistence
 - `news_risk.py` — `NewsRiskAdjuster` and `NewsAwareRiskStrategy` using knowledge-graph sentiment and MCP guards
 - `market_condition.py` — `MarketConditionProfile` + `MarketConditionStrategySelector` for archetype-based strategy gating
+- `graph/` — CoinGecko-to-Neo4j sync helpers, `GraphSignalStrategy`, and `graph_weight_overlays()` for graph-aware weighting
+- `graph/sync_coingecko_universe.py` — refreshes the CoinGecko top-5000 universe into Neo4j from cached JSON or live CoinGecko pages
+- `portfolio_optimizer.py` — graph universe now biases buy/rebalance candidate ranking via Neo4j graph scores
 - `run_trader_v2.py` — unified Coinbase trader with startup validation, graceful shutdown, health endpoint, and tick-stage error boundaries
+- `trading_system/ui/dashboard_server.py` — `/market/universe` and `/execution/status` now include graph summaries/overlays
 
 ### Coinbase v2 Hardening (coinbase/src/)
 
@@ -196,6 +203,9 @@ Opportunities ranked by `priority * confidence * boost`, max 10 positions, 20% r
 - `run_trader_v2.py` can expose `--health-port <port>` and serves `/health` with tick, regime, uptime, and ranking status
 - `StrategyRanking` persists to `data/ranking_state.json` and reloads on startup
 - `run_trader_v2.py` creates a `CBClient` and subscribes configured products so the feed actually polls; `PollingFeed(cb_client=None, ...)` still remains inert for harnesses
+- `run_trader_v2.py` optionally registers `GraphSignalStrategy` and applies Neo4j graph overlays when the graph package is available
+- `portfolio_optimizer.py` uses cached Neo4j graph scores to bias strategy-signal sizing and rebalance candidate selection
+- Dashboard universe/execution views expose graph scores and overlays so the bias is visible in the UI
 - `Ticker` uses `price` (not `mid_price`) and `TickerCache` uses `get_ticker()`; these are the canonical field/method names in the Coinbase feed stack
 
 ### State Persistence
@@ -255,6 +265,18 @@ YFinance/Alpha Vantage ──→ data/unified_fetcher.py ──→ strategy_engi
 - **Coinbase trader health** — use `python3 coinbase/src/run_trader_v2.py --mode paper --health-port 9090` to run the hardened loop with a local health endpoint
 - **Live mode validation** — `run_trader_v2.py` refuses non-paper startup if the Coinbase CLI is missing
 - **Ranking persistence** — `data/ranking_state.json` is created automatically; do not hand-edit it unless you know the schema
+
+## Symbol Universe
+
+All trading pairs defined in `graph-alpha-bot/app/strategies/coinbase_universe.py` (single source of truth). **34 real Coinbase spot pairs.**
+
+| Tier | Pairs | Count |
+|------|-------|-------|
+| Core (safe) | BTC-USD, ETH-USD, SOL-USD | 3 |
+| Growth | XRP, ADA, DOGE, AVAX, DOT, LINK, UNI, POL, ATOM, LTC, BCH, NEAR, APT, SUI, ARB, OP, FIL, INJ, SEI, TIA | 20 |
+| Speculative | ALGO, XLM, STX, HBAR, ICP, GRT, SHIB, PEPE, BONK, TRUMP, FLOKI | 11 |
+
+**Removed:** BTC-XXX ratio pairs (never real products), MATIC→POL (migrated), delisted FTM/TRX.
 
 ## How to Run
 

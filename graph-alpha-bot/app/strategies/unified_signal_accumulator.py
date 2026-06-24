@@ -26,6 +26,9 @@ sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Canonical Coinbase spot universe
+from coinbase_universe import COINBASE_SPOT_PAIRS, FEED_PRODUCTS
+
 
 # ======================================================================
 # Data structures
@@ -178,11 +181,7 @@ class NewsSentimentAdapter:
 
     def __init__(self):
         from unified_signal_generator import NewsSentimentAnalyzer
-        symbols_default = [
-            "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "XRP-USD",
-            "ADA-USD", "DOT-USD", "AVAX-USD", "LINK-USD", "UNI-USD",
-        ]
-        self.analyzer = NewsSentimentAnalyzer(symbols_default)
+        self.analyzer = NewsSentimentAnalyzer(list(COINBASE_SPOT_PAIRS))
 
     def get_signals(self, price_map: Dict[str, float]) -> List[AccumulatedSignal]:
         rich_data = self.analyzer.analyze_full()
@@ -313,9 +312,27 @@ class DaemonSnapshotAdapter:
         ("xrp", "XRP-USD"), ("ripple", "XRP-USD"),
         ("cardano", "ADA-USD"), ("polkadot", "DOT-USD"),
         ("avalanche", "AVAX-USD"), ("chainlink", "LINK-USD"),
-        ("uniswap", "UNI-USD"), ("ai", "NVDA"),
-        ("nvidia", "NVDA"), ("inflation", "BTC-USD"),
-        ("fed", "BTC-USD"), ("interest rate", "BTC-USD"),
+        ("uniswap", "UNI-USD"),
+        ("polygon", "POL-USD"), ("matic", "POL-USD"), ("pol", "POL-USD"),
+        ("cosmos", "ATOM-USD"), ("atom", "ATOM-USD"),
+        ("litecoin", "LTC-USD"), ("ltc", "LTC-USD"),
+        ("bitcoin cash", "BCH-USD"), ("bitcoincash", "BCH-USD"),
+        ("near", "NEAR-USD"), ("aptos", "APT-USD"), ("apt", "APT-USD"),
+        ("sui", "SUI-USD"), ("arbitrum", "ARB-USD"), ("arb", "ARB-USD"),
+        ("optimism", "OP-USD"), ("op", "OP-USD"),
+        ("filecoin", "FIL-USD"), ("injective", "INJ-USD"),
+        ("sei", "SEI-USD"), ("celestia", "TIA-USD"), ("tia", "TIA-USD"),
+        ("shiba", "SHIB-USD"), ("shib", "SHIB-USD"),
+        ("pepe", "PEPE-USD"), ("bonk", "BONK-USD"),
+        ("trump", "TRUMP-USD"), ("floki", "FLOKI-USD"),
+        ("algorand", "ALGO-USD"),
+        ("stellar", "XLM-USD"), ("stacks", "STX-USD"),
+        ("hedera", "HBAR-USD"),
+        ("internet computer", "ICP-USD"),
+        ("the graph", "GRT-USD"), ("grt", "GRT-USD"),
+        ("ai", "NVDA"), ("nvidia", "NVDA"),
+        ("inflation", "BTC-USD"), ("fed", "BTC-USD"),
+        ("interest rate", "BTC-USD"),
         ("president", "BTC-USD"), ("election", "BTC-USD"),
     ]
 
@@ -523,10 +540,7 @@ class UnifiedSignalAccumulator:
         self._last_fetch: Dict[str, float] = {}
 
         # Registered symbols — must be valid Coinbase Advanced Trade products
-        self.symbols: List[str] = [
-            "BTC-USD", "ETH-USD", "SOL-USD", "DOGE-USD", "XRP-USD",
-            "ADA-USD", "DOT-USD", "AVAX-USD", "LINK-USD", "UNI-USD",
-        ]
+        self.symbols: List[str] = list(COINBASE_SPOT_PAIRS)
 
         self.prediction_market_adapter = self._init_pm_adapter()
         self.daemon_adapter = DaemonSnapshotAdapter()

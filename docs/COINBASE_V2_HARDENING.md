@@ -32,6 +32,16 @@ python3 coinbase/src/run_trader_v2.py --mode paper --health-port 9090
 - `ranking.py` - rolling strategy ranking + persistence
 - `news_risk.py` - knowledge-graph based risk adjustment
 - `market_condition.py` - archetype-based opportunity gating
+- `graph/` - CoinGecko sync helpers, `GraphSignalStrategy`, and graph-based overlays
+- `portfolio_optimizer.py` - cached Neo4j graph scores bias strategy-signal sizing and rebalance candidate selection
+- `trading_system/ui/dashboard_server.py` - `/market/universe` and `/execution/status` include graph summaries/overlays
+
+## CoinGecko Sync
+
+- Script: `python3 -m coinbase.src.graph.sync_coingecko_universe`
+- Default source: cached top-5000 markets JSON under `coinbase/data/alt/json/`
+- Optional live refresh: `--fetch-live`
+- Cached asset metadata is ingested when `coingecko_assets_meta.json` is present
 
 ## Notes
 

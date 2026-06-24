@@ -2,11 +2,10 @@ from __future__ import annotations
 import os
 import time
 import json
+import logging
 import subprocess
 import shutil
 from datetime import datetime, timezone
-import requests
-
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency in tests
@@ -15,6 +14,8 @@ except ImportError:  # pragma: no cover - optional dependency in tests
 
 load_dotenv(override=False)
 
+log = logging.getLogger(__name__)
+
 class CBClient:
     def __init__(self, api_key: str | None = None, api_secret: str | None = None, timeout: int | None = None):
         api_key = api_key or os.getenv("COINBASE_API_KEY")
@@ -22,7 +23,6 @@ class CBClient:
         # allow override via env; default to 30s
         timeout = timeout or int(float(os.getenv("CB_TIMEOUT_S", "30")))
         self.timeout = timeout
-        self.client = None
         self.api_key = api_key
         self.api_secret = api_secret
         self.cli_env = os.getenv("COINBASE_CLI_ENV", "live")
@@ -70,6 +70,7 @@ class CBClient:
                     if isinstance(book, dict):
                         merged["pricebooks"].append(book)
             except Exception:
+                log.warning("best_bid_ask failed for %d products — synthesizing from candles", len(batch))
                 merged["pricebooks"].extend(self._synthetic_books(batch))
 
         return merged

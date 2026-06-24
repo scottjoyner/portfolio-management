@@ -1,4 +1,5 @@
 from __future__ import annotations
+import fcntl
 import time
 import uuid
 import logging
@@ -266,20 +267,22 @@ class ExecutionOrchestrator:
         notional = sig.size * sig.entry_price
         self.fee_tracker.record_trade(notional)
         self.volume_generator.record_generated(notional)
+        entry_order = bracket.get("entry_order")
         return {
-            "success": bracket.get("entry_order", {}).success,
+            "success": getattr(entry_order, "success", False) if entry_order is not None else False,
             "product_id": sig.product_id,
             "side": sig.direction.value,
             "size": sig.size,
             "entry": sig.entry_price,
-            "order_id": bracket.get("entry_order", {}).order_id,
+            "order_id": getattr(entry_order, "order_id", "") if entry_order is not None else "",
             "notional": notional,
             "mode": "live",
-            "bracket_id": bracket.get("entry_order", {}).client_order_id,
+            "bracket_id": getattr(entry_order, "client_order_id", "") if entry_order is not None else "",
         }
 
     def _approval_execute(self, sig: TradeSignal) -> Dict[str, Any]:
         import json, os
+        token = str(uuid.uuid4())
         approval = {
             "product_id": sig.product_id,
             "direction": sig.direction.value,
@@ -291,19 +294,21 @@ class ExecutionOrchestrator:
             "confidence": sig.confidence,
             "reason": sig.reason,
             "timestamp": time.time(),
-            "token": str(uuid.uuid4()),
+            "token": token,
             "status": "pending",
         }
-        pending = []
+        pending = {}
         try:
             if os.path.exists("pending_approvals.json"):
                 with open("pending_approvals.json") as f:
+                    fcntl.flock(f, fcntl.LOCK_SH)
                     pending = json.load(f)
         except Exception:
             pass
-        pending.append(approval)
+        pending[token] = approval
         with open("pending_approvals.json", "w") as f:
-            json.dump(pending, f, indent=2)
+            fcntl.flock(f, fcntl.LOCK_EX)
+            json.dump(pending, f, indent=2, default=str)
         self.state.pending_approvals.append(approval)
         return {
             "success": True,

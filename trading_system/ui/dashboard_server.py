@@ -36,6 +36,7 @@ import argparse
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -49,11 +50,13 @@ sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
 OPERATOR_STATE_PATH = str(ROOT / 'data' / 'operator-state.json')
 SIGNAL_CACHE_PATH = str(ROOT / 'data' / '.unified_signal_cache.json')
 APPROVALS_PATH = str(ROOT / 'data' / 'pending_approvals.json')
-STATE_DB_PATH = str(ROOT / 'state' / 'optimizer_state.db')
+STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
 ARBITRAGE_CACHE = {"ts": 0.0, "data": None}
+GRAPH_CACHE = {"ts": 0.0, "data": None}
 PREDICTION_MARKETS_TTL_SECS = 300
 ARBITRAGE_TTL_SECS = 180
+GRAPH_TTL_SECS = 300
 
 DEFAULT_STOCK_WATCHLIST = [
     'AAPL', 'MSFT', 'NVDA', 'AMZN', 'META', 'GOOGL', 'TSLA',
@@ -62,7 +65,7 @@ DEFAULT_STOCK_WATCHLIST = [
 
 DEFAULT_CAPITAL_POLICY = {
     "targets": {"reserve": 0.50, "core": 0.20, "opportunity": 0.30},
-    "core_allowlist": ["BTC", "ETH"],
+    "core_allowlist": ["BTC", "ETH", "SOL"],
     "core_min_allocation_pct": 10.0,
     "core_batch_fraction": 0.05,
     "opportunity_batch_fraction": 0.03,
@@ -74,7 +77,7 @@ CAPITAL_PRESETS = {
         "description": "More cash, smaller risk sleeve.",
         "policy": {
             "targets": {"reserve": 0.65, "core": 0.25, "opportunity": 0.10},
-            "core_allowlist": ["BTC", "ETH"],
+            "core_allowlist": ["BTC", "ETH", "SOL"],
             "core_min_allocation_pct": 15.0,
             "core_batch_fraction": 0.04,
             "opportunity_batch_fraction": 0.02,
@@ -85,7 +88,7 @@ CAPITAL_PRESETS = {
         "description": "Default 50/20/30 split with medium batch sizes.",
         "policy": {
             "targets": {"reserve": 0.50, "core": 0.20, "opportunity": 0.30},
-            "core_allowlist": ["BTC", "ETH"],
+            "core_allowlist": ["BTC", "ETH", "SOL"],
             "core_min_allocation_pct": 10.0,
             "core_batch_fraction": 0.05,
             "opportunity_batch_fraction": 0.03,
@@ -96,7 +99,7 @@ CAPITAL_PRESETS = {
         "description": "Lower cash, larger opportunity sleeve.",
         "policy": {
             "targets": {"reserve": 0.35, "core": 0.20, "opportunity": 0.45},
-            "core_allowlist": ["BTC", "ETH"],
+            "core_allowlist": ["BTC", "ETH", "SOL"],
             "core_min_allocation_pct": 8.0,
             "core_batch_fraction": 0.06,
             "opportunity_batch_fraction": 0.05,
@@ -134,6 +137,62 @@ def _get_state_store():
         return None
 
 
+def _get_graph_store():
+    try:
+        from coinbase.src.graph.neo4j_graph import CryptoGraphStore
+    except Exception:
+        return None
+
+    cached = GRAPH_CACHE.get("data")
+    now = time.time()
+    if cached is not None and now - float(GRAPH_CACHE.get("ts", 0.0) or 0.0) < GRAPH_TTL_SECS:
+        return cached
+
+    try:
+        store = CryptoGraphStore()
+        GRAPH_CACHE["data"] = store
+        GRAPH_CACHE["ts"] = now
+        return store
+    except Exception as e:
+        logger.debug("Graph store unavailable: %s", e)
+        return None
+
+
+def _graph_summary_for_products(products: list[str], limit: int = 10) -> dict:
+    if not products:
+        return {"available": False, "products": [], "top_assets": [], "avg_score": 0.0}
+
+    store = _get_graph_store()
+    if not store:
+        return {"available": False, "products": products[:limit], "top_assets": [], "avg_score": 0.0}
+
+    try:
+        from coinbase.src.graph.portfolio_overlay import graph_weight_overlays
+        signals = [store.asset_signal(pid) for pid in products[: max(1, limit)]]
+        signals = sorted(signals, key=lambda s: s.graph_score, reverse=True)
+        overlays = graph_weight_overlays(signals, max_boost=0.25)
+        avg_score = sum(s.graph_score for s in signals) / len(signals) if signals else 0.0
+        return {
+            "available": True,
+            "products": products[:limit],
+            "top_assets": [
+                {
+                    "product_id": s.product_id,
+                    "symbol": s.symbol,
+                    "graph_score": round(s.graph_score, 3),
+                    "available_on_coinbase": bool(getattr(s, "available_on_coinbase", False)),
+                    "overlay": round(overlays.get(s.product_id, 1.0), 3),
+                    "reasons": list(getattr(s, "reasons", []) or []),
+                }
+                for s in signals[:limit]
+            ],
+            "avg_score": round(avg_score, 3),
+        }
+    except Exception as e:
+        logger.debug("Graph summary failed: %s", e)
+        return {"available": False, "products": products[:limit], "top_assets": [], "avg_score": 0.0}
+
+
 def _normalize_capital_policy(policy: dict | None = None) -> dict:
     raw = dict(DEFAULT_CAPITAL_POLICY)
     if policy:
@@ -155,6 +214,9 @@ def _normalize_capital_policy(policy: dict | None = None) -> dict:
         "core_min_allocation_pct": max(float(raw.get("core_min_allocation_pct", DEFAULT_CAPITAL_POLICY["core_min_allocation_pct"])), 0.0),
         "core_batch_fraction": max(min(float(raw.get("core_batch_fraction", DEFAULT_CAPITAL_POLICY["core_batch_fraction"])), 0.5), 0.0),
         "opportunity_batch_fraction": max(min(float(raw.get("opportunity_batch_fraction", DEFAULT_CAPITAL_POLICY["opportunity_batch_fraction"])), 0.5), 0.0),
+        "max_deployable_usd": max(float(raw.get("max_deployable_usd", 0.0) or 0.0), 0.0),
+        "live_test_started_at": str(raw.get("live_test_started_at", "") or ""),
+        "updated_at": str(raw.get("updated_at", "") or ""),
         "preset_name": str(raw.get("preset_name", "custom")),
         }
 
@@ -309,17 +371,36 @@ def _refresh_cache():
     now = time.time()
     if now - _cache_ts < _CACHE_TTL and _cache:
         return
-    acc = _get_accumulator()
-    if acc:
-        try:
-            _cache = acc.accumulate_and_report()
-            _cache_ts = now
-        except Exception as e:
-            logger.error("Accumulator error: %s", e)
-            _cache = {"status": "error", "error": str(e), "queue": []}
-    else:
-        _cache = {"status": "unavailable", "queue": []}
+
+    # Prefer the persisted cache written by the daemon. It is much faster than
+    # recomputing the accumulator live on every request.
+    signal_cache = _load_json(SIGNAL_CACHE_PATH, {})
+    cached_signals = signal_cache.get("signals", []) if isinstance(signal_cache, dict) else []
+    if cached_signals:
+        queue = list(cached_signals)
+        queue.sort(key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0), reverse=True)
+        _cache = {
+            "status": signal_cache.get("status", "ok") if isinstance(signal_cache, dict) else "ok",
+            "source": "cache",
+            "queue": queue,
+            "signals": queue,
+            "total_signals": len(queue),
+            "buy_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "BUY"),
+            "sell_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "SELL"),
+            "quality_score": round(sum(float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0) for s in queue[:5]) / len(queue[:5]) if queue[:5] else 0, 3),
+            "updated_at": signal_cache.get("updated_at") if isinstance(signal_cache, dict) else None,
+        }
         _cache_ts = now
+        return
+
+    if _cache:
+        _cache["status"] = _cache.get("status", "stale")
+        _cache["source"] = "stale"
+        _cache_ts = now
+        return
+
+    _cache = {"status": "unavailable", "source": "empty", "queue": [], "signals": []}
+    _cache_ts = now
 
 
 # ── API Handlers ────────────────────────────────────────────────
@@ -612,6 +693,7 @@ def api_universe():
     coinbase_quality = 0.0
     prediction = {}
     stock_watchlist = DEFAULT_STOCK_WATCHLIST
+    graph = {"available": False, "products": [], "top_assets": [], "avg_score": 0.0}
 
     cb = _get_coinbase_cli()
     if cb:
@@ -653,10 +735,14 @@ def api_universe():
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    if coinbase:
+        graph = _graph_summary_for_products(coinbase[:25], limit=10)
+
     return {
         'coinbase_total': len(coinbase),
         'coinbase_quality_score': coinbase_quality,
         'coinbase_sample': coinbase[:25],
+        'graph': graph,
         'stock_watchlist': stock_watchlist,
         'stock_count': len(stock_watchlist),
         'prediction_categories': prediction,
@@ -693,8 +779,9 @@ def api_execution():
     total_value = float(latest.get('total_value', 0) or 0)
     usdc_balance = float(latest.get('usdc_balance', 0) or 0)
     reserve_usd = min(total_value, max(total_value * float(policy.get('targets', {}).get('reserve', 0.50)), 100.0)) if total_value else 0.0
-    deployable_buy_power = max(usdc_balance - reserve_usd, 0.0)
+    raw_cash_buy_power = max(usdc_balance - reserve_usd, 0.0)
     holdings = latest.get('holdings', {}) if latest else {}
+    graph_products = []
     core_value = 0.0
     opportunity_value = 0.0
     core_allowlist = {str(x).upper().replace('-USD', '') for x in (policy.get('core_allowlist') or ['BTC', 'ETH'])}
@@ -708,11 +795,40 @@ def api_execution():
             core_value += value
         elif currency not in {'USDC', 'USDT', 'DAI'}:
             opportunity_value += value
+        pid = str(h.get('product_id') or f"{currency}-USD")
+        if pid not in graph_products:
+            graph_products.append(pid)
     bucket_targets = {
         'reserve': round(total_value * float(policy.get('targets', {}).get('reserve', 0.50)), 2),
         'core': round(total_value * float(policy.get('targets', {}).get('core', 0.20)), 2),
         'opportunity': round(total_value * float(policy.get('targets', {}).get('opportunity', 0.30)), 2),
     }
+    hard_cap = float(policy.get('max_deployable_usd', 0) or 0)
+    started_at = str(policy.get('live_test_started_at', '') or policy.get('updated_at', '') or '')
+    try:
+        start_dt = datetime.fromisoformat(started_at.replace('Z', '+00:00')) if started_at else None
+    except Exception:
+        start_dt = None
+    live_test_capital_in_play = 0.0
+    if hard_cap > 0 and start_dt is not None:
+        for t in store.load_trades(limit=2000) if store else []:
+            if bool(t.get('dry_run', 1)):
+                continue
+            try:
+                trade_dt = datetime.fromisoformat(str(t.get('timestamp', '')).replace('Z', '+00:00'))
+            except Exception:
+                continue
+            if trade_dt.tzinfo is None:
+                trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+            if trade_dt < start_dt:
+                continue
+            size = max(float(t.get('size_usd', 0) or 0), 0.0)
+            side = str(t.get('side', '')).upper()
+            live_test_capital_in_play += size if side == 'BUY' else -size
+        live_test_capital_in_play = max(live_test_capital_in_play, 0.0)
+    remaining_hard_cap = max(hard_cap - live_test_capital_in_play, 0.0) if hard_cap > 0 else 0.0
+    deployable_buy_power = min(raw_cash_buy_power, remaining_hard_cap) if hard_cap > 0 else raw_cash_buy_power
+    graph = _graph_summary_for_products(graph_products, limit=10) if graph_products else {"available": False, "products": [], "top_assets": [], "avg_score": 0.0}
 
     return {
         'pending_approvals': pending,
@@ -720,15 +836,21 @@ def api_execution():
         'recent_trades': recent,
         'recent_trade_count': len(recent),
         'usdc_reserve_usd': round(reserve_usd, 2),
+        'raw_cash_buy_power_usd': round(raw_cash_buy_power, 2),
         'deployable_buy_power_usd': round(deployable_buy_power, 2),
         'portfolio_value_usd': round(total_value, 2),
         'usdc_balance_usd': round(usdc_balance, 2),
+        'hard_cap_usd': round(hard_cap, 2),
+        'risk_capital_in_play_usd': round(live_test_capital_in_play, 2),
+        'remaining_hard_cap_usd': round(remaining_hard_cap, 2),
+        'live_test_started_at': started_at,
         'bucket_targets': bucket_targets,
         'bucket_values': {
             'reserve': round(usdc_balance, 2),
             'core': round(core_value, 2),
             'opportunity': round(opportunity_value, 2),
         },
+        'graph': graph,
     }
 
 
@@ -1067,12 +1189,37 @@ def api_market_intelligence():
     })
 
 
+def _enrich_signals_with_graph(queue: list[dict]) -> list[dict]:
+    products = []
+    for s in queue:
+        pid = str(s.get("symbol", s.get("instrument", "")))
+        if pid and "-" in pid and pid not in products:
+            products.append(pid)
+    if not products:
+        return queue
+    graph = _graph_summary_for_products(products, limit=len(products))
+    if not graph.get("available"):
+        return queue
+    lookup = {a["product_id"]: a for a in graph.get("top_assets", [])}
+    enriched = []
+    for s in queue:
+        pid = str(s.get("symbol", s.get("instrument", "")))
+        entry = lookup.get(pid)
+        if entry:
+            s["graph_score"] = entry["graph_score"]
+            s["graph_overlay"] = entry["overlay"]
+        enriched.append(s)
+    return enriched
+
+
 def api_opportunities():
     _refresh_cache()
     report = dict(_cache or {})
     queue = list(report.get("queue", []))
 
     queue.sort(key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0), reverse=True)
+    if queue and not any(s.get("graph_score") is not None for s in queue[:10]):
+        queue = _enrich_signals_with_graph(queue)
     report["queue"] = queue
     report["total_signals"] = len(queue)
     report["buy_signals"] = sum(1 for s in queue if s.get("action", "").upper() == "BUY")
@@ -1168,6 +1315,28 @@ def api_paper_trades():
     return {"trades": trades[:100], "total": len(trades)}
 
 
+def api_trade_plans():
+    TRADE_PLANS_PATH = ROOT / "trade_plans.json"
+    if not TRADE_PLANS_PATH.exists():
+        return {"plans": [], "total": 0}
+    try:
+        payload = json.loads(TRADE_PLANS_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"plans": [], "total": 0}
+    if isinstance(payload, dict):
+        plans = list(payload.get("plans", []))
+        updated_at = payload.get("updated_at")
+        source = payload.get("source", "portfolio_optimizer")
+        total = int(payload.get("total", len(plans)))
+    else:
+        plans = list(payload)
+        updated_at = None
+        source = "portfolio_optimizer"
+        total = len(plans)
+    plans.sort(key=lambda p: p.get("priority", 0), reverse=True)
+    return {"plans": plans[:50], "total": total, "updated_at": updated_at, "source": source}
+
+
 
 # ── Request Handler ─────────────────────────────────────────────
 
@@ -1191,6 +1360,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/arbitrage/opportunities": lambda: api_arbitrage_opportunities(),
             "/crypto-divergence": lambda: api_crypto_divergence(),
             "/paper-trades": lambda: api_paper_trades(),
+            "/trade-plans": lambda: api_trade_plans(),
             "/signals/opportunities": lambda: api_opportunities(),
             "/signals/feed": lambda: api_signal_feed(),
             "/strategies/performance": lambda: api_strategies_performance(),
@@ -1241,7 +1411,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._serve_dashboard()
 
         else:
-            super().do_GET()
+            self._json_response(json.dumps({"error": "not found", "path": path}), status=404)
 
     def _json_response(self, data_str, status=200):
         self.send_response(status)
@@ -1251,6 +1421,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data_str.encode())
 
+    MAX_POST_SIZE = 1_048_576  # 1 MB
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
@@ -1258,7 +1430,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(json.dumps({"error": "not found"}), status=404)
             return
 
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            raw_length = self.headers.get("Content-Length", "0")
+            length = min(int(raw_length), self.MAX_POST_SIZE)
+        except (ValueError, TypeError):
+            length = 0
         body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         try:
             payload = json.loads(body or "{}")
@@ -1338,6 +1514,7 @@ def main():
     print(f"  GET /prediction-markets       — Prediction market rankings")
     print(f"  GET /arbitrage/opportunities   — Cross-market arbitrage rankings")
     print(f"  GET /crypto-divergence         — Crypto price vs PM divergence")
+    print(f"  GET /trade-plans               — Full execution-intent plans")
     print(f"  GET /signals/opportunities    — BTC-XXX opportunities")
     print(f"  GET /signals/feed             — Signal queue")
     print(f"  GET /strategies/performance   — Strategy breakdown")
@@ -1346,9 +1523,11 @@ def main():
     print("=" * 60)
     print("Press Ctrl+C to stop")
 
-    handler = DashboardHandler
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", args.port), handler) as httpd:
+    class ThreadedServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    with ThreadedServer((args.host, args.port), DashboardHandler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

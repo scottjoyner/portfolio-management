@@ -1,19 +1,37 @@
 from __future__ import annotations
 import os
-from pydantic import BaseModel
-from dotenv import load_dotenv
+import sys
+try:
+    from pydantic import BaseModel
+except Exception:
+    class BaseModel:
+        def __init__(self, **data):
+            for k, v in data.items():
+                setattr(self, k, v)
+try:
+    from dotenv import load_dotenv
+except Exception:
+    def load_dotenv(*args, **kwargs):
+        return False
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "graph-alpha-bot", "app", "strategies"))
+try:
+    from coinbase_universe import COINBASE_SPOT_PAIRS
+except Exception:
+    COINBASE_SPOT_PAIRS = ["BTC-USD", "ETH-USD", "SOL-USD"]
+
 load_dotenv(override=False)
 
 class Settings(BaseModel):
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
-    products: list[str] = os.getenv("PRODUCTS", "BTC-USD,ETH-USD,SOL-USD").split(",")
+    products: list[str] = os.getenv("PRODUCTS", ",".join(COINBASE_SPOT_PAIRS)).split(",")
     cash_ccy: str = os.getenv("CASH", "USD")
     bar_granularity: str = os.getenv("BAR_GRANULARITY", "ONE_HOUR")
     lookback_days: int = int(os.getenv("LOOKBACK_DAYS", "240"))
     target_vol: float = float(os.getenv("TARGET_VOL", "0.10"))
     risk_per_trade: float = float(os.getenv("RISK_PER_TRADE", "0.01"))
     max_drawdown: float = float(os.getenv("MAX_DD", "0.15"))
-    min_notional: float = float(os.getenv("MIN_NOTIONAL", "50"))
+    min_notional: float = float(os.getenv("MIN_NOTIONAL", "10"))
 SETTINGS = Settings()
 
 class BracketSettings(BaseModel):

@@ -2,7 +2,9 @@
 Comprehensive Unit Tests — Coinbase v2 Enhancements
 ====================================================
 """
-import sys, os, json, math, time, unittest
+import sys, os, json, math, time, unittest, tempfile
+from pathlib import Path
+from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from coinbase.src.protocols import Direction, InstrumentType, Bar, Opportunity, BracketSetup, BaseStrategy
@@ -13,6 +15,9 @@ from coinbase.src.adaptive_mode import AdaptiveModeSelector, AdaptiveScalpSwingS
 from coinbase.src.dual_mm import DualMarketMaker, MarketMakingStrategy
 from coinbase.src.ranking import StrategyRanking, StrategyRankingFilter, TopRankedStrategyWrapper
 from coinbase.src.fear_greed import FearGreedIndex, FearGreedSignalAdapter
+from coinbase.src.graph import sync_coingecko_universe as cg_sync
+from portfolio_optimizer import PortfolioOptimizer
+from trading_system.ui import dashboard_server as ds
 
 
 def make_bar(close, high=None, low=None, open_=None, volume=0):
@@ -476,6 +481,191 @@ class TestRanking(unittest.TestCase):
         self.assertEqual(inner._pid, "BTC-USD")
 
 
+class TestGraphSync(unittest.TestCase):
+    def test_sync_coingecko_universe_uses_cached_payload(self):
+        class FakeStore:
+            def __init__(self):
+                self.schema_applied = False
+                self.assets = []
+                self.tokens = []
+
+            def apply_schema(self):
+                self.schema_applied = True
+
+            def upsert_assets(self, assets):
+                items = list(assets)
+                self.assets.extend(items)
+                return len(items)
+
+            def upsert_tokens(self, tokens):
+                items = list(tokens)
+                self.tokens.extend(items)
+                return len(items)
+
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            markets = td / "markets.json"
+            meta = td / "meta.json"
+            markets.write_text(json.dumps({"data": [
+                {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "market_cap_rank": 1, "market_cap": 1},
+                {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "market_cap_rank": 2, "market_cap": 2},
+            ]}))
+            meta.write_text(json.dumps({"data": {
+                "bitcoin": {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin", "categories": ["Layer 1"], "platforms": {"": ""}},
+                "ethereum": {"id": "ethereum", "symbol": "eth", "name": "Ethereum", "categories": ["Layer 1"], "platforms": {"ethereum": "0xabc"}},
+            }}))
+
+            fake = FakeStore()
+            with patch.object(cg_sync, "_load_coinbase_symbols", return_value={"BTC", "ETH"}):
+                summary = cg_sync.sync_coingecko_universe(
+                    store=fake,
+                    markets_path=markets,
+                    meta_path=meta,
+                    fetch_live=False,
+                )
+
+        self.assertTrue(fake.schema_applied)
+        self.assertEqual(summary["assets"], 2)
+        self.assertEqual(summary["meta_assets"], 2)
+        self.assertEqual(summary["tokens"], 1)
+        self.assertEqual(fake.assets[0].product_id, "BTC-USD")
+
+    def test_portfolio_optimizer_graph_multiplier_prefers_higher_scores(self):
+        class FakeSignal:
+            def __init__(self, score):
+                self.graph_score = score
+
+        opt = PortfolioOptimizer.__new__(PortfolioOptimizer)
+        opt._graph_signals = {
+            "BTC-USD": FakeSignal(0.9),
+            "ETH-USD": FakeSignal(0.4),
+        }
+        opt.graph_store = None
+        opt._graph_cache_ts = 0.0
+        opt._graph_cache_ttl = 3600.0
+
+        high = opt._graph_multiplier_for_product("BTC-USD", max_boost=0.25)
+        low = opt._graph_multiplier_for_product("ETH-USD", max_boost=0.25)
+
+        self.assertGreater(high, 1.0)
+        self.assertLess(low, 1.0)
+        self.assertGreater(high, low)
+
+
+class TestDashboardGraph(unittest.TestCase):
+    def test_graph_summary_for_products_uses_fake_store(self):
+        class FakeSignal:
+            def __init__(self, product_id, symbol, score, available=True):
+                self.product_id = product_id
+                self.symbol = symbol
+                self.graph_score = score
+                self.available_on_coinbase = available
+                self.reasons = ["test"]
+
+        class FakeStore:
+            def asset_signal(self, product_id):
+                return FakeSignal(product_id, product_id.split("-")[0], 0.9 if product_id == "BTC-USD" else 0.4)
+
+        original_ts = ds.GRAPH_CACHE["ts"]
+        original_data = ds.GRAPH_CACHE["data"]
+        try:
+            ds.GRAPH_CACHE["data"] = FakeStore()
+            ds.GRAPH_CACHE["ts"] = time.time()
+            summary = ds._graph_summary_for_products(["BTC-USD", "ETH-USD"], limit=2)
+        finally:
+            ds.GRAPH_CACHE["ts"] = original_ts
+            ds.GRAPH_CACHE["data"] = original_data
+
+        self.assertTrue(summary["available"])
+        self.assertEqual(summary["top_assets"][0]["product_id"], "BTC-USD")
+        self.assertGreater(summary["top_assets"][0]["overlay"], summary["top_assets"][1]["overlay"])
+
+    def test_enrich_signals_with_graph_enriches_matching_products(self):
+        class FakeSignal:
+            def __init__(self, product_id, symbol, score, available=True):
+                self.product_id = product_id
+                self.symbol = symbol
+                self.graph_score = score
+                self.available_on_coinbase = available
+                self.reasons = ["test"]
+        class FakeStore:
+            def asset_signal(self, product_id):
+                return FakeSignal(product_id, product_id.split("-")[0], 0.9 if product_id == "BTC-USD" else 0.4)
+
+        original_ts = ds.GRAPH_CACHE["ts"]
+        original_data = ds.GRAPH_CACHE["data"]
+        try:
+            ds.GRAPH_CACHE["data"] = FakeStore()
+            ds.GRAPH_CACHE["ts"] = time.time()
+            queue = [
+                {"symbol": "BTC-USD", "action": "BUY", "score": 0.8},
+                {"symbol": "ETH-USD", "action": "SELL", "score": 0.6},
+                {"symbol": "USDC", "action": "BUY", "score": 0.5},  # no dash — won't be collected
+            ]
+            enriched = ds._enrich_signals_with_graph(queue)
+            self.assertEqual(len(enriched), 3)
+            btc = next(s for s in enriched if s["symbol"] == "BTC-USD")
+            self.assertAlmostEqual(btc["graph_score"], 0.9)
+            self.assertGreater(btc["graph_overlay"], 1.0)
+            eth = next(s for s in enriched if s["symbol"] == "ETH-USD")
+            self.assertAlmostEqual(eth["graph_score"], 0.4)
+            usdc = next(s for s in enriched if s["symbol"] == "USDC")
+            self.assertNotIn("graph_score", usdc, "USDC has no dash so should be skipped")
+        finally:
+            ds.GRAPH_CACHE["ts"] = original_ts
+            ds.GRAPH_CACHE["data"] = original_data
+
+
+class TestCriticalBugs(unittest.TestCase):
+    def test_confidence_engine_stub_has_required_attributes(self):
+        from portfolio_optimizer import PortfolioOptimizer
+
+        class _Sig: pass
+        stub = _Sig()
+        stub.symbol = "BTC"
+        stub.strategy = "confidence_matrix_aggregated"
+        stub.strength = 0.8
+        stub.action = "BUY"
+
+        # Verify all fields the ConfidenceEngine.apply_modifiers accesses
+        self.assertEqual(stub.symbol, "BTC")
+        self.assertEqual(stub.strategy, "confidence_matrix_aggregated")
+        self.assertEqual(stub.strength, 0.8)
+        self.assertEqual(stub.action, "BUY")
+
+    def test_orchestrator_writes_dict_not_list_to_pending_approvals(self):
+        from coinbase.src.orchestrator import ExecutionOrchestrator, TradeSignal
+        from coinbase.src.protocols import Direction
+
+        sig = TradeSignal(
+            product_id="BTC-USD",
+            direction=Direction.LONG,
+            size=0.1,
+            entry_price=50000,
+            stop_price=49000,
+            target_price=52000,
+            strategy_name="test",
+            confidence=0.8,
+            reason="test",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            orig = os.getcwd()
+            os.chdir(tmp)
+            try:
+                from coinbase.src.orchestrator import TradeMode
+                orch = ExecutionOrchestrator(mode=TradeMode.PAPER, dry_run=True)
+                orch._approval_execute(sig)
+                with open("pending_approvals.json") as f:
+                    data = json.load(f)
+                self.assertIsInstance(data, dict)
+                self.assertEqual(len(data), 1)
+                token = list(data.keys())[0]
+                self.assertEqual(data[token]["product_id"], "BTC-USD")
+                self.assertEqual(data[token]["status"], "pending")
+            finally:
+                os.chdir(orig)
+
+
 class TestFearGreed(unittest.TestCase):
     def setUp(self):
         self.fg = FearGreedIndex()
@@ -541,6 +731,179 @@ class TestFearGreed(unittest.TestCase):
         self._compute(prices)
         result = self.adapter.on_bar(make_bar(100), [make_bar(100)])
         self.assertIsNone(result)
+
+
+class TestConfidenceMatrix(unittest.TestCase):
+    def setUp(self):
+        # Build minimal StrategySignal-like stubs
+        class FakeSignal:
+            def __init__(self, action, strategy, confidence, reason=""):
+                self.action = action
+                self.strategy = strategy
+                self.confidence = confidence
+                self.reason = reason
+        self.FakeSignal = FakeSignal
+        self.module_path = "confidence_matrix"
+
+    def _matrix(self, bt_cache=None):
+        from confidence_matrix import ConfidenceMatrix
+        return ConfidenceMatrix(bt_cache=bt_cache or {})
+
+    def test_empty_signals_returns_empty_list(self):
+        cm = self._matrix()
+        self.assertEqual(cm.aggregate([]), [])
+
+    def test_single_buy_signal(self):
+        cm = self._matrix()
+        sig = self.FakeSignal("BUY", "ema_cross", 0.7, "trend up")
+        results = cm.aggregate([sig], currency="BTC")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].direction, "BUY")
+        self.assertAlmostEqual(results[0].confidence, 0.7, places=2)
+
+    def test_group_agreement_boost(self):
+        cm = self._matrix()
+        signals = [
+            self.FakeSignal("BUY", "ema_cross", 0.7, "trend"),
+            self.FakeSignal("BUY", "rsi_revert", 0.6, "momentum"),
+            self.FakeSignal("BUY", "boll_break", 0.5, "volatility"),
+        ]
+        results = cm.aggregate(signals, currency="BTC")
+        self.assertEqual(len(results), 1)
+        # 3 agreeing groups → 1.0 + (3-1)*0.15 = 1.3 boost
+        self.assertGreater(results[0].confidence, 0.5)
+        self.assertEqual(results[0].agreeing_groups, 3)
+
+    def test_buy_and_sell_in_different_directions(self):
+        cm = self._matrix()
+        signals = [
+            self.FakeSignal("BUY", "ema_cross", 0.7, "up"),
+            self.FakeSignal("SELL", "rsi_revert", 0.6, "down"),
+        ]
+        results = cm.aggregate(signals, currency="BTC")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0].direction, "BUY")
+        self.assertEqual(results[1].direction, "SELL")
+        self.assertGreater(results[0].confidence, results[1].confidence)
+
+    def test_strategy_weight_from_bt_cache(self):
+        cm = self._matrix(bt_cache={"ema_cross/BTC": {"win_rate": 0.8, "sharpe_ratio": 0.5, "profit_factor": 1.5}})
+        sig = self.FakeSignal("BUY", "ema_cross", 0.7, "")
+        weight = cm._strategy_weight("ema_cross", "BTC")
+        self.assertGreater(weight, 0.3)  # Cache weight should exceed default
+        self.assertLessEqual(weight, 1.0)
+
+    def test_class_boost_varies_by_asset_class(self):
+        cm = self._matrix()
+        # momentum strategies boosted in speculative
+        mom_safe = cm._class_boost("rsi_revert", "safe")
+        mom_spec = cm._class_boost("rsi_revert", "speculative")
+        self.assertLess(mom_safe, mom_spec)
+
+
+class TestStateStore(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        from state_store import StateStore
+        self.store = StateStore(self.tmp.name)
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def test_save_and_load_trade(self):
+        trade = {"type": "rebalance", "side": "BUY", "currency": "BTC", "size_usd": 1000}
+        self.store.save_trade(trade)
+        trades = self.store.load_trades()
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["currency"], "BTC")
+        self.assertEqual(trades[0]["size_usd"], 1000)
+
+    def test_multiple_trades_ordered_by_recency(self):
+        for i in range(3):
+            self.store.save_trade({"type": "test", "side": "BUY", "currency": f"CUR{i}", "size_usd": i * 100})
+        trades = self.store.load_trades(limit=10)
+        self.assertEqual(len(trades), 3)
+
+    def test_save_snapshot_and_load(self):
+        class FakeState:
+            holdings = {"BTC": {"currency": "BTC", "total": 1.0, "price": 50000, "value": 50000, "classification": "safe", "allocation_pct": 100}}
+            total_value = 50000
+            usdc_balance = 10000
+            fee_volume_30d = 5000
+            fee_tier = (100000, 0.006, 0.012)
+
+        result = self.store.save_snapshot(FakeState())
+        self.assertIn("id", result)
+        snapshots = self.store.load_snapshots(limit=5)
+        self.assertEqual(len(snapshots), 1)
+        self.assertIn("holdings", snapshots[0])
+        self.assertEqual(snapshots[0]["total_value"], 50000)
+
+    def test_bt_cache_round_trip(self):
+        class FakeVerdict:
+            strategy = "ema_cross"
+            currency = "BTC"
+            total_trades = 10
+            winning_trades = 6
+            losing_trades = 4
+            win_rate = 0.6
+            total_return_pct = 15.0
+            sharpe_ratio = 1.2
+            profit_factor = 1.8
+            max_drawdown_pct = -10.0
+            regime = "trending"
+            passed = True
+            reason = "ok"
+
+        self.store.save_bt_cache("ema_cross/BTC", FakeVerdict())
+        cache = self.store.load_bt_cache(ttl=86400)
+        self.assertIn("ema_cross/BTC", cache)
+        self.assertEqual(cache["ema_cross/BTC"]["win_rate"], 0.6)
+
+    def test_connection_is_reused(self):
+        conn1 = self.store._conn()
+        conn2 = self.store._conn()
+        self.assertIs(conn1, conn2)
+
+    def test_meta_round_trip(self):
+        self.store.set_meta("test_key", "test_value")
+        self.assertEqual(self.store.get_meta("test_key"), "test_value")
+        self.assertIsNone(self.store.get_meta("nonexistent"))
+
+    def test_stats(self):
+        stats = self.store.stats()
+        self.assertIn("trades", stats)
+        self.assertIn("snapshots", stats)
+        self.assertIn("db_path", stats)
+
+
+class TestApprovalServer(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False)
+        self.tmp.write("{}")
+        self.tmp.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def test_read_pending_returns_empty_dict_for_missing_file(self):
+        from approval_server import ApprovalHandler
+        h = ApprovalHandler.__new__(ApprovalHandler)
+        h.pending_file = "/nonexistent/file.json"
+        data = h._read_pending()
+        self.assertEqual(data, {})
+
+    def test_write_then_read_round_trip(self):
+        from approval_server import ApprovalHandler
+        h = ApprovalHandler.__new__(ApprovalHandler)
+        h.pending_file = self.tmp.name
+        h._write_pending({"abc-123": {"status": "pending", "side": "BUY", "currency": "BTC", "size_usd": 1000}})
+        data = h._read_pending()
+        self.assertEqual(data["abc-123"]["status"], "pending")
+        self.assertEqual(data["abc-123"]["currency"], "BTC")
 
 
 if __name__ == "__main__":

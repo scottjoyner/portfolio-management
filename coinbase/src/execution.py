@@ -59,9 +59,13 @@ def place_bracket_long(cb: CBClient, product_id: str, base_size: float,
         prev = cb.preview_order(side="buy", product_id=product_id, quote_size=_fmt_quote(base_size * entry))
         order_res = {"preview": prev, "client_order_id": cid}
     else:
-        order = cb.market_order("buy", product_id=product_id,
-                                quote_size=_fmt_quote(base_size * entry), client_order_id=cid)
-        order_res = {"order": order, "client_order_id": cid}
+        try:
+            order = cb.market_order("buy", product_id=product_id,
+                                    quote_size=_fmt_quote(base_size * entry), client_order_id=cid)
+            order_res = {"order": order, "client_order_id": cid}
+        except Exception as e:
+            log.error("Entry order failed for %s: %s", product_id, e)
+            return {"success": False, "error": str(e), "client_order_id": cid}
     add_bracket(_bracket_dict(product_id, "long", base_size, entry, stop, target, cid=cid))
     return order_res
 
@@ -74,9 +78,13 @@ def place_bracket_short(cb: CBClient, product_id: str, base_size: float,
         prev = cb.preview_order(side="sell", product_id=product_id, base_size=_fmt_base(base_size))
         order_res = {"preview": prev, "client_order_id": cid}
     else:
-        order = cb.market_order("sell", product_id=product_id,
-                                base_size=_fmt_base(base_size), client_order_id=cid)
-        order_res = {"order": order, "client_order_id": cid}
+        try:
+            order = cb.market_order("sell", product_id=product_id,
+                                    base_size=_fmt_base(base_size), client_order_id=cid)
+            order_res = {"order": order, "client_order_id": cid}
+        except Exception as e:
+            log.error("Entry order failed for %s: %s", product_id, e)
+            return {"success": False, "error": str(e), "client_order_id": cid}
     add_bracket(_bracket_dict(product_id, "short", base_size, entry, stop, target, cid=cid))
     return order_res
 
@@ -150,12 +158,16 @@ def manage_brackets(cb: CBClient, poll_secs: int = 5,
                     if dry_run:
                         log.info(f"[DRY] Exit {pid} via {exit_reason} @ ~{mid} for {base_size} base ({side})")
                     else:
-                        if side == "long":
-                            cb.market_order("sell", product_id=pid, base_size=_fmt_base(base_size),
-                                            client_order_id=str(uuid.uuid4()))
-                        else:
-                            cb.market_order("buy", product_id=pid, base_size=_fmt_base(base_size),
-                                            client_order_id=str(uuid.uuid4()))
+                        try:
+                            if side == "long":
+                                cb.market_order("sell", product_id=pid, base_size=_fmt_base(base_size),
+                                                client_order_id=str(uuid.uuid4()))
+                            else:
+                                cb.market_order("buy", product_id=pid, base_size=_fmt_base(base_size),
+                                                client_order_id=str(uuid.uuid4()))
+                        except Exception as e:
+                            log.error("Exit order failed for %s: %s — will retry", pid, e)
+                            continue
 
                     _set(b, "status", "CLOSED")
                     _set(b, "metadata", {**_get(b, "metadata", {}), "exit_price": mid,
@@ -196,6 +208,8 @@ def manage_brackets(cb: CBClient, poll_secs: int = 5,
 
 def _get_mid(best: Any, pid: str) -> float:
     """Extract mid price from best_bid_ask response."""
+    if best is None:
+        return 0.0
     pricebooks = best.get("pricebooks", best if isinstance(best, list) else [])
     for pb in pricebooks:
         if pb.get("product_id") == pid:

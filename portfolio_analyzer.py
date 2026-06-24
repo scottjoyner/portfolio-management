@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 USDC_BENCHMARK_APY = 3.5  # weekly-compounded USDC yield on Coinbase
 
-SAFE_ASSETS = {"BTC", "USDC", "USDT", "DAI", "ETH"}
-GROWTH_ASSETS = {"SOL", "LINK", "MATIC", "AVAX", "DOT", "ADA", "ATOM", "UNI"}
+SAFE_ASSETS = {"BTC", "ETH", "USDC", "USDT", "DAI"}
+GROWTH_ASSETS = {"SOL", "LINK", "POL", "AVAX", "DOT", "ADA", "ATOM", "UNI"}
 # Everything else → speculative
 
 COINBASE_FEE_TIERS: List[Tuple[float, float, float]] = [

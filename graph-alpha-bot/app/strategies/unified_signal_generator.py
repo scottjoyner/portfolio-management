@@ -16,6 +16,11 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
+try:
+    from graph_alpha_bot.app.strategies.coinbase_universe import COINBASE_SPOT_PAIRS
+except ImportError:
+    from coinbase_universe import COINBASE_SPOT_PAIRS
+
 # Import our enhanced backtesting strategies from the backtesting framework
 sys.path.insert(0, '/home/scott/git/portfolio-management')
 from backtester import (
@@ -80,12 +85,7 @@ class UnifiedSignalConfig:
     """Configuration for unified signal generation."""
 
     symbols: List[str] = field(
-        default_factory=lambda: [
-            "BTC-USD", "BTC-ETH", "BTC-SOL", "BTC-DOGE", "BTC-XRP",
-            "BTC-ADA", "BTC-DOT", "BTC-MATIC", "BTC-SHIB", "BTC-AVAX",
-            "BTC-UNI", "BTC-SNX", "BTC-YFI", "BTC-AAVE", "BTC-MKR",
-            "BTC-COMP", "BTC-LINK", "BTC-BAT", "BTC-ZRX"
-        ]
+        default_factory=lambda: list(COINBASE_SPOT_PAIRS)
     )
     news_hours: int = 6  # Hours of news to analyze
     sentiment_threshold: float = 0.25  # Min abs(sentiment) for signal
@@ -384,13 +384,14 @@ class UnifiedSignalGenerator:
             logger.error(f"Price fetch failed for {symbol}: {e}")
             # Return hardcoded fallback prices
             price_map = {
-                'BTC-USD': 68500.0, 'BTC-ETH': 2.5, 'BTC-SOL': 175.0,
-                'BTC-DOGE': 0.15, 'BTC-XRP': 0.5, 'BTC-ADA': 0.35,
-                'BTC-DOT': 7.5, 'BTC-MATIC': 0.9, 'BTC-SHIB': 0.000015,
-                'BTC-AVAX': 42.0, 'BTC-UNI': 35.0, 'BTC-SNX': 3.5,
-                'BTC-YFI': 12000.0, 'BTC-AAVE': 85.0, 'BTC-MKR': 1500.0,
-                'BTC-COMP': 45.0, 'BTC-LINK': 6.5, 'BTC-BAT': 0.25,
-                'BTC-ZRX': 0.4
+                'BTC-USD': 68500.0, 'ETH-USD': 3500.0, 'SOL-USD': 145.0,
+                'DOGE-USD': 0.08, 'XRP-USD': 0.50, 'ADA-USD': 0.35,
+                'DOT-USD': 7.50, 'POL-USD': 0.90, 'AVAX-USD': 25.0,
+                'UNI-USD': 8.50, 'LINK-USD': 12.50, 'ATOM-USD': 9.50,
+                'LTC-USD': 85.0, 'BCH-USD': 350.0, 'NEAR-USD': 6.50,
+                'APT-USD': 8.0, 'SUI-USD': 1.50, 'ARB-USD': 0.90,
+                'OP-USD': 1.80, 'FIL-USD': 5.50, 'INJ-USD': 18.0,
+                'SEI-USD': 0.40, 'TIA-USD': 7.0,
             }
             return (price_map.get(symbol, 100.0), 0.0)
 
@@ -661,12 +662,7 @@ def main():
     """Run unified signal generation."""
 
     config = UnifiedSignalConfig(
-        symbols=[
-            "BTC-USD", "BTC-ETH", "BTC-SOL", "BTC-DOGE", "BTC-XRP",
-            "BTC-ADA", "BTC-DOT", "BTC-MATIC", "BTC-SHIB", "BTC-AVAX",
-            "BTC-UNI", "BTC-SNX", "BTC-YFI", "BTC-AAVE", "BTC-MKR",
-            "BTC-COMP", "BTC-LINK", "BTC-BAT", "BTC-ZRX"
-        ],
+        symbols=list(COINBASE_SPOT_PAIRS),
         sentiment_threshold=0.25,
         cooldown_minutes=15,
         enable_strategy_signals=True,

@@ -9,9 +9,12 @@ Each strategy consumes OHLCV bars and returns Signal objects:
   Signal(action="BUY"|"SELL", price, confidence, reason)
 """
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -1559,7 +1562,8 @@ class KalshiSignal:
                     "extremity": m.probability_extremity,
                 } for m in markets if m.is_open]
                 self._cache_ts = now
-            except Exception:
+            except Exception as e:
+                logger.warning("KalshiSignal fetch failed: %s", e)
                 return None
 
         for m in self._cache:
@@ -1627,7 +1631,8 @@ class PolymarketSignal:
                     "extremity": m.probability_extremity,
                 } for m in markets if m.is_open]
                 self._cache_ts = now
-            except Exception:
+            except Exception as e:
+                logger.warning("PolymarketSignal fetch failed: %s", e)
                 return None
 
         for m in self._cache:
@@ -1808,7 +1813,8 @@ def run_strategies(
             if sig and sig.action != "HOLD":
                 sig.strategy = name
                 signals.append(sig)
-        except Exception:
+        except Exception as e:
+            logger.debug("Strategy %s failed: %s", name, e)
             continue
 
     # Sort by confidence descending
@@ -1910,7 +1916,8 @@ def backtest_strategy(
                 sig = strat.on_bar(closes[i], bar_closes, volumes=bar_volumes)
             else:
                 sig = strat.on_bar(closes[i], bar_closes)
-        except Exception:
+        except Exception as e:
+            logger.debug("Backtest strategy %s bar %d failed: %s", strategy_name, i, e)
             continue
 
         if not sig or sig.action == "HOLD":

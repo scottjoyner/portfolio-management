@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -49,10 +50,12 @@ class ApprovalHandler(BaseHTTPRequestHandler):
         if not os.path.exists(self.pending_file):
             return {}
         with open(self.pending_file, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
             return json.load(f)
 
     def _write_pending(self, data: Dict[str, Any]):
         with open(self.pending_file, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
             json.dump(data, f, indent=2, default=str)
 
     def _parse_token(self, path: str, prefix: str) -> str:

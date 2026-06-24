@@ -28,7 +28,14 @@ log = logging.getLogger("unified_market_daemon")
 
 STATE_PATH = ROOT / "data" / "operator-state.json"
 PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
-DEFAULT_PRODUCTS = ["BTC-USD", "ETH-USD", "SOL-USD"]
+DEFAULT_PRODUCTS = [
+    "BTC-USD", "ETH-USD", "SOL-USD",
+    "XRP-USD", "ADA-USD", "DOGE-USD",
+    "AVAX-USD", "DOT-USD", "LINK-USD",
+    "POL-USD", "ATOM-USD", "LTC-USD",
+    "NEAR-USD", "APT-USD", "SUI-USD",
+    "SHIB-USD", "PEPE-USD", "TRUMP-USD",
+]
 
 
 def _load_json(path: Path, default: Any = None) -> Any:

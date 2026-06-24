@@ -12,6 +12,20 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "graph-alpha-bot", "app", "strategies"))
+try:
+    from coinbase_universe import COINBASE_SPOT_PAIRS
+except Exception:
+    COINBASE_SPOT_PAIRS = [
+        "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "ADA-USD",
+        "DOGE-USD", "AVAX-USD", "DOT-USD", "LINK-USD", "UNI-USD",
+        "POL-USD", "ATOM-USD", "LTC-USD", "BCH-USD", "NEAR-USD",
+        "APT-USD", "SUI-USD", "ARB-USD", "OP-USD", "FIL-USD",
+        "INJ-USD", "SEI-USD", "TIA-USD", "ALGO-USD", "XLM-USD",
+        "STX-USD", "HBAR-USD", "ICP-USD", "GRT-USD", "SHIB-USD",
+        "PEPE-USD", "BONK-USD", "TRUMP-USD", "FLOKI-USD",
+    ]
+
 from .protocols import (
     Direction, InstrumentType, Bar, Opportunity, BracketSetup, BaseStrategy,
 )
@@ -45,19 +59,25 @@ log = logging.getLogger("run_trader_v2")
 
 VOL_ESTIMATES = {
     "BTC-USD": 20_000, "ETH-USD": 200_000, "SOL-USD": 500_000,
-    "AVAX-USD": 300_000, "LINK-USD": 150_000, "MATIC-USD": 500_000,
-    "DOGE-USD": 1_000_000, "ADA-USD": 400_000, "XRP-USD": 600_000,
+    "XRP-USD": 600_000, "ADA-USD": 400_000, "DOGE-USD": 1_000_000,
+    "AVAX-USD": 300_000, "DOT-USD": 250_000, "LINK-USD": 150_000,
+    "UNI-USD": 100_000, "POL-USD": 500_000, "ATOM-USD": 100_000,
+    "LTC-USD": 300_000, "BCH-USD": 100_000, "NEAR-USD": 200_000,
+    "APT-USD": 150_000, "SUI-USD": 300_000, "ARB-USD": 200_000,
+    "OP-USD": 150_000, "SHIB-USD": 800_000, "PEPE-USD": 500_000,
+    "TRUMP-USD": 400_000,
 }
+
+STATIC_LONG_TERM_ASSETS = {"BTC", "ETH"}
+STATIC_LONG_TERM_PRODUCTS = {f"{asset}-USD" for asset in STATIC_LONG_TERM_ASSETS}
 
 
 @dataclass
 class TraderConfig:
-    products: List[str] = field(default_factory=lambda: [
-        "BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD"
-    ])
-    poll_interval_secs: float = 60.0
+    products: List[str] = field(default_factory=lambda: list(COINBASE_SPOT_PAIRS))
+    poll_interval_secs: float = 30.0
     execution_mode: ExecutionMode = ExecutionMode.PAPER
-    equity: float = 10000.0
+    equity: float = 100.0
     max_positions: int = 10
     target_vol: float = 0.15
     dry_run: bool = True
@@ -70,10 +90,14 @@ class TraderConfig:
             "approval": ExecutionMode.LIVE_APPROVAL,
             "live": ExecutionMode.LIVE,
         }
+        raw_products = os.environ.get("TRADER_PRODUCTS", "").strip()
+        products = [p.strip() for p in raw_products.split(",") if p.strip()] if raw_products else list(COINBASE_SPOT_PAIRS)
+        dry_run_env = os.environ.get("COINBASE_DRY_RUN")
         return cls(
             execution_mode=mode_map.get(mode_str, ExecutionMode.PAPER),
-            equity=float(os.environ.get("TRADER_EQUITY", "10000")),
-            dry_run=os.environ.get("COINBASE_DRY_RUN", "true").lower() == "true",
+            products=products,
+            equity=float(os.environ.get("TRADER_EQUITY", "100")),
+            dry_run=(dry_run_env.lower() == "true") if dry_run_env is not None else (mode_str != "live"),
         )
 
 
@@ -90,6 +114,11 @@ class UnifiedTrader:
         self.fill_model = AdaptiveFillModel()
         self.scanner = OpportunityScanner()
         self.scanner.register_defaults()
+        try:
+            from .graph.register import register_graph_strategy
+            register_graph_strategy(self.scanner, min_graph_score=0.45)
+        except Exception as e:
+            log.debug("Graph strategy registration skipped: %s", e)
 
         risk_limit = RiskLimit.AGGRESSIVE if self.config.execution_mode == ExecutionMode.PAPER else RiskLimit.MODERATE
         self.risk_mgr = RiskManager(limit=risk_limit)
@@ -140,6 +169,10 @@ class UnifiedTrader:
         self._last_market_profile: Optional[MarketConditionProfile] = None
         self._equity_last: float = 0.0
         self._tick_count: int = 0
+        self._graph_overlay_cache: Dict[str, float] = {}
+        self._graph_overlay_cache_ts: float = 0.0
+        self._graph_overlay_ttl: float = 300.0
+        self._static_products = set(STATIC_LONG_TERM_PRODUCTS)
 
     def _warm_price_buffer(self):
         for pid in self.config.products:
@@ -314,6 +347,10 @@ class UnifiedTrader:
             except Exception as e:
                 log.warning("Signal blend failed: %s", e)
             try:
+                opportunities = self._apply_graph_overlay(opportunities)
+            except Exception as e:
+                log.warning("Graph overlay failed: %s", e)
+            try:
                 opportunities = self._apply_risk_parity(opportunities, prices)
             except Exception as e:
                 log.warning("Risk parity failed: %s", e)
@@ -436,10 +473,12 @@ class UnifiedTrader:
         )
 
     def _gather_opportunities(self, prices: Dict[str, float],
-                               bars: Dict[str, Bar],
-                               history_bars: Dict[str, List[Bar]]) -> List[Opportunity]:
+                                bars: Dict[str, Bar],
+                                history_bars: Dict[str, List[Bar]]) -> List[Opportunity]:
         all_opps = []
         for pid in self.config.products:
+            if pid in self._static_products:
+                continue
             price = prices.get(pid)
             bar = bars.get(pid)
             history = history_bars.get(pid, [])
@@ -529,7 +568,29 @@ class UnifiedTrader:
             self.product_rotator.record_bar(pid, bar.close, 0)
         self.product_rotator.rebalance()
         top = set(self.product_rotator.ranked_products)
-        return [o for o in opportunities if o.product_id in top]
+        return [o for o in opportunities if o.product_id in top and o.product_id not in self._static_products]
+
+    def _apply_graph_overlay(self, opportunities: List[Opportunity]) -> List[Opportunity]:
+        if not opportunities:
+            return opportunities
+        now = time.time()
+        overlays = self._graph_overlay_cache
+        if not overlays or (now - self._graph_overlay_cache_ts) > self._graph_overlay_ttl:
+            try:
+                from .graph.portfolio_overlay import fetch_graph_weight_overlays
+                product_ids = sorted({opp.product_id for opp in opportunities})
+                overlays = fetch_graph_weight_overlays(product_ids, max_boost=0.25)
+                self._graph_overlay_cache = overlays
+                self._graph_overlay_cache_ts = now
+            except Exception as e:
+                log.debug("Graph overlay unavailable: %s", e)
+                return opportunities
+
+        for opp in opportunities:
+            overlay = overlays.get(opp.product_id, 1.0)
+            opp.confidence = min(0.99, opp.confidence * overlay)
+            opp.score = opp.score * overlay
+        return opportunities
 
     def _apply_fear_greed(self, prices: Dict[str, float],
                            bars: Dict[str, Bar]) -> List[Opportunity]:
@@ -694,6 +755,8 @@ def main():
     if args.equity:
         config.equity = args.equity
     if args.no_dry_run:
+        config.dry_run = False
+    elif args.mode == "live":
         config.dry_run = False
     if args.poll_interval:
         config.poll_interval_secs = args.poll_interval

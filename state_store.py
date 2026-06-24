@@ -26,13 +26,16 @@ class StateStore:
     def __init__(self, db_path: str = "optimizer_state.db"):
         self._db_path = db_path
         self._lock = threading.Lock()
+        self._conn_obj: Optional[sqlite3.Connection] = None
         self._init_schema()
 
     def _conn(self):
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        if self._conn_obj is None:
+            self._conn_obj = sqlite3.connect(self._db_path)
+            self._conn_obj.row_factory = sqlite3.Row
+            self._conn_obj.execute("PRAGMA journal_mode=WAL")
+            self._conn_obj.execute("PRAGMA busy_timeout=5000")
+        return self._conn_obj
 
     def _init_schema(self):
         with self._lock:

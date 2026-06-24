@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import math
@@ -84,6 +85,15 @@ except ImportError:
     _HAS_CONFIDENCE_ENGINE = False
     logger.warning("ConfidenceEngine not available (trading_system.signal_confidence)")
 
+try:
+    from coinbase.src.graph.neo4j_graph import CryptoGraphStore
+    from coinbase.src.graph.models import GraphAssetSignal
+    _HAS_COINBASE_GRAPH = True
+except Exception:
+    CryptoGraphStore = None  # type: ignore
+    GraphAssetSignal = None  # type: ignore
+    _HAS_COINBASE_GRAPH = False
+
 # Regime detection for confidence modifiers
 try:
     from multi_strategy_paper_trading import detect_regime as _detect_regime
@@ -99,6 +109,15 @@ try:
     from data.fetch_unified import UnifiedMarketDataAdapter
 except Exception:
     UnifiedMarketDataAdapter = None
+
+# Unified signal accumulator (optional — merges news, PM, arb, divergence, strategy signals)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "graph-alpha-bot", "app", "strategies"))
+_HAS_ACCUMULATOR = False
+try:
+    from unified_signal_accumulator import UnifiedSignalAccumulator
+    _HAS_ACCUMULATOR = True
+except Exception:
+    UnifiedSignalAccumulator = None
 
 # ---------------------------------------------------------------------------
 # Config
@@ -116,22 +135,32 @@ PORTFOLIO_BUCKET_TARGETS = {
 
 USDC_YIELD_RESERVE_FRACTION = PORTFOLIO_BUCKET_TARGETS["reserve"]
 
-CORE_LONG_TERM_ASSETS = {"BTC", "ETH"}
+CORE_LONG_TERM_ASSETS = {"BTC", "ETH", "SOL"}
+STATIC_LONG_TERM_ASSETS = {"BTC", "ETH"}
 CORE_BATCH_FRACTION = 0.05
 OPPORTUNITY_BATCH_FRACTION = 0.03
 
 DEFAULT_CAPITAL_POLICY = {
     "targets": dict(PORTFOLIO_BUCKET_TARGETS),
-    "core_allowlist": ["BTC", "ETH"],
+    "core_allowlist": ["BTC", "ETH", "SOL"],
+    "static_holdings": ["BTC", "ETH"],
     "core_min_allocation_pct": 10.0,
     "core_batch_fraction": CORE_BATCH_FRACTION,
     "opportunity_batch_fraction": OPPORTUNITY_BATCH_FRACTION,
 }
 
-TARGET_ALLOCATION = {"safe": 0.80, "growth": 0.15, "speculative": 0.05}
+TARGET_ALLOCATION = {"safe": 0.75, "growth": 0.20, "speculative": 0.05}
 
-SAFE_ASSETS = {"BTC", "USDC", "USDT", "DAI", "ETH"}
-GROWTH_ASSETS = {"SOL", "LINK", "AVAX", "DOT", "ADA", "ATOM", "UNI", "MATIC"}
+SAFE_ASSETS = {"BTC", "ETH", "USDC", "USDT", "DAI"}
+GROWTH_ASSETS = {
+    "SOL", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK", "UNI",
+    "POL", "ATOM", "LTC", "BCH", "NEAR", "APT", "SUI", "ARB",
+    "OP", "FIL", "INJ", "SEI", "TIA",
+}
+SPECULATIVE_ASSETS = {
+    "ALGO", "XLM", "STX", "HBAR", "ICP", "GRT",
+    "SHIB", "PEPE", "BONK", "TRUMP", "FLOKI",
+}
 
 COINBASE_FEE_TIERS = [
     (0, 0.0060, 0.0120),
@@ -144,7 +173,7 @@ COINBASE_FEE_TIERS = [
 ]
 
 # Minimum time between executions of the same type (seconds)
-OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "strategy": 300, "cycle": 600}
+OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "strategy": 300, "cycle": 600, "accumulator": 120}
 
 # Fee tier volume cycling
 CYCLE_MIN_PROFIT_PCT = 0.0   # we'll break even or small loss for volume
@@ -164,6 +193,7 @@ class OpportunityType(Enum):
     VOLUME_CYCLE = "cycle"
     EVENT_MARKET = "event_market"
     EVENT_ARBITRAGE = "event_arbitrage"
+    ACCUMULATOR_SIGNAL = "accumulator"
 
 
 @dataclass
@@ -179,6 +209,12 @@ class Opportunity:
     preview_passed: bool = False
     executed: bool = False
     order_id: str = ""
+    entry_price_est: float = 0.0        # Estimated entry price
+    stop_loss_pct: float = 0.0          # Stop loss % from entry (positive = away from entry)
+    take_profit_pct: float = 0.0        # Take profit % from entry
+    holding_period_hours: float = 0.0   # Estimated holding period in hours
+    expected_return_pct: float = 0.0    # Expected return %
+    risk_pct: float = 0.0               # Risk % (distance to stop / entry)
     meta: Dict[str, Any] = field(default_factory=dict)  # Arbitrary extra data
 
 
@@ -393,6 +429,8 @@ def classify_asset(currency: str) -> str:
         return "safe"
     if c in GROWTH_ASSETS:
         return "growth"
+    if c in SPECULATIVE_ASSETS:
+        return "speculative"
     return "speculative"
 
 
@@ -427,8 +465,9 @@ class PortfolioOptimizer:
     def __init__(
         self,
         environment: str = "live",
-        interval: int = 300,
-        min_value: float = 50.0,
+        interval: int = 60,
+        min_value: float = 10.0,
+        max_deployable_usd: Optional[float] = None,
         dry_run: bool = True,
         db_path: str = "optimizer_state.db",
         neo4j_uri: str = "",
@@ -449,6 +488,13 @@ class PortfolioOptimizer:
         self.cli = CoinbaseCLI(environment)
         self.interval = interval
         self.min_value = min_value
+        env_cap = os.getenv("MAX_DEPLOYABLE_USD", "").strip()
+        if max_deployable_usd is not None:
+            self._forced_max_deployable_usd = max(0.0, float(max_deployable_usd))
+        elif env_cap:
+            self._forced_max_deployable_usd = max(0.0, float(env_cap))
+        else:
+            self._forced_max_deployable_usd = 0.0
         self.dry_run = dry_run
         self.require_approval = require_approval
         self.pending_file = pending_file
@@ -463,6 +509,10 @@ class PortfolioOptimizer:
         self._bt_cache: Dict[str, BacktestVerdict] = {}
         self._bt_cache_ttl: float = 3600
         self._seen_products_meta_prefix = "coinbase_first_seen:"
+        self.graph_store: Optional[Any] = None
+        self._graph_signals: Dict[str, Any] = {}
+        self._graph_cache_ts: float = 0.0
+        self._graph_cache_ttl: float = 3600
 
         # Local SQLite store
         self.store = StateStore(db_path)
@@ -481,6 +531,18 @@ class PortfolioOptimizer:
                 logger.info("Connected to Neo4j at %s (db=%s)", neo4j_uri, neo4j_db)
             except Exception as e:
                 logger.warning("Neo4j connection failed: %s — falling back to SQLite only", e)
+
+        if _HAS_COINBASE_GRAPH and neo4j_uri:
+            try:
+                self.graph_store = CryptoGraphStore(
+                    uri=neo4j_uri,
+                    user=neo4j_user,
+                    password=neo4j_password,
+                    database=neo4j_db,
+                )
+                logger.info("Connected to CoinGecko graph store at %s (db=%s)", neo4j_uri, neo4j_db)
+            except Exception as e:
+                logger.warning("CoinGecko graph store failed: %s", e)
 
         # Optional email notifier
         self.notifier: Optional[TradeNotifier] = None
@@ -569,6 +631,7 @@ class PortfolioOptimizer:
                 logger.warning("ConfidenceEngine init failed: %s", e)
 
         self._load_from_store()
+        self._load_graph_universe()
         self._refresh_capital_policy()
 
     def _load_from_store(self):
@@ -610,6 +673,52 @@ class PortfolioOptimizer:
             except Exception as e:
                 logger.warning("Neo4j save failed: %s", e)
 
+    def _load_graph_universe(self, *, limit: int = 5000, only_coinbase: bool = True) -> None:
+        if not _HAS_COINBASE_GRAPH:
+            return
+        if self.graph_store is None:
+            return
+        try:
+            assets = self.graph_store.top_graph_assets(limit=limit, only_coinbase=only_coinbase)
+            self._graph_signals = {
+                f"{sig.product_id}".upper(): sig
+                for sig in assets
+                if getattr(sig, "product_id", None)
+            }
+            self._graph_cache_ts = time.time()
+            logger.info("Loaded %d graph assets into optimizer cache", len(self._graph_signals))
+        except Exception as e:
+            logger.warning("Failed to load graph universe: %s", e)
+
+    def _graph_signal_for_product(self, product_id: str) -> Optional[Any]:
+        if not product_id:
+            return None
+        pid = str(product_id).upper()
+        cached = self._graph_signals.get(pid)
+        if cached is not None:
+            return cached
+        if not self.graph_store:
+            return None
+        if self._graph_cache_ts and time.time() - self._graph_cache_ts > self._graph_cache_ttl:
+            self._graph_signals.clear()
+        try:
+            signal = self.graph_store.asset_signal(product_id)
+            self._graph_signals[pid] = signal
+            self._graph_cache_ts = time.time()
+            return signal
+        except Exception:
+            return None
+
+    def _graph_score_for_product(self, product_id: str) -> float:
+        signal = self._graph_signal_for_product(product_id)
+        if signal is None:
+            return 0.5
+        return max(0.0, min(1.0, float(getattr(signal, "graph_score", 0.5) or 0.5)))
+
+    def _graph_multiplier_for_product(self, product_id: str, *, max_boost: float = 0.25) -> float:
+        score = self._graph_score_for_product(product_id)
+        return max(1.0 - max_boost, min(1.0 + max_boost, 1.0 + (score - 0.5) * (2.0 * max_boost)))
+
     def _normalize_capital_policy(self, policy: Optional[dict] = None) -> dict:
         raw = dict(DEFAULT_CAPITAL_POLICY)
         if policy:
@@ -627,12 +736,26 @@ class PortfolioOptimizer:
         allowlist = [str(x).upper().replace("-USD", "") for x in allowlist if str(x).strip()]
         if not allowlist:
             allowlist = list(DEFAULT_CAPITAL_POLICY["core_allowlist"])
+        static_holdings = raw.get("static_holdings") or DEFAULT_CAPITAL_POLICY["static_holdings"]
+        if isinstance(static_holdings, str):
+            static_holdings = [x.strip() for x in static_holdings.split(",") if x.strip()]
+        static_holdings = [str(x).upper().replace("-USD", "") for x in static_holdings if str(x).strip()]
+        if not static_holdings:
+            static_holdings = list(DEFAULT_CAPITAL_POLICY["static_holdings"])
+        max_deployable = raw.get("max_deployable_usd", 0.0)
+        try:
+            max_deployable = max(0.0, float(max_deployable or 0.0))
+        except Exception:
+            max_deployable = 0.0
         return {
             "targets": targets,
             "core_allowlist": allowlist,
+            "static_holdings": static_holdings,
             "core_min_allocation_pct": max(float(raw.get("core_min_allocation_pct", DEFAULT_CAPITAL_POLICY["core_min_allocation_pct"])), 0.0),
             "core_batch_fraction": _clamp(float(raw.get("core_batch_fraction", DEFAULT_CAPITAL_POLICY["core_batch_fraction"])), 0.0, 0.5),
             "opportunity_batch_fraction": _clamp(float(raw.get("opportunity_batch_fraction", DEFAULT_CAPITAL_POLICY["opportunity_batch_fraction"])), 0.0, 0.5),
+            "max_deployable_usd": max_deployable,
+            "live_test_started_at": str(raw.get("live_test_started_at", "") or ""),
             "updated_at": raw.get("updated_at", ""),
         }
 
@@ -643,6 +766,13 @@ class PortfolioOptimizer:
         except Exception:
             policy = {}
         self.capital_policy = self._normalize_capital_policy(policy)
+        if self._forced_max_deployable_usd > 0:
+            cap_changed = float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0) != self._forced_max_deployable_usd
+            started_at = str(self.capital_policy.get("live_test_started_at", "") or "")
+            if cap_changed or not started_at:
+                self.capital_policy["max_deployable_usd"] = self._forced_max_deployable_usd
+                self.capital_policy["live_test_started_at"] = datetime.now(timezone.utc).isoformat()
+                self._save_capital_policy()
         return self.capital_policy
 
     def _save_capital_policy(self):
@@ -698,6 +828,111 @@ class PortfolioOptimizer:
             size = min(size, max(0.0, capital_limit))
         return _clamp(size, min_notional, max_notional)
 
+    def _estimate_trade_volatility_pct(
+        self,
+        closes: List[float],
+        highs: Optional[List[float]] = None,
+        lows: Optional[List[float]] = None,
+    ) -> float:
+        """Estimate a trade-friendly volatility percentage from recent candles."""
+        if not closes or len(closes) < 3:
+            return 30.0
+
+        tr_values = []
+        prev_close = closes[0]
+        for idx in range(1, len(closes)):
+            close = closes[idx]
+            high = highs[idx] if highs and idx < len(highs) else close
+            low = lows[idx] if lows and idx < len(lows) else close
+            tr_values.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+            prev_close = close
+
+        lookback = tr_values[-14:] if len(tr_values) >= 14 else tr_values
+        atr = sum(lookback) / max(len(lookback), 1)
+        last = closes[-1]
+        if last <= 0:
+            return 30.0
+
+        atr_pct = (atr / last) * 100.0
+        recent_idx = max(0, len(closes) - 24)
+        recent_move_pct = abs((closes[-1] / closes[recent_idx]) - 1.0) * 100.0 if closes[recent_idx] else atr_pct
+
+        return _clamp(max(atr_pct * 5.0, recent_move_pct * 1.2, 2.0), 2.0, 100.0)
+
+    def _current_price_for_symbol(self, symbol: str, fallback: float = 0.0) -> float:
+        """Fetch a current price if available; otherwise fall back."""
+        if not symbol:
+            return fallback
+        pid = symbol if "-" in symbol else f"{symbol}-USD"
+        try:
+            price_info = self.cli.get_price(pid)
+            price = to_float(price_info.get("price", 0))
+            if price > 0:
+                return price
+        except Exception:
+            pass
+        if self.state:
+            base = symbol.split("-")[0]
+            holding = self.state.holdings.get(base, {})
+            price = to_float(holding.get("price", 0))
+            if price > 0:
+                return price
+        return fallback
+
+    def _compute_exit_plan(
+        self,
+        currency: str,
+        side: str,
+        confidence: float,
+        expected_return_pct: float = 0.0,
+        *,
+        trade_style: str = "momentum",
+        volatility_pct: float = 60.0,
+        spread_pct: float = 0.0,
+        hold_hint_hours: Optional[float] = None,
+    ) -> Dict[str, float]:
+        """Compute a conservative execution plan for a candidate trade."""
+        profiles = {
+            "momentum": {"stop_mult": 1.00, "rr_min": 1.8, "hold": 36.0, "hold_cap": 120.0, "target_floor": 6.0, "stop_floor": 2.0, "target_cap": 45.0, "spread_mult": 0.35},
+            "new_listing": {"stop_mult": 1.20, "rr_min": 2.2, "hold": 18.0, "hold_cap": 72.0, "target_floor": 8.0, "stop_floor": 2.5, "target_cap": 50.0, "spread_mult": 0.45},
+            "equity_momentum": {"stop_mult": 0.90, "rr_min": 1.7, "hold": 72.0, "hold_cap": 240.0, "target_floor": 5.0, "stop_floor": 1.5, "target_cap": 35.0, "spread_mult": 0.15},
+            "prediction_market": {"stop_mult": 0.70, "rr_min": 1.6, "hold": 24.0, "hold_cap": 72.0, "target_floor": 4.0, "stop_floor": 1.5, "target_cap": 30.0, "spread_mult": 0.60},
+            "event": {"stop_mult": 0.85, "rr_min": 1.5, "hold": 16.0, "hold_cap": 48.0, "target_floor": 4.0, "stop_floor": 1.5, "target_cap": 25.0, "spread_mult": 0.55},
+            "mean_reversion": {"stop_mult": 0.75, "rr_min": 1.3, "hold": 18.0, "hold_cap": 72.0, "target_floor": 3.5, "stop_floor": 1.5, "target_cap": 20.0, "spread_mult": 0.20},
+            "arbitrage": {"stop_mult": 0.35, "rr_min": 1.1, "hold": 6.0, "hold_cap": 24.0, "target_floor": 1.0, "stop_floor": 0.5, "target_cap": 10.0, "spread_mult": 1.10},
+            "rebalance": {"stop_mult": 0.35, "rr_min": 1.1, "hold": 4.0, "hold_cap": 12.0, "target_floor": 1.0, "stop_floor": 0.5, "target_cap": 10.0, "spread_mult": 0.10},
+            "cycle": {"stop_mult": 0.25, "rr_min": 1.0, "hold": 1.0, "hold_cap": 4.0, "target_floor": 0.5, "stop_floor": 0.5, "target_cap": 5.0, "spread_mult": 0.05},
+            "tax_loss": {"stop_mult": 0.25, "rr_min": 1.0, "hold": 1.0, "hold_cap": 4.0, "target_floor": 0.5, "stop_floor": 0.5, "target_cap": 5.0, "spread_mult": 0.05},
+        }
+        profile = profiles.get(trade_style, profiles["momentum"])
+
+        vol = max(volatility_pct, 1.0)
+        conf = _clamp(confidence, 0.05, 0.99)
+        spread = max(spread_pct, 0.0)
+
+        stop_pct = profile["stop_floor"] + (vol * profile["stop_mult"] * (1.18 - (conf * 0.45))) + (spread * profile["spread_mult"])
+        stop_pct = _clamp(stop_pct, profile["stop_floor"], profile["target_cap"])
+
+        target_pct = max(expected_return_pct, stop_pct * profile["rr_min"], profile["target_floor"])
+        target_pct = _clamp(target_pct, profile["target_floor"], profile["target_cap"])
+
+        vol_adjust = _clamp(30.0 / vol, 0.45, 1.35)
+        hold_hours = profile["hold"] * vol_adjust * (1.10 - (conf * 0.18))
+        if hold_hint_hours is not None:
+            hold_hours = (hold_hours * 0.65) + (hold_hint_hours * 0.35)
+        hold_hours = _clamp(hold_hours, 0.0, profile["hold_cap"])
+
+        expected_return_pct = max(expected_return_pct, target_pct * 0.55)
+
+        return {
+            "trade_style": trade_style,
+            "stop_loss_pct": round(stop_pct, 1),
+            "take_profit_pct": round(target_pct, 1),
+            "holding_period_hours": round(hold_hours, 1),
+            "risk_pct": round(stop_pct, 1),
+            "expected_return_pct": round(expected_return_pct, 1),
+        }
+
     def _usdc_reserve_amount(self) -> float:
         if not self.state:
             return 0.0
@@ -708,24 +943,86 @@ class PortfolioOptimizer:
     def _deployable_capital(self) -> float:
         if not self.state:
             return 0.0
-        return max(self.state.total_value - self._usdc_reserve_amount(), 0.0)
+        base = max(self.state.total_value - self._usdc_reserve_amount(), 0.0)
+        cap = float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0)
+        if cap > 0:
+            return min(base, self._remaining_deployable_capital())
+        return base
+
+    def _parse_iso_ts(self, value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            text = str(value).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
+
+    def _live_test_started_at(self) -> Optional[datetime]:
+        return self._parse_iso_ts(self.capital_policy.get("live_test_started_at") or self.capital_policy.get("updated_at"))
+
+    def _live_test_capital_in_play(self) -> float:
+        cap = float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0)
+        if cap <= 0:
+            return 0.0
+        start = self._live_test_started_at()
+        if not start:
+            return 0.0
+        spent = 0.0
+        for trade in self.store.load_trades(limit=2000):
+            if not trade:
+                continue
+            if bool(trade.get("dry_run", 1)):
+                continue
+            trade_ts = self._parse_iso_ts(trade.get("timestamp"))
+            if not trade_ts or trade_ts < start:
+                continue
+            side = str(trade.get("side", "")).upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            size = max(float(trade.get("size_usd", 0) or 0), 0.0)
+            spent += size if side == "BUY" else -size
+        return max(spent, 0.0)
+
+    def _remaining_deployable_capital(self) -> float:
+        cap = float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0)
+        if cap <= 0:
+            return 0.0
+        return max(cap - self._live_test_capital_in_play(), 0.0)
 
     def _buy_capacity(self) -> float:
         if not self.state:
             return 0.0
-        return max(self.state.usdc_balance - self._usdc_reserve_amount(), 0.0)
+        spendable = max(self.state.usdc_balance - self._usdc_reserve_amount(), 0.0)
+        remaining_cap = self._remaining_deployable_capital()
+        if float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0) > 0:
+            return min(spendable, remaining_cap)
+        if remaining_cap > 0:
+            return min(spendable, remaining_cap)
+        return spendable
 
     def _core_batch_cap(self) -> float:
         if not self.state:
             return 0.0
         frac = float(self.capital_policy.get("core_batch_fraction", CORE_BATCH_FRACTION))
-        return max(self.state.total_value * frac, self.min_value)
+        cap = max(self.state.total_value * frac, self.min_value)
+        remaining_cap = self._remaining_deployable_capital()
+        if float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0) > 0:
+            return min(cap, remaining_cap)
+        return cap
 
     def _opportunity_batch_cap(self) -> float:
         if not self.state:
             return 0.0
         frac = float(self.capital_policy.get("opportunity_batch_fraction", OPPORTUNITY_BATCH_FRACTION))
-        return max(self.state.total_value * frac, self.min_value)
+        cap = max(self.state.total_value * frac, self.min_value)
+        remaining_cap = self._remaining_deployable_capital()
+        if float(self.capital_policy.get("max_deployable_usd", 0.0) or 0.0) > 0:
+            return min(cap, remaining_cap)
+        return cap
 
     def _bucket_targets(self) -> Dict[str, float]:
         if not self.state:
@@ -743,6 +1040,15 @@ class PortfolioOptimizer:
         allocation_pct = to_float(holding.get("allocation_pct", 0))
         min_alloc = float(self.capital_policy.get("core_min_allocation_pct", 10.0))
         return classification == "safe" and allocation_pct >= min_alloc
+
+    def _static_holdings_set(self) -> set[str]:
+        raw = self.capital_policy.get("static_holdings", DEFAULT_CAPITAL_POLICY["static_holdings"])
+        if isinstance(raw, str):
+            raw = [x.strip() for x in raw.split(",") if x.strip()]
+        return {str(x).upper().replace("-USD", "") for x in raw if str(x).strip()}
+
+    def _is_static_currency(self, currency: str) -> bool:
+        return currency.upper().replace("-USD", "") in self._static_holdings_set()
 
     def _bucket_values(self) -> Dict[str, float]:
         if not self.state:
@@ -766,6 +1072,8 @@ class PortfolioOptimizer:
             return opp.meta["capital_bucket"]
         if opp.opp_type in (OpportunityType.NEW_LISTING_MOMENTUM, OpportunityType.EVENT_MARKET, OpportunityType.EVENT_ARBITRAGE):
             return "opportunity"
+        if opp.opp_type == OpportunityType.ACCUMULATOR_SIGNAL:
+            return opp.meta.get("capital_bucket", "opportunity")
         if opp.opp_type == OpportunityType.STOCK_SIGNAL:
             return "opportunity"
         if opp.side == "BUY":
@@ -779,6 +1087,7 @@ class PortfolioOptimizer:
             return
         try:
             with open(self.pending_file, "r") as f:
+                fcntl.flock(f, fcntl.LOCK_SH)
                 pending = json.load(f)
         except (json.JSONDecodeError, OSError):
             return
@@ -796,6 +1105,7 @@ class PortfolioOptimizer:
 
         if executed_any:
             with open(self.pending_file, "w") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
                 json.dump(pending, f, indent=2, default=str)
 
     def _execute_approved(self, entry: dict):
@@ -892,6 +1202,11 @@ class PortfolioOptimizer:
 
     def stop(self):
         self.running = False
+        if self.graph_store:
+            try:
+                self.graph_store.close()
+            except Exception:
+                pass
 
     # ── Single tick ────────────────────────────────────────────────
 
@@ -903,6 +1218,8 @@ class PortfolioOptimizer:
         self._fetch_state()
         opportunities = self._detect_opportunities()
         opportunities.sort(key=lambda o: o.priority, reverse=True)
+        self._write_trade_plans(opportunities)
+        self._write_signal_cache(opportunities)
         logger.info("Found %d opportunities", len(opportunities))
         for opp in opportunities[:5]:  # max 5 per tick
             self._process_opportunity(opp)
@@ -1024,6 +1341,7 @@ class PortfolioOptimizer:
         ops.extend(self._detect_rebalance())
         ops.extend(self._detect_strategy_signals())
         ops.extend(self._detect_volume_cycles())
+        ops.extend(self._detect_accumulator_signals())
         ops.extend(self._detect_event_markets())
         return ops
 
@@ -1046,6 +1364,8 @@ class PortfolioOptimizer:
                 continue
             base = pid.split("-")[0]
             if base in ("USDC", "USDT", "DAI"):
+                continue
+            if self._is_static_currency(base):
                 continue
             prev = best_by_base.get(base)
             if not prev:
@@ -1142,6 +1462,17 @@ class PortfolioOptimizer:
                         remaining_core_capacity = max(remaining_core_capacity - size_usd, 0.0)
                     else:
                         remaining_opportunity_capacity = max(remaining_opportunity_capacity - size_usd, 0.0)
+                entry_price = closes[-1] if closes else 0
+                trade_style = "new_listing" if is_new_listing else "momentum"
+                if is_new_listing and side == "SELL":
+                    trade_style = "mean_reversion"
+                exit_plan = self._compute_exit_plan(
+                    pid.split("-")[0], side, score,
+                    expected_return_pct=max(expected_return_pct, 0.5),
+                    trade_style=trade_style,
+                    volatility_pct=self._estimate_trade_volatility_pct(closes, highs, lows),
+                    hold_hint_hours=18.0 if is_new_listing else 36.0,
+                )
                 ops.append(Opportunity(
                     opp_type=opp_type,
                     currency=pid.split("-")[0],
@@ -1154,6 +1485,12 @@ class PortfolioOptimizer:
                     ),
                     priority=score,
                     product_id=pid,
+                    entry_price_est=entry_price,
+                    stop_loss_pct=exit_plan["stop_loss_pct"],
+                    take_profit_pct=exit_plan["take_profit_pct"],
+                    holding_period_hours=exit_plan["holding_period_hours"],
+                    expected_return_pct=exit_plan["expected_return_pct"],
+                    risk_pct=exit_plan["risk_pct"],
                     meta={
                         "platform": "coinbase",
                         "category": "coinbase_universe",
@@ -1167,11 +1504,13 @@ class PortfolioOptimizer:
                         "listing_phase": "new_listing" if is_new_listing else "seasoned",
                         "fade_signal": is_new_listing and side == "SELL",
                         "capital_bucket": bucket,
+                        "trade_style": trade_style,
                         "signal_type": "coinbase_universe:momentum" if opp_type == OpportunityType.STRATEGY_SIGNAL else "coinbase_universe:new_listing_momentum",
                         "confidence": score,
                         "trend_10d": trend_10,
                         "trend_30d": trend_30,
                         "volume_ratio": volume_ratio,
+                        "exit_plan": exit_plan,
                     },
                 ))
             except Exception as e:
@@ -1226,14 +1565,28 @@ class PortfolioOptimizer:
                     max_notional=2000.0,
                     min_notional=self.min_value,
                 )
+                side = "BUY" if upside >= 0 else "SELL"
+                exit_plan = self._compute_exit_plan(
+                    symbol, side, score,
+                    expected_return_pct=max(abs(upside) * 100 * (1.4 if side == "BUY" else 1.1), 0.5),
+                    trade_style="equity_momentum" if side == "BUY" else "mean_reversion",
+                    volatility_pct=max((1.0 - min(vol_ratio / 3.0, 1.0)) * 25.0 + abs(trend) * 100.0 * 6.0 + 12.0, 12.0),
+                    hold_hint_hours=72.0,
+                )
                 ops.append(Opportunity(
                     opp_type=OpportunityType.STOCK_SIGNAL,
                     currency=symbol,
-                    side="BUY" if upside >= 0 else "SELL",
+                    side=side,
                     size_usd=size_usd,
                     reason=f"Stock screen: {symbol} return90d={return_90d*100:.1f}% trend={trend*100:.1f}% volx={vol_ratio:.2f}",
                     priority=score,
                     product_id=symbol,
+                    entry_price_est=closes[-1] if closes else 0,
+                    stop_loss_pct=exit_plan["stop_loss_pct"],
+                    take_profit_pct=exit_plan["take_profit_pct"],
+                    holding_period_hours=exit_plan["holding_period_hours"],
+                    expected_return_pct=exit_plan["expected_return_pct"],
+                    risk_pct=exit_plan["risk_pct"],
                     meta={
                         "platform": "equity",
                         "category": "stock_watchlist",
@@ -1243,10 +1596,12 @@ class PortfolioOptimizer:
                         "spread": 0.0,
                         "liquidity_score": min(vol_ratio / 2.0, 1.0),
                         "signal_type": "equity_screen:quality_momentum",
+                        "trade_style": "equity_momentum" if side == "BUY" else "mean_reversion",
                         "confidence": score,
                         "return_90d": return_90d,
                         "trend_20_50": trend,
                         "volume_ratio": vol_ratio,
+                        "exit_plan": exit_plan,
                     },
                 ))
             except Exception as e:
@@ -1261,6 +1616,8 @@ class PortfolioOptimizer:
         ops = []
         for cur, h in self.state.holdings.items():
             if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
+                continue
+            if self._is_static_currency(cur):
                 continue
             pnl = h.get("unrealized_pnl_pct")
             if pnl is None or pnl >= -5:
@@ -1279,6 +1636,12 @@ class PortfolioOptimizer:
                 reason=f"TLH: {pnl:.1f}% loss, est. tax savings ${tax_savings:.0f}",
                 priority=priority,
                 product_id=pid,
+                entry_price_est=h.get("price", 0),
+                stop_loss_pct=0,
+                take_profit_pct=0,
+                holding_period_hours=0,
+                expected_return_pct=tax_savings / max(h["value"], 1) * 100,
+                risk_pct=0,
             ))
         if ops:
             logger.info("TLH: %d candidates", len(ops))
@@ -1296,7 +1659,7 @@ class PortfolioOptimizer:
         # Look for holdings with enough value and decent liquidity.
         candidates = [
             h for h in self.state.holdings.values()
-            if h["currency"] not in ("USDC",) and h["value"] >= self.min_value
+            if h["currency"] not in ("USDC",) and h["value"] >= self.min_value and not self._is_static_currency(h["currency"])
         ]
         if not candidates:
             return []
@@ -1325,6 +1688,12 @@ class PortfolioOptimizer:
             reason=f"Fee tier: generate ${trade_size:.0f} volume toward ${needed:,.0f} needed",
             priority=0.7,
             product_id=pid,
+            entry_price_est=best.get("price", 0),
+            stop_loss_pct=3.0,
+            take_profit_pct=3.0,
+            holding_period_hours=1,
+            expected_return_pct=-0.5,
+            risk_pct=3.0,
         )]
         logger.info("Fee tier: need $%.0f more volume, trading $%.0f of %s",
                      needed, trade_size, best["currency"])
@@ -1351,8 +1720,12 @@ class PortfolioOptimizer:
                 candidates = sorted(
                     [h for h in self.state.holdings.values()
                      if h["classification"] == cls and h["currency"] not in ("USDC", "USDT", "DAI")
-                     and h["value"] >= self.min_value],
-                    key=lambda x: x["allocation_pct"], reverse=True
+                     and h["value"] >= self.min_value and not self._is_static_currency(h["currency"])],
+                    key=lambda x: (
+                        x["allocation_pct"],
+                        -self._graph_score_for_product(x.get("product_id") or f"{x['currency']}-USD"),
+                    ),
+                    reverse=True,
                 )
                 for h in candidates:
                     sell_size = min(move_usd, h["value"] * 0.5)
@@ -1368,6 +1741,12 @@ class PortfolioOptimizer:
                             reason=f"Rebalance: reduce {cls} by ${move_usd:.0f}",
                             priority=0.5,
                             product_id=pid,
+                            entry_price_est=h.get("price", 0),
+                            stop_loss_pct=0,
+                            take_profit_pct=0,
+                            holding_period_hours=0,
+                            expected_return_pct=0,
+                            risk_pct=0,
                         ))
                         break
             else:
@@ -1379,24 +1758,40 @@ class PortfolioOptimizer:
                 # Pick the best asset to buy (highest tradability, not already held large)
                 buy_candidates = [
                     h for h in self.state.holdings.values()
-                    if h["classification"] == cls and h["currency"] not in ("USDC", "USDT", "DAI")
+                    if h["classification"] == cls and h["currency"] not in ("USDC", "USDT", "DAI") and not self._is_static_currency(h["currency"])
                 ]
                 if not buy_candidates:
                     # No existing holding in this class — use a representative asset
                     representatives = {"growth": "ETH", "speculative": "SOL", "safe": "BTC"}
                     target = representatives.get(cls, "ETH")
+                    if self._is_static_currency(target):
+                        continue
                     if cls == "growth":
                         buy_candidates = [{"currency": "ETH", "value": 0, "product_id": "ETH-USD"}]
                     elif cls == "speculative":
                         buy_candidates = [{"currency": "SOL", "value": 0, "product_id": "SOL-USD"}]
                     else:
                         buy_candidates = [{"currency": "BTC", "value": 0, "product_id": "BTC-USD"}]
-                best = min(buy_candidates, key=lambda h: h["allocation_pct"])
+                best = min(
+                    buy_candidates,
+                    key=lambda h: (
+                        h["allocation_pct"],
+                        -self._graph_score_for_product(h.get("product_id") or f"{h['currency']}-USD"),
+                    ),
+                )
+                graph_multiplier = self._graph_multiplier_for_product(best.get("product_id") or f"{best['currency']}-USD", max_boost=0.20)
                 bucket = "core" if best["currency"].upper() in CORE_LONG_TERM_ASSETS else "opportunity"
-                move_usd = min(move_usd, self._core_batch_cap() if bucket == "core" else self._opportunity_batch_cap())
+                move_usd = min(
+                    move_usd * graph_multiplier,
+                    self._core_batch_cap() if bucket == "core" else self._opportunity_batch_cap(),
+                )
                 pid = self.cli.best_product(best["currency"], "BUY")
                 if not pid:
                     continue
+                exit_plan = self._compute_exit_plan(
+                    best["currency"], "BUY", 0.65,
+                    expected_return_pct=6.0,
+                )
                 ops.append(Opportunity(
                     opp_type=OpportunityType.REBALANCE,
                     currency=best["currency"],
@@ -1405,7 +1800,13 @@ class PortfolioOptimizer:
                     reason=f"Rebalance: increase {cls} by ${move_usd:.0f}",
                     priority=0.5,
                     product_id=pid,
-                    meta={"capital_bucket": bucket},
+                    entry_price_est=best.get("price", 0),
+                    stop_loss_pct=exit_plan["stop_loss_pct"],
+                    take_profit_pct=exit_plan["take_profit_pct"],
+                    holding_period_hours=exit_plan["holding_period_hours"],
+                    expected_return_pct=exit_plan["expected_return_pct"],
+                    risk_pct=exit_plan["risk_pct"],
+                    meta={"capital_bucket": bucket, "graph_multiplier": graph_multiplier, "graph_score": self._graph_score_for_product(best.get("product_id") or f"{best['currency']}-USD"), "exit_plan": exit_plan},
                 ))
         if ops:
             logger.info("Rebalance: %d actions", len(ops))
@@ -1418,6 +1819,8 @@ class PortfolioOptimizer:
         now = time.time()
         for cur, h in self.state.holdings.items():
             if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
+                continue
+            if self._is_static_currency(cur):
                 continue
             self.position_ages[cur] += 1
             if self.position_ages[cur] >= CYCLE_MAX_HOLD_TICKS:
@@ -1432,6 +1835,12 @@ class PortfolioOptimizer:
                     reason=f"Volume cycle: close after {self.position_ages[cur]} ticks",
                     priority=0.3,
                     product_id=pid,
+                    entry_price_est=h.get("price", 0),
+                    stop_loss_pct=0,
+                    take_profit_pct=0,
+                    holding_period_hours=0,
+                    expected_return_pct=0,
+                    risk_pct=0,
                 ))
         if ops:
             logger.info("Volume cycles: %d positions stale", len(ops))
@@ -1443,7 +1852,7 @@ class PortfolioOptimizer:
             return []
         candidates = [
             h for h in self.state.holdings.values()
-            if h["currency"] not in ("USDC", "USDT", "DAI") and h["value"] >= self.min_value
+            if h["currency"] not in ("USDC", "USDT", "DAI") and h["value"] >= self.min_value and not self._is_static_currency(h["currency"])
         ]
         if not candidates:
             return []
@@ -1570,10 +1979,12 @@ class PortfolioOptimizer:
 
                 # Apply ConfidenceEngine modifiers if available
                 final_confidence = agg.confidence
-                if self.confidence_engine and h.get("spread"):
+                if self.confidence_engine:
                     try:
                         class _Sig: pass
                         sig_stub = _Sig()
+                        sig_stub.symbol = currency
+                        sig_stub.strategy = "confidence_matrix_aggregated"
                         sig_stub.strength = agg.confidence
                         sig_stub.action = "BUY" if side == "BUY" else "SELL"
                         mod_result = self.confidence_engine.apply_modifiers(
@@ -1583,7 +1994,7 @@ class PortfolioOptimizer:
                                 "volume": h.get("volume_24h", 0),
                                 "price": h.get("price", 0),
                             },
-                            regime=_detect_regime({"change_pct": h.get("change_pct", 0)}),
+                            regime=_detect_regime({"change_pct": h.get("change_24h", 0)}),
                             market_leaders=["BTC", "ETH"],
                             sentiment_score=0.0,
                             global_consensus=0.5,
@@ -1598,26 +2009,169 @@ class PortfolioOptimizer:
                 if not use_pid:
                     continue
 
+                graph_multiplier = self._graph_multiplier_for_product(use_pid, max_boost=0.25)
+                final_confidence = min(0.95, final_confidence * graph_multiplier)
+                size = min(size * graph_multiplier, self._buy_capacity() if side == "BUY" else h["value"])
+                if size < self.min_value:
+                    continue
+
+                exit_plan = self._compute_exit_plan(
+                    currency, side, final_confidence,
+                    expected_return_pct=max(final_confidence * 10.0, 0.5),
+                    trade_style="momentum" if side == "BUY" else "mean_reversion",
+                    volatility_pct=max(abs(to_float(h.get("change_24h", 0))) * 50, 30),
+                )
                 ops.append(Opportunity(
                     opp_type=OpportunityType.STRATEGY_SIGNAL,
                     currency=currency,
                     side=side,
                     size_usd=size,
-                    reason=f"{agg.best_reason} (agg_conf={agg.confidence:.2f}, {agg.strategy_count} strats)",
-                    priority=min(agg.confidence * 0.8 + 0.1, 0.9),
+                    reason=f"{agg.best_reason} (agg_conf={agg.confidence:.2f}, graph={graph_multiplier:.2f}, {agg.strategy_count} strats)",
+                    priority=min(final_confidence * 0.8 + 0.1, 0.95),
                     product_id=use_pid,
+                    entry_price_est=h.get("price", 0),
+                    stop_loss_pct=exit_plan["stop_loss_pct"],
+                    take_profit_pct=exit_plan["take_profit_pct"],
+                    holding_period_hours=exit_plan["holding_period_hours"],
+                    expected_return_pct=exit_plan["expected_return_pct"],
+                    risk_pct=exit_plan["risk_pct"],
                     meta={
                         "aggregated": True,
                         "confidence": agg.confidence,
+                        "graph_multiplier": graph_multiplier,
+                        "graph_score": self._graph_score_for_product(use_pid),
                         "strategy_count": agg.strategy_count,
                         "strategies": agg.strategies,
                         "agreeing_groups": agg.agreeing_groups,
                         "capital_bucket": bucket,
+                        "trade_style": "momentum" if side == "BUY" else "mean_reversion",
+                        "exit_plan": exit_plan,
                     },
                 ))
 
         if ops:
             logger.info("Strategy signals: %d opportunities", len(ops))
+        return ops
+
+    def _detect_accumulator_signals(self) -> List[Opportunity]:
+        if not _HAS_ACCUMULATOR or UnifiedSignalAccumulator is None:
+            return []
+        if time.time() - self.last_execution.get("accumulator", 0) < OP_COOLDOWN["accumulator"]:
+            return []
+        try:
+            acc = UnifiedSignalAccumulator(max_queue_size=50)
+            signals = acc.accumulate()
+        except Exception as e:
+            logger.warning("Unified signal accumulator error: %s", e)
+            return []
+
+        ops = []
+        remaining_buy_capacity = self._buy_capacity()
+        remaining_core_capacity = self._bucket_gap("core")
+        remaining_opportunity_capacity = self._bucket_gap("opportunity")
+        for sig in signals:
+            if sig.action not in ("BUY", "SELL"):
+                continue
+            if sig.final_confidence < 0.15:
+                continue
+            currency = sig.symbol.replace("-USD", "")
+            if self._is_static_currency(currency):
+                continue
+            classification = classify_asset(currency)
+            bucket = "core" if currency.upper() in CORE_LONG_TERM_ASSETS else "opportunity"
+
+            graph_multiplier = 1.0
+            buy_pid = self.cli.best_product(currency, "BUY")
+            sell_pid = self.cli.best_product(currency, "SELL")
+            use_pid = buy_pid if sig.action == "BUY" else sell_pid
+            if not use_pid:
+                continue
+            graph_multiplier = self._graph_multiplier_for_product(use_pid, max_boost=0.25)
+
+            final_confidence = min(0.95, sig.final_confidence * graph_multiplier)
+            holding = self.state.holdings.get(currency) if self.state else None
+            price = (holding.get("price", 0) or 0) if holding else sig.market_data.get("price", 0)
+            liquidity = min(float(holding.get("liquidity_score", 0.7) or 0.7), 1.0) if holding else 0.7
+
+            size = self._risk_reward_size(
+                expected_return_pct=max(final_confidence * 8.0, 0.5),
+                risk_pct=max((1.0 - final_confidence) * 10.0 + 2.0, 1.0),
+                confidence=final_confidence,
+                liquidity=liquidity,
+                cap_pct=0.008,
+                max_notional=2500.0,
+                min_notional=self.min_value,
+                capital_limit=(remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity),
+            )
+            if sig.action == "SELL" and holding:
+                size = min(size, holding.get("value", 0))
+            else:
+                batch_cap = self._core_batch_cap() if bucket == "core" else self._opportunity_batch_cap()
+                cap = remaining_buy_capacity if sig.action == "BUY" else size
+                size = min(size, cap, batch_cap, remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity)
+                if sig.action == "BUY":
+                    remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                if bucket == "core":
+                    remaining_core_capacity = max(remaining_core_capacity - size, 0.0)
+                else:
+                    remaining_opportunity_capacity = max(remaining_opportunity_capacity - size, 0.0)
+
+            if size < self.min_value:
+                continue
+
+            classification_label = {
+                "NewsSentiment": "news",
+                "NewsHackAlert": "news",
+                "NewsRegulationWatch": "news",
+                "NewsAdoptionSignal": "news",
+                "NewsTechSignal": "news",
+            }.get(sig.strategy_name.split(":", 1)[0] if ":" in sig.strategy_name else sig.strategy_name, sig.strategy_name)
+
+            trade_style = "event"
+            strategy_name = sig.strategy_name.lower()
+            if "momentum" in strategy_name or "trend" in strategy_name:
+                trade_style = "momentum"
+            elif "reversion" in strategy_name or "mean" in strategy_name:
+                trade_style = "mean_reversion"
+            exit_plan = self._compute_exit_plan(
+                currency, sig.action, final_confidence,
+                expected_return_pct=max(final_confidence * 10.0, 0.5),
+                trade_style=trade_style,
+                volatility_pct=max(abs(to_float(sig.market_data.get("change_pct", 0))) * 18.0 + 12.0, 12.0),
+                hold_hint_hours=24.0 if trade_style == "event" else 36.0,
+            )
+
+            ops.append(Opportunity(
+                opp_type=OpportunityType.ACCUMULATOR_SIGNAL,
+                currency=currency,
+                side=sig.action,
+                size_usd=size,
+                reason=f"{sig.strategy_name}: {sig.signal_reason[:80]}",
+                priority=min(final_confidence * 0.85, 0.9),
+                product_id=use_pid,
+                    entry_price_est=price,
+                stop_loss_pct=exit_plan["stop_loss_pct"],
+                take_profit_pct=exit_plan["take_profit_pct"],
+                holding_period_hours=exit_plan["holding_period_hours"],
+                expected_return_pct=exit_plan["expected_return_pct"],
+                risk_pct=exit_plan["risk_pct"],
+                meta={
+                    "strategy_name": sig.strategy_name,
+                    "final_confidence": round(final_confidence, 3),
+                    "base_confidence": round(sig.base_confidence, 3),
+                    "opportunity_score": sig.opportunity_score,
+                    "capital_bucket": bucket,
+                    "graph_multiplier": graph_multiplier,
+                    "graph_score": self._graph_score_for_product(use_pid),
+                    "signal_type": classification_label,
+                    "trade_style": trade_style,
+                    "market_data": sig.market_data,
+                    "exit_plan": exit_plan,
+                },
+            ))
+
+        if ops:
+            logger.info("Accumulator signals: %d opportunities", len(ops))
         return ops
 
     def _detect_event_markets(self) -> List[Opportunity]:
@@ -1691,6 +2245,14 @@ class PortfolioOptimizer:
                     arb_size = min(arb_size, remaining_buy_capacity, self._opportunity_batch_cap(), remaining_opportunity_capacity)
                     remaining_buy_capacity = max(remaining_buy_capacity - arb_size, 0.0)
                     remaining_opportunity_capacity = max(remaining_opportunity_capacity - arb_size, 0.0)
+                    arb_plan = self._compute_exit_plan(
+                        "ARB", "PAIR", arb.confidence,
+                        expected_return_pct=max(arb.edge_pct * 100.0, 0.5),
+                        trade_style="arbitrage",
+                        volatility_pct=max(arb.edge_pct * 100.0 * 6.0 + 2.0, 2.0),
+                        spread_pct=arb.edge_pct * 100.0,
+                        hold_hint_hours=6.0,
+                    )
                     ops.append(Opportunity(
                         opp_type=OpportunityType.EVENT_ARBITRAGE,
                         currency="ARB",
@@ -1699,6 +2261,12 @@ class PortfolioOptimizer:
                         reason=arb.reason,
                         priority=min(arb.confidence * 0.95, 0.95),
                         product_id=f"{arb.platform_buy}:{arb.platform_hedge}",
+                        entry_price_est=arb.leg_buy.price,
+                        stop_loss_pct=arb_plan["stop_loss_pct"],
+                        take_profit_pct=arb_plan["take_profit_pct"],
+                        holding_period_hours=arb_plan["holding_period_hours"],
+                        expected_return_pct=arb_plan["expected_return_pct"],
+                        risk_pct=arb_plan["risk_pct"],
                         meta={
                             "event_key": arb.event_key,
                             "category": arb.category,
@@ -1724,6 +2292,8 @@ class PortfolioOptimizer:
                             "edge_pct": arb.edge_pct,
                             "confidence": arb.confidence,
                             "signal_type": "cross_platform_arbitrage",
+                            "trade_style": "arbitrage",
+                            "exit_plan": arb_plan,
                         },
                     ))
                 if arbs:
@@ -1806,6 +2376,15 @@ class PortfolioOptimizer:
                     reason += f"[kg: {kg.direction} gap={kg.gap_pct:.0f}%]"
                 else:
                     reason += f"(vol=${m.volume:.0f})"
+                spot_entry = self._current_price_for_symbol(crypto_symbol, fallback=0.0)
+                exit_plan_pm = self._compute_exit_plan(
+                    crypto_symbol.replace("-USD", ""), side, conf,
+                    expected_return_pct=max(abs((kg.gap if kg else (m.mid_price - 0.5))) * 100.0, 0.5),
+                    trade_style="prediction_market",
+                    volatility_pct=max((1.0 - m.liquidity_score) * 35.0 + m.spread * 1000.0 + 18.0, 18.0),
+                    spread_pct=m.spread * 100.0,
+                    hold_hint_hours=24.0 if m.category == "crypto" else 16.0,
+                )
                 ops.append(Opportunity(
                     opp_type=OpportunityType.STRATEGY_SIGNAL,
                     currency=crypto_symbol.replace("-USD", ""),
@@ -1814,6 +2393,12 @@ class PortfolioOptimizer:
                     reason=reason,
                     priority=min(conf * (0.9 if m.category == "crypto" else 0.7), 0.8),
                     product_id=crypto_symbol,
+                    entry_price_est=spot_entry,
+                    stop_loss_pct=exit_plan_pm["stop_loss_pct"],
+                    take_profit_pct=exit_plan_pm["take_profit_pct"],
+                    holding_period_hours=exit_plan_pm["holding_period_hours"],
+                    expected_return_pct=exit_plan_pm["expected_return_pct"],
+                    risk_pct=exit_plan_pm["risk_pct"],
                     meta=dict({
                         "platform": m.platform,
                         "category": m.category,
@@ -1823,8 +2408,10 @@ class PortfolioOptimizer:
                         "spread": m.spread,
                         "liquidity_score": m.liquidity_score,
                         "signal_type": f"prediction_market:{m.category}",
+                        "trade_style": "prediction_market",
                         "confidence": conf,
                         "capital_bucket": bucket,
+                        "exit_plan": exit_plan_pm,
                     }, **kg_meta),
                 ))
             else:
@@ -1859,6 +2446,92 @@ class PortfolioOptimizer:
                          len(ops), actionable, kg_count, ",".join(sorted(cats)))
         return ops
 
+    def _write_trade_plans(self, opportunities: List[Opportunity]):
+        """Persist trade plans to JSON for dashboard consumption."""
+        style_map = {
+            "TLH": "tax_loss",
+            "FEE_TIER_VOLUME": "rebalance",
+            "REBALANCE": "rebalance",
+            "VOLUME_CYCLE": "cycle",
+            "STOCK_SIGNAL": "equity_momentum",
+            "EVENT_ARBITRAGE": "arbitrage",
+            "EVENT_MARKET": "event",
+            "NEW_LISTING_MOMENTUM": "new_listing",
+            "ACCUMULATOR_SIGNAL": "event",
+            "STRATEGY_SIGNAL": "momentum",
+        }
+        plans = []
+        for opp in opportunities[:50]:
+            plan = asdict(opp)
+            plan["opp_type"] = opp.opp_type.name
+            plan["trade_style"] = opp.meta.get("trade_style", "") or style_map.get(opp.opp_type.name, "")
+            plans.append(plan)
+        payload = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "source": "portfolio_optimizer",
+            "plans": plans,
+            "total": len(plans),
+        }
+        try:
+            tmp_path = "trade_plans.json.tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            os.replace(tmp_path, "trade_plans.json")
+        except Exception as e:
+            logger.debug("Failed to write trade_plans.json: %s", e)
+
+    def _write_signal_cache(self, opportunities: List[Opportunity]):
+        """Persist a lightweight signal cache for the dashboard signal feed."""
+        style_map = {
+            "TLH": "tax_loss",
+            "FEE_TIER_VOLUME": "rebalance",
+            "REBALANCE": "rebalance",
+            "VOLUME_CYCLE": "cycle",
+            "STOCK_SIGNAL": "equity_momentum",
+            "EVENT_ARBITRAGE": "arbitrage",
+            "EVENT_MARKET": "event",
+            "NEW_LISTING_MOMENTUM": "new_listing",
+            "ACCUMULATOR_SIGNAL": "event",
+            "STRATEGY_SIGNAL": "momentum",
+        }
+        queue = []
+        for opp in opportunities[:100]:
+            item = asdict(opp)
+            item.update({
+                "action": opp.side,
+                "symbol": f"{opp.currency}-USD" if opp.currency and not str(opp.currency).endswith("-USD") else opp.currency,
+                "instrument": opp.product_id or opp.currency,
+                "strategy_name": opp.meta.get("strategy_name") or opp.opp_type.name,
+                "trade_style": opp.meta.get("trade_style", "") or style_map.get(opp.opp_type.name, ""),
+                "signal_reason": opp.reason,
+                "confidence": float(opp.meta.get("final_confidence", opp.priority) or opp.priority or 0),
+                "opportunity_score": float(opp.meta.get("opportunity_score", opp.priority) or opp.priority or 0),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "source": "portfolio_optimizer",
+                "graph_score": opp.meta.get("graph_score"),
+                "graph_overlay": opp.meta.get("graph_multiplier"),
+            })
+            queue.append(item)
+
+        payload = {
+            "status": "ok",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "queue": queue,
+            "signals": queue,
+            "total_signals": len(queue),
+            "buy_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "BUY"),
+            "sell_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "SELL"),
+            "quality_score": round(sum(float(s.get("opportunity_score", 0) or 0) for s in queue[:5]) / len(queue[:5]) if queue[:5] else 0, 3),
+        }
+        try:
+            tmp_path = "data/.unified_signal_cache.json.tmp"
+            os.makedirs("data", exist_ok=True)
+            with open(tmp_path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            os.replace(tmp_path, "data/.unified_signal_cache.json")
+        except Exception as e:
+            logger.debug("Failed to write unified_signal_cache.json: %s", e)
+
     _SYMBOL_MAP = [
         # Crypto direct
         ("bitcoin", "BTC-USD"), ("btc", "BTC-USD"),
@@ -1868,10 +2541,25 @@ class PortfolioOptimizer:
         ("xrp", "XRP-USD"), ("ripple", "XRP-USD"),
         ("cardano", "ADA-USD"), ("ada", "ADA-USD"),
         ("polkadot", "DOT-USD"), ("dot", "DOT-USD"),
-        ("polygon", "MATIC-USD"), ("matic", "MATIC-USD"),
+        ("polygon", "POL-USD"), ("matic", "POL-USD"), ("pol", "POL-USD"),
         ("avalanche", "AVAX-USD"), ("avax", "AVAX-USD"),
         ("chainlink", "LINK-USD"), ("link", "LINK-USD"),
         ("uniswap", "UNI-USD"), ("uni", "UNI-USD"),
+        ("cosmos", "ATOM-USD"), ("atom", "ATOM-USD"),
+        ("litecoin", "LTC-USD"), ("ltc", "LTC-USD"),
+        ("bitcoin cash", "BCH-USD"), ("bch", "BCH-USD"),
+        ("near", "NEAR-USD"), ("aptos", "APT-USD"), ("apt", "APT-USD"),
+        ("sui", "SUI-USD"), ("arbitrum", "ARB-USD"), ("arb", "ARB-USD"),
+        ("optimism", "OP-USD"), ("op", "OP-USD"),
+        ("filecoin", "FIL-USD"), ("injective", "INJ-USD"),
+        ("sei", "SEI-USD"), ("celestia", "TIA-USD"), ("tia", "TIA-USD"),
+        ("shiba", "SHIB-USD"), ("shib", "SHIB-USD"),
+        ("pepe", "PEPE-USD"), ("bonk", "BONK-USD"),
+        ("trump", "TRUMP-USD"), ("floki", "FLOKI-USD"),
+        ("algorand", "ALGO-USD"),
+        ("stellar", "XLM-USD"), ("stacks", "STX-USD"),
+        ("hedera", "HBAR-USD"),
+        ("internet computer", "ICP-USD"), ("grt", "GRT-USD"),
         # Sports → general market sentiment (speculative)
         ("super bowl", "BTC-USD"),
         ("world cup", "BTC-USD"),
@@ -1916,6 +2604,12 @@ class PortfolioOptimizer:
                 reason=sig.reason,
                 priority=min(sig.confidence, 0.7),
                 product_id=f"{sig.platform}:{sig.market_ticker}",
+                entry_price_est=sig.probability * 2,
+                stop_loss_pct=10.0,
+                take_profit_pct=20.0,
+                holding_period_hours=48,
+                expected_return_pct=max((sig.probability - 0.5) * 200, 0),
+                risk_pct=5.0,
                 meta={
                     "platform": sig.platform,
                     "market_question": sig.market_question,
@@ -1933,6 +2627,10 @@ class PortfolioOptimizer:
     def _process_opportunity(self, opp: Opportunity):
         logger.info("Processing [%.2f] %s %s $%.0f: %s",
                      opp.priority, opp.side, opp.currency, opp.size_usd, opp.reason)
+
+        if self._is_static_currency(opp.currency):
+            logger.info("  → Static long-term holding skipped: %s", opp.currency)
+            return
 
         # Non-Coinbase opportunities are notify-only until we add execution support.
         if opp.opp_type in (OpportunityType.EVENT_MARKET, OpportunityType.EVENT_ARBITRAGE, OpportunityType.STOCK_SIGNAL):
@@ -2161,8 +2859,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--live", action="store_true", help="Execute real trades (default: dry-run)")
-    parser.add_argument("--interval", type=int, default=300, help="Check interval in seconds (default: 300)")
-    parser.add_argument("--min-value", type=float, default=50.0, help="Minimum position value to trade (default: $50)")
+    parser.add_argument("--interval", type=int, default=60, help="Check interval in seconds (default: 60)")
+    parser.add_argument("--min-value", type=float, default=10.0, help="Minimum position value to trade (default: $10)")
+    parser.add_argument("--max-deployable-usd", type=float, default=100.0,
+                        help="Hard cap on non-cash capital the optimizer may deploy (e.g. 100)")
     parser.add_argument("-e", "--environment", default="live", choices=["live", "sandbox"])
     parser.add_argument("--once", action="store_true", help="Run a single tick then exit")
     parser.add_argument("--summary", action="store_true", help="Print trade summary and exit (no tick)")
@@ -2217,6 +2917,7 @@ def main():
         environment=args.environment,
         interval=args.interval,
         min_value=args.min_value,
+        max_deployable_usd=args.max_deployable_usd,
         dry_run=not args.live,
         db_path=args.db,
         neo4j_uri=args.neo4j_uri,
