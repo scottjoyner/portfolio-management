@@ -1,0 +1,12 @@
+[package]
+name = "operator-actions"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight Rust operator action queue service for the portfolio dashboard"
+license = "UNLICENSED"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = true
+panic = "abort"

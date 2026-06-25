@@ -39,6 +39,9 @@ class MarketConditionProfile:
     has_hacks: bool = False
     has_regulation: bool = False
 
+    def __post_init__(self):
+        self.regime = str(getattr(self.regime, "value", self.regime))
+
     @property
     def is_extreme_sentiment(self) -> bool:
         return self.fear_greed < 20 or self.fear_greed > 80 or abs(self.news_sentiment_pulse) > 0.4

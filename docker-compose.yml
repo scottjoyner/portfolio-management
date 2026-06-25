@@ -43,14 +43,32 @@ services:
       - ./state:/app/state
     environment:
       - PYTHONUNBUFFERED=1
+      - OPERATOR_ACTIONS_PATH=/app/data/operator-actions.json
+      - OPERATOR_ACTIONS_URL=http://operator-actions:8098
     command: python3 -u trading_system/ui/dashboard_server.py --host 0.0.0.0 --port 8099
     restart: unless-stopped
+    depends_on:
+      - operator-actions
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3).status < 400 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  operator-actions:
+    build:
+      context: .
+      dockerfile: services/operator-actions/Dockerfile
+    container_name: portfolio-operator-actions
+    ports:
+      - "8098:8098"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - OPERATOR_ACTIONS_BIND=0.0.0.0:8098
+      - OPERATOR_ACTIONS_PATH=/app/data/operator-actions.json
+    restart: unless-stopped
 
   approval-server:
     build:

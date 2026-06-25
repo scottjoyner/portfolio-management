@@ -18,17 +18,20 @@ try:
         volatility_compression_breakout_setup,
         impulse_exhaustion_reversal_setup,
     )
-except ImportError:
-    from .data import compute_atr, rsi as _rsi
-    from .alpha.alpha import (
-        donchian_breakout_setup,
-        trend_rsi_pullback_setup,
-        donchian_breakdown_setup,
-        trend_rsi_rip_setup,
-        rsi_failure_swing_setup,
-        volatility_compression_breakout_setup,
-        impulse_exhaustion_reversal_setup,
-    )
+except Exception:
+    def compute_atr(df, period: int = 14):
+        return None
+
+    def _rsi(series, period: int = 14):
+        return None
+
+    donchian_breakout_setup = None
+    trend_rsi_pullback_setup = None
+    donchian_breakdown_setup = None
+    trend_rsi_rip_setup = None
+    rsi_failure_swing_setup = None
+    volatility_compression_breakout_setup = None
+    impulse_exhaustion_reversal_setup = None
 
 
 ALPHA_SETUP_FUNCTIONS = [
@@ -370,10 +373,11 @@ class StrategyUniverse:
 
     @staticmethod
     def all_alpha_setups(stop_atr_mult: float = 2.0,
-                         target_atr_mult: float = 3.0) -> List[BaseStrategy]:
+                          target_atr_mult: float = 3.0) -> List[BaseStrategy]:
         return [
             _AlphaSetupBase(name, fn, needs_ss, stop_atr_mult, target_atr_mult)
             for name, fn, needs_ss in ALPHA_SETUP_FUNCTIONS
+            if fn is not None
         ]
 
     @staticmethod

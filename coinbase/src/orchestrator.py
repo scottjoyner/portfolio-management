@@ -1,5 +1,6 @@
 from __future__ import annotations
 import fcntl
+import os
 import time
 import uuid
 import logging
@@ -22,6 +23,7 @@ from .adaptive_mode import AdaptiveModeSelector
 from .fear_greed import FearGreedSignalAdapter
 from .news_risk import NewsRiskAdjuster
 from .market_condition import MarketConditionStrategySelector, MarketConditionProfile
+from .capital_buckets import CapitalBucketLedger
 log = logging.getLogger(__name__)
 
 
@@ -29,6 +31,7 @@ class TradeMode(Enum):
     PAPER = "paper"
     LIVE_APPROVAL = "live_approval"
     LIVE = "live"
+    FUTURES = "futures"
 
 
 @dataclass
@@ -45,6 +48,7 @@ class TradeSignal:
     instrument_type: InstrumentType = InstrumentType.SPOT
     leverage: float = 1.0
     opportunity_score: float = 0.0
+    bucket_id: str = ""
 
 
 @dataclass
@@ -67,6 +71,9 @@ class ExecutionOrchestrator:
         risk_profile: Optional[RiskProfile] = None,
         risk_limit: RiskLimit = RiskLimit.MODERATE,
         dry_run: bool = True,
+        futures_portfolio_uuid: str = "",
+        futures_margin_type: str = "CROSS",
+        futures_default_leverage: float = 2.0,
     ):
         self.cb = cb
         if self.cb is None and mode != TradeMode.PAPER:
@@ -81,6 +88,33 @@ class ExecutionOrchestrator:
         self.dry_run = dry_run
         self.exec_engine = NativeExecutionEngine(self.cb, dry_run) if self.cb else None
         self.bracket_mgr = BracketManager(self.exec_engine)
+        self.futures_exec = None
+        if self.mode == TradeMode.FUTURES and not self.dry_run:
+            try:
+                from .futures_execution import CoinbaseFuturesExecutor
+                api_key = os.getenv("COINBASE_API_KEY", "")
+                api_secret = os.getenv("COINBASE_API_SECRET", "")
+                base_url = os.getenv("COINBASE_API_BASE_URL", "api.coinbase.com")
+                timeout = int(os.getenv("CB_TIMEOUT_S", "30"))
+                portfolio_uuid = futures_portfolio_uuid or os.getenv("COINBASE_FUTURES_PORTFOLIO_UUID", "")
+                margin_type = futures_margin_type or os.getenv("COINBASE_FUTURES_MARGIN_TYPE", "CROSS")
+                default_leverage = float(os.getenv("COINBASE_FUTURES_DEFAULT_LEVERAGE", str(futures_default_leverage)))
+                self.futures_exec = CoinbaseFuturesExecutor(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    base_url=base_url,
+                    timeout=timeout,
+                    portfolio_uuid=portfolio_uuid,
+                    margin_type=margin_type,
+                    default_leverage=default_leverage,
+                )
+                try:
+                    self.futures_exec.validate()
+                    log.info("Futures execution engine enabled (portfolio_uuid=%s)", bool(portfolio_uuid))
+                except Exception as exc:
+                    raise RuntimeError(f"Futures validation failed: {exc}") from exc
+            except Exception as e:
+                raise RuntimeError(f"Failed to enable futures executor: {e}") from e
         self.risk_mgr = RiskManager(risk_profile, risk_limit)
         self.kelly = KellySizer()
         self.fill_model = AdaptiveFillModel()
@@ -99,6 +133,11 @@ class ExecutionOrchestrator:
         self.mode_selector = AdaptiveModeSelector()
         self.news_risk = NewsRiskAdjuster()
         self.market_selector = MarketConditionStrategySelector()
+        self.bucket_ledger = CapitalBucketLedger.from_env()
+        if self.mode == TradeMode.PAPER:
+            seed_cash = float(self.bucket_ledger.summary().get("total_value_usd", 0.0))
+            self.state.cash = seed_cash
+            self.state.equity = seed_cash
 
     def set_risk_appetite(self, controller: DynamicRiskController):
         self.risk_appetite = controller
@@ -225,6 +264,7 @@ class ExecutionOrchestrator:
                 instrument_type=opp.instrument_type,
                 leverage=opp.leverage,
                 opportunity_score=opp.score,
+                bucket_id=str(opp.meta.get("bucket_id", "")),
             )
             signals.append(signal)
 
@@ -238,6 +278,8 @@ class ExecutionOrchestrator:
                 result = self._paper_execute(sig)
             elif self.mode == TradeMode.LIVE_APPROVAL:
                 result = self._approval_execute(sig)
+            elif self.mode == TradeMode.FUTURES:
+                result = self._futures_execute(sig)
             else:
                 result = self._live_execute(sig)
             results.append(result)
@@ -251,6 +293,64 @@ class ExecutionOrchestrator:
             r.get("notional", 0) for r in results if r.get("success")
         )
         return results
+
+    def _futures_execute(self, sig: TradeSignal) -> Dict[str, Any]:
+        if self.dry_run or not self.futures_exec:
+            bucket_id = sig.bucket_id or self.bucket_ledger.allocate(sig.strategy_name, sig.product_id, sig.size * sig.entry_price) or "challenge"
+            return {
+                "success": True,
+                "product_id": sig.product_id,
+                "side": sig.direction.value,
+                "size": sig.size,
+                "entry": sig.entry_price,
+                "notional": sig.size * sig.entry_price,
+                "mode": "futures",
+                "status": "dry_run",
+                "leverage": sig.leverage,
+                "bucket_id": bucket_id,
+            }
+
+        result = self.futures_exec.place_bracket(
+            symbol=sig.product_id,
+            side=sig.direction.value,
+            base_size=sig.size,
+            stop_price=sig.stop_price,
+            target_price=sig.target_price,
+            leverage=sig.leverage,
+        )
+        notional = sig.size * sig.entry_price
+        self.fee_tracker.record_trade(notional)
+        self.volume_generator.record_generated(notional)
+        bucket_id = sig.bucket_id or self.bucket_ledger.allocate(sig.strategy_name, sig.product_id, notional) or "challenge"
+        sig.bucket_id = bucket_id
+        if result.success:
+            self.bucket_ledger.open_position(bucket_id, sig.product_id, sig.direction.value, sig.size, sig.entry_price, sig.strategy_name)
+            self.state.open_positions[sig.product_id] = {
+                "direction": sig.direction.value,
+                "size": sig.size,
+                "entry": sig.entry_price,
+                "stop": sig.stop_price,
+                "target": sig.target_price,
+                "strategy": sig.strategy_name,
+                "bucket_id": bucket_id,
+                "timestamp": time.time(),
+                "leverage": sig.leverage,
+            }
+        return {
+            "success": result.success,
+            "product_id": sig.product_id,
+            "side": sig.direction.value,
+            "size": sig.size,
+            "entry": sig.entry_price,
+            "order_id": result.order_id,
+            "notional": notional,
+            "mode": "futures",
+            "status": "open" if result.success else "failed",
+            "leverage": sig.leverage,
+            "raw": result.raw,
+            "error": result.error,
+            "bucket_id": bucket_id,
+        }
 
     def _live_execute(self, sig: TradeSignal) -> Dict[str, Any]:
         if not self.cb or not self.exec_engine:
@@ -267,7 +367,21 @@ class ExecutionOrchestrator:
         notional = sig.size * sig.entry_price
         self.fee_tracker.record_trade(notional)
         self.volume_generator.record_generated(notional)
+        bucket_id = sig.bucket_id or self.bucket_ledger.allocate(sig.strategy_name, sig.product_id, notional) or "challenge"
+        sig.bucket_id = bucket_id
         entry_order = bracket.get("entry_order")
+        if getattr(entry_order, "success", False):
+            self.bucket_ledger.open_position(bucket_id, sig.product_id, sig.direction.value, sig.size, sig.entry_price, sig.strategy_name)
+            self.state.open_positions[sig.product_id] = {
+                "direction": sig.direction.value,
+                "size": sig.size,
+                "entry": sig.entry_price,
+                "stop": sig.stop_price,
+                "target": sig.target_price,
+                "strategy": sig.strategy_name,
+                "bucket_id": bucket_id,
+                "timestamp": time.time(),
+            }
         return {
             "success": getattr(entry_order, "success", False) if entry_order is not None else False,
             "product_id": sig.product_id,
@@ -278,6 +392,7 @@ class ExecutionOrchestrator:
             "notional": notional,
             "mode": "live",
             "bracket_id": getattr(entry_order, "client_order_id", "") if entry_order is not None else "",
+            "bucket_id": bucket_id,
         }
 
     def _approval_execute(self, sig: TradeSignal) -> Dict[str, Any]:
@@ -323,12 +438,16 @@ class ExecutionOrchestrator:
 
     def _paper_execute(self, sig: TradeSignal) -> Dict[str, Any]:
         notional = sig.size * sig.entry_price
+        bucket_id = sig.bucket_id or self.bucket_ledger.allocate(sig.strategy_name, sig.product_id, notional) or "challenge"
+        sig.bucket_id = bucket_id
         if sig.direction == Direction.LONG:
             if notional > self.state.cash:
                 return {"success": False, "reason": "insufficient cash", "product_id": sig.product_id}
             self.state.cash -= notional
         else:
             self.state.cash += notional
+
+        self.bucket_ledger.open_position(bucket_id, sig.product_id, sig.direction.value, sig.size, sig.entry_price, sig.strategy_name)
 
         self.state.open_positions[sig.product_id] = {
             "direction": sig.direction.value,
@@ -337,6 +456,7 @@ class ExecutionOrchestrator:
             "stop": sig.stop_price,
             "target": sig.target_price,
             "strategy": sig.strategy_name,
+            "bucket_id": bucket_id,
             "timestamp": time.time(),
         }
         self.fee_tracker.record_trade(notional)
@@ -351,6 +471,7 @@ class ExecutionOrchestrator:
             "notional": notional,
             "mode": "paper",
             "cash_remaining": self.state.cash,
+            "bucket_id": bucket_id,
         }
 
     def generate_fee_volume(self, product_id: str, current_price: float,
@@ -434,6 +555,11 @@ class ExecutionOrchestrator:
             pnl = (entry - exit_price) * size
             r = (entry - exit_price) / max(abs(pos.get("stop", entry) - entry), 1e-9)
             self.state.cash -= size * exit_price
+        bucket_id = pos.get("bucket_id", "challenge")
+        try:
+            self.bucket_ledger.close_position(bucket_id, product_id, exit_price)
+        except Exception:
+            pass
         self.record_trade_result(pos.get("strategy", "unknown"), pnl > 0, r)
         log.info(f"[CLOSE] {side} {product_id} PnL=${pnl:.2f} R={r:.2f} ({reason})")
         return {"pnl": pnl, "r_multiple": r, "product_id": product_id}
@@ -455,6 +581,7 @@ class ExecutionOrchestrator:
             "strategy_performance": self._strategy_performance,
             "risk_limit": self.risk_mgr.limit.value,
             "fee_tier": self.fee_tracker.tier_display(),
+            "capital_buckets": self.bucket_ledger.summary(),
             "fee_tier_volume_30d": round(self.fee_tracker.rolling_30d_volume, 2),
             "volume_to_next_tier": round(self.fee_tracker.volume_to_next_tier(), 2),
         }

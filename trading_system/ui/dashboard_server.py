@@ -39,6 +39,8 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("dashboard_server")
@@ -51,6 +53,9 @@ OPERATOR_STATE_PATH = str(ROOT / 'data' / 'operator-state.json')
 SIGNAL_CACHE_PATH = str(ROOT / 'data' / '.unified_signal_cache.json')
 APPROVALS_PATH = str(ROOT / 'data' / 'pending_approvals.json')
 STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
+CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
+OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data' / 'operator-actions.json'))
+OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
 ARBITRAGE_CACHE = {"ts": 0.0, "data": None}
 GRAPH_CACHE = {"ts": 0.0, "data": None}
@@ -70,6 +75,39 @@ DEFAULT_CAPITAL_POLICY = {
     "core_batch_fraction": 0.05,
     "opportunity_batch_fraction": 0.03,
 }
+
+OPERATOR_ACTIONS = [
+    {
+        "id": "refresh_market_data",
+        "label": "Refresh market data",
+        "description": "Request the collector/daemon to refresh cached market snapshots.",
+        "risk": "safe",
+    },
+    {
+        "id": "generate_trade_plans",
+        "label": "Generate trade plans",
+        "description": "Request a dry-run optimizer pass to refresh trade_plans.json.",
+        "risk": "safe",
+    },
+    {
+        "id": "rebalance_dry_run",
+        "label": "Rebalance dry-run",
+        "description": "Queue a rebalance proposal without live execution.",
+        "risk": "guarded",
+    },
+    {
+        "id": "paper_smoke",
+        "label": "Paper smoke test",
+        "description": "Run the paper-trading smoke path and store the result in logs.",
+        "risk": "safe",
+    },
+    {
+        "id": "pause_live_trading",
+        "label": "Pause live trading",
+        "description": "Set operator intent to pause live execution until manually resumed.",
+        "risk": "guarded",
+    },
+]
 
 CAPITAL_PRESETS = {
     "conservative": {
@@ -245,6 +283,141 @@ def _build_preset_payload():
         payload["id"] = preset_id
         presets.append(payload)
     return presets
+
+
+def _load_capital_buckets() -> dict:
+    payload = _load_json(CAPITAL_BUCKETS_PATH, {})
+    buckets = payload.get('buckets', []) if isinstance(payload, dict) else payload
+    if not isinstance(buckets, list):
+        buckets = []
+    normalized = []
+    total_value = 0.0
+    for item in buckets:
+        if not isinstance(item, dict):
+            continue
+        cash = float(item.get('cash_usd', 0) or 0)
+        total = float(item.get('starting_balance_usd', 0) or 0)
+        realized = float(item.get('realized_pnl_usd', 0) or 0)
+        volume = float(item.get('volume_30d_usd', 0) or 0)
+        target_volume = float(item.get('target_volume_usd', 0) or 0)
+        target_multiple = float(item.get('target_multiple', 0) or 0)
+        positions = item.get('positions', {}) or {}
+        current_value = cash + sum(float((p or {}).get('size', 0) or 0) * float((p or {}).get('current_price', (p or {}).get('entry_price', 0)) or 0) for p in positions.values() if isinstance(p, dict))
+        total_value += current_value
+        normalized.append({
+            'bucket_id': item.get('bucket_id', ''),
+            'name': item.get('name', ''),
+            'cash_usd': round(cash, 2),
+            'total_value_usd': round(current_value, 2),
+            'starting_balance_usd': round(total, 2),
+            'realized_pnl_usd': round(realized, 2),
+            'volume_30d_usd': round(volume, 2),
+            'target_volume_usd': round(target_volume, 2),
+            'target_multiple': target_multiple,
+            'volume_progress': round(volume / target_volume, 3) if target_volume > 0 else 0.0,
+            'equity_progress': round(current_value / (total * target_multiple), 3) if total > 0 and target_multiple > 0 else 0.0,
+            'positions': len(positions),
+            'active': bool(item.get('active', True)),
+            'allowed_strategies': list(item.get('allowed_strategies', []) or []),
+        })
+    normalized.sort(key=lambda b: (b.get('active', False), b.get('total_value_usd', 0.0)), reverse=True)
+    return {'buckets': normalized, 'total_value_usd': round(total_value, 2)}
+
+
+def _bucket_preset_names() -> list[str]:
+    try:
+        from coinbase.src.capital_buckets import bucket_preset_names
+        return bucket_preset_names()
+    except Exception:
+        return ['challenge_1', 'challenge_5', 'challenge_10', 'challenge_50', 'challenge_100', 'challenge', 'core', 'fee_tier', 'challenge_core_fee_tier']
+
+
+def _build_bucket_preset(name: str, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    try:
+        from coinbase.src.capital_buckets import build_bucket_preset
+        kwargs = {}
+        if isinstance(payload, dict):
+            for key in ('starting_balance_usd', 'challenge_usd', 'core_usd', 'fee_tier_usd'):
+                if key in payload:
+                    kwargs[key] = float(payload[key])
+        return build_bucket_preset(name, **kwargs)
+    except Exception:
+        if name in {'challenge_1', 'challenge_5', 'challenge_10', 'challenge_50', 'challenge_100'}:
+            amount = float(name.split('_', 1)[1])
+            return {'buckets': [{'bucket_id': name, 'name': f'${int(amount)} Challenge', 'starting_balance_usd': amount, 'cash_usd': amount, 'target_volume_usd': 10000.0, 'target_multiple': 3.0, 'max_position_pct': 0.25, 'allowed_strategies': [], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}]}
+        if name == 'challenge':
+            return {'buckets': [{'bucket_id': 'challenge', 'name': '100 USDC Challenge', 'starting_balance_usd': 100.0, 'cash_usd': 100.0, 'target_volume_usd': 10000.0, 'target_multiple': 3.0, 'max_position_pct': 0.25, 'allowed_strategies': [], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}]}
+        if name == 'fee_tier':
+            return {'buckets': [{'bucket_id': 'fee_tier', 'name': 'Fee Tier Generator', 'starting_balance_usd': 1000.0, 'cash_usd': 1000.0, 'target_volume_usd': 10000.0, 'target_multiple': 1.1, 'max_position_pct': 0.40, 'allowed_strategies': ['volume_generator', 'market_making'], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}]}
+        if name == 'core':
+            return {'buckets': [
+                {'bucket_id': 'core', 'name': 'Core', 'starting_balance_usd': 800.0, 'cash_usd': 800.0, 'target_volume_usd': 25000.0, 'target_multiple': 1.5, 'max_position_pct': 0.20, 'allowed_strategies': ['ema_cross', 'macd', 'adaptive_mode'], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+                {'bucket_id': 'reserve', 'name': 'Reserve', 'starting_balance_usd': 150.0, 'cash_usd': 150.0, 'target_volume_usd': 5000.0, 'target_multiple': 1.1, 'max_position_pct': 0.05, 'allowed_strategies': [], 'active': False, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+                {'bucket_id': 'opportunity', 'name': 'Opportunity', 'starting_balance_usd': 50.0, 'cash_usd': 50.0, 'target_volume_usd': 20000.0, 'target_multiple': 2.0, 'max_position_pct': 0.25, 'allowed_strategies': ['momentum_rotation', 'volatility', 'breakout'], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+            ]}
+        if name == 'challenge_core_fee_tier':
+            return {'buckets': [
+                {'bucket_id': 'challenge', 'name': '100 USDC Challenge', 'starting_balance_usd': 100.0, 'cash_usd': 100.0, 'target_volume_usd': 10000.0, 'target_multiple': 3.0, 'max_position_pct': 0.25, 'allowed_strategies': [], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+                {'bucket_id': 'core', 'name': 'Core', 'starting_balance_usd': 800.0, 'cash_usd': 800.0, 'target_volume_usd': 25000.0, 'target_multiple': 1.5, 'max_position_pct': 0.20, 'allowed_strategies': ['ema_cross', 'macd', 'adaptive_mode'], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+                {'bucket_id': 'fee_tier', 'name': 'Fee Tier Generator', 'starting_balance_usd': 100.0, 'cash_usd': 100.0, 'target_volume_usd': 10000.0, 'target_multiple': 1.1, 'max_position_pct': 0.40, 'allowed_strategies': ['volume_generator', 'market_making'], 'active': True, 'realized_pnl_usd': 0.0, 'volume_30d_usd': 0.0, 'positions': {}, 'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())},
+            ]}
+        return {'buckets': []}
+
+
+def _bucket_preset_payloads() -> list[dict]:
+    presets = []
+    for name in _bucket_preset_names():
+        payload = _build_bucket_preset(name)
+        first_bucket = (payload.get('buckets') or [{}])[0]
+        presets.append({
+            'name': name,
+            'label': first_bucket.get('name') or name.replace('_', ' ').title(),
+            'payload': payload,
+        })
+    return presets
+
+
+def _save_capital_buckets(payload: dict | list) -> dict:
+    if isinstance(payload, dict):
+        buckets = payload.get('buckets', [])
+    else:
+        buckets = payload
+    if not isinstance(buckets, list):
+        buckets = []
+    normalized = []
+    for idx, item in enumerate(buckets):
+        if not isinstance(item, dict):
+            continue
+        bucket_id = str(item.get('bucket_id') or item.get('id') or f'bucket_{idx}')
+        name = str(item.get('name') or bucket_id)
+        starting = float(item.get('starting_balance_usd', item.get('cash_usd', 0.0)) or 0.0)
+        cash = float(item.get('cash_usd', starting) or starting)
+        target_volume = float(item.get('target_volume_usd', 10000.0) or 10000.0)
+        target_multiple = float(item.get('target_multiple', 2.0) or 2.0)
+        max_position_pct = float(item.get('max_position_pct', 0.25) or 0.25)
+        allowed = item.get('allowed_strategies', []) or []
+        if isinstance(allowed, str):
+            allowed = [x.strip() for x in allowed.split(',') if x.strip()]
+        positions = item.get('positions', {}) or {}
+        normalized.append({
+            'bucket_id': bucket_id,
+            'name': name,
+            'starting_balance_usd': starting,
+            'cash_usd': cash,
+            'target_volume_usd': target_volume,
+            'target_multiple': target_multiple,
+            'max_position_pct': max_position_pct,
+            'allowed_strategies': [str(x) for x in allowed],
+            'active': bool(item.get('active', True)),
+            'realized_pnl_usd': float(item.get('realized_pnl_usd', 0.0) or 0.0),
+            'volume_30d_usd': float(item.get('volume_30d_usd', 0.0) or 0.0),
+            'positions': positions if isinstance(positions, dict) else {},
+            'updated_at': item.get('updated_at') or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        })
+    data = {'buckets': normalized}
+    _write_json(CAPITAL_BUCKETS_PATH, data)
+    return _load_capital_buckets()
 
 
 def _save_capital_policy(policy: dict) -> dict:
@@ -850,6 +1023,7 @@ def api_execution():
             'core': round(core_value, 2),
             'opportunity': round(opportunity_value, 2),
         },
+        'capital_buckets': _load_capital_buckets(),
         'graph': graph,
     }
 
@@ -1337,6 +1511,83 @@ def api_trade_plans():
     return {"plans": plans[:50], "total": total, "updated_at": updated_at, "source": source}
 
 
+def _operator_action_ids() -> set[str]:
+    return {str(a["id"]) for a in OPERATOR_ACTIONS}
+
+
+def _load_operator_actions_queue() -> list[dict]:
+    payload = _load_json(OPERATOR_ACTIONS_PATH, [])
+    if isinstance(payload, dict):
+        payload = payload.get("queue", []) or payload.get("actions", [])
+    return payload if isinstance(payload, list) else []
+
+
+def _save_operator_actions_queue(queue: list[dict]) -> bool:
+    Path(OPERATOR_ACTIONS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    return _write_json(OPERATOR_ACTIONS_PATH, queue)
+
+
+def _proxy_operator_actions(path: str, method: str = "GET", payload: dict | None = None, timeout_secs: float = 2.0):
+    if not OPERATOR_ACTIONS_URL:
+        return None
+    try:
+        data = json.dumps(payload or {}).encode("utf-8") if method.upper() == "POST" else None
+        req = Request(
+            f"{OPERATOR_ACTIONS_URL}{path}",
+            data=data,
+            method=method.upper(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=timeout_secs) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw or "{}")
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
+        logger.debug("operator-actions proxy unavailable: %s", e)
+        return None
+
+
+def api_operator_actions():
+    proxied = _proxy_operator_actions("/actions")
+    if proxied:
+        proxied.setdefault("actions", OPERATOR_ACTIONS)
+        proxied.setdefault("backend", "rust")
+        return proxied
+    return {
+        "actions": OPERATOR_ACTIONS,
+        "queue": _load_operator_actions_queue(),
+        "queue_path": OPERATOR_ACTIONS_PATH,
+        "backend": "python-fallback",
+    }
+
+
+def queue_operator_action(payload: dict) -> dict:
+    action = str(payload.get("action") or payload.get("id") or "").strip()
+    if action not in _operator_action_ids():
+        raise ValueError(f"unknown operator action: {action}")
+    proxied = _proxy_operator_actions("/actions/run", method="POST", payload=payload)
+    if proxied and proxied.get("ok"):
+        proxied["backend"] = "rust"
+        return proxied
+
+    queue = _load_operator_actions_queue()
+    event = {
+        "id": f"act-{int(time.time())}-{len(queue) + 1}",
+        "action": action,
+        "status": "queued",
+        "source": "dashboard-python-fallback",
+        "note": str(payload.get("note") or ""),
+        "created_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    }
+    queue.append(event)
+    if not _save_operator_actions_queue(queue):
+        raise OSError(f"failed to write {OPERATOR_ACTIONS_PATH}")
+    return {"ok": True, "status": "queued", "event": event, "backend": "python-fallback"}
+
+
+def api_bucket_presets():
+    return {"presets": _bucket_preset_payloads()}
+
+
 
 # ── Request Handler ─────────────────────────────────────────────
 
@@ -1361,6 +1612,9 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/crypto-divergence": lambda: api_crypto_divergence(),
             "/paper-trades": lambda: api_paper_trades(),
             "/trade-plans": lambda: api_trade_plans(),
+            "/capital/bucket-presets": lambda: api_bucket_presets(),
+            "/capital/buckets": lambda: _load_json(CAPITAL_BUCKETS_PATH, {"buckets": []}),
+            "/actions": lambda: api_operator_actions(),
             "/signals/opportunities": lambda: api_opportunities(),
             "/signals/feed": lambda: api_signal_feed(),
             "/strategies/performance": lambda: api_strategies_performance(),
@@ -1385,6 +1639,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             ok = _update_approval(token, "denied") if token else False
             status = 200 if ok else 404
             self._json_response(json.dumps({"ok": ok, "token": token, "status": "denied" if ok else "missing"}), status=status)
+
+        elif path.startswith("/capital/buckets/preset/"):
+            preset_name = path.split("/capital/buckets/preset/", 1)[-1].strip()
+            try:
+                saved = _save_capital_buckets(_build_bucket_preset(preset_name))
+                self._json_response(json.dumps({"ok": True, "capital_buckets": saved}, default=str))
+            except Exception as e:
+                logger.error("bucket preset apply error: %s", e)
+                self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
 
         elif path.startswith("/evaluations/price/"):
             instrument = path.split("/evaluations/price/", 1)[-1]
@@ -1426,7 +1689,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path != "/capital/config":
+        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run"}:
             self._json_response(json.dumps({"error": "not found"}), status=404)
             return
 
@@ -1442,8 +1705,19 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             self._json_response(json.dumps({"error": "invalid json"}), status=400)
             return
         try:
-            saved = _save_capital_policy(payload)
-            self._json_response(json.dumps({"ok": True, "capital_policy": saved}, default=str))
+            if path == "/capital/config":
+                saved = _save_capital_policy(payload)
+                self._json_response(json.dumps({"ok": True, "capital_policy": saved}, default=str))
+            elif path == "/actions/run":
+                result = queue_operator_action(payload)
+                self._json_response(json.dumps(result, default=str))
+            elif path == "/capital/buckets/preset":
+                preset_name = str(payload.get('preset') or payload.get('name') or '')
+                saved = _save_capital_buckets(_build_bucket_preset(preset_name, payload))
+                self._json_response(json.dumps({"ok": True, "capital_buckets": saved}, default=str))
+            else:
+                saved = _save_capital_buckets(payload)
+                self._json_response(json.dumps({"ok": True, "capital_buckets": saved}, default=str))
         except Exception as e:
             logger.error("capital config save error: %s", e)
             self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)

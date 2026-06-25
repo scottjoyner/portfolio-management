@@ -12,6 +12,10 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    __package__ = "coinbase.src"
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "graph-alpha-bot", "app", "strategies"))
 try:
     from coinbase_universe import COINBASE_SPOT_PAIRS
@@ -36,8 +40,13 @@ from .risk_manager import RiskManager, KellySizer, RiskLimit
 from .risk_appetite import DynamicRiskController, RiskAppetiteSnapshot
 from .orchestrator import ExecutionOrchestrator, TradeMode as ExecutionMode
 from .paper_live_bridge import PerformanceTracker, DeploymentPipeline
-from .feed import TickerCache, PollingFeed, Ticker
-from .correlation import CorrelationAwareSizer
+from .feed import TickerCache, PollingFeed, Ticker, FeedSource
+try:
+    from .correlation import CorrelationAwareSizer
+except Exception:
+    class CorrelationAwareSizer:
+        def adjust_size(self, product_id, base_size, positions):
+            return type("Adj", (), {"adjusted_size": base_size})()
 from .ensemble import BayesianSignalBlender, StrategyConfidenceAggregator
 from .regime import RegimeDetector, AdaptiveStrategySelector
 from .confluence import MultiTimeframeConfluence, ConfluenceResult, TimeframeSignal
@@ -89,6 +98,7 @@ class TraderConfig:
             "paper": ExecutionMode.PAPER,
             "approval": ExecutionMode.LIVE_APPROVAL,
             "live": ExecutionMode.LIVE,
+            "futures": ExecutionMode.FUTURES,
         }
         raw_products = os.environ.get("TRADER_PRODUCTS", "").strip()
         products = [p.strip() for p in raw_products.split(",") if p.strip()] if raw_products else list(COINBASE_SPOT_PAIRS)
@@ -97,7 +107,7 @@ class TraderConfig:
             execution_mode=mode_map.get(mode_str, ExecutionMode.PAPER),
             products=products,
             equity=float(os.environ.get("TRADER_EQUITY", "100")),
-            dry_run=(dry_run_env.lower() == "true") if dry_run_env is not None else (mode_str != "live"),
+            dry_run=(dry_run_env.lower() == "true") if dry_run_env is not None else (mode_str not in {"live", "futures"}),
         )
 
 
@@ -120,7 +130,12 @@ class UnifiedTrader:
         except Exception as e:
             log.debug("Graph strategy registration skipped: %s", e)
 
-        risk_limit = RiskLimit.AGGRESSIVE if self.config.execution_mode == ExecutionMode.PAPER else RiskLimit.MODERATE
+        if self.config.execution_mode == ExecutionMode.PAPER:
+            risk_limit = RiskLimit.AGGRESSIVE
+        elif self.config.execution_mode == ExecutionMode.FUTURES:
+            risk_limit = RiskLimit.MODERATE
+        else:
+            risk_limit = RiskLimit.MODERATE
         self.risk_mgr = RiskManager(limit=risk_limit)
         self.kelly = KellySizer()
         self.risk_appetite = DynamicRiskController()
@@ -172,7 +187,7 @@ class UnifiedTrader:
         self._graph_overlay_cache: Dict[str, float] = {}
         self._graph_overlay_cache_ts: float = 0.0
         self._graph_overlay_ttl: float = 300.0
-        self._static_products = set(STATIC_LONG_TERM_PRODUCTS)
+        self._static_products = set() if self.config.execution_mode == ExecutionMode.FUTURES else set(STATIC_LONG_TERM_PRODUCTS)
 
     def _warm_price_buffer(self):
         for pid in self.config.products:
@@ -202,6 +217,9 @@ class UnifiedTrader:
             errors.append(f"Max positions must be positive, got {self.config.max_positions}")
         if self.config.execution_mode != ExecutionMode.PAPER and not shutil.which(self.cb_client.cli):
             errors.append(f"Coinbase CLI not found for live mode: {self.cb_client.cli}")
+        if self.config.execution_mode == ExecutionMode.FUTURES and not self.config.dry_run:
+            if not os.getenv("COINBASE_API_KEY") or not os.getenv("COINBASE_API_SECRET"):
+                errors.append("COINBASE_API_KEY and COINBASE_API_SECRET are required for futures mode")
         if errors:
             raise ValueError("; ".join(errors))
 
@@ -264,11 +282,22 @@ class UnifiedTrader:
         self._tick_count += 1
         ticker_map = self._fetch_all_tickers()
         if not ticker_map:
+            try:
+                self.feed._poll_once()
+            except Exception as e:
+                log.debug("Feed priming retry failed: %s", e)
+            ticker_map = self._fetch_all_tickers(allow_synthetic=self.config.dry_run)
+
+        if not ticker_map:
             log.warning("No prices available, skipping tick")
             return
 
         prices = {pid: t.price for pid, t in ticker_map.items()}
         bars, history_bars = self._build_bar_history(ticker_map)
+        try:
+            self.orchestrator.bucket_ledger.mark_prices(prices)
+        except Exception:
+            pass
 
         prices_list = list(prices.values())
         if len(prices_list) >= 30:
@@ -405,12 +434,31 @@ class UnifiedTrader:
         if self._health.get("status") in {"starting", "running"}:
             self._health["status"] = "running"
 
-    def _fetch_all_tickers(self) -> Dict[str, Any]:
+    def _fetch_all_tickers(self, allow_synthetic: bool = False) -> Dict[str, Any]:
         tickers = {}
         for pid in self.config.products:
             t = self.ticker_cache.get_ticker(pid)
             if t:
                 tickers[pid] = t
+        if tickers or not allow_synthetic:
+            return tickers
+
+        # In dry-run mode we keep the loop alive with seeded prices if the live
+        # feed is temporarily empty.
+        now = time.time()
+        for pid, buf in self._price_buffer.items():
+            if not buf:
+                continue
+            price = float(buf[-1])
+            tickers[pid] = Ticker(
+                product_id=pid,
+                price=price,
+                bid=price * 0.999,
+                ask=price * 1.001,
+                volume_24h=0.0,
+                timestamp=now,
+                source=FeedSource.SYNTHETIC,
+            )
         return tickers
 
     def _build_bar_history(self, ticker_map: Dict[str, Any]) -> Tuple[Dict[str, Bar], Dict[str, List[Bar]]]:
@@ -432,12 +480,14 @@ class UnifiedTrader:
         vol_bps = (rf.volatility * 10000) if hasattr(rf, 'volatility') and rf.volatility else 30
         adx_val = rf.adx if hasattr(rf, 'adx') else 25.0
         trend_st = rf.trend_strength if hasattr(rf, 'trend_strength') else 0.0
+        regime_label = getattr(rf.regime, "value", rf.regime)
+        regime_label = str(regime_label)
 
         self.selector.set_regime(rf.regime)
-        self.risk_appetite.update_regime(rf.regime, 0.02)
+        self.risk_appetite.update_regime(regime_label, 0.02)
         fg_val = float(self.fear_greed._cache.value) if hasattr(self.fear_greed, '_cache') else 50.0
         self.mode_selector.update(
-            regime=rf.regime, volatility_bps=vol_bps,
+            regime=regime_label, volatility_bps=vol_bps,
             fear_greed_value=fg_val, adx=adx_val,
             trend_strength=trend_st,
         )
@@ -558,6 +608,19 @@ class UnifiedTrader:
             notional = kelly_pct * self.config.equity
             price = opp.entry_price or 1.0
             opp.base_size = notional / max(price, 1e-9)
+            try:
+                capped_size, bucket_id = self.orchestrator.bucket_ledger.apply_opportunity_limits(
+                    opp.strategy_name, opp.product_id, price, opp.base_size, opp.quote_size,
+                )
+                if capped_size <= 0:
+                    opp.base_size = 0.0
+                    continue
+                opp.base_size = min(opp.base_size, capped_size)
+                opp.quote_size = opp.base_size * price
+                opp.meta["bucket_id"] = bucket_id or "challenge"
+                opp.meta["challenge_bucket"] = bucket_id or "challenge"
+            except Exception:
+                pass
         return opportunities
 
     def _apply_product_rotation(self, opportunities: List[Opportunity],
@@ -683,6 +746,11 @@ class UnifiedTrader:
             log.info("  market: %s", market_str)
         if appetite.gating_reasons:
             log.info("  risk gates: %s", ", ".join(appetite.gating_reasons))
+        try:
+            bucket_summary = self.orchestrator.bucket_ledger.summary(prices)
+            log.info("  buckets: %s", bucket_summary)
+        except Exception:
+            pass
         for s in signals[:5]:
             log.info("  %s %s %s @ %.2f sz=%.4f conf=%.3f",
                      s.product_id, s.strategy_name, s.direction.value,
@@ -734,12 +802,15 @@ def start_health_server(trader: UnifiedTrader, port: int = 9090):
 
 def main():
     parser = argparse.ArgumentParser(description="Unified Trader v2")
-    parser.add_argument("--mode", choices=["paper", "approval", "live"], default=None)
+    parser.add_argument("--mode", choices=["paper", "approval", "live", "futures"], default=None)
     parser.add_argument("--products", nargs="+", default=None)
     parser.add_argument("--equity", type=float, default=None)
     parser.add_argument("--no-dry-run", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=None)
     parser.add_argument("--health-port", type=int, default=0)
+    parser.add_argument("--futures-portfolio-uuid", default=os.environ.get("COINBASE_FUTURES_PORTFOLIO_UUID", ""))
+    parser.add_argument("--futures-margin-type", default=os.environ.get("COINBASE_FUTURES_MARGIN_TYPE", "CROSS"))
+    parser.add_argument("--futures-default-leverage", type=float, default=float(os.environ.get("COINBASE_FUTURES_DEFAULT_LEVERAGE", "2.0")))
     args = parser.parse_args()
 
     config = TraderConfig.from_env()
@@ -748,6 +819,7 @@ def main():
             "paper": ExecutionMode.PAPER,
             "approval": ExecutionMode.LIVE_APPROVAL,
             "live": ExecutionMode.LIVE,
+            "futures": ExecutionMode.FUTURES,
         }
         config.execution_mode = mode_map[args.mode]
     if args.products:
@@ -756,10 +828,17 @@ def main():
         config.equity = args.equity
     if args.no_dry_run:
         config.dry_run = False
-    elif args.mode == "live":
+    elif args.mode in {"live", "futures"} and os.environ.get("COINBASE_DRY_RUN") is None:
         config.dry_run = False
     if args.poll_interval:
         config.poll_interval_secs = args.poll_interval
+
+    if args.futures_portfolio_uuid:
+        os.environ["COINBASE_FUTURES_PORTFOLIO_UUID"] = args.futures_portfolio_uuid
+    if args.futures_margin_type:
+        os.environ["COINBASE_FUTURES_MARGIN_TYPE"] = args.futures_margin_type
+    if args.futures_default_leverage:
+        os.environ["COINBASE_FUTURES_DEFAULT_LEVERAGE"] = str(args.futures_default_leverage)
 
     trader = UnifiedTrader(config)
     if args.health_port:

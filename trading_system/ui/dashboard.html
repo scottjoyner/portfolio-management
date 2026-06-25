@@ -103,6 +103,11 @@
     .badge { font-weight: 700; font-size: .78rem; padding: 3px 8px; border-radius: 6px; }
     .badge.buy { background: color-mix(in srgb, var(--good) 15%, transparent); color: var(--good); }
     .badge.sell { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+    .action-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px; }
+    .action-btn { text-align:left; padding:10px; display:grid; gap:4px; }
+    .action-btn .name { font-weight:750; }
+    .action-btn .desc { color:var(--muted); font-size:.72rem; line-height:1.25; }
+    .action-btn.guarded { border-color: color-mix(in srgb, var(--warn) 35%, var(--border)); }
 
     /* Accordion */
     .accordion-item { border-bottom: 1px solid var(--border); }
@@ -258,6 +263,41 @@
           <div class="panel-body" id="holdings-panel" style="display:grid; gap:10px;"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:70%"></div></div>
         </section>
 
+        <!-- Capital Buckets -->
+        <section class="panel">
+          <div class="panel-head"><div><div class="panel-title">Capital Buckets</div><div class="panel-sub">Virtual off-exchange challenge ledgers and deployable sleeves</div></div></div>
+          <div class="panel-body" id="bucket-panel" style="display:grid; gap:10px;"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line" style="width:70%"></div></div>
+        </section>
+
+        <!-- One-click operator actions -->
+        <section class="panel">
+          <div class="panel-head">
+            <div><div class="panel-title">One-click Actions</div><div class="panel-sub">Queues safe operator intents; live execution stays behind existing guardrails</div></div>
+            <span class="tag accent" id="actions-backend">loading</span>
+          </div>
+          <div class="panel-body" style="display:grid; gap:10px;">
+            <div class="action-grid" id="operator-actions-panel"><div class="shimmer shimmer-line"></div><div class="shimmer shimmer-line"></div></div>
+            <div class="muted small" id="operator-actions-status">No action queued this session.</div>
+          </div>
+        </section>
+
+        <!-- Bucket Editor -->
+        <section class="panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Bucket Editor</div><div class="panel-sub">Edit raw bucket definitions and persist them live</div></div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button class="btn" id="bucket-refresh-btn" style="padding:5px 10px;font-size:.76rem;">Reload</button>
+              <button class="btn primary" id="bucket-save-btn" style="padding:5px 10px;font-size:.76rem;">Save</button>
+            </div>
+          </div>
+          <div class="panel-body" style="display:grid; gap:8px;">
+            <div id="bucket-preset-buttons" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+            <div class="muted small">JSON array or object with `buckets` key. Example: create `challenge`, `core`, and `fee_tier` sleeves here.</div>
+            <textarea id="bucket-editor" class="mono" style="width:100%;min-height:240px;padding:12px;border-radius:12px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:.78rem;line-height:1.45;resize:vertical;"></textarea>
+            <div class="muted small" id="bucket-editor-status">Not loaded</div>
+          </div>
+        </section>
+
         <!-- Market Intelligence accordion -->
         <section class="panel">
           <div class="panel-head"><div><div class="panel-title">Market Intelligence</div><div class="panel-sub">Prediction markets, arbitrage, divergences</div></div></div>
@@ -312,6 +352,81 @@
     function pct(v) { return `${Number(v||0).toFixed(1)}%`; }
     function short(v, n=60) { const s=String(v||''); return s.length>n ? s.slice(0,n-1)+'…' : s; }
     function ageStr(dateStr) { return dateStr ? `${Math.round((Date.now()-new Date(dateStr).getTime())/60000)}m ago` : '--'; }
+    function progressWidth(v) { return `${Math.max(0, Math.min(100, Number(v || 0) * 100))}%`; }
+
+    function renderBucketPresetButtons(presets) {
+      const host = document.getElementById('bucket-preset-buttons');
+      if (!host) return;
+      host.innerHTML = (presets || []).map(p => `
+        <button class="btn" data-bucket-preset="${esc(p.name)}" title="${esc(bucketPresetHint(p.name))}" style="padding:5px 10px;font-size:.76rem;">${esc(p.label || p.name)}</button>
+      `).join('');
+    }
+
+    async function loadBucketEditor() {
+      const editor = document.getElementById('bucket-editor');
+      const status = document.getElementById('bucket-editor-status');
+      if (!editor || !status) return;
+      try {
+        const payload = await fetchJSON('/capital/buckets').catch(() => ({buckets: []}));
+        editor.value = JSON.stringify(payload, null, 2);
+        status.textContent = 'Loaded';
+      } catch (e) {
+        status.textContent = `Load failed: ${e.message || e}`;
+      }
+    }
+
+    async function loadBucketPresets() {
+      try {
+        const payload = await fetchJSON('/capital/bucket-presets').catch(() => ({presets: []}));
+        renderBucketPresetButtons(payload.presets || []);
+      } catch (e) {
+        const host = document.getElementById('bucket-preset-buttons');
+        if (host) host.innerHTML = `<div class="muted small">Preset load failed: ${esc(e.message || e)}</div>`;
+      }
+    }
+
+    async function applyBucketPreset(name) {
+      const status = document.getElementById('bucket-editor-status');
+      if (status) status.textContent = `Applying ${name}...`;
+      try {
+        const res = await fetchJSON('/capital/buckets/preset', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({preset: name}),
+        });
+        if (status) status.textContent = `Applied ${name}`;
+        await loadBucketEditor();
+        await loadAccountsPositions();
+      } catch (e) {
+        if (status) status.textContent = `Preset failed: ${e.message || e}`;
+      }
+    }
+
+    function bucketPresetHint(name) {
+      if (name === 'challenge') return '100 USDC challenge';
+      if (name === 'core') return 'core/reserve/opportunity sleeves';
+      if (name === 'fee_tier') return 'fee tier volume generator';
+      if (name === 'challenge_core_fee_tier') return 'all three sleeves';
+      return name;
+    }
+
+    async function saveBucketEditor() {
+      const editor = document.getElementById('bucket-editor');
+      const status = document.getElementById('bucket-editor-status');
+      if (!editor || !status) return;
+      try {
+        const payload = JSON.parse(editor.value || '{}');
+        const res = await fetchJSON('/capital/buckets', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+        status.textContent = 'Saved';
+        await loadAccountsPositions();
+      } catch (e) {
+        status.textContent = `Save failed: ${e.message || e}`;
+      }
+    }
 
     async function fetchJSON(path, opts, timeoutMs=15000) {
       const controller = new AbortController();
@@ -326,6 +441,48 @@
       }
     }
 
+    function renderOperatorActions(payload) {
+      const host = document.getElementById('operator-actions-panel');
+      const backend = document.getElementById('actions-backend');
+      if (!host) return;
+      const actions = payload.actions || [];
+      if (backend) backend.textContent = payload.backend || 'fallback';
+      host.innerHTML = actions.length ? actions.map(a => `
+        <button class="btn action-btn ${a.risk === 'guarded' ? 'guarded' : ''}" data-operator-action="${esc(a.id)}" title="${esc(a.description || '')}">
+          <span class="name">${esc(a.label || a.id)}</span>
+          <span class="desc">${esc(a.description || '')}</span>
+          <span class="tag ${a.risk === 'guarded' ? 'warn' : 'good'}" style="width:max-content;">${esc(a.risk || 'safe')}</span>
+        </button>
+      `).join('') : '<div class="muted small">No actions configured.</div>';
+    }
+
+    async function loadOperatorActions() {
+      const payload = await fetchJSON('/actions').catch(() => ({actions: [], backend: 'offline'}));
+      renderOperatorActions(payload);
+      const queue = payload.queue || [];
+      const status = document.getElementById('operator-actions-status');
+      if (status && queue.length) {
+        const last = queue[queue.length - 1];
+        status.textContent = `Last queued: ${last.action || last.id || 'action'} · ${last.status || 'queued'}`;
+      }
+    }
+
+    async function runOperatorAction(action) {
+      const status = document.getElementById('operator-actions-status');
+      if (status) status.textContent = `Queueing ${action}...`;
+      try {
+        const res = await fetchJSON('/actions/run', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action, note: 'queued from dashboard one-click action'}),
+        }, 8000);
+        if (status) status.textContent = res.ok ? `Queued ${action} via ${res.backend || 'dashboard'}` : `Queue failed: ${res.error || 'unknown error'}`;
+        await loadOperatorActions();
+      } catch (e) {
+        if (status) status.textContent = `Queue failed: ${e.message || e}`;
+      }
+    }
+
     // ── Accordion ──
     function toggleAccordion(id) {
       const body = document.getElementById(id);
@@ -335,6 +492,14 @@
       const head = e.target.closest('[data-acc]');
       if (!head) return;
       toggleAccordion(head.dataset.acc);
+    });
+    document.addEventListener('click', e => {
+      const refresh = e.target.closest('#bucket-refresh-btn');
+      if (refresh) { loadBucketEditor(); return; }
+      const save = e.target.closest('#bucket-save-btn');
+      if (save) { saveBucketEditor(); return; }
+      const preset = e.target.closest('[data-bucket-preset]');
+      if (preset) { applyBucketPreset(preset.dataset.bucketPreset); return; }
     });
 
     // ── Classify signal ──
@@ -502,6 +667,41 @@
       document.getElementById('stat-pnl').textContent = avgPnl >= 0 ? `+${pct(avgPnl)}` : pct(avgPnl);
       document.getElementById('stat-pnl').style.color = avgPnl >= 0 ? 'var(--good)' : 'var(--bad)';
 
+      const capitalBuckets = execStatus.capital_buckets?.buckets || [];
+      const bucketTotal = Number(execStatus.capital_buckets?.total_value_usd || 0);
+      const challengeBucket = capitalBuckets.find(b => String(b.bucket_id || '').toLowerCase().includes('challenge')) || capitalBuckets[0];
+      document.getElementById('bucket-panel').innerHTML = capitalBuckets.length ? `
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:8px;">
+          <div class="stat" style="padding:8px 10px;"><div class="label">Buckets</div><div class="value purple" style="font-size:1.1rem">${capitalBuckets.length}</div></div>
+          <div class="stat" style="padding:8px 10px;"><div class="label">Bucket NAV</div><div class="value" style="font-size:1.1rem">${compact(bucketTotal)}</div></div>
+          <div class="stat" style="padding:8px 10px;"><div class="label">Challenge</div><div class="value" style="font-size:1.1rem">${challengeBucket ? pct(challengeBucket.equity_progress * 100) : '--'}</div></div>
+        </div>
+        <div style="display:grid; gap:8px;">
+          ${capitalBuckets.map(b => `
+            <div class="signal-card">
+              <div class="signal-head">
+                <div>
+                  <div class="signal-title">${esc(b.name || b.bucket_id || 'Bucket')}</div>
+                  <div class="signal-meta mono">${esc(b.bucket_id || '')} ${b.active ? '<span class="tag good">active</span>' : '<span class="tag bad">paused</span>'}</div>
+                </div>
+                <div style="text-align:right;">
+                  <div style="font-weight:800;">${compact(b.total_value_usd || 0)}</div>
+                  <div class="muted small">cash ${compact(b.cash_usd || 0)} · PnL ${Number(b.realized_pnl_usd || 0) >= 0 ? '+' : ''}${compact(b.realized_pnl_usd || 0)}</div>
+                </div>
+              </div>
+              <div class="signal-body">
+                <div class="score-bar"><div class="score-fill" style="width:${progressWidth(b.volume_progress)}"></div></div>
+                <span style="font-weight:700;font-size:.82rem;white-space:nowrap;">vol ${pct((b.volume_progress || 0) * 100)}</span>
+              </div>
+              <div class="signal-body">
+                <div class="score-bar"><div class="score-fill" style="width:${progressWidth(b.equity_progress)}"></div></div>
+                <span style="font-weight:700;font-size:.82rem;white-space:nowrap;">equity ${pct((b.equity_progress || 0) * 100)}</span>
+              </div>
+              <div class="muted small">${Number(b.positions || 0)} positions · target ${compact(b.target_volume_usd || 0)} volume · target ${Number(b.target_multiple || 0).toFixed(1)}x</div>
+            </div>
+          `).join('')}
+        </div>` : '<div class="muted small">No buckets loaded.</div>';
+
       // Accounts table
       const accRows = accList.map(a => `<tr><td>${esc(a.name||'')}</td><td>${money(a.cash||a.availableBalance||0)}</td><td>${money(a.nav||0)}</td><td>${money(a.buyingPower||a.availableBalance||0)}</td></tr>`).join('');
       // Positions table
@@ -547,6 +747,8 @@
         <div style="margin-top:8px; overflow-x:auto;">
           <table class="table"><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Value</th><th>P&L</th><th>Plan</th><th>Exit</th></tr></thead><tbody>${posRows||'<tr><td colspan="7" class="muted">No positions</td></tr>'}</tbody></table>
         </div>`;
+
+      await loadBucketEditor();
     }
 
     // ── Load rankings (signal feed) ──
@@ -801,7 +1003,7 @@
       document.getElementById('live-dot').style.background = 'var(--warn)';
       document.getElementById('status-text').textContent = 'Refreshing';
       try {
-        const results = await Promise.allSettled([loadAccountsPositions(), loadRankings(), loadIntelligence(), loadTradePlans()]);
+        const results = await Promise.allSettled([loadAccountsPositions(), loadRankings(), loadIntelligence(), loadTradePlans(), loadBucketPresets(), loadOperatorActions()]);
         const failed = results.filter(r => r.status === 'rejected');
         if (failed.length === results.length) throw new Error('all dashboard sections failed');
         syncExecutionDetailToTop();
@@ -847,6 +1049,10 @@
       });
     });
 
+    loadBucketPresets().catch(() => {});
+    loadBucketEditor().catch(() => {});
+    loadOperatorActions().catch(() => {});
+
     document.addEventListener('keydown', e => {
       if (e.target && ['INPUT','TEXTAREA'].includes(e.target.tagName)) return;
       if (e.key === 'r') refreshAll();
@@ -857,6 +1063,11 @@
       const jump = e.target.closest('[data-jump]');
       if (jump) {
         jumpTo(jump.dataset.jump);
+        return;
+      }
+      const actionBtn = e.target.closest('[data-operator-action]');
+      if (actionBtn) {
+        runOperatorAction(actionBtn.dataset.operatorAction);
         return;
       }
       const sigBtn = e.target.closest('[data-open-signal]');

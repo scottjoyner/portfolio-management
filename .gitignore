@@ -70,6 +70,31 @@ trading_system/artifacts/*.yml
 trading_system/artifacts/*.toml
 trading_system/artifacts/*.ini
 
+# --- Runtime logs and local service state ---
+logs/
+*.log
+*.log.*
+*.pid
+*.sock
+
+# Keep data source code and seed CSVs deployable, but ignore generated state/cache files.
+data/*.log
+data/.daemon_heartbeat
+data/.*cache*.json
+data/*cache*.json
+data/operator-state.json
+data/operator-actions.json
+data/pending_approvals.json
+data/ranking_state.json
+data/paper-trades.json
+data/capital_buckets.json
+data/smoke_test_report.json
+data/fetch_metadata.json
+data/btc_current.json
+trade_plans.json
+state/
+optimizer_state.db*
+
 # --- Test databases ---
 *.db
 *.sqlite

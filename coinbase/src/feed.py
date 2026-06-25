@@ -133,6 +133,13 @@ class PollingFeed:
         if self._running:
             return
         self._running = True
+        # Prime the cache before the main loop starts so the first trader tick
+        # does not run empty if the background thread has not polled yet.
+        for _ in range(3):
+            self._poll_once()
+            if self.cache.all_prices():
+                break
+            time.sleep(min(self.poll_interval, 1.0))
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
         log.info(f"[FEED] Started polling feed for {len(self._products)} products")

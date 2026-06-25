@@ -103,6 +103,12 @@ class PerformanceTracker:
     def get_performance(self, strategy: str) -> Dict[str, Any]:
         return self._data.get(strategy, {})
 
+    def get_win_rate(self, strategy: str) -> float:
+        perf = self._data.get(strategy, {})
+        if not perf:
+            return 0.5
+        return float(perf.get("win_rate", 0.5))
+
     def get_all_performance(self) -> Dict[str, Dict[str, Any]]:
         return self._data
 

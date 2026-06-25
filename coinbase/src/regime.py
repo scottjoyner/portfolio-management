@@ -53,6 +53,7 @@ REGIME_STRATEGY_MAP: Dict[Regime, List[str]] = {
 
 @dataclass
 class RegimeFeatures:
+    regime: Regime = Regime.UNKNOWN
     adx: float = 0.0
     trend_strength: float = 0.0
     volatility: float = 0.0
@@ -88,6 +89,7 @@ class RegimeDetector:
                volumes: Optional[List[float]] = None) -> Tuple[Regime, RegimeFeatures]:
         features = self._compute_features(closes, highs, lows, volumes)
         regime = self._classify(features)
+        features.regime = regime
         return regime, features
 
     def _compute_features(self, closes: List[float],
@@ -165,6 +167,45 @@ class RegimeDetector:
         if hi - lo == 0:
             return 0.5
         return (prices[-1] - lo) / (hi - lo)
+
+    def _compute_adx(self, closes: List[float], highs: List[float], lows: List[float]) -> float:
+        """Approximate ADX from directional movement and true range."""
+        if len(closes) < 2 or not highs or not lows:
+            return 25.0
+
+        n = min(len(closes), len(highs), len(lows))
+        highs = highs[-n:]
+        lows = lows[-n:]
+        closes = closes[-n:]
+
+        trs = []
+        plus_dm = []
+        minus_dm = []
+        for i in range(1, n):
+            up_move = highs[i] - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+            minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
+            trs.append(tr)
+
+        if not trs:
+            return 25.0
+
+        period = min(self.adx_period, len(trs))
+        tr_sum = sum(trs[-period:])
+        if tr_sum <= 0:
+            return 25.0
+
+        plus_di = 100.0 * sum(plus_dm[-period:]) / tr_sum
+        minus_di = 100.0 * sum(minus_dm[-period:]) / tr_sum
+        denom = max(plus_di + minus_di, 1e-9)
+        dx = 100.0 * abs(plus_di - minus_di) / denom
+        return max(0.0, min(100.0, dx))
 
     @staticmethod
     def _compute_skewness(returns: List[float]) -> float:
@@ -246,6 +287,18 @@ class AdaptiveStrategySelector:
     def current_regime(self) -> Regime:
         return self._current_regime
 
+    def set_regime(self, regime: Regime | str) -> Regime:
+        """Set the active regime from an enum or string label."""
+        if isinstance(regime, Regime):
+            self._current_regime = regime
+        else:
+            value = str(regime).lower()
+            self._current_regime = next(
+                (r for r in Regime if r.value == value),
+                Regime.UNKNOWN,
+            )
+        return self._current_regime
+
     def update(self, closes: List[float], highs: Optional[List[float]] = None,
                lows: Optional[List[float]] = None,
                volumes: Optional[List[float]] = None) -> Regime:
@@ -260,6 +313,15 @@ class AdaptiveStrategySelector:
 
     def active_strategies(self) -> List[str]:
         return self.detector.recommended_strategies(self._current_regime)
+
+    def select(self, strategy_name: str) -> Dict[str, object]:
+        """Backward-compatible strategy gate used by the live trader."""
+        active = set(self.active_strategies())
+        return {
+            "enabled": strategy_name in active,
+            "regime": self._current_regime.value,
+            "active_strategies": list(active),
+        }
 
     def filter_opportunities(self, opportunities: List) -> List:
         active = set(self.active_strategies())

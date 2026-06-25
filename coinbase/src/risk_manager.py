@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
@@ -23,7 +24,8 @@ class RiskProfile:
     min_risk_reward: float = 1.5
     risk_per_trade_pct: float = 0.01
     var_confidence: float = 0.95
-    max_notional_per_trade: float = 10_000.0
+    # Allow the live runner to cap per-trade notional from the environment.
+    max_notional_per_trade: float = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "10000"))
 
 
 RISK_TEMPLATES = {
@@ -226,6 +228,11 @@ class KellySizer:
     @staticmethod
     def half_kelly(win_rate: float, avg_win: float, avg_loss: float) -> float:
         return KellySizer.fraction(win_rate, avg_win, avg_loss) * 0.5
+
+    @staticmethod
+    def fractional_kelly(win_rate: float, avg_win: float, avg_loss: float, fraction: float = 0.5) -> float:
+        """Backward-compatible alias used by the live trader."""
+        return KellySizer.fraction(win_rate, avg_win, avg_loss) * max(0.0, min(1.0, fraction))
 
     @staticmethod
     def size_for_risk(equity: float, risk_pct: float, entry: float,

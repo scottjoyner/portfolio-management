@@ -50,14 +50,16 @@ class AdaptiveModeSelector:
     def update(self, regime: str, volatility_bps: float,
                fear_greed_value: float = 50.0,
                adx: float = 25.0, trend_strength: float = 0.0):
+        regime_label = getattr(regime, "value", regime)
+        regime_label = str(regime_label)
         self._bars_since_switch += 1
         self._last_fg = fear_greed_value
-        self._last_regime = regime
+        self._last_regime = regime_label
 
         if self._bars_since_switch < self._cooldown:
             return self.current_mode
 
-        new_mode = self._select_mode(regime, volatility_bps, fear_greed_value, adx, trend_strength)
+        new_mode = self._select_mode(regime_label, volatility_bps, fear_greed_value, adx, trend_strength)
         if new_mode != self.current_mode:
             self._mode_history.append(self.current_mode)
             if len(self._mode_history) > 10:
@@ -69,6 +71,7 @@ class AdaptiveModeSelector:
 
     def _select_mode(self, regime: str, vol_bps: float,
                       fg: float, adx: float, trend: float) -> TradingMode:
+        regime = str(getattr(regime, "value", regime))
         if fg < 20 or fg > 80:
             return TradingMode.TREND
         if "uptrend" in regime or "downtrend" in regime:

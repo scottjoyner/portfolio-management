@@ -63,14 +63,29 @@ class CBClient:
 
         for i in range(0, len(pids), 50):
             batch = pids[i:i+50]
+            collected = 0
             try:
                 for pid in batch:
                     data = self._cli_json("products", "book", pid)
                     book = data.get("pricebook") or data.get("pricebooks") or data
                     if isinstance(book, dict):
                         merged["pricebooks"].append(book)
+                        collected += 1
+                    elif isinstance(book, list):
+                        for item in book:
+                            if isinstance(item, dict):
+                                merged["pricebooks"].append(item)
+                                collected += 1
+                            elif isinstance(item, list):
+                                nested = [b for b in item if isinstance(b, dict)]
+                                merged["pricebooks"].extend(nested)
+                                collected += len(nested)
             except Exception:
                 log.warning("best_bid_ask failed for %d products — synthesizing from candles", len(batch))
+                merged["pricebooks"].extend(self._synthetic_books(batch))
+                continue
+
+            if collected == 0:
                 merged["pricebooks"].extend(self._synthetic_books(batch))
 
         return merged
