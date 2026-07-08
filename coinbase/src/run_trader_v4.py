@@ -1424,7 +1424,8 @@ class EventTraderV4:
         return max(0.0, min(1.0, score))
 
     def _paper_trade_notional(self, confidence: float) -> float:
-        max_notional = self.paper_cash * self.paper_max_position_pct
+        eq = self._paper_equity()
+        max_notional = eq * self.paper_max_position_pct
         base = max_notional * max(0.25, confidence)
         return max(self.paper_min_trade_usd, min(base, max_notional))
 
@@ -2004,7 +2005,7 @@ class EventTraderV4:
         holding = self._core_holdings.get(pid)
 
         if self.mode == "paper":
-            if self.paper_cash < notional + fee:
+            if self._paper_equity() < notional + fee:
                 return False
             self.paper_cash -= notional + fee
             self.paper_fees_paid += fee
@@ -2103,7 +2104,7 @@ class EventTraderV4:
 
         # Determine available cash
         if self.mode == "paper":
-            avail = self.paper_cash
+            avail = self._paper_equity()
         else:
             avail = self._dca_available_cash()
 
@@ -2257,9 +2258,10 @@ class EventTraderV4:
             return
         else:
             kelly_frac = self.paper_max_position_pct
+        eq = self._paper_equity()
         notional = self._paper_trade_notional(confidence)
-        notional = min(notional, self.paper_cash * kelly_frac)
-        if self.paper_cash < notional:
+        notional = min(notional, eq * kelly_frac)
+        if eq < notional:
             return
         if confidence < self.paper_min_confidence:
             return
@@ -2280,7 +2282,7 @@ class EventTraderV4:
             return
 
         leverage = min(self.max_leverage, float(opp.get("leverage", 1.0))) if self.enable_leverage else 1.0
-        notional = min(notional, self.paper_cash * self.paper_max_position_pct * leverage)
+        notional = min(notional, eq * self.paper_max_position_pct * leverage)
         if notional < self.paper_min_trade_usd:
             return
 
@@ -2304,12 +2306,12 @@ class EventTraderV4:
         fee = notional * (entry_fee_bps / 10_000.0)
 
         if side_label == "SHORT":
-            if self.paper_cash < fee:
+            if eq < fee:
                 return
         else:
             total_cost = margin_required + fee
-            if total_cost > self.paper_cash:
-                margin_required = max(0.0, self.paper_cash - fee)
+            if total_cost > eq:
+                margin_required = max(0.0, eq - fee)
                 notional = margin_required * leverage
                 qty = notional / max(fill_price, 1e-9)
                 fee = notional * (entry_fee_bps / 10_000.0)
@@ -3038,7 +3040,7 @@ class EventTraderV4:
                 if scale_notional >= self.paper_min_trade_usd:
                     scale_fee = scale_notional * (self._effective_fee_bps() / 10_000.0)
                     if pos.is_short:
-                        if self.paper_cash >= scale_fee:
+                        if self._paper_equity() >= scale_fee:
                             cash_delta = scale_notional - scale_fee
                             scale_qty = scale_notional / max(price, 1e-9)
                             pos.qty += scale_qty
@@ -3050,7 +3052,7 @@ class EventTraderV4:
                             log.info("SCALE IN %s: +%.4f qty (r_mult=%.1f, trade=%d/3)",
                                      product_id, scale_qty, pos.current_r_multiple, pos.trades)
                     else:
-                        if self.paper_cash >= scale_notional + scale_fee:
+                        if self._paper_equity() >= scale_notional + scale_fee:
                             cash_delta = -(scale_notional + scale_fee)
                             scale_qty = scale_notional / max(price, 1e-9)
                             pos.qty += scale_qty
