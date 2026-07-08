@@ -248,6 +248,11 @@ class EventTraderV4:
         (500_000_000, 0, 0),     # Tier 11
     ]
 
+    _MEAN_REVERSION_STRATS = frozenset({
+        "vwap_revert", "rsi_revert", "zscore_revert", "boll_break",
+        "keltner", "williams_r", "scci", "cmo",
+    })
+
     # ── Runtime-tunable knob schema ──
     # key: (type, min, max, default, description)
     TUNABLE_KNOBS: dict = {
@@ -395,6 +400,7 @@ class EventTraderV4:
 
         self._tick_count = 0
         self._bt_cache: Dict[str, Any] = {}
+        self._bt_cache_lock = threading.Lock()
         self._bt_cache_path = Path("data/bt_cache_v4.json")
         self._bt_cache_dirty = False
 
@@ -405,6 +411,9 @@ class EventTraderV4:
         self._signal_pulses: Dict[str, PulseRecord] = {}
         self._pulse_lock = threading.Lock()
         self._pulse_window_s: float = 300.0
+
+        # Shared state lock for health_status, _last_price, _signal_counts
+        self._shared_lock = threading.Lock()
 
         # Signal fingerprint dedup: {fingerprint_key → expiry_ts}
         self._signal_fingerprints: Dict[str, float] = {}
@@ -1082,9 +1091,7 @@ class EventTraderV4:
                     elif self.mode in ("live", "approval") and not self._cb_breached:
                         self._live_execute(pid, ticker.price, opps)
             except Exception:
-                pass
-
-            # Scalping signal on ticker
+                log.debug("Order flow eval failed for %s", pid, exc_info=True)
             try:
                 streaming = self.streaming.try_get(pid)
                 if streaming and len(streaming.closes) >= 20:
@@ -1101,9 +1108,7 @@ class EventTraderV4:
                         elif self.mode in ("live", "approval") and not self._cb_breached:
                             self._live_execute(pid, ticker.price, [scalping_sig])
             except Exception:
-                pass
-
-            last_eval = self._last_eval.get(pid, 0)
+                log.debug("Scalping eval failed for %s", pid, exc_info=True)
             if has_position:
                 eval_interval = self._position_eval_interval
             else:
@@ -1347,6 +1352,8 @@ class EventTraderV4:
                             opp_leverage = min(opp_leverage, 1.5)
 
                     stop_dist = atr_14 * 2.5 if atr_14 > 0 else current_price * 0.03
+                    if s_name in self._MEAN_REVERSION_STRATS:
+                        stop_dist *= 1.5  # wider stops for mean-reversion (needs room)
                     if is_long_horizon:
                         stop_dist *= 2.0  # wider stops for long-horizon bets
 
@@ -2985,8 +2992,16 @@ class EventTraderV4:
                     log.debug("SKIP %s: regime=%s atr=%.4f (insufficient streaming data)", product_id, regime_str, atr_val)
                     return
 
-            # Auto-disable check: skip if this strategy is disabled for this product
+            # Gate mean-reversion strategies in trending regimes
             best_strat = str(best.get("strategy", ""))
+            if best_strat in self._MEAN_REVERSION_STRATS and regime_str in (
+                "strong_uptrend", "weak_uptrend", "strong_downtrend", "weak_downtrend",
+            ):
+                log.info("PAPER SKIP %s: %s is mean-reversion in %s regime",
+                         product_id, best_strat, regime_str)
+                return
+
+            # Auto-disable check: skip if this strategy is disabled for this product
             if self._perf_tracker.is_disabled(best_strat, product_id):
                 rec = self._perf_tracker.get(best_strat, product_id)
                 log.info("PAPER SKIP %s: strategy %s disabled (%s)",
@@ -3123,6 +3138,34 @@ class EventTraderV4:
             if self.full_scan_interval > 0 and self._last_full_scan_ts and (now - self._last_full_scan_ts) > max(2 * self.full_scan_interval, 7200):
                 alerts.append(f"full_scan_stale:{int(now - self._last_full_scan_ts)}s")
 
+            # ── Restart dead background threads ──────────────────────
+            _thread_map = [
+                ("minute_scan", "_minute_scan_thread", self._minute_scan_loop,
+                 self.minute_scan_interval > 0),
+                ("batch_scan", "_scan_thread", self._scan_loop,
+                 self.scan_interval > 0),
+                ("full_scan", "_full_scan_thread", self._full_scan_loop,
+                 self.full_scan_interval > 0),
+                ("news_sentiment", "_news_thread", self._news_sentiment_loop, True),
+                ("macro_risk", "_macro_thread", self._macro_risk_loop, True),
+                ("analytics", "_analytics_thread", self._analytics_loop, True),
+                ("experiment", "_experiment_thread", self._experiment_loop, True),
+                ("pair_trade", "_pair_trade_thread", self._pair_trade_loop, True),
+                ("onchain_flow", "_onchain_thread", self._onchain_loop, True),
+                ("macro_tf", "_macro_tf_thread", self._macro_tf_loop, True),
+                ("perf_tracker", "_perf_thread", self._perf_save_loop, True),
+                ("funding_scan", "_funding_thread", self._funding_loop, True),
+            ]
+            for name, attr_name, target, should_run in _thread_map:
+                if should_run:
+                    t = getattr(self, attr_name, None)
+                    if t and not t.is_alive():
+                        log.warning("Thread %s dead — restarting", name)
+                        new_t = threading.Thread(target=target, daemon=True, name=name)
+                        new_t.start()
+                        setattr(self, attr_name, new_t)
+                        alerts.append(f"restarted:{name}")
+
             # Systemd watchdog notification
             try:
                 from systemd.daemon import notify
@@ -3136,7 +3179,7 @@ class EventTraderV4:
                             s.connect(sock)
                             s.sendall(b"WATCHDOG=1")
                 except Exception:
-                    pass
+                    log.debug("Systemd watchdog notify failed")
 
             self.health_status["alerts"] = alerts
             self.health_status["last_ticker_ts"] = self._last_ticker_ts
