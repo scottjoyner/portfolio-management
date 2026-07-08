@@ -262,11 +262,11 @@ class EventTraderV4:
         "paper_product_cooldown_s":(int,   0,    86400,300,   "Per-product cooldown after exit"),
         "max_hold_s":              (int,   300,  604800,86400,"Max position hold time (seconds)"),
         "max_leverage":            (float, 1.00, 10.0, 2.00,  "Max leverage multiplier"),
-        "min_change_pct":          (float, 0.01, 5.00, 0.02,  "Min price change % to trigger eval"),
+        "min_change_pct":          (float, 0.01, 5.00, 0.03,  "Min price change % to trigger eval"),
         "_max_cluster_exposure_pct":(float,0.00, 1.00, 0.30,  "Max % of portfolio per correlation cluster"),
         "_pulse_window_s":         (float, 30.0, 3600, 300.0, "Pulse tracking window (seconds)"),
         "_fingerprint_ttl_s":      (float, 5.00, 300,  30.0,  "Signal dedup TTL (seconds)"),
-        "_min_eval_interval":      (float, 0.10, 30.0, 0.25,  "Min seconds between eval per product"),
+        "_min_eval_interval":      (float, 0.10, 30.0, 0.50,  "Min seconds between eval per product"),
         "_core_holdings_enabled":  (int,   0,    1,    1,     "Enable core holdings DCA (0/1)"),
         "_core_dca_dip_pct":       (float, 0.50, 30.0, 3.00,  "Dip % to trigger core DCA buy"),
         "_core_dca_cooldown_s":    (int,   60,   86400,3600,  "Cooldown between DCA buys (seconds)"),
@@ -337,7 +337,7 @@ class EventTraderV4:
         min_change_pct: float = 0.05,
         paper_product_cooldown_s: int = 300,
         paper_maker_pct: float = 0.80,
-        minute_scan_interval: int = 30,
+        minute_scan_interval: int = 60,
         minute_scan_top_n: int = 150,
         minute_scan_min_top_n: int = 10,
         minute_scan_max_top_n: int = 50,
@@ -505,7 +505,7 @@ class EventTraderV4:
         self._full_scan_thread: Optional[threading.Thread] = None
 
         self._last_eval: Dict[str, float] = {}
-        self._min_eval_interval: float = 0.25
+        self._min_eval_interval: float = 0.50
         self._adaptive_eval_enabled: bool = True
         self._last_price: Dict[str, float] = {}
         self._last_volume_24h: Dict[str, float] = {}
@@ -1024,10 +1024,10 @@ class EventTraderV4:
 
     def _polling_loop(self):
         self.health_status["status"] = "polling"
-        log.info("Polling mode: checking ticker every 1s")
+        log.info("Polling mode: checking ticker every 2s")
         while not self._shutdown:
             self._drain_ticker_cache()
-            time.sleep(1)
+            time.sleep(2)
 
     # ── Ticker Processing ────────────────────────────────────────────
 
@@ -1784,12 +1784,12 @@ class EventTraderV4:
         mean_price = sum(recent) / len(recent)
         vol_ratio = atr / max(mean_price, 1e-9)
         if vol_ratio < 0.001:
-            return 2.5
+            return 3.0
         if vol_ratio < 0.003:
-            return 1.0
+            return 1.5
         if vol_ratio < 0.01:
-            return 0.5
-        return 0.25
+            return 1.0
+        return 0.5
 
     # ── Signal Pulse Tracking ─────────────────────────────────────────
 
