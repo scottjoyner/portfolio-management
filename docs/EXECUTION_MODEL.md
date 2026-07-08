@@ -80,6 +80,10 @@ Venues:
 - **kalshi**: REST client to kalshi.com API (demo/live)
 - **polymarket**: CLOB client to polymarket.io API (readonly)
 
+Current operational note:
+- The active paper trader is still crypto-spot oriented and behaves long-biased unless a separate bearish-regime policy suppresses longs.
+- Future adapters must make intent type explicit (`LONG`, `SHORT`, `HEDGE`, `FLAT`) so downtrends in BTC / SPX can be expressed as shorts or defensive allocation instead of only sell-to-flat behavior.
+
 ## Reconciliation & Settlement
 
 ### ExecutionReconciler (`packages/execution/src/reconciliation.mjs`)

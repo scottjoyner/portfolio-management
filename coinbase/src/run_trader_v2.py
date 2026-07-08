@@ -90,6 +90,7 @@ class TraderConfig:
     max_positions: int = 10
     target_vol: float = 0.15
     dry_run: bool = True
+    enable_volume_generator: bool = False
 
     @classmethod
     def from_env(cls) -> TraderConfig:
@@ -103,11 +104,13 @@ class TraderConfig:
         raw_products = os.environ.get("TRADER_PRODUCTS", "").strip()
         products = [p.strip() for p in raw_products.split(",") if p.strip()] if raw_products else list(COINBASE_SPOT_PAIRS)
         dry_run_env = os.environ.get("COINBASE_DRY_RUN")
+        volume_env = os.environ.get("TRADER_ENABLE_VOLUME_GENERATOR", "false")
         return cls(
             execution_mode=mode_map.get(mode_str, ExecutionMode.PAPER),
             products=products,
             equity=float(os.environ.get("TRADER_EQUITY", "100")),
             dry_run=(dry_run_env.lower() == "true") if dry_run_env is not None else (mode_str not in {"live", "futures"}),
+            enable_volume_generator=volume_env.strip().lower() in {"1", "true", "yes", "on"},
         )
 
 
@@ -187,7 +190,7 @@ class UnifiedTrader:
         self._graph_overlay_cache: Dict[str, float] = {}
         self._graph_overlay_cache_ts: float = 0.0
         self._graph_overlay_ttl: float = 300.0
-        self._static_products = set() if self.config.execution_mode == ExecutionMode.FUTURES else set(STATIC_LONG_TERM_PRODUCTS)
+        self._static_products = set()
 
     def _warm_price_buffer(self):
         for pid in self.config.products:
@@ -283,7 +286,7 @@ class UnifiedTrader:
         ticker_map = self._fetch_all_tickers()
         if not ticker_map:
             try:
-                self.feed._poll_once()
+                self.feed.poll_once()
             except Exception as e:
                 log.debug("Feed priming retry failed: %s", e)
             ticker_map = self._fetch_all_tickers(allow_synthetic=self.config.dry_run)
@@ -292,6 +295,10 @@ class UnifiedTrader:
             log.warning("No prices available, skipping tick")
             return
 
+        # Warn if using synthetic prices in dry-run mode
+        if self.config.dry_run and any(getattr(t, 'is_synthetic', False) for t in ticker_map.values()):
+            log.warning("Using synthetic prices (dry-run mode) — live feed unavailable")
+
         prices = {pid: t.price for pid, t in ticker_map.items()}
         bars, history_bars = self._build_bar_history(ticker_map)
         try:
@@ -299,10 +306,10 @@ class UnifiedTrader:
         except Exception:
             pass
 
-        prices_list = list(prices.values())
-        if len(prices_list) >= 30:
+        btc_buffer = self._price_buffer.get("BTC-USD", list(prices.values()))
+        if len(btc_buffer) >= 30:
             try:
-                regime, regime_features = self.regime.detect(prices_list)
+                regime, regime_features = self.regime.detect(btc_buffer)
                 self._last_regime_str = regime.value if regime else "unknown"
                 self._last_regime_features = regime_features
             except Exception as e:
@@ -397,12 +404,13 @@ class UnifiedTrader:
         try:
             atr_map = {pid: 0.02 * prices.get(pid, 1) for pid in prices}
             signals = self.orchestrator.process_opportunities(opportunities, atr_map)
-            for pid in prices:
-                price = prices[pid]
-                if price > 0:
-                    fee_sig = self.orchestrator.generate_fee_volume(pid, price, atr_map.get(pid, 0))
-                    if fee_sig:
-                        signals.append(fee_sig)
+            if self.config.enable_volume_generator:
+                for pid in prices:
+                    price = prices[pid]
+                    if price > 0:
+                        fee_sig = self.orchestrator.generate_fee_volume(pid, price, atr_map.get(pid, 0))
+                        if fee_sig:
+                            signals.append(fee_sig)
         except Exception as e:
             log.warning("Signal processing failed: %s", e)
 
@@ -437,7 +445,11 @@ class UnifiedTrader:
     def _fetch_all_tickers(self, allow_synthetic: bool = False) -> Dict[str, Any]:
         tickers = {}
         for pid in self.config.products:
-            t = self.ticker_cache.get_ticker(pid)
+            try:
+                t = self.ticker_cache.get_ticker(pid)
+            except Exception as e:
+                log.debug("get_ticker failed for %s: %s", pid, e)
+                t = None
             if t:
                 tickers[pid] = t
         if tickers or not allow_synthetic:
@@ -485,7 +497,8 @@ class UnifiedTrader:
 
         self.selector.set_regime(rf.regime)
         self.risk_appetite.update_regime(regime_label, 0.02)
-        fg_val = float(self.fear_greed._cache.value) if hasattr(self.fear_greed, '_cache') else 50.0
+        closes_by_pid = {pid: self._price_buffer.get(pid, []) for pid in prices}
+        fg_val = self.fear_greed.get_value(closes_by_pid)
         self.mode_selector.update(
             regime=regime_label, volatility_bps=vol_bps,
             fear_greed_value=fg_val, adx=adx_val,
@@ -505,7 +518,8 @@ class UnifiedTrader:
             vol_bps, adx_val, trend_st = 30, 25, 0.0
             hurst_v, ser_corr, vol_trend = 0.5, 0.0, 0.0
 
-        fg_val = float(self.fear_greed._cache.value) if hasattr(self.fear_greed, '_cache') else 50.0
+        closes_by_pid = {pid: self._price_buffer.get(pid, []) for pid in prices}
+        fg_val = self.fear_greed.get_value(closes_by_pid)
 
         return MarketConditionProfile(
             regime=self._last_regime_str,
@@ -608,19 +622,6 @@ class UnifiedTrader:
             notional = kelly_pct * self.config.equity
             price = opp.entry_price or 1.0
             opp.base_size = notional / max(price, 1e-9)
-            try:
-                capped_size, bucket_id = self.orchestrator.bucket_ledger.apply_opportunity_limits(
-                    opp.strategy_name, opp.product_id, price, opp.base_size, opp.quote_size,
-                )
-                if capped_size <= 0:
-                    opp.base_size = 0.0
-                    continue
-                opp.base_size = min(opp.base_size, capped_size)
-                opp.quote_size = opp.base_size * price
-                opp.meta["bucket_id"] = bucket_id or "challenge"
-                opp.meta["challenge_bucket"] = bucket_id or "challenge"
-            except Exception:
-                pass
         return opportunities
 
     def _apply_product_rotation(self, opportunities: List[Opportunity],
@@ -758,10 +759,15 @@ class UnifiedTrader:
 
 
     def health(self) -> Dict[str, Any]:
-        with self._lock:
-            h = dict(self._health)
+        # Keep health responsive while broad-universe ticks are running. A full
+        # Coinbase USD scan can hold the trader lock for minutes, so health uses
+        # an eventually-consistent snapshot instead of blocking behind the tick.
+        h = dict(self._health)
         h["uptime_seconds"] = time.time() - h.pop("_started_at", time.time())
-        h["products"] = self.config.products
+        h["product_count"] = len(self.config.products)
+        h["products"] = self.config.products[:50]
+        if len(self.config.products) > 50:
+            h["products_truncated"] = True
         h["mode"] = self.config.execution_mode.value
         h["equity"] = self.config.equity
         h["regime"] = self._last_regime_str

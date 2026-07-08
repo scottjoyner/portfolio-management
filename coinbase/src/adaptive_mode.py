@@ -74,16 +74,22 @@ class AdaptiveModeSelector:
         regime = str(getattr(regime, "value", regime))
         if fg < 20 or fg > 80:
             return TradingMode.TREND
-        if "uptrend" in regime or "downtrend" in regime:
+        
+        # Use exact enum value matching instead of substring matching
+        uptrend_regimes = {"strong_uptrend", "weak_uptrend"}
+        downtrend_regimes = {"weak_downtrend", "strong_downtrend"}
+        ranging_regimes = {"ranging", "low_volatility"}
+        
+        if regime in uptrend_regimes or regime in downtrend_regimes:
             if vol_bps < 30:
                 return TradingMode.TREND
             elif vol_bps < 80:
                 return TradingMode.SWING
             else:
                 return TradingMode.SCALP
-        if "ranging" in regime or "low_vol" in regime:
+        if regime in ranging_regimes:
             return TradingMode.SCALP
-        if "high_vol" in regime:
+        if regime == "high_volatility":
             return TradingMode.SCALP
         if adx < 20:
             return TradingMode.SCALP

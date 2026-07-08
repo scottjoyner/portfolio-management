@@ -5,7 +5,9 @@ import json
 import logging
 import subprocess
 import shutil
+import threading
 from datetime import datetime, timezone
+from collections import deque
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency in tests
@@ -15,6 +17,34 @@ except ImportError:  # pragma: no cover - optional dependency in tests
 load_dotenv(override=False)
 
 log = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """Token bucket rate limiter for API calls."""
+    
+    def __init__(self, max_calls: int = 10, period: float = 1.0):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = deque()
+        self._lock = threading.Lock()
+    
+    def acquire(self):
+        with self._lock:
+            now = time.time()
+            # Remove old calls outside the window
+            while self.calls and self.calls[0] <= now - self.period:
+                self.calls.popleft()
+            if len(self.calls) >= self.max_calls:
+                # Wait until oldest call expires
+                sleep_time = self.calls[0] + self.period - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                # Re-check after sleep
+                now = time.time()
+                while self.calls and self.calls[0] <= now - self.period:
+                    self.calls.popleft()
+            self.calls.append(time.time())
+
 
 class CBClient:
     def __init__(self, api_key: str | None = None, api_secret: str | None = None, timeout: int | None = None):
@@ -28,8 +58,14 @@ class CBClient:
         self.cli_env = os.getenv("COINBASE_CLI_ENV", "live")
         cli = os.getenv("COINBASE_CLI_PATH", "coinbase")
         self.cli = cli if shutil.which(cli) else (shutil.which("coinbase") or cli)
+        
+        # Rate limiter: 10 calls/second default (adjustable via env)
+        max_calls = int(os.getenv("CB_RATE_LIMIT_CALLS", "10"))
+        period = float(os.getenv("CB_RATE_LIMIT_PERIOD", "1.0"))
+        self._rate_limiter = RateLimiter(max_calls=max_calls, period=period)
 
     def _cli_json(self, *args: str) -> dict:
+        self._rate_limiter.acquire()
         cmd = [self.cli, "-e", self.cli_env, *args, "--jq", "."]
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
         if out.returncode != 0:
@@ -41,6 +77,77 @@ class CBClient:
         
     def list_accounts(self) -> dict:
         return self._cli_json("balance")
+    
+    def get_positions(self) -> list[dict]:
+        """Get current open positions from Coinbase.
+        
+        Returns list of positions with product_id, side, size, entry_price, unrealized_pnl.
+        Uses the 'portfolio' endpoint if available, otherwise synthesizes from orders.
+        """
+        try:
+            # Try portfolio endpoint first (Advanced Trade)
+            data = self._cli_json("portfolio", "list")
+            positions = data.get("positions", [])
+            result = []
+            for pos in positions:
+                if float(pos.get("size", 0)) > 0:
+                    result.append({
+                        "product_id": pos.get("product_id"),
+                        "side": "LONG" if float(pos.get("size", 0)) > 0 else "SHORT",
+                        "size": float(pos.get("size", 0)),
+                        "entry_price": float(pos.get("average_entry_price", 0)),
+                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0)),
+                        "leverage": float(pos.get("leverage", 1.0)),
+                    })
+            if result:
+                return result
+        except Exception as e:
+            log.debug(f"portfolio list failed: {e}, falling back to orders")
+        
+        # Fallback: synthesize from recent filled orders
+        return self._synthesize_positions_from_orders()
+    
+    def _synthesize_positions_from_orders(self) -> list[dict]:
+        """Synthesize positions from recent filled orders."""
+        try:
+            orders = self.list_orders(status="FILLED")
+            positions: dict[str, dict] = {}
+            for order in orders:
+                if order.get("status") != "FILLED":
+                    continue
+                pid = order.get("product_id")
+                side = order.get("side", "").upper()
+                size = float(order.get("filled_size", 0))
+                price = float(order.get("average_filled_price", 0))
+                if not pid or size <= 0:
+                    continue
+                if pid not in positions:
+                    positions[pid] = {"product_id": pid, "side": "", "size": 0.0, "entry_price": 0.0, "unrealized_pnl": 0.0, "leverage": 1.0}
+                pos = positions[pid]
+                if not pos["side"]:
+                    pos["side"] = "LONG" if side == "BUY" else "SHORT"
+                if pos["side"] == "LONG" and side == "BUY":
+                    # Adding to long
+                    total_size = pos["size"] + size
+                    pos["entry_price"] = (pos["entry_price"] * pos["size"] + price * size) / total_size
+                    pos["size"] = total_size
+                elif pos["side"] == "SHORT" and side == "SELL":
+                    # Adding to short
+                    total_size = pos["size"] + size
+                    pos["entry_price"] = (pos["entry_price"] * pos["size"] + price * size) / total_size
+                    pos["size"] = total_size
+                elif pos["side"] == "LONG" and side == "SELL":
+                    # Reducing long
+                    pos["size"] -= size
+                elif pos["side"] == "SHORT" and side == "BUY":
+                    # Reducing short
+                    pos["size"] -= size
+            
+            # Filter out closed positions
+            return [p for p in positions.values() if p["size"] > 1e-9]
+        except Exception as e:
+            log.warning(f"Failed to synthesize positions: {e}")
+            return []
 
     def best_bid_ask(self, product_ids: list[str]) -> dict:
         """

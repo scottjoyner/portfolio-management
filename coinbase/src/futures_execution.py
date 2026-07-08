@@ -4,12 +4,15 @@ import importlib.metadata as importlib_metadata
 import logging
 import os
 import sys
+import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 log = logging.getLogger(__name__)
+
+_SDK_IMPORT_LOCK = threading.Lock()
 
 
 def _repo_root() -> str:
@@ -18,28 +21,29 @@ def _repo_root() -> str:
 
 @contextmanager
 def _sdk_import_context():
-    repo_root = _repo_root()
-    dist_root = str(importlib_metadata.distribution("coinbase-advanced-py").locate_file(""))
-    saved_path = list(sys.path)
-    saved_modules = {
-        k: sys.modules[k]
-        for k in list(sys.modules)
-        if k == "coinbase" or k.startswith("coinbase.")
-    }
-    try:
-        sys.path = [p for p in sys.path if os.path.abspath(p or ".") != repo_root]
-        if dist_root not in sys.path:
-            sys.path.insert(0, dist_root)
-        for key in list(sys.modules):
-            if key == "coinbase" or key.startswith("coinbase."):
-                del sys.modules[key]
-        yield
-    finally:
-        sys.path = saved_path
-        for key in list(sys.modules):
-            if key == "coinbase" or key.startswith("coinbase."):
-                del sys.modules[key]
-        sys.modules.update(saved_modules)
+    with _SDK_IMPORT_LOCK:
+        repo_root = _repo_root()
+        dist_root = str(importlib_metadata.distribution("coinbase-advanced-py").locate_file(""))
+        saved_path = list(sys.path)
+        saved_modules = {
+            k: sys.modules[k]
+            for k in list(sys.modules)
+            if k == "coinbase" or k.startswith("coinbase.")
+        }
+        try:
+            sys.path = [p for p in sys.path if os.path.abspath(p or ".") != repo_root]
+            if dist_root not in sys.path:
+                sys.path.insert(0, dist_root)
+            for key in list(sys.modules):
+                if key == "coinbase" or key.startswith("coinbase."):
+                    del sys.modules[key]
+            yield
+        finally:
+            sys.path = saved_path
+            for key in list(sys.modules):
+                if key == "coinbase" or key.startswith("coinbase."):
+                    del sys.modules[key]
+            sys.modules.update(saved_modules)
 
 
 def _as_dict(obj: Any) -> Dict[str, Any]:
@@ -95,6 +99,7 @@ class CoinbaseFuturesExecutor:
         self.portfolio_uuid = portfolio_uuid
         self.margin_type = margin_type.upper()
         self.default_leverage = max(1.0, float(default_leverage))
+        self._perp_products: Dict[str, str] = {}
         with _sdk_import_context():
             from coinbase.rest import RESTClient
         self._RESTClient = RESTClient
@@ -104,7 +109,6 @@ class CoinbaseFuturesExecutor:
             base_url=base_url,
             timeout=timeout,
         )
-        self._perp_products: Dict[str, str] = {}
         self._load_perp_products()
 
     def _load_perp_products(self):
@@ -143,12 +147,11 @@ class CoinbaseFuturesExecutor:
                 raise RuntimeError(f"Futures balance validation failed: {e}") from e
         return summary
 
-    def discover_product_id(self, symbol: str) -> str:
+    def discover_product_id(self, symbol: str) -> Optional[str]:
         base = symbol.upper().replace("-INTX", "").replace("-PERP", "").replace("-USD", "")
         if base in self._perp_products:
             return self._perp_products[base]
-        fallback = f"{base}-PERP-INTX"
-        return fallback
+        return None
 
     def summary(self) -> Dict[str, Any]:
         if self.portfolio_uuid:

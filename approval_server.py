@@ -33,8 +33,13 @@ class ApprovalHandler(BaseHTTPRequestHandler):
     """HTTP handler serving approve/deny/status endpoints."""
 
     # Shared via class var set by the server factory
-    pending_file: str = "pending_approvals.json"
+    pending_file: str = "data/pending_approvals.json"
     server_ref: Any = None
+    _auth_token: str = ""
+
+    def _check_auth(self) -> bool:
+        auth = self.headers.get("Authorization", "")
+        return auth == f"Bearer {self._auth_token}" or auth == self._auth_token
 
     def log_message(self, fmt, *args):
         logger.info(fmt, *args)
@@ -177,6 +182,9 @@ a {{ color:#1a1a2e; }}
             self._send_response(200, self._render_status(data))
 
         elif path == "/api/status":
+            if not self._check_auth():
+                self._send_response(403, json.dumps({"error": "forbidden"}), "application/json")
+                return
             data = self._read_pending()
             self._send_response(200, json.dumps(data, indent=2, default=str), "application/json")
 
@@ -184,22 +192,29 @@ a {{ color:#1a1a2e; }}
             self._send_response(404, self._render_page("Not Found", f"Path not found: {path}", "#dc3545"))
 
 
-def serve(pending_file: str = "pending_approvals.json", port: int = 8080, host: str = "0.0.0.0"):
+def serve(pending_file: str = "data/pending_approvals.json", port: int = 8080, host: str = "0.0.0.0"):
     """Start the approval server (blocking)."""
     # Ensure the pending file exists
     if not os.path.exists(pending_file):
         with open(pending_file, "w") as f:
             json.dump({}, f)
 
-    # Patch the handler class to use our file path
+    # Patch the handler class to use our file path and auth token
     ApprovalHandler.pending_file = pending_file
+    auth_token = os.getenv("APPROVAL_TOKEN", "")
+    if not auth_token:
+        import secrets
+        auth_token = secrets.token_urlsafe(32)
+        logger.warning("APPROVAL_TOKEN not set — generated random token for API auth")
+    ApprovalHandler._auth_token = auth_token
 
     server = HTTPServer((host, port), ApprovalHandler)
     print(f"Approval server running at http://{host}:{port}")
     print(f"  Approve: http://{host}:{port}/approve/<token>")
     print(f"  Deny:    http://{host}:{port}/deny/<token>")
     print(f"  Status:  http://{host}:{port}/status")
-    print(f"  API:     http://{host}:{port}/api/status")
+    if ApprovalHandler._auth_token:
+        print(f"  API:     http://{host}:{port}/api/status (auth: Bearer {ApprovalHandler._auth_token[:8]}...)")
     print(f"  Pending file: {pending_file}")
     try:
         server.serve_forever()

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from enum import Enum
 
 from .protocols import Direction, Opportunity, BaseStrategy
+from .resilience import SourceCircuitBreaker, retry_call
 
 log = logging.getLogger(__name__)
 
@@ -114,40 +115,64 @@ class MCPSentimentClient:
                  timeout_secs: float = 2.0):
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout_secs
+        self._breaker = SourceCircuitBreaker("mcp:sentiment", failure_threshold=3, reset_timeout_s=120.0)
 
     def query_sentiment(self, symbol: str) -> Optional[Dict]:
+        if not self._breaker.allow():
+            return None
         try:
             import urllib.request
             url = f"{self.base_url}/query/sentiment?symbol={symbol}"
             req = urllib.request.Request(url)
-            resp = urllib.request.urlopen(req, timeout=self.timeout)
-            data = json.loads(resp.read().decode())
+            def _fetch() -> Dict:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode())
+
+            data = retry_call(_fetch, attempts=3, base_delay=0.3, max_delay=2.0)
             results = data.get("results", [])
             if results:
+                self._breaker.on_success()
                 return results[-1]
+            self._breaker.on_success()
             return None
         except Exception as e:
+            self._breaker.on_failure(e)
             log.debug("MCP sentiment query failed for %s: %s", symbol, e)
             return None
 
     def query_news(self, symbol: str, days: int = 1) -> Optional[List[Dict]]:
+        if not self._breaker.allow():
+            return None
         try:
             import urllib.request
             url = f"{self.base_url}/query/news?symbol={symbol}&days={days}"
             req = urllib.request.Request(url)
-            resp = urllib.request.urlopen(req, timeout=self.timeout)
-            data = json.loads(resp.read().decode())
+            def _fetch() -> Dict:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode())
+
+            data = retry_call(_fetch, attempts=3, base_delay=0.3, max_delay=2.0)
+            self._breaker.on_success()
             return data.get("results", [])
-        except Exception:
+        except Exception as e:
+            self._breaker.on_failure(e)
             return None
 
     def is_available(self) -> bool:
+        if not self._breaker.allow():
+            return False
         try:
             import urllib.request
             req = urllib.request.Request(f"{self.base_url}/health")
-            resp = urllib.request.urlopen(req, timeout=self.timeout)
-            return resp.status == 200
-        except Exception:
+            def _fetch() -> int:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    return resp.status
+
+            status = retry_call(_fetch, attempts=2, base_delay=0.2, max_delay=1.0)
+            self._breaker.on_success()
+            return status == 200
+        except Exception as e:
+            self._breaker.on_failure(e)
             return False
 
 

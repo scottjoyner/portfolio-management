@@ -82,8 +82,23 @@ class CapitalBucket:
             return False
         if notional > self.max_notional() and self.positions:
             return False
+        existing = self.positions.get(product_id)
+        if existing is not None and existing.side != side:
+            return False
         self.cash_usd -= notional
         self.volume_30d_usd += notional
+        if existing is not None:
+            combined_size = existing.size + size
+            if combined_size <= 0:
+                return False
+            combined_cost = existing.cost_basis + notional
+            existing.size = combined_size
+            existing.entry_price = combined_cost / combined_size
+            existing.current_price = entry_price
+            existing.strategy = strategy or existing.strategy
+            existing.opened_at = time.time()
+            self.updated_at = time.time()
+            return True
         self.positions[product_id] = BucketPosition(
             product_id=product_id,
             side=side,

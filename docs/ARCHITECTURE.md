@@ -9,6 +9,8 @@ The repository currently contains two partially connected system layers:
 
 This split is workable, but it must be made explicit before production. Today, the service boundary is not clear enough for deployment.
 
+Current execution scope is still narrower than the target architecture: the running paper trader is crypto-centric and spot-oriented. It can model bearish conditions and decline regimes, but it does not yet have first-class adapters for equities, index ETFs, futures, or crypto perpetual shorts.
+
 ## Intended product architecture
 
 ```text
@@ -119,10 +121,24 @@ Do not deploy until this decision is made and documented.
 3. Paper executor simulates fills.
 4. Reconciliation verifies expected positions and balances.
 5. UI shows status, P&L, risk, and incidents.
+6. Regime state is attached to every opportunity so bearish markets can suppress longs and surface hedge candidates.
 
 ### Production/live flow
 
 Live execution must remain disabled until all lower environments pass certification. Live mode requires explicit approval, credentials, reconciliation, kill-switch coverage, and incident runbooks.
+
+## Cross-asset expansion path
+
+The next robustness step is a cross-asset regime service that can classify `risk_on`, `risk_off`, `crash`, and `rebound` states using BTC plus equity macro proxies (SPX/QQQ/VIX/DXY/10Y).
+
+Planned adapter order:
+
+1. Crypto spot (current).
+2. Crypto perpetuals / margin shorts.
+3. Index ETF paper adapter.
+4. Futures or other short-capable hedge adapters where supported.
+
+The strategy layer should emit `LONG`, `SHORT`, `HEDGE`, and `FLAT` intents, while adapters reject unsupported intents instead of silently converting them.
 
 ## Non-negotiable production controls
 

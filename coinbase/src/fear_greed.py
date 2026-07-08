@@ -81,6 +81,11 @@ class FearGreedIndex:
         self._cache_ts = now
         return self._cache
 
+    def get_value(self, closes_dict: dict, volumes_dict: Optional[dict] = None) -> float:
+        """Get the current Fear & Greed index value (computes if needed)."""
+        snapshot = self.compute(closes_dict, volumes_dict)
+        return snapshot.value
+
     def _momentum_score(self, closes: List[float]) -> float:
         if len(closes) < self.lookback_mom + 1:
             return 50.0

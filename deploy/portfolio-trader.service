@@ -1,0 +1,55 @@
+[Unit]
+Description=Portfolio Management — EventTraderV4 paper trading (direct execution)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WatchdogSec=90
+User=scott
+Group=scott
+WorkingDirectory=/home/scott/git/portfolio-management
+Environment=HOME=/home/scott
+Environment=PATH=/home/scott/git/portfolio-management/.venv/bin:/home/scott/.npm-global/bin:/home/scott/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=KILL_SWITCH=true
+Environment=LIVE_TRADING_ENABLED=false
+Environment=REQUIRE_APPROVALS=true
+Environment=PAPER_TRADING=true
+Environment=TRADER_MODE=paper
+Environment=COINBASE_DRY_RUN=true
+Environment=MAX_NOTIONAL_PER_TRADE_USD=100
+ExecStart=/home/scott/git/portfolio-management/.venv/bin/python3 \
+  /home/scott/git/portfolio-management/coinbase/src/run_trader_v4.py \
+  --mode paper \
+  --health-port 9090 \
+  --log-file logs/trader-v4.log \
+  --enable-shorts \
+  --enable-leverage \
+  --max-leverage 2.0 \
+  --minute-scan-interval 60 \
+  --minute-scan-top 150 \
+  --minute-scan-min-top 10 \
+  --minute-scan-max-top 80 \
+  --minute-scan-use-hotset \
+  --minute-scan-hotset-size 150 \
+  --scan-interval 300 \
+  --scan-top 50 \
+  --scan-min-vol 1000 \
+  --full-scan-interval 300 \
+  --paper-product-cooldown-seconds 300 \
+  --paper-maker-pct 0.80 \
+  --min-change 0.05
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+ReadWritePaths=/home/scott/git/portfolio-management/data /home/scott/git/portfolio-management/logs
+
+[Install]
+WantedBy=multi-user.target

@@ -29,6 +29,7 @@ import uuid
 import urllib.error
 import urllib.request
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 from enum import Enum
@@ -36,11 +37,16 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("optimizer")
 
+_IO_EXECUTOR = ThreadPoolExecutor(max_workers=12, thread_name_prefix="opt_io")
+_BT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="opt_bt")
+
 # Strategy engine
 from strategy_engine import run_strategies as _run_strategies
+from strategy_engine import batch_signals_fast as _batch_signals_fast
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
+from strategy_engine import batch_backtest_rust as _batch_backtest_rust
 
 # State store
 from state_store import StateStore
@@ -86,6 +92,27 @@ except ImportError:
     logger.warning("ConfidenceEngine not available (trading_system.signal_confidence)")
 
 try:
+    from trading_system.core.performance_model import latency_tuned_priority as _latency_tuned_priority
+except Exception:
+    def _latency_tuned_priority(base_priority: float, **_: Any) -> float:
+        return base_priority
+
+try:
+    from coinbase.src.multi_hop import (
+        RouteContext as MultiHopContext,
+        RoutePlan as MultiHopRoutePlan,
+        RouteStep as MultiHopRouteStep,
+        find_best_decision as _find_best_route_decision,
+    )
+    _HAS_MULTI_HOP = True
+except Exception:
+    MultiHopContext = None  # type: ignore
+    MultiHopRoutePlan = None  # type: ignore
+    MultiHopRouteStep = None  # type: ignore
+    _find_best_route_decision = None  # type: ignore
+    _HAS_MULTI_HOP = False
+
+try:
     from coinbase.src.graph.neo4j_graph import CryptoGraphStore
     from coinbase.src.graph.models import GraphAssetSignal
     _HAS_COINBASE_GRAPH = True
@@ -119,6 +146,15 @@ try:
 except Exception:
     UnifiedSignalAccumulator = None
 
+# Signal aggregator (universe-wide cross-product ranking)
+_HAS_AGGREGATOR = False
+try:
+    from trading_system.core.signal_aggregator import SignalAggregator, UnifiedSignal
+    _HAS_AGGREGATOR = True
+except Exception:
+    SignalAggregator = None
+    UnifiedSignal = None
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -136,7 +172,6 @@ PORTFOLIO_BUCKET_TARGETS = {
 USDC_YIELD_RESERVE_FRACTION = PORTFOLIO_BUCKET_TARGETS["reserve"]
 
 CORE_LONG_TERM_ASSETS = {"BTC", "ETH", "SOL"}
-STATIC_LONG_TERM_ASSETS = {"BTC", "ETH"}
 CORE_BATCH_FRACTION = 0.05
 OPPORTUNITY_BATCH_FRACTION = 0.03
 
@@ -173,11 +208,11 @@ COINBASE_FEE_TIERS = [
 ]
 
 # Minimum time between executions of the same type (seconds)
-OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "strategy": 300, "cycle": 600, "accumulator": 120}
+OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300}
 
 # Fee tier volume cycling
 CYCLE_MIN_PROFIT_PCT = 0.0   # we'll break even or small loss for volume
-CYCLE_MAX_HOLD_TICKS = 6     # force-close after this many checks
+CYCLE_MAX_HOLD_HOURS = 168   # force-close after 7 days
 
 # ---------------------------------------------------------------------------
 # Types
@@ -480,7 +515,7 @@ class PortfolioOptimizer:
         from_addr: str = "",
         to_addr: str = "",
         approval_base_url: str = "http://localhost:8080",
-        pending_file: str = "pending_approvals.json",
+        pending_file: str = "data/pending_approvals.json",
         enable_polymarket: bool = False,
         kalshi_email: str = "",
         kalshi_password: str = "",
@@ -503,11 +538,12 @@ class PortfolioOptimizer:
         self.state: Optional[PortfolioState] = None
         self.cost_bases: Dict[str, float] = {}
         self.last_execution: Dict[str, float] = defaultdict(float)
-        self.position_ages: Dict[str, int] = defaultdict(int)
+        self.position_ages: Dict[str, float] = defaultdict(float)
         self.trade_log: List[dict] = []
         self.running = False
         self._bt_cache: Dict[str, BacktestVerdict] = {}
         self._bt_cache_ttl: float = 3600
+        self._portfolio_peak_value: float = 0.0
         self._seen_products_meta_prefix = "coinbase_first_seen:"
         self.graph_store: Optional[Any] = None
         self._graph_signals: Dict[str, Any] = {}
@@ -668,7 +704,6 @@ class PortfolioOptimizer:
                 if self.state:
                     self.neo4j_store.save_snapshot(self.state)
                 self.neo4j_store.save_position_ages(dict(self.position_ages))
-                self._save_capital_policy()
                 self.neo4j_store.prune_bt_cache()
             except Exception as e:
                 logger.warning("Neo4j save failed: %s", e)
@@ -775,6 +810,50 @@ class PortfolioOptimizer:
                 self._save_capital_policy()
         return self.capital_policy
 
+    def _apply_bear_market_policy(self):
+        """Shift allocation toward core crypto as the portfolio draws down."""
+
+        if not self.state or self.state.total_value <= 0:
+            return
+
+        self._portfolio_peak_value = max(self._portfolio_peak_value, self.state.total_value)
+        if self._portfolio_peak_value <= 0:
+            return
+
+        drawdown = max(0.0, (self._portfolio_peak_value - self.state.total_value) / self._portfolio_peak_value)
+        if drawdown < 0.05:
+            return
+
+        if drawdown < 0.15:
+            targets = {"reserve": 0.45, "core": 0.25, "opportunity": 0.30}
+            core_min = 15.0
+        elif drawdown < 0.30:
+            targets = {"reserve": 0.35, "core": 0.35, "opportunity": 0.30}
+            core_min = 25.0
+        else:
+            targets = {"reserve": 0.25, "core": 0.45, "opportunity": 0.30}
+            core_min = 35.0
+
+        # If BTC is still trending down, be a little more aggressive about accumulation.
+        btc = self.state.holdings.get("BTC", {})
+        btc_change = to_float(btc.get("change_24h", 0))
+        if btc_change < 0:
+            targets["reserve"] = max(0.20, targets["reserve"] - 0.05)
+            targets["core"] = min(0.55, targets["core"] + 0.05)
+
+        policy = dict(self.capital_policy)
+        policy["targets"] = targets
+        policy["core_min_allocation_pct"] = core_min
+        policy["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.capital_policy = self._normalize_capital_policy(policy)
+        logger.info(
+            "Bear-market overlay: drawdown=%.1f%% peak=$%.0f current=$%.0f targets=%s",
+            drawdown * 100.0,
+            self._portfolio_peak_value,
+            self.state.total_value,
+            self.capital_policy.get("targets"),
+        )
+
     def _save_capital_policy(self):
         try:
             payload = json.dumps(self._normalize_capital_policy(self.capital_policy), default=str)
@@ -857,7 +936,7 @@ class PortfolioOptimizer:
         recent_idx = max(0, len(closes) - 24)
         recent_move_pct = abs((closes[-1] / closes[recent_idx]) - 1.0) * 100.0 if closes[recent_idx] else atr_pct
 
-        return _clamp(max(atr_pct * 5.0, recent_move_pct * 1.2, 2.0), 2.0, 100.0)
+        return _clamp(max(atr_pct * 1.5, recent_move_pct * 0.5, 1.0), 1.0, 20.0)
 
     def _current_price_for_symbol(self, symbol: str, fallback: float = 0.0) -> float:
         """Fetch a current price if available; otherwise fall back."""
@@ -879,10 +958,231 @@ class PortfolioOptimizer:
                 return price
         return fallback
 
+    def _route_market_products(self) -> List[dict]:
+        """Return Coinbase products for route planning."""
+
+        try:
+            products = self.cli.get_products()
+            if isinstance(products, dict):
+                return list(products.values())
+            if isinstance(products, list):
+                return products
+        except Exception as e:
+            logger.debug("Route product discovery failed: %s", e)
+        return []
+
+    def _route_context_for_opportunity(self, opp: Opportunity) -> Optional[Any]:
+        if not _HAS_MULTI_HOP or MultiHopContext is None:
+            return None
+
+        holdings = {}
+        current_prices = {}
+        drawdown = 0.0
+        if self.state:
+            current_prices = {cur: float(h.get("price", 0.0) or 0.0) for cur, h in self.state.holdings.items()}
+            holdings = {
+                cur: {
+                    **h,
+                    "holding_days": float(self.position_ages.get(cur, 0) or 0),
+                }
+                for cur, h in self.state.holdings.items()
+            }
+            if self._portfolio_peak_value > 0:
+                drawdown = max(0.0, (self._portfolio_peak_value - self.state.total_value) / self._portfolio_peak_value)
+
+        # Use currently detected opportunities as context so the planner can
+        # prefer routes that align with the strongest nearby edges.
+        opps = [
+            {
+                "currency": o.currency,
+                "side": o.side,
+                "priority": o.priority,
+                "reason": o.reason,
+                "product_id": o.product_id,
+                "opp_type": o.opp_type.value,
+            }
+            for o in (self._last_detected_opportunities or [opp])
+        ]
+
+        # For sells, prefer routing into the strongest nearby buy opportunities
+        # plus the core/stable reserve currencies.
+        top_buys = [o.currency for o in self._last_detected_opportunities if o.side == "BUY"]
+        targets = []
+        if opp.side == "BUY":
+            targets = [opp.currency]
+        else:
+            targets = top_buys[:3] + ["USD", "USDC", "BTC", "ETH"]
+
+        return MultiHopContext(
+            amount_in=float(opp.size_usd or 0.0),
+            candidate_targets=list(dict.fromkeys([t for t in targets if t])),
+            opportunities=opps,
+            holdings=holdings,
+            current_prices=current_prices,
+            drawdown_pct=drawdown,
+            regime=str(_detect_regime({"change_pct": self.state.holdings.get("BTC", {}).get("change_24h", 0) if self.state else 0})),
+            max_hops=3,
+        )
+
+    def _best_route_decision_for_opportunity(self, opp: Opportunity) -> Optional[Any]:
+        if not _HAS_MULTI_HOP or _find_best_route_decision is None:
+            return None
+
+        ctx = self._route_context_for_opportunity(opp)
+        if ctx is None:
+            return None
+
+        source = opp.currency if opp.side == "SELL" else ("USDC" if self.state and self.state.usdc_balance > 0 else "USD")
+        if opp.side == "BUY":
+            targets = [opp.currency]
+        else:
+            # Let the route engine choose among cash, core, or stronger nearby buys.
+            targets = [t for t in ctx.candidate_targets if t != opp.currency]
+            if not targets:
+                targets = ["USD", "USDC", "BTC", "ETH"]
+
+        products = self._route_market_products()
+        if not products:
+            return None
+
+        try:
+            return _find_best_route_decision(
+                source,
+                targets,
+                products,
+                context=ctx,
+                max_hops=ctx.max_hops,
+            )
+        except Exception as e:
+            logger.debug("Route decision failed for %s: %s", opp.currency, e)
+            return None
+
+    def _route_decision_from_payload(self, payload: Dict[str, Any]) -> Optional[Any]:
+        """Reconstruct a multi-hop decision from persisted JSON."""
+
+        if not _HAS_MULTI_HOP or MultiHopRoutePlan is None:
+            return None
+
+        try:
+            steps = []
+            for s in payload.get("steps", []):
+                if MultiHopRouteStep is None:
+                    continue
+                steps.append(MultiHopRouteStep(
+                    product_id=str(s.get("product_id", "")),
+                    from_currency=str(s.get("from_currency", "")),
+                    to_currency=str(s.get("to_currency", "")),
+                    direction=str(s.get("direction", "BUY")),
+                    price=float(s.get("price", 0.0) or 0.0),
+                    effective_rate=float(s.get("effective_rate", 0.0) or 0.0),
+                ))
+            plan = MultiHopRoutePlan(
+                source=str(payload.get("source", "")).upper(),
+                target=str(payload.get("target", "")).upper(),
+                steps=steps,
+                effective_rate=float(payload.get("effective_rate", payload.get("score", 0.0)) or 0.0),
+                fee_bps=float(payload.get("fee_bps", 10.0) or 10.0),
+                spread_bps=float(payload.get("spread_bps", 5.0) or 5.0),
+            )
+            return type("Decision", (), {
+                "plan": plan,
+                "score": float(payload.get("score", 0.0) or 0.0),
+                "expected_tax_impact_usd": float(payload.get("expected_tax_impact_usd", 0.0) or 0.0),
+                "opportunity_bonus": float(payload.get("opportunity_bonus", 0.0) or 0.0),
+                "drawdown_bonus": float(payload.get("drawdown_bonus", 0.0) or 0.0),
+                "regime_bonus": float(payload.get("regime_bonus", 0.0) or 0.0),
+                "hop_penalty": float(payload.get("hop_penalty", 0.0) or 0.0),
+                "liquidity_bonus": float(payload.get("liquidity_bonus", 0.0) or 0.0),
+                "factor_breakdown": dict(payload.get("factor_breakdown", {})),
+            })()
+        except Exception as e:
+            logger.debug("Failed to reconstruct route decision: %s", e)
+            return None
+
+    def _route_amount_for_source(self, source: str, notional_usd: float) -> float:
+        """Convert USD notional to source-currency units when needed."""
+
+        src = str(source or "").upper().replace("-USD", "")
+        if src in ("USD", "USDC", "USDT", "DAI", "USD1", "USDS"):
+            return float(notional_usd)
+        price = self._current_price_for_symbol(src, fallback=0.0)
+        if price <= 0:
+            return 0.0
+        return float(notional_usd) / price
+
+    def _execute_route_decision(self, opp: Opportunity, decision: Any) -> bool:
+        """Execute a multi-hop route sequentially."""
+
+        plan = getattr(decision, "plan", None)
+        if plan is None or not getattr(plan, "steps", None):
+            return False
+
+        source = plan.source.upper().replace("-USD", "")
+        amount = self._route_amount_for_source(source, opp.size_usd)
+        if amount <= 0:
+            logger.warning("  → Route amount unavailable for %s", opp.currency)
+            return False
+
+        logger.info("  → Multi-hop route: %s", getattr(plan, "path", [source, opp.currency]))
+        logger.info("  → Route score=%.3f details=%s", float(getattr(decision, "score", 0.0)), getattr(decision, "factor_breakdown", {}))
+
+        executed_steps = []
+        for idx, step in enumerate(plan.steps):
+            step_amount = amount
+            if step.direction == "BUY":
+                preview = self.cli.preview_order(step.product_id, "BUY", step_amount, is_quote=True)
+            else:
+                preview = self.cli.preview_order(step.product_id, "SELL", step_amount, is_quote=False)
+            if not preview:
+                logger.warning("  → Route preview failed on hop %d (%s)", idx + 1, step.product_id)
+                return False
+
+            fee = to_float(preview.get("total_fee", 0))
+            if fee > max(opp.size_usd * 0.03, 1.0):
+                logger.warning("  → Route hop fee too high on %s, aborting", step.product_id)
+                return False
+
+            if self.dry_run:
+                logger.info(
+                    "  → DRY-RUN hop %d/%d: %s %s amount=%.8f fee=$%.2f",
+                    idx + 1, len(plan.steps), step.direction, step.product_id, step_amount, fee,
+                )
+                order_id = f"dry-hop-{idx+1}"
+            else:
+                if step.direction == "BUY":
+                    order = self.cli.create_order(step.product_id, "BUY", step_amount, is_quote=True)
+                else:
+                    order = self.cli.create_order(step.product_id, "SELL", step_amount, is_quote=False)
+                if not order:
+                    logger.error("  → Route execution failed on hop %d (%s)", idx + 1, step.product_id)
+                    return False
+                order_id = order.get("id", f"hop-{idx+1}")
+
+            executed_steps.append({
+                "product_id": step.product_id,
+                "direction": step.direction,
+                "input_amount": step_amount,
+                "order_id": order_id,
+            })
+            amount = max(amount * float(step.effective_rate or 0.0), 0.0)
+            if amount <= 0:
+                logger.warning("  → Route output collapsed after hop %d (%s)", idx + 1, step.product_id)
+                return False
+
+        self.last_execution[f"route:{opp.opp_type.value}"] = time.time()
+        opp.meta["route_decision"] = {
+            "path": getattr(plan, "path", []),
+            "score": float(getattr(decision, "score", 0.0)),
+            "factor_breakdown": getattr(decision, "factor_breakdown", {}),
+            "steps": executed_steps,
+        }
+        opp.executed = True
+        opp.order_id = executed_steps[-1]["order_id"] if executed_steps else "route"
+        return True
+
     def _compute_exit_plan(
         self,
         currency: str,
-        side: str,
         confidence: float,
         expected_return_pct: float = 0.0,
         *,
@@ -932,6 +1232,25 @@ class PortfolioOptimizer:
             "risk_pct": round(stop_pct, 1),
             "expected_return_pct": round(expected_return_pct, 1),
         }
+
+    def _latency_adjusted_priority(
+        self,
+        base_priority: float,
+        *,
+        trade_style: str = "momentum",
+        expected_delay_ms: Optional[float] = None,
+    ) -> float:
+        """Down-weight short-horizon strategies when the environment is slow."""
+
+        delay_ms = expected_delay_ms
+        if delay_ms is None:
+            # Average detection delay from the optimizer tick plus a small execution buffer.
+            delay_ms = max(250.0, (self.interval * 500.0) + 250.0)
+        return _latency_tuned_priority(
+            base_priority,
+            trade_style=trade_style,
+            expected_delay_ms=delay_ms,
+        )
 
     def _usdc_reserve_amount(self) -> float:
         if not self.state:
@@ -1137,6 +1456,51 @@ class PortfolioOptimizer:
                 logger.warning("  → Cannot compute base quantity, skipping")
                 return
 
+        route_payload = entry.get("route_decision")
+        if route_payload and _HAS_MULTI_HOP:
+            route_decision = self._route_decision_from_payload(route_payload)
+            if route_decision is not None:
+                type_str = entry.get("type", "strategy")
+                try:
+                    opp_type = OpportunityType(type_str)
+                except ValueError:
+                    opp_type = OpportunityType.STRATEGY_SIGNAL
+                route_opp = Opportunity(
+                    opp_type=opp_type,
+                    currency=currency,
+                    side=side,
+                    size_usd=size_usd,
+                    reason=reason,
+                    priority=float(entry.get("priority", 0.0) or 0.0),
+                    product_id=product_id,
+                    meta={"route_decision": route_payload},
+                )
+                if self._execute_route_decision(route_opp, route_decision):
+                    logger.info("  → EXECUTED approved route trade: %s", route_opp.order_id)
+                    self.last_execution[entry.get("type", "strategy")] = time.time()
+                    trade_entry = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "type": entry.get("type", "approved"),
+                        "side": side,
+                        "currency": currency,
+                        "size_usd": round(size_usd, 2),
+                        "fee": 0.0,
+                        "reason": f"[APPROVED] {reason}",
+                        "order_id": route_opp.order_id,
+                        "dry_run": self.dry_run,
+                        "route_decision": route_payload,
+                    }
+                    self.trade_log.append(trade_entry)
+                    self.store.save_trade(trade_entry)
+                    if self.neo4j_store:
+                        try:
+                            self.neo4j_store.save_trade(trade_entry)
+                        except Exception as e:
+                            logger.warning("Neo4j trade save failed: %s", e)
+                    return
+                logger.warning("  → Approved route failed; aborting without direct fallback")
+                return
+
         if is_quote:
             preview = self.cli.preview_order(product_id, side, size_usd, is_quote=True)
         else:
@@ -1189,6 +1553,12 @@ class PortfolioOptimizer:
         self.running = True
         logger.info("Optimizer started (dry_run=%s, interval=%ds)", self.dry_run, self.interval)
         while self.running:
+            # KILL_SWITCH check — immediate halt
+            ks = os.environ.get("KILL_SWITCH", "false").strip().lower()
+            if ks in ("true", "1", "yes"):
+                logger.warning("KILL_SWITCH active — halting optimizer")
+                self.running = False
+                break
             try:
                 self._tick()
             except KeyboardInterrupt:
@@ -1216,7 +1586,9 @@ class PortfolioOptimizer:
         self._refresh_capital_policy()
         self._check_pending_approvals()
         self._fetch_state()
+        self._apply_bear_market_policy()
         opportunities = self._detect_opportunities()
+        self._last_detected_opportunities = list(opportunities)
         opportunities.sort(key=lambda o: o.priority, reverse=True)
         self._write_trade_plans(opportunities)
         self._write_signal_cache(opportunities)
@@ -1229,9 +1601,25 @@ class PortfolioOptimizer:
 
     def _fetch_state(self):
         try:
-            self.cli.get_products()  # warm the cache
-            balances = self.cli.get_balances()
-            fees_data = self.cli.get_fees()
+            # Run three independent CLI calls in parallel
+            futs = {
+                _IO_EXECUTOR.submit(self.cli.get_products): "products",
+                _IO_EXECUTOR.submit(self.cli.get_balances): "balances",
+                _IO_EXECUTOR.submit(self.cli.get_fees): "fees",
+            }
+            results = {}
+            for fut in as_completed(futs):
+                key = futs[fut]
+                try:
+                    results[key] = fut.result()
+                except Exception as e:
+                    logger.warning("Coinbase %s fetch failed: %s", key, e)
+                    results[key] = None
+            products_data = results.get("products")
+            balances = results.get("balances")
+            fees_data = results.get("fees")
+            if balances is None:
+                raise Exception("balances fetch failed")
         except Exception as exc:
             logger.warning("Coinbase state unavailable; continuing with empty portfolio: %s", exc)
             self.cost_bases = {}
@@ -1294,7 +1682,10 @@ class PortfolioOptimizer:
         for h in holdings.values():
             h["allocation_pct"] = (h["value"] / total_value * 100) if total_value > 0 else 0
 
-        fee_volume = to_float(fees_data.get("advanced_trade_only_volume", 0))
+        if fees_data is None:
+            fee_volume = 0.0
+        else:
+            fee_volume = to_float(fees_data.get("advanced_trade_only_volume", 0))
         fee_tier = current_fee_tier(fee_volume)
 
         self.state = PortfolioState(
@@ -1342,6 +1733,7 @@ class PortfolioOptimizer:
         ops.extend(self._detect_strategy_signals())
         ops.extend(self._detect_volume_cycles())
         ops.extend(self._detect_accumulator_signals())
+        ops.extend(self._detect_aggregator_signals())
         ops.extend(self._detect_event_markets())
         return ops
 
@@ -1385,27 +1777,74 @@ class PortfolioOptimizer:
         remaining_buy_capacity = self._buy_capacity()
         remaining_core_capacity = self._bucket_gap("core")
         remaining_opportunity_capacity = self._bucket_gap("opportunity")
+
+        # Fetch candles for top 25 products in parallel
+        candle_futs = {}
         for pid, p in rows[:25]:
+            fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
+            candle_futs[fut] = (pid, p)
+
+        # Process each product as candle data arrives
+        candle_results: List[Tuple[str, dict, List[float], List[float], List[float], List[float]]] = []
+        for fut in as_completed(candle_futs):
+            pid, p = candle_futs[fut]
             try:
-                candles = self.cli.get_candles(pid, granularity="1h", limit=100)
-                if len(candles) < 40:
-                    continue
-                closes, vols, highs, lows = [], [], [], []
-                for c in reversed(candles):
-                    closes.append(to_float(c.get("close", 0)))
-                    vols.append(to_float(c.get("volume", 0)))
-                    highs.append(to_float(c.get("high", 0)))
-                    lows.append(to_float(c.get("low", 0)))
-                if len(closes) < 40:
-                    continue
-                recent = closes[-10:]
-                prior = closes[-40:-10]
-                vol_recent = sum(vols[-10:]) / max(len(vols[-10:]), 1)
-                vol_prior = sum(vols[-40:-10]) / max(len(vols[-40:-10]), 1)
+                candles = fut.result()
+            except Exception as e:
+                logger.debug("Candle fetch failed for %s: %s", pid, e)
+                continue
+            if not candles or len(candles) < 40:
+                continue
+            closes, vols, highs, lows = [], [], [], []
+            for c in reversed(candles):
+                closes.append(to_float(c.get("close", 0)))
+                vols.append(to_float(c.get("volume", 0)))
+                highs.append(to_float(c.get("high", 0)))
+                lows.append(to_float(c.get("low", 0)))
+            if len(closes) < 40:
+                continue
+            candle_results.append((pid, p, closes, vols, highs, lows))
+
+        # Batch-compute trend/volume metrics via compute backend
+        try:
+            from trading_system.core.compute_backend import get_compute_backend
+            _cb = get_compute_backend()
+            n = len(candle_results)
+            if n > 0:
+                all_closes_arr = []
+                all_vols_arr = []
+                for _, _, c, v, _, _ in candle_results:
+                    all_closes_arr.append(c[-40:])
+                    all_vols_arr.append(v[-40:])
+                # Shape: (n_products, 40)
+                import numpy as np
+                closes_np = np.array(all_closes_arr, dtype=np.float64)
+                vols_np = np.array(all_vols_arr, dtype=np.float64)
+                trend_10_arr = closes_np[:, -1] / np.maximum(closes_np[:, -10], 1e-9) - 1.0
+                trend_30_arr = closes_np[:, -1] / np.maximum(closes_np[:, -30], 1e-9) - 1.0
+                vol_recent_arr = np.mean(vols_np[:, -10:], axis=1)
+                vol_prior_arr = np.mean(vols_np[:, -40:-10], axis=1)
+                vol_ratio_arr = np.divide(vol_recent_arr, np.maximum(vol_prior_arr, 1e-9),
+                                          out=np.ones_like(vol_recent_arr), where=vol_prior_arr > 0)
+        except Exception as e:
+            logger.debug("Batch metric computation unavailable: %s", e)
+            trend_10_arr = trend_30_arr = vol_ratio_arr = None
+
+        # Process each product sequentially (fast, no I/O)
+        for idx, (pid, p, closes, vols, highs, lows) in enumerate(candle_results):
+            try:
                 base = pid.split("-")[0]
-                trend_10 = (recent[-1] / recent[0] - 1) if recent[0] else 0
-                trend_30 = (closes[-1] / closes[-30] - 1) if closes[-30] else 0
-                volume_ratio = (vol_recent / vol_prior) if vol_prior > 0 else 1.0
+                if trend_10_arr is not None and idx < len(trend_10_arr):
+                    trend_10 = float(trend_10_arr[idx])
+                    trend_30 = float(trend_30_arr[idx])
+                    volume_ratio = float(vol_ratio_arr[idx])
+                else:
+                    recent = closes[-10:]
+                    vol_recent = sum(vols[-10:]) / max(len(vols[-10:]), 1)
+                    vol_prior = sum(vols[-40:-10]) / max(len(vols[-40:-10]), 1)
+                    trend_10 = (recent[-1] / recent[0] - 1) if recent[0] else 0
+                    trend_30 = (closes[-1] / closes[-30] - 1) if closes[-30] else 0
+                    volume_ratio = (vol_recent / vol_prior) if vol_prior > 0 else 1.0
                 age_days = self._first_seen_age_days(pid)
                 quality_asset = classify_asset(base)
                 quality_volume = to_float(p.get("volume_24h", 0))
@@ -1467,7 +1906,7 @@ class PortfolioOptimizer:
                 if is_new_listing and side == "SELL":
                     trade_style = "mean_reversion"
                 exit_plan = self._compute_exit_plan(
-                    pid.split("-")[0], side, score,
+                    pid.split("-")[0], score,
                     expected_return_pct=max(expected_return_pct, 0.5),
                     trade_style=trade_style,
                     volatility_pct=self._estimate_trade_volatility_pct(closes, highs, lows),
@@ -1567,7 +2006,7 @@ class PortfolioOptimizer:
                 )
                 side = "BUY" if upside >= 0 else "SELL"
                 exit_plan = self._compute_exit_plan(
-                    symbol, side, score,
+                    symbol, score,
                     expected_return_pct=max(abs(upside) * 100 * (1.4 if side == "BUY" else 1.1), 0.5),
                     trade_style="equity_momentum" if side == "BUY" else "mean_reversion",
                     volatility_pct=max((1.0 - min(vol_ratio / 3.0, 1.0)) * 25.0 + abs(trend) * 100.0 * 6.0 + 12.0, 12.0),
@@ -1613,6 +2052,8 @@ class PortfolioOptimizer:
     def _detect_tlh(self) -> List[Opportunity]:
         if time.time() - self.last_execution.get("tlh", 0) < OP_COOLDOWN["tlh"]:
             return []
+        if not self.state:
+            return []
         ops = []
         for cur, h in self.state.holdings.items():
             if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
@@ -1649,6 +2090,8 @@ class PortfolioOptimizer:
 
     def _detect_fee_tier_volume(self) -> List[Opportunity]:
         if time.time() - self.last_execution.get("fee_tier", 0) < OP_COOLDOWN["fee_tier"]:
+            return []
+        if not self.state:
             return []
         needed = self.state.volume_to_next_tier
         buy_capacity = self._buy_capacity()
@@ -1701,6 +2144,8 @@ class PortfolioOptimizer:
 
     def _detect_rebalance(self) -> List[Opportunity]:
         if time.time() - self.last_execution.get("rebalance", 0) < OP_COOLDOWN["rebalance"]:
+            return []
+        if not self.state:
             return []
         by_class: Dict[str, float] = defaultdict(float)
         for h in self.state.holdings.values():
@@ -1789,7 +2234,7 @@ class PortfolioOptimizer:
                 if not pid:
                     continue
                 exit_plan = self._compute_exit_plan(
-                    best["currency"], "BUY", 0.65,
+                    best["currency"], 0.65,
                     expected_return_pct=6.0,
                 )
                 ops.append(Opportunity(
@@ -1806,7 +2251,7 @@ class PortfolioOptimizer:
                     holding_period_hours=exit_plan["holding_period_hours"],
                     expected_return_pct=exit_plan["expected_return_pct"],
                     risk_pct=exit_plan["risk_pct"],
-                    meta={"capital_bucket": bucket, "graph_multiplier": graph_multiplier, "graph_score": self._graph_score_for_product(best.get("product_id") or f"{best['currency']}-USD"), "exit_plan": exit_plan},
+                    meta={"capital_bucket": bucket, "graph_overlay": graph_multiplier, "graph_score": self._graph_score_for_product(best.get("product_id") or f"{best['currency']}-USD"), "exit_plan": exit_plan},
                 ))
         if ops:
             logger.info("Rebalance: %d actions", len(ops))
@@ -1822,8 +2267,10 @@ class PortfolioOptimizer:
                 continue
             if self._is_static_currency(cur):
                 continue
-            self.position_ages[cur] += 1
-            if self.position_ages[cur] >= CYCLE_MAX_HOLD_TICKS:
+            if self.position_ages.get(cur, 0) == 0:
+                self.position_ages[cur] = now  # first time seeing this hold
+            age_hours = (now - self.position_ages[cur]) / 3600
+            if age_hours >= CYCLE_MAX_HOLD_HOURS:
                 pid = self.cli.best_product(cur, "SELL")
                 if not pid:
                     continue
@@ -1832,7 +2279,7 @@ class PortfolioOptimizer:
                     currency=cur,
                     side="SELL",
                     size_usd=h["value"],
-                    reason=f"Volume cycle: close after {self.position_ages[cur]} ticks",
+                    reason=f"Volume cycle: close after {age_hours:.1f}h",
                     priority=0.3,
                     product_id=pid,
                     entry_price_est=h.get("price", 0),
@@ -1843,12 +2290,86 @@ class PortfolioOptimizer:
                     risk_pct=0,
                 ))
         if ops:
-            logger.info("Volume cycles: %d positions stale", len(ops))
+            logger.info("Volume cycles: %d positions stale (age > %dh)", len(ops), CYCLE_MAX_HOLD_HOURS)
         return ops
+
+    def _batch_uncached_backtests(
+        self,
+        candidates_with_sigs: List[Tuple[dict, str, List[float], List[float], List[float], List[float], List]],
+    ) -> None:
+        """Batch-backtest all un-cached strategy×product pairs across products in parallel.
+        Uses ThreadPoolExecutor to run backtests for different products concurrently
+        (Rust releases GIL during computation, so threads run in parallel).
+        """
+        # Collect all un-cached (strategy, currency, closes, volumes) across all products
+        uncached_by_product: Dict[str, List] = {}
+        for h, pid, closes, volumes, highs, lows, signals in candidates_with_sigs:
+            currency = h["currency"]
+            for sig in signals:
+                ck = f"{sig.strategy}/{currency}"
+                if ck in self._bt_cache:
+                    continue
+                if currency not in uncached_by_product:
+                    uncached_by_product[currency] = []
+                uncached_by_product[currency].append(
+                    (sig.strategy, closes, volumes, highs, lows)
+                )
+
+        if not uncached_by_product:
+            return
+
+        # Submit one backtest job per product to the BT executor
+        # Each product gets its strategies batched via backtest_multi_py (rayon)
+        bt_futs = {}
+        for currency, strategy_list in uncached_by_product.items():
+            def _do_backtest(cur=currency, slist=strategy_list):
+                strategies_for_rust = [
+                    (s_name, cur, closes, vols, highs, lows)
+                    for s_name, closes, vols, highs, lows in slist
+                ]
+                return _batch_backtest_rust(strategies_for_rust)
+            bt_futs[_BT_EXECUTOR.submit(_do_backtest)] = currency
+
+        # Collect results
+        for fut in as_completed(bt_futs):
+            currency = bt_futs[fut]
+            try:
+                batch_results = fut.result()
+                for ck, verdict in batch_results.items():
+                    if ck not in self._bt_cache:
+                        self._bt_cache[ck] = verdict
+                        self.store.save_bt_cache(ck, verdict)
+                        if self.neo4j_store:
+                            try:
+                                self.neo4j_store.save_bt_cache(ck, verdict)
+                            except Exception as e:
+                                logger.warning("Neo4j BT cache write failed: %s", e)
+            except Exception as e:
+                logger.debug("Batch backtest failed for %s: %s", currency, e)
+
+        # Fallback: backtest any remaining un-cached strategies sequentially (Python path)
+        for h, pid, closes, volumes, highs, lows, signals in candidates_with_sigs:
+            currency = h["currency"]
+            for sig in signals:
+                ck = f"{sig.strategy}/{currency}"
+                if ck in self._bt_cache:
+                    continue
+                try:
+                    verdict = _backtest_strategy(
+                        sig.strategy, currency, closes, volumes,
+                        highs=highs if highs else None,
+                        lows=lows if lows else None,
+                    )
+                    self._bt_cache[ck] = verdict
+                    self.store.save_bt_cache(ck, verdict)
+                except Exception as e:
+                    logger.debug("Backtest failed for %s: %s", ck, e)
 
     def _detect_strategy_signals(self) -> List[Opportunity]:
         """Run 5 strategies on each meaningful holding; return top signals as opportunities."""
         if time.time() - self.last_execution.get("strategy", 0) < OP_COOLDOWN["strategy"]:
+            return []
+        if not self.state:
             return []
         candidates = [
             h for h in self.state.holdings.values()
@@ -1861,18 +2382,27 @@ class PortfolioOptimizer:
         remaining_buy_capacity = self._buy_capacity()
         remaining_core_capacity = self._bucket_gap("core")
         remaining_opportunity_capacity = self._bucket_gap("opportunity")
+
+        # Fetch candles for all candidates in parallel
+        candle_futs = {}
         for h in candidates:
             currency = h["currency"]
-            buy_capacity = self._buy_capacity()
             pid = h.get("product_id", f"{currency}-USD")
-            candles = self.cli.get_candles(pid, granularity="1h", limit=100)
-            if len(candles) < 30:
-                continue
+            fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
+            candle_futs[fut] = (h, pid)
 
-            closes = []
-            volumes = []
-            highs = []
-            lows = []
+        # Parse candle data as it arrives
+        parsed_data: List[Tuple[dict, str, List[float], List[float], List[float], List[float]]] = []
+        for fut in as_completed(candle_futs):
+            h, pid = candle_futs[fut]
+            try:
+                candles = fut.result()
+            except Exception as e:
+                logger.debug("Candle fetch failed for %s: %s", pid, e)
+                continue
+            if not candles or len(candles) < 30:
+                continue
+            closes, volumes, highs, lows = [], [], [], []
             for c in reversed(candles):
                 if isinstance(c, dict):
                     closes.append(to_float(c.get("close", 0)))
@@ -1884,24 +2414,52 @@ class PortfolioOptimizer:
                     volumes.append(to_float(c[5]))
                     highs.append(to_float(c[2]))
                     lows.append(to_float(c[1]))
-
             if len(closes) < 30:
                 continue
+            parsed_data.append((h, pid, closes, volumes, highs, lows))
 
-            signals = _run_strategies(
-                currency=currency,
-                asset_class=h["classification"],
-                closes=closes,
-                volumes=volumes,
-                current_price=h["price"],
-                highs=highs if highs else None,
-                lows=lows if lows else None,
-            )
+        # Batch-compute all signals via vectorized compute backend (GPU/NumPy)
+        try:
+            products_list = [(h["currency"] + "-USD", h["classification"]) for h, _, _, _, _, _ in parsed_data]
+            closes_dict = {pid: c for _, pid, c, _, _, _ in parsed_data}
+            volumes_dict = {pid: v for _, pid, _, v, _, _ in parsed_data}
+            highs_dict = {pid: hi for _, pid, _, _, hi, _ in parsed_data}
+            lows_dict = {pid: lo for _, pid, _, _, _, lo in parsed_data}
+            batch_results = _batch_signals_fast(products_list, closes_dict, volumes_dict, highs_dict, lows_dict)
+        except Exception as e:
+            logger.debug("Batch signal generation failed: %s", e)
+            batch_results = {}
 
-            if len(signals) < 1:
-                continue
+        # Phase 1: collect signals for all products (batch or fallback)
+        candidates_with_sigs: List[Tuple[dict, str, List[float], List[float], List[float], List[float], List]] = []
+        for h, pid, closes, volumes, highs, lows in parsed_data:
+            currency = h["currency"]
+            pid_results = batch_results.get(pid) if batch_results else None
+            if pid_results:
+                signals = []
+                for s_name, action in pid_results.items():
+                    if action != "HOLD":
+                        signals.append(StrategySignal(
+                            strategy=s_name, action=action, confidence=0.5,
+                            reason=f"batch:{s_name}", symbol=currency,
+                        ))
+            else:
+                signals = _run_strategies(
+                    currency=currency, asset_class=h["classification"],
+                    closes=closes, volumes=volumes, current_price=h["price"],
+                    highs=highs if highs else None, lows=lows if lows else None,
+                )
+            if signals:
+                candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
 
-            # Backtest all signals, filter passed
+        # Phase 2: batch-backtest all un-cached strategy×product pairs in parallel
+        self._batch_uncached_backtests(candidates_with_sigs)
+
+        # Phase 3: process each candidate with cached backtest results
+        for h, pid, closes, volumes, highs, lows, signals in candidates_with_sigs:
+            currency = h["currency"]
+            buy_capacity = self._buy_capacity()
+
             passed_signals = []
             for sig in signals:
                 if sig.action == "BUY" and buy_capacity < self.min_value:
@@ -1910,20 +2468,9 @@ class PortfolioOptimizer:
                     continue
 
                 cache_key = f"{sig.strategy}/{currency}"
-                cached = self._bt_cache.get(cache_key)
-                if cached:
-                    verdict = cached
-                else:
-                    verdict = _backtest_strategy(sig.strategy, currency, closes, volumes,
-                                                  highs=highs if highs else None,
-                                                  lows=lows if lows else None)
-                    self._bt_cache[cache_key] = verdict
-                    self.store.save_bt_cache(cache_key, verdict)
-                    if self.neo4j_store:
-                        try:
-                            self.neo4j_store.save_bt_cache(cache_key, verdict)
-                        except Exception as e:
-                            logger.warning("Neo4j BT cache write failed: %s", e)
+                verdict = self._bt_cache.get(cache_key)
+                if verdict is None:
+                    continue
 
                 logger.info("  BT %s/%s: trades=%d WR=%.0f%% Sharpe=%.1f Pf=%.1f dd=%.1f%% → %s (%s)",
                              sig.strategy, currency, verdict.total_trades,
@@ -1990,12 +2537,12 @@ class PortfolioOptimizer:
                         mod_result = self.confidence_engine.apply_modifiers(
                             signal=sig_stub,
                             market_data={
-                                "spread": h.get("spread", 0.001),
+                                "spread": h.get("spread", 0.0),
                                 "volume": h.get("volume_24h", 0),
                                 "price": h.get("price", 0),
                             },
                             regime=_detect_regime({"change_pct": h.get("change_24h", 0)}),
-                            market_leaders=["BTC", "ETH"],
+                            market_leaders=[],  # No per-leader data available; cross-correlation penalty skipped
                             sentiment_score=0.0,
                             global_consensus=0.5,
                         )
@@ -2016,10 +2563,11 @@ class PortfolioOptimizer:
                     continue
 
                 exit_plan = self._compute_exit_plan(
-                    currency, side, final_confidence,
+                    currency, final_confidence,
                     expected_return_pct=max(final_confidence * 10.0, 0.5),
                     trade_style="momentum" if side == "BUY" else "mean_reversion",
-                    volatility_pct=max(abs(to_float(h.get("change_24h", 0))) * 50, 30),
+                    daily_chg=abs(to_float(h.get("change_24h", 0))),
+                    volatility_pct=max(daily_chg * 1.5, 5.0),
                 )
                 ops.append(Opportunity(
                     opp_type=OpportunityType.STRATEGY_SIGNAL,
@@ -2027,7 +2575,10 @@ class PortfolioOptimizer:
                     side=side,
                     size_usd=size,
                     reason=f"{agg.best_reason} (agg_conf={agg.confidence:.2f}, graph={graph_multiplier:.2f}, {agg.strategy_count} strats)",
-                    priority=min(final_confidence * 0.8 + 0.1, 0.95),
+                    priority=self._latency_adjusted_priority(
+                        min(final_confidence * 0.8 + 0.1, 0.95),
+                        trade_style="momentum" if side == "BUY" else "mean_reversion",
+                    ),
                     product_id=use_pid,
                     entry_price_est=h.get("price", 0),
                     stop_loss_pct=exit_plan["stop_loss_pct"],
@@ -2038,7 +2589,7 @@ class PortfolioOptimizer:
                     meta={
                         "aggregated": True,
                         "confidence": agg.confidence,
-                        "graph_multiplier": graph_multiplier,
+                        "graph_overlay": graph_multiplier,
                         "graph_score": self._graph_score_for_product(use_pid),
                         "strategy_count": agg.strategy_count,
                         "strategies": agg.strategies,
@@ -2134,7 +2685,7 @@ class PortfolioOptimizer:
             elif "reversion" in strategy_name or "mean" in strategy_name:
                 trade_style = "mean_reversion"
             exit_plan = self._compute_exit_plan(
-                currency, sig.action, final_confidence,
+                currency, final_confidence,
                 expected_return_pct=max(final_confidence * 10.0, 0.5),
                 trade_style=trade_style,
                 volatility_pct=max(abs(to_float(sig.market_data.get("change_pct", 0))) * 18.0 + 12.0, 12.0),
@@ -2161,7 +2712,7 @@ class PortfolioOptimizer:
                     "base_confidence": round(sig.base_confidence, 3),
                     "opportunity_score": sig.opportunity_score,
                     "capital_bucket": bucket,
-                    "graph_multiplier": graph_multiplier,
+                    "graph_overlay": graph_multiplier,
                     "graph_score": self._graph_score_for_product(use_pid),
                     "signal_type": classification_label,
                     "trade_style": trade_style,
@@ -2172,6 +2723,178 @@ class PortfolioOptimizer:
 
         if ops:
             logger.info("Accumulator signals: %d opportunities", len(ops))
+        return ops
+
+    def _detect_aggregator_signals(self) -> List[Opportunity]:
+        """Run SignalAggregator on top-N universe pairs, rank cross-product, create opportunities."""
+        if not _HAS_AGGREGATOR or SignalAggregator is None:
+            return []
+        if time.time() - self.last_execution.get("aggregator", 0) < OP_COOLDOWN["aggregator"]:
+            return []
+
+        try:
+            from coinbase.src.pair_discovery import top_coinbase_pairs
+            from coinbase.src.rest_feed import fetch_candles_batch
+            import urllib3, json
+
+            pairs = top_coinbase_pairs(n=50, min_volume_usd=500_000)
+            if not pairs:
+                return []
+            pids = [p[0] for p in pairs]
+
+            # Fetch candles in bulk
+            candles = fetch_candles_batch(pids, granularity=3600, limit=100, max_workers=12)
+
+            # Retry empty pairs individually (rate-limit recovery)
+            http = urllib3.PoolManager()
+            for pid, _ in pairs:
+                if pid not in candles or not candles[pid]:
+                    try:
+                        r = http.request("GET",
+                            f"https://api.exchange.coinbase.com/products/{pid}/candles?granularity=3600&limit=100",
+                            timeout=15)
+                        if r.status == 200:
+                            data = json.loads(r.data)
+                            if isinstance(data, list) and len(data) >= 30:
+                                candles[pid] = data
+                    except Exception:
+                        pass
+
+            closes = {pid: [float(c[4]) for c in clist] for pid, clist in candles.items()}
+            volumes = {pid: [float(c[5]) for c in clist] for pid, clist in candles.items()}
+            highs = {pid: [float(c[2]) for c in clist] for pid, clist in candles.items()}
+            lows = {pid: [float(c[3]) for c in clist] for pid, clist in candles.items()}
+            products = [(pid, base) for pid, base in pairs if pid in closes and len(closes[pid]) >= 60]
+
+            if len(products) < 3:
+                return []
+
+            agg = SignalAggregator()
+            results = agg.scan_universe(products, closes, volumes, highs, lows, min_candles=60)
+        except Exception as e:
+            logger.warning("Aggregator scan failed: %s", e, exc_info=True)
+            return []
+
+        self.last_execution["aggregator"] = time.time()
+
+        # Filter to actionable signals
+        actionable = [r for r in results if r.direction in ("BUY", "SELL") and r.priority >= 0.05]
+        if not actionable:
+            return []
+
+        # Check capacities
+        remaining_buy = self._buy_capacity()
+        sell_candidates = {
+            h["currency"]: h for h in self.state.holdings.values()
+            if h["value"] >= self.min_value
+        } if self.state else {}
+
+        ops = []
+        for us in actionable[:5]:
+            direction = us.direction
+            currency = us.base
+            pid = us.product_id
+
+            # Skip if BUY but no capacity
+            if direction == "BUY" and remaining_buy < self.min_value:
+                continue
+            # Skip if SELL but no position
+            if direction == "SELL" and currency not in sell_candidates:
+                continue
+
+            # Use existing trend for sizing boost (trend-aligned trades get higher confidence)
+            trend_aligned = (direction == "BUY" and us.trend_score > 0) or (direction == "SELL" and us.trend_score < 0)
+            confidence = abs(us.unified_score) * (1.2 if trend_aligned else 0.9)
+            confidence = min(confidence, 0.99)
+
+            # Estimate volatility from candle data
+            pix_closes = closes.get(pid, [])
+            vol = self._estimate_trade_volatility_pct(pix_closes) if pix_closes else 60.0
+
+            # Trade style based on top strategies
+            momentum_strats = {"ema_cross", "macd", "trix", "adx", "psar", "hma", "aroon", "force_idx", "vpt",
+                               "kama", "dmi_cross", "vma", "dpo", "elder_ray", "ichimoku",
+                               "mom_accel", "linreg_slope", "multi_rsi", "kst"}
+            reversion_strats = {"rsi_revert", "zscore_revert", "boll_break", "vwap_revert", "cmo", "williams_r",
+                                "keltner", "donchian", "scci", "stoch", "rvi", "de_marker",
+                                "gap_revert", "envelope", "std_channel", "atr_channel"}
+            has_momentum = any(s in momentum_strats for s in us.top_strategies)
+            has_reversion = any(s in reversion_strats for s in us.top_strategies)
+            trade_style = "momentum" if has_momentum else ("mean_reversion" if has_reversion else "momentum")
+
+            # Read current price from ticker or stored state
+            cur_price = us.price
+            if cur_price <= 0:
+                cur_price = self._current_price_for_symbol(pid)
+            if cur_price <= 0:
+                continue
+
+            # Compute exit plan
+            exit_plan = self._compute_exit_plan(
+                currency=currency,
+                confidence=confidence,
+                expected_return_pct=abs(us.trend_score) * 5.0 if us.trend_score != 0 else 3.0,
+                trade_style=trade_style,
+                volatility_pct=vol,
+            )
+
+            # Size the trade
+            size = self._risk_reward_size(
+                expected_return_pct=exit_plan["expected_return_pct"],
+                risk_pct=exit_plan["risk_pct"],
+                confidence=confidence,
+                liquidity=min(1.0, us.backtest_quality + 0.3),
+                cap_pct=0.012,
+                max_notional=2000.0,
+            )
+            if size < self.min_value:
+                continue
+
+            # Track remaining buy capacity
+            if direction == "BUY":
+                remaining_buy -= size
+
+            reason = (
+                f"Aggregator {direction} {currency} "
+                f"(score={us.unified_score:+.2f} conv={us.conviction:.0%} "
+                f"bt={us.backtest_quality:.2f} trend={us.trend_score:+.2f} "
+                f"top={','.join(us.top_strategies[:4])})"
+            )
+
+            ops.append(Opportunity(
+                opp_type=OpportunityType.STRATEGY_SIGNAL,
+                currency=currency,
+                side=direction,
+                size_usd=size,
+                reason=reason,
+                priority=self._latency_adjusted_priority(
+                    abs(us.unified_score) * confidence,
+                    trade_style=trade_style,
+                ),
+                product_id=pid,
+                expected_fee=0.0,
+                entry_price_est=cur_price,
+                stop_loss_pct=exit_plan["stop_loss_pct"],
+                take_profit_pct=exit_plan["take_profit_pct"],
+                holding_period_hours=exit_plan["holding_period_hours"],
+                expected_return_pct=exit_plan["expected_return_pct"],
+                risk_pct=exit_plan["risk_pct"],
+                meta={
+                    "source": "signal_aggregator",
+                    "unified_score": us.unified_score,
+                    "conviction": us.conviction,
+                    "backtest_quality": us.backtest_quality,
+                    "trend_score": us.trend_score,
+                    "top_strategies": us.top_strategies,
+                    "trade_style": trade_style,
+                    "trend_aligned": trend_aligned,
+                    "buy_strategies": us.details.get("buy_strategies", []),
+                    "sell_strategies": us.details.get("sell_strategies", []),
+                },
+            ))
+
+        if ops:
+            logger.info("Aggregator signals: %d opportunities", len(ops))
         return ops
 
     def _detect_event_markets(self) -> List[Opportunity]:
@@ -2246,7 +2969,7 @@ class PortfolioOptimizer:
                     remaining_buy_capacity = max(remaining_buy_capacity - arb_size, 0.0)
                     remaining_opportunity_capacity = max(remaining_opportunity_capacity - arb_size, 0.0)
                     arb_plan = self._compute_exit_plan(
-                        "ARB", "PAIR", arb.confidence,
+                        "ARB", arb.confidence,
                         expected_return_pct=max(arb.edge_pct * 100.0, 0.5),
                         trade_style="arbitrage",
                         volatility_pct=max(arb.edge_pct * 100.0 * 6.0 + 2.0, 2.0),
@@ -2256,7 +2979,7 @@ class PortfolioOptimizer:
                     ops.append(Opportunity(
                         opp_type=OpportunityType.EVENT_ARBITRAGE,
                         currency="ARB",
-                        side="PAIR",
+                        side="BUY",
                         size_usd=arb_size,
                         reason=arb.reason,
                         priority=min(arb.confidence * 0.95, 0.95),
@@ -2378,7 +3101,7 @@ class PortfolioOptimizer:
                     reason += f"(vol=${m.volume:.0f})"
                 spot_entry = self._current_price_for_symbol(crypto_symbol, fallback=0.0)
                 exit_plan_pm = self._compute_exit_plan(
-                    crypto_symbol.replace("-USD", ""), side, conf,
+                    crypto_symbol.replace("-USD", ""), conf,
                     expected_return_pct=max(abs((kg.gap if kg else (m.mid_price - 0.5))) * 100.0, 0.5),
                     trade_style="prediction_market",
                     volatility_pct=max((1.0 - m.liquidity_score) * 35.0 + m.spread * 1000.0 + 18.0, 18.0),
@@ -2509,7 +3232,7 @@ class PortfolioOptimizer:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "source": "portfolio_optimizer",
                 "graph_score": opp.meta.get("graph_score"),
-                "graph_overlay": opp.meta.get("graph_multiplier"),
+                "graph_overlay": opp.meta.get("graph_overlay"),
             })
             queue.append(item)
 
@@ -2726,6 +3449,100 @@ class PortfolioOptimizer:
                 logger.warning("  → Cannot compute base quantity, skipping")
                 return
 
+        route_decision = self._best_route_decision_for_opportunity(opp)
+        route_plan = getattr(route_decision, "plan", None) if route_decision else None
+        use_route = bool(route_plan and getattr(route_plan, "steps", None) and len(route_plan.steps) > 1)
+
+        if use_route:
+            opp.meta["route_decision"] = {
+                "source": route_plan.source,
+                "target": route_plan.target,
+                "effective_rate": route_plan.effective_rate,
+                "score": float(getattr(route_decision, "score", 0.0)),
+                "expected_tax_impact_usd": float(getattr(route_decision, "expected_tax_impact_usd", 0.0)),
+                "opportunity_bonus": float(getattr(route_decision, "opportunity_bonus", 0.0)),
+                "drawdown_bonus": float(getattr(route_decision, "drawdown_bonus", 0.0)),
+                "regime_bonus": float(getattr(route_decision, "regime_bonus", 0.0)),
+                "hop_penalty": float(getattr(route_decision, "hop_penalty", 0.0)),
+                "liquidity_bonus": float(getattr(route_decision, "liquidity_bonus", 0.0)),
+                "factor_breakdown": dict(getattr(route_decision, "factor_breakdown", {})),
+                "steps": [
+                    {
+                        "product_id": s.product_id,
+                        "from_currency": s.from_currency,
+                        "to_currency": s.to_currency,
+                        "direction": s.direction,
+                        "price": s.price,
+                        "effective_rate": s.effective_rate,
+                    }
+                    for s in route_plan.steps
+                ],
+            }
+
+            if self.require_approval and not self.dry_run:
+                token = str(uuid.uuid4())
+                bucket = self._capital_bucket_for(opp)
+                pending_entry = {
+                    "type": opp.opp_type.value,
+                    "side": opp.side,
+                    "currency": opp.currency,
+                    "size_usd": round(opp.size_usd, 2),
+                    "expected_fee": 0.0,
+                    "product_id": opp.product_id,
+                    "reason": opp.reason,
+                    "priority": opp.priority,
+                    "capital_bucket": bucket,
+                    "status": "pending",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "route_decision": opp.meta["route_decision"],
+                }
+                os.makedirs(os.path.dirname(self.pending_file) or ".", exist_ok=True)
+                try:
+                    with open(self.pending_file, "r") as f:
+                        fcntl.flock(f, fcntl.LOCK_SH)
+                        pending = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pending = {}
+                pending[token] = pending_entry
+                with open(self.pending_file, "w") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    json.dump(pending, f, indent=2, default=str)
+                if self.notifier:
+                    state_summary = {
+                        "total_value": round(self.state.total_value, 2) if self.state else 0,
+                        "usdc_balance": round(self.state.usdc_balance, 2) if self.state else 0,
+                        "holdings_count": len(self.state.holdings) if self.state else 0,
+                    }
+                    self.notifier.send_trade_alert(opp=pending_entry, state=state_summary, token=token)
+                logger.info("  → PENDING APPROVAL (route): %s", token)
+                return
+
+            if self._execute_route_decision(opp, route_decision):
+                logger.info("  → ROUTE EXECUTED: %s", opp.meta.get("route_decision", {}).get("steps", []))
+                entry = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": opp.opp_type.value,
+                    "side": opp.side,
+                    "currency": opp.currency,
+                    "size_usd": round(opp.size_usd, 2),
+                    "fee": 0.0,
+                    "reason": f"{opp.reason} [route]",
+                    "order_id": opp.order_id,
+                    "dry_run": self.dry_run,
+                    "route_decision": opp.meta["route_decision"],
+                }
+                self.trade_log.append(entry)
+                self.store.save_trade(entry)
+                if self.neo4j_store:
+                    try:
+                        self.neo4j_store.save_trade(entry)
+                    except Exception as e:
+                        logger.warning("Neo4j trade save failed: %s", e)
+                return
+
+            logger.warning("  → Route execution failed; skipping direct fallback to avoid partial overlap")
+            return
+
         # 2. Preview (dry-run)
         if is_quote:
             preview = self.cli.preview_order(opp.product_id, opp.side, opp.size_usd, is_quote=True)
@@ -2766,11 +3583,13 @@ class PortfolioOptimizer:
             os.makedirs(os.path.dirname(self.pending_file) or ".", exist_ok=True)
             try:
                 with open(self.pending_file, "r") as f:
+                    fcntl.flock(f, fcntl.LOCK_SH)
                     pending = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 pending = {}
             pending[token] = pending_entry
             with open(self.pending_file, "w") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
                 json.dump(pending, f, indent=2, default=str)
 
             if self.notifier:
@@ -2809,7 +3628,7 @@ class PortfolioOptimizer:
         # 4. Record
         self.last_execution[opp.opp_type.value] = time.time()
         if opp.opp_type == OpportunityType.VOLUME_CYCLE:
-            self.position_ages[opp.currency] = 0
+            self.position_ages[opp.currency] = time.time()
         elif opp.opp_type == OpportunityType.TLH:
             self.cost_bases.pop(opp.currency, None)  # reset cost basis after sale
 
@@ -2888,8 +3707,8 @@ def main():
                         help="To email address (default: same as smtp-user)")
     parser.add_argument("--approval-base-url", default="http://localhost:8080",
                         help="Base URL for approve/deny links (default: http://localhost:8080)")
-    parser.add_argument("--pending-file", default="pending_approvals.json",
-                        help="Path for pending approvals JSON (default: pending_approvals.json)")
+    parser.add_argument("--pending-file", default="data/pending_approvals.json",
+                        help="Path for pending approvals JSON (default: data/pending_approvals.json)")
     parser.add_argument("--polymarket", action="store_true",
                         help="Enable Polymarket event market monitoring (read-only)")
     parser.add_argument("--kalshi-email", default="",

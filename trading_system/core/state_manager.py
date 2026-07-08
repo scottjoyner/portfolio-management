@@ -34,7 +34,7 @@ class StateManager:
     def save_brackets(self, brackets: List[Bracket]) -> None:
         with self.lock:
             with open(self.brackets_path, "w") as f:
-                json.dump([b.dict() for b in brackets], f, indent=2)
+                json.dump([b.model_dump() if hasattr(b, 'model_dump') else b.dict() for b in brackets], f, indent=2)
 
     def add_bracket(self, bracket: Bracket) -> None:
         with self.lock:

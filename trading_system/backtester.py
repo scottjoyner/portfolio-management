@@ -14,9 +14,11 @@ import subprocess
 import json
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple, Optional, Dict
 import numpy as np
 import logging
+import os
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +108,10 @@ class CoinbaseBacktester:
         # Calculate performance metrics
         total_return = cumulative_returns.iloc[-1] - 1
         sharpe_ratio = np.sqrt(252) * returns.mean() / returns.std()
-        max_drawdown = cumulative_returns.max() - cumulative_returns.min()
+        # Peak-to-trough drawdown, not total range
+        running_max = cumulative_returns.cummax()
+        drawdown_series = (cumulative_returns - running_max) / running_max
+        max_drawdown = drawdown_series.min()
         
         return {
             'total_return': float(total_return),

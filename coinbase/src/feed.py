@@ -3,8 +3,13 @@ import json
 import time
 import logging
 import threading
+import hmac
+import hashlib
+import base64
+import os
+import jwt
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Callable, Set
+from typing import Dict, List, Optional, Callable, Set, Any
 from enum import Enum
 
 log = logging.getLogger(__name__)
@@ -147,6 +152,10 @@ class PollingFeed:
     def stop(self):
         self._running = False
 
+    def poll_once(self):
+        """Public method to trigger a single poll of the feed."""
+        self._poll_once()
+
     def _poll_loop(self):
         while self._running:
             try:
@@ -186,12 +195,16 @@ class PollingFeed:
 
 class WebSocketFeed:
     def __init__(self, cache: TickerCache,
-                 ws_url: str = "wss://advanced-trade-ws.coinbase.com"):
+                 ws_url: str = "wss://ws-feed.exchange.coinbase.com",
+                 use_advanced: bool = False):
         self.cache = cache
         self.ws_url = ws_url
+        self._use_advanced = use_advanced
         self._products: Set[str] = set()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self.reconnect_count: int = 0
+        self._reconnect_delay: float = 1.0
 
     def subscribe(self, product_ids: List[str]):
         self._products.update(product_ids)
@@ -204,7 +217,7 @@ class WebSocketFeed:
         self._running = True
         self._thread = threading.Thread(target=self._ws_loop, daemon=True)
         self._thread.start()
-        log.info(f"[WS] Started WebSocket feed for {len(self._products)} products")
+        log.info(f"[WS] Started WebSocket feed for {len(self._products)} products at {self.ws_url}")
         return True
 
     def stop(self):
@@ -221,37 +234,168 @@ class WebSocketFeed:
                     on_error=lambda ws, e: log.debug(f"[WS] Error: {e}"),
                     on_close=lambda ws, *a: None,
                 )
-                ws.on_open = lambda ws: self._subscribe(ws)
+                ws.on_open = lambda ws: (setattr(self, '_reconnect_delay', 1.0), self._subscribe(ws))
                 ws.run_forever(ping_interval=30, ping_timeout=10)
             except Exception:
                 pass
-            time.sleep(5)
+            if not self._running:
+                break
+            self.reconnect_count += 1
+            log.info("[WS] Disconnected — reconnecting in %.0fs (attempt #%d)", self._reconnect_delay, self.reconnect_count)
+            time.sleep(self._reconnect_delay)
+            self._reconnect_delay = min(30.0, self._reconnect_delay * 2.0)
 
     def _subscribe(self, ws):
         if not self._products:
             return
-        msg = {
-            "type": "subscribe",
-            "product_ids": list(self._products),
-            "channel": "ticker",
-        }
+        if self._use_advanced:
+            # Advanced Trade API format (authenticated)
+            msg = {
+                "type": "subscribe",
+                "product_ids": list(self._products),
+                "channel": "ticker",
+            }
+        else:
+            # Public Exchange API format (no auth)
+            msg = {
+                "type": "subscribe",
+                "channels": [{"name": "ticker", "product_ids": list(self._products)}],
+            }
         ws.send(json.dumps(msg))
 
     def _on_message(self, ws, message):
         try:
             data = json.loads(message)
-            if data.get("type") != "ticker":
+            msg_type = data.get("type", "")
+            if msg_type not in ("ticker", "snapshot", "l2update"):
                 return
             pid = data.get("product_id")
             price = float(data.get("price", 0))
-            bid = float(data.get("best_bid", 0))
-            ask = float(data.get("best_ask", 0))
-            vol = float(data.get("volume_24_h", 0))
+            bid = float(data.get("best_bid", data.get("bid", 0)))
+            ask = float(data.get("best_ask", data.get("ask", 0)))
+            vol = float(data.get("volume_24_h", data.get("volume", 0)))
             if price > 0:
                 self.cache.update_ticker(Ticker(
                     product_id=pid, price=price, bid=bid, ask=ask,
                     volume_24h=vol, timestamp=time.time(),
-                    source=FeedSource.COINBASE_ADVANCED,
+                    source=FeedSource.COINBASE_PUBLIC,
                 ))
         except Exception:
             pass
+
+
+class AdvancedTradeWebSocket:
+    """Authenticated WebSocket for Coinbase Advanced Trade user data.
+    
+    Handles: order fills, account updates, order status changes.
+    Uses JWT authentication per Coinbase Advanced Trade spec.
+    """
+    
+    def __init__(self, api_key: str, api_secret: str, cache: TickerCache,
+                 ws_url: str = "wss://advanced-trade-ws.coin.coinbase.com",
+                 on_fill: Optional[Callable] = None,
+                 on_order: Optional[Callable] = None,
+                 on_account: Optional[Callable] = None):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.cache = cache
+        self.ws_url = ws_url
+        self.on_fill = on_fill
+        self.on_order = on_order
+        self.on_account = on_account
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self.reconnect_count: int = 0
+        self._reconnect_delay: float = 1.0
+        self._ws = None
+        
+    def _generate_jwt(self) -> str:
+        """Generate JWT token for Coinbase Advanced Trade WS auth."""
+        now = int(time.time())
+        payload = {
+            "sub": self.api_key,
+            "iss": "coinbase-cloud",
+            "nbf": now,
+            "exp": now + 120,  # 2 min expiry
+            "uri": self.ws_url,
+        }
+        # api_secret is base64-encoded Ed25519 private key
+        signing_key = base64.b64decode(self.api_secret)
+        token = jwt.encode(payload, signing_key, algorithm="EdDSA")
+        return token
+    
+    def start(self):
+        import importlib.util
+        if importlib.util.find_spec("websocket") is None:
+            log.warning("[ADV-WS] websocket-client not installed")
+            return False
+        if importlib.util.find_spec("jwt") is None:
+            log.warning("[ADV-WS] pyjwt not installed")
+            return False
+        self._running = True
+        self._thread = threading.Thread(target=self._ws_loop, daemon=True)
+        self._thread.start()
+        log.info(f"[ADV-WS] Started authenticated WebSocket for user data")
+        return True
+    
+    def stop(self):
+        self._running = False
+        if self._ws:
+            self._ws.close()
+    
+    def _ws_loop(self):
+        import websocket
+        while self._running:
+            try:
+                jwt_token = self._generate_jwt()
+                headers = {"Authorization": f"Bearer {jwt_token}"}
+                self._ws = websocket.WebSocketApp(
+                    self.ws_url,
+                    header=headers,
+                    on_message=self._on_message,
+                    on_error=lambda ws, e: log.debug(f"[ADV-WS] Error: {e}"),
+                    on_close=lambda ws, *a: log.info("[ADV-WS] Connection closed"),
+                )
+                self._ws.on_open = lambda ws: self._subscribe(ws)
+                self._ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as e:
+                log.debug(f"[ADV-WS] Loop error: {e}")
+            if not self._running:
+                break
+            self.reconnect_count += 1
+            log.info("[ADV-WS] Disconnected — reconnecting in %.0fs (attempt #%d)", 
+                     self._reconnect_delay, self.reconnect_count)
+            time.sleep(self._reconnect_delay)
+            self._reconnect_delay = min(30.0, self._reconnect_delay * 2.0)
+    
+    def _subscribe(self, ws):
+        # Subscribe to user channels: orders, fills, accounts
+        msg = {
+            "type": "subscribe",
+            "channels": [
+                {"name": "orders"},
+                {"name": "fills"},
+                {"name": "accounts"},
+            ]
+        }
+        ws.send(json.dumps(msg))
+        log.info("[ADV-WS] Subscribed to user channels: orders, fills, accounts")
+    
+    def _on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            channel = data.get("channel", "")
+            events = data.get("events", [])
+            
+            for event in events:
+                event_type = event.get("type", "")
+                
+                if channel == "fills" and self.on_fill:
+                    self.on_fill(event)
+                elif channel == "orders" and self.on_order:
+                    self.on_order(event)
+                elif channel == "accounts" and self.on_account:
+                    self.on_account(event)
+                    
+        except Exception as e:
+            log.debug(f"[ADV-WS] Message parse error: {e}")

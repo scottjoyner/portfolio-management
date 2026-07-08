@@ -11,8 +11,9 @@ Each strategy consumes OHLCV bars and returns Signal objects:
 
 import logging
 import math
+import threading
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -27,70 +28,145 @@ class Signal:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Per-call Indicator Cache
+# ---------------------------------------------------------------------------
+# Avoids redundant indicator recomputation when multiple strategies in one
+# call to run_strategies() request the same (indicator, period, data) tuple.
+
+_thread_cache = threading.local()
+
+
+def _get_cache() -> Dict[str, float]:
+    try:
+        return _thread_cache.store
+    except AttributeError:
+        _thread_cache.store = {}
+        return _thread_cache.store
+
+
+def _clear_cache() -> None:
+    try:
+        _thread_cache.store.clear()
+    except AttributeError:
+        pass
+
+
+def _cache_key(name: str, period: int, data_id: int) -> str:
+    return f"{name}:{period}:{data_id}"
+
+
+# ---------------------------------------------------------------------------
+# Helpers (with per-call caching)
 # ---------------------------------------------------------------------------
 
 
 def _sma(values: List[float], period: int) -> float:
+    key = _cache_key("sma", period, id(values))
+    cache = _get_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
     if len(values) < period:
-        return values[-1] if values else 0.0
-    return sum(values[-period:]) / period
+        val = values[-1] if values else 0.0
+    else:
+        val = sum(values[-period:]) / period
+    cache[key] = val
+    return val
 
 
 def _ema(values: List[float], period: int) -> float:
+    key = _cache_key("ema", period, id(values))
+    cache = _get_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
     if len(values) < period:
-        return values[-1] if values else 0.0
-    k = 2.0 / (period + 1)
-    result = sum(values[:period]) / period
-    for v in values[period:]:
-        result = v * k + result * (1 - k)
-    return result
+        val = values[-1] if values else 0.0
+    else:
+        k = 2.0 / (period + 1)
+        result = sum(values[:period]) / period
+        for v in values[period:]:
+            result = v * k + result * (1 - k)
+        val = result
+    cache[key] = val
+    return val
 
 
 def _rsi(values: List[float], period: int = 14) -> float:
+    key = _cache_key("rsi", period, id(values))
+    cache = _get_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
     if len(values) < period + 1:
-        return 50.0
-    deltas = [
-        values[i] - values[i - 1] for i in range(len(values) - period, len(values))
-    ]
-    gains = [d if d > 0 else 0 for d in deltas]
-    losses = [-d if d < 0 else 0 for d in deltas]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
+        val = 50.0
+    else:
+        deltas = [
+            values[i] - values[i - 1] for i in range(len(values) - period, len(values))
+        ]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            val = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            val = 100.0 - (100.0 / (1.0 + rs))
+    cache[key] = val
+    return val
 
 
 def _bollinger(values: List[float], period: int = 20, std_mult: float = 2.0):
+    key = _cache_key("boll", period, id(values))
+    cache = _get_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
     if len(values) < period:
-        return (values[-1], values[-1], values[-1], 0.0) if values else (0, 0, 0, 0)
-    recent = values[-period:]
-    mean = sum(recent) / period
-    variance = sum((x - mean) ** 2 for x in recent) / period
-    std = math.sqrt(variance)
-    return (mean, mean + std_mult * std, mean - std_mult * std, std)
+        val = (values[-1], values[-1], values[-1], 0.0) if values else (0, 0, 0, 0)
+    else:
+        recent = values[-period:]
+        mean = sum(recent) / period
+        variance = sum((x - mean) ** 2 for x in recent) / period
+        std = math.sqrt(variance)
+        val = (mean, mean + std_mult * std, mean - std_mult * std, std)
+    cache[key] = val
+    return val
 
 
 def _zscore(values: List[float], period: int = 30) -> float:
+    key = _cache_key("zscore", period, id(values))
+    cache = _get_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
     if len(values) < period:
-        return 0.0
-    recent = values[-period:]
-    mean = sum(recent) / period
-    variance = sum((x - mean) ** 2 for x in recent) / period
-    std = math.sqrt(variance)
-    if std == 0:
-        return 0.0
-    return (values[-1] - mean) / std
+        val = 0.0
+    else:
+        recent = values[-period:]
+        mean = sum(recent) / period
+        variance = sum((x - mean) ** 2 for x in recent) / period
+        std = math.sqrt(variance)
+        val = (values[-1] - mean) / std if std != 0 else 0.0
+    cache[key] = val
+    return val
 
 
 def _wma(values: List[float], period: int) -> float:
+    key = _cache_key("wma", period, id(values))
+    cache = _get_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
     if len(values) < period:
-        return values[-1] if values else 0.0
-    weights = list(range(1, period + 1))
-    recent = values[-period:]
-    return sum(w * v for w, v in zip(weights, recent)) / sum(weights)
+        val = values[-1] if values else 0.0
+    else:
+        weights = list(range(1, period + 1))
+        recent = values[-period:]
+        val = sum(w * v for w, v in zip(weights, recent)) / sum(weights)
+    cache[key] = val
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +180,8 @@ class EMA_Crossover:
     def __init__(self, fast: int = 9, slow: int = 21):
         self.fast = fast
         self.slow = slow
-        self.prev_fast = 0.0
-        self.prev_slow = 0.0
+        self.prev_fast: Optional[float] = None
+        self.prev_slow: Optional[float] = None
 
     def on_bar(self, close: float, closes: List[float]) -> Optional[Signal]:
         if len(closes) < self.slow + 1:
@@ -113,7 +189,7 @@ class EMA_Crossover:
         fast_val = _ema(closes, self.fast)
         slow_val = _ema(closes, self.slow)
         signal = None
-        if self.prev_fast > 0 and self.prev_slow > 0:
+        if self.prev_fast is not None and self.prev_slow is not None:
             if self.prev_fast <= self.prev_slow and fast_val > slow_val:
                 conf = min(abs(fast_val - slow_val) / slow_val * 50, 1.0)
                 signal = Signal(
@@ -169,7 +245,6 @@ class BollingerBreakout:
         self.period = period
         self.std_mult = std_mult
         self.squeeze_threshold = squeeze_threshold
-        self.prev_bandwidth = 0.0
 
     def on_bar(self, close: float, closes: List[float]) -> Optional[Signal]:
         if len(closes) < self.period + 1:
@@ -186,7 +261,6 @@ class BollingerBreakout:
             return Signal(
                 "SELL", close, conf, "Bollinger breakdown below lower", "boll_break"
             )
-        self.prev_bandwidth = bandwidth
         return None
 
 
@@ -231,13 +305,13 @@ class VolumeMomentum:
             return None
         recent_close = closes[-self.period :]
         recent_vol = volumes[-self.period :]
-        avg_vol = sum(recent_vol) / self.period if self.period > 0 else 1
+        avg_vol = sum(recent_vol) / self.period
         if avg_vol == 0:
             return None
         last_vol = volumes[-1]
         if last_vol < avg_vol * self.volume_mult:
             return None
-        price_change = (closes[-1] - closes[-self.period]) / closes[-self.period]
+        price_change = (closes[-1] - closes[-self.period]) / max(closes[-self.period], 1e-12)
         if price_change > 0.05:
             conf = min(price_change * 2, 1.0)
             return Signal(
@@ -278,30 +352,32 @@ class MACD:
         self.fast = fast
         self.slow = slow
         self.signal = signal
-        self.prev_hist = 0.0
+        self.prev_hist: Optional[float] = None
 
     def on_bar(self, close: float, closes: List[float]) -> Optional[Signal]:
         if len(closes) < self.slow + self.signal + 1:
             return None
-        macd_line = _ema(closes, self.fast) - _ema(closes, self.slow)
-        sig_line = _ema(closes, self.signal)
-        # Use a synthetic MACD series for signal EMA
+        
+        # Precompute MACD series once
         macd_series = []
         for i in range(self.signal, len(closes)):
             fast_e = _ema(closes[: i + 1], self.fast)
             slow_e = _ema(closes[: i + 1], self.slow)
             macd_series.append(fast_e - slow_e)
+        
         if len(macd_series) < self.signal:
             return None
+        
+        macd_line = _ema(closes, self.fast) - _ema(closes, self.slow)
         signal_line = _ema(macd_series, self.signal)
         histogram = macd_line - signal_line
 
         result = None
-        if self.prev_hist != 0.0:
+        if self.prev_hist is not None:
             if self.prev_hist < 0 and histogram > 0:
                 conf = min(
-                    abs(histogram) / _ema(macd_series, self.signal) * 2
-                    if _ema(macd_series, self.signal) != 0
+                    abs(histogram) / signal_line * 2
+                    if signal_line != 0
                     else 0.1,
                     1.0,
                 )
@@ -310,8 +386,8 @@ class MACD:
                 )
             elif self.prev_hist > 0 and histogram < 0:
                 conf = min(
-                    abs(histogram) / _ema(macd_series, self.signal) * 2
-                    if _ema(macd_series, self.signal) != 0
+                    abs(histogram) / signal_line * 2
+                    if signal_line != 0
                     else 0.1,
                     1.0,
                 )
@@ -474,7 +550,7 @@ class TRIX:
 
     def __init__(self, period: int = 15):
         self.period = period
-        self.prev_trix = 0.0
+        self.prev_trix: Optional[float] = None
 
     def _triple_ema(self, closes: List[float], p: int) -> float:
         if len(closes) < p * 3:
@@ -499,7 +575,7 @@ class TRIX:
             return None
         current_trix = (trix_series[-1] - trix_series[-2]) / trix_series[-2] * 10000
         result = None
-        if self.prev_trix != 0.0:
+        if self.prev_trix is not None:
             if self.prev_trix < 0 and current_trix > 0:
                 conf = min(abs(current_trix) / 100, 1.0)
                 result = Signal(
@@ -540,8 +616,8 @@ class ADX:
     def __init__(self, period: int = 14, threshold: float = 25.0):
         self.period = period
         self.threshold = threshold
-        self.prev_plus_di = 0.0
-        self.prev_minus_di = 0.0
+        self.prev_plus_di: Optional[float] = None
+        self.prev_minus_di: Optional[float] = None
 
     @staticmethod
     def _wilder_smooth(values: List[float], p: int) -> float:
@@ -623,7 +699,7 @@ class ADX:
             return None
 
         result = None
-        if self.prev_plus_di != 0:
+        if self.prev_plus_di is not None and self.prev_minus_di is not None:
             if self.prev_plus_di <= self.prev_minus_di and plus_di > minus_di:
                 conf = min((adx - self.threshold) / 50, 1.0)
                 result = Signal(
@@ -932,8 +1008,8 @@ class HullMA:
     def __init__(self, fast: int = 9, slow: int = 21):
         self.fast = fast
         self.slow = slow
-        self.prev_fast = 0.0
-        self.prev_slow = 0.0
+        self.prev_fast: Optional[float] = None
+        self.prev_slow: Optional[float] = None
 
     @staticmethod
     def _hma(values: List[float], n: int) -> float:
@@ -968,7 +1044,7 @@ class HullMA:
         fast_val = self._hma(closes, self.fast)
         slow_val = self._hma(closes, self.slow)
         signal = None
-        if self.prev_fast > 0 and self.prev_slow > 0:
+        if self.prev_fast is not None and self.prev_slow is not None:
             if self.prev_fast <= self.prev_slow and fast_val > slow_val:
                 conf = min(abs(fast_val - slow_val) / slow_val * 30, 1.0)
                 signal = Signal(
@@ -996,7 +1072,7 @@ class ForceIndex:
 
     def __init__(self, period: int = 13):
         self.period = period
-        self.prev_smoothed = 0.0
+        self.prev_smoothed: Optional[float] = None
 
     def on_bar(
         self,
@@ -1014,7 +1090,7 @@ class ForceIndex:
         smoothed = _ema(fi_values, self.period)
 
         result = None
-        if self.prev_smoothed != 0.0:
+        if self.prev_smoothed is not None:
             if self.prev_smoothed < 0 and smoothed > 0:
                 conf = min(
                     smoothed / abs(self.prev_smoothed)
@@ -1052,7 +1128,7 @@ class VolumePriceTrend:
 
     def __init__(self, period: int = 21):
         self.period = period
-        self.prev_diff = 0.0
+        self.prev_diff: Optional[float] = None
 
     def on_bar(
         self,
@@ -1078,7 +1154,7 @@ class VolumePriceTrend:
         current_diff = current_vpt - vpt_ema
 
         result = None
-        if self.prev_diff != 0.0:
+        if self.prev_diff is not None:
             if self.prev_diff <= 0 and current_diff > 0:
                 conf = min(
                     abs(current_diff) / abs(vpt_ema) * 2 if vpt_ema != 0 else 0.1, 1.0
@@ -1157,7 +1233,7 @@ class Aroon:
 
     def __init__(self, period: int = 25):
         self.period = period
-        self.prev_osc = 0.0
+        self.prev_osc: Optional[float] = None
 
     def on_bar(
         self,
@@ -1185,7 +1261,7 @@ class Aroon:
         osc = aroon_up - aroon_down
 
         result = None
-        if self.prev_osc != 0.0:
+        if self.prev_osc is not None:
             if self.prev_osc <= 0 and osc > 0 and aroon_up > 50:
                 conf = min(aroon_up / 100, 1.0)
                 result = Signal(
@@ -1224,7 +1300,7 @@ class PriceEfficiencyRatio:
         self.period = period
         self.signal_period = signal_period
         self.threshold = threshold
-        self.prev_eff = 0.0
+        self.prev_eff: Optional[float] = None
 
     @staticmethod
     def _efficiency(price: List[float], volume: List[float]) -> List[float]:
@@ -1258,7 +1334,7 @@ class PriceEfficiencyRatio:
             return None
         smoothed = _wma(eff, self.signal_period)
 
-        if self.prev_eff == 0.0:
+        if self.prev_eff is None:
             self.prev_eff = smoothed
             return None
 
@@ -1333,7 +1409,7 @@ class RangeExpansionIndex:
     def __init__(self, period: int = 21, min_amplitude: float = 0.05):
         self.period = period
         self.min_amplitude = min_amplitude
-        self.prev_rei = 0.0
+        self.prev_rei: Optional[float] = None
 
     def on_bar(
         self,
@@ -1361,7 +1437,7 @@ class RangeExpansionIndex:
         range_contraction = (prev_low - current_low) / prev_low if prev_low != 0 else 0
         rei = range_expansion + range_contraction
 
-        if abs(rei) > self.min_amplitude and self.prev_rei != 0.0:
+        if abs(rei) > self.min_amplitude and self.prev_rei is not None:
             if self.prev_rei <= 0 and rei > 0:
                 conf = min(abs(rei) / self.min_amplitude, 1.0)
                 self.prev_rei = rei
@@ -1398,7 +1474,7 @@ class EMADeviation:
     def __init__(self, period: int = 14, min_amplitude: float = 0.05):
         self.period = period
         self.min_amplitude = min_amplitude
-        self.prev_dev = 0.0
+        self.prev_dev: Optional[float] = None
 
     def on_bar(
         self,
@@ -1413,7 +1489,7 @@ class EMADeviation:
         ema = _ema(closes, self.period)
         dev = (close - ema) / ema if ema != 0 else 0
 
-        if abs(dev) > self.min_amplitude and self.prev_dev != 0.0:
+        if abs(dev) > self.min_amplitude and self.prev_dev is not None:
             if self.prev_dev <= 0 and dev > 0:
                 conf = min(abs(dev) / self.min_amplitude, 1.0)
                 self.prev_dev = dev
@@ -1453,7 +1529,7 @@ class SignalToNoiseRatio:
         self.period = period
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
-        self.prev_snr = 0.0
+        self.prev_snr: Optional[float] = None
 
     def on_bar(
         self,
@@ -1485,7 +1561,7 @@ class SignalToNoiseRatio:
             else 0
         )
 
-        if self.prev_snr != 0.0:
+        if self.prev_snr is not None:
             if self.prev_snr <= 0 and direction_snr > self.buy_threshold / 30:
                 conf = min(direction_snr / (self.buy_threshold / 30), 1.0)
                 self.prev_snr = direction_snr
@@ -1507,6 +1583,317 @@ class SignalToNoiseRatio:
                     "snr_idx",
                 )
         self.prev_snr = direction_snr
+        return None
+
+
+class FundingRateContrarian:
+    """Funding rate contrarian signal.
+
+    Fetches live perpetual swap funding rates from Binance Futures
+    public API (no auth needed). Extreme positive funding → SELL
+    (crowded long, shorts paying longs — reversal expected).
+    Extreme negative funding → BUY (crowded short, bounce expected).
+
+    Pure external-data strategy — ignores OHLCV inputs.
+    """
+
+    BINANCE_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
+
+    def __init__(self, min_abs_funding_bps: float = 0.1):
+        self.min_abs_funding_bps = min_abs_funding_bps
+        self._cache: Dict[str, float] = {}
+        self._cache_ts: float = 0
+
+    def on_bar(
+        self,
+        close: float,
+        closes: List[float],
+        volumes: Optional[List[float]] = None,
+        highs: Optional[List[float]] = None,
+        lows: Optional[List[float]] = None,
+        currency: Optional[str] = None,
+    ) -> Optional[Signal]:
+        import time
+        now = time.time()
+        if now - self._cache_ts > 60:
+            try:
+                import json, urllib.request
+                req = urllib.request.Request(self.BINANCE_URL)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode())
+                fresh: Dict[str, float] = {}
+                for entry in data:
+                    symbol = entry.get("symbol", "")
+                    fr_str = entry.get("lastFundingRate", "0")
+                    fr = float(fr_str) if fr_str else 0.0
+                    fresh[symbol] = fr
+                if fresh:
+                    self._cache = fresh
+                    self._cache_ts = now
+            except Exception:
+                return None  # Silently handle (Binance may be geo-blocked)
+
+        if not self._cache:
+            return None
+
+        # Find most extreme funding rate across all pairs
+        best_fr = 0.0
+        best_sym = ""
+        for sym, fr in self._cache.items():
+            if abs(fr) > abs(best_fr):
+                best_fr = fr
+                best_sym = sym
+
+        if not best_sym:
+            return None
+
+        # Convert from decimal (per 8h) to bps
+        fr_bps = best_fr * 100.0 * 100.0
+
+        if fr_bps > self.min_abs_funding_bps:
+            conf = min(fr_bps / 8.0, 0.90)
+            return Signal(
+                "SELL", close, max(conf, 0.1),
+                f"Funding {best_sym}: +{fr_bps:.1f}bps (crowded long → fade)",
+                "funding_contrarian",
+            )
+        elif fr_bps < -self.min_abs_funding_bps:
+            conf = min(-fr_bps / 8.0, 0.90)
+            return Signal(
+                "BUY", close, max(conf, 0.1),
+                f"Funding {best_sym}: {fr_bps:.1f}bps (crowded short → bounce)",
+                "funding_contrarian",
+            )
+        return None
+
+
+class ExchangeFlowSignal:
+    """Exchange flow divergence signal via CoinGecko.
+
+    Uses CoinGecko market_chart volume data as a proxy for exchange
+    flow pressure. Detects volume anomalies combined with price trend
+    to identify distribution (volume spike on up-move → SELL) or
+    accumulation (volume spike on down-move → BUY).
+
+    Pure external-data strategy — ignores OHLCV inputs.
+    Fetches via the existing CoinGecko client if available, else
+    falls back to direct public API calls.
+    """
+
+    PRODUCT_TO_CG: Dict[str, str] = {
+        "BTC-USD": "bitcoin", "ETH-USD": "ethereum", "SOL-USD": "solana",
+        "XRP-USD": "ripple", "ADA-USD": "cardano", "DOGE-USD": "dogecoin",
+        "AVAX-USD": "avalanche-2", "DOT-USD": "polkadot", "LINK-USD": "chainlink",
+        "UNI-USD": "uniswap", "MATIC-USD": "matic-network",
+    }
+
+    def __init__(self, cache_ttl: float = 300.0, vol_spike_threshold: float = 3.0):
+        self.cache_ttl = cache_ttl
+        self.vol_spike_threshold = vol_spike_threshold
+        self._cache: Dict[str, Dict] = {}
+        self._cache_ts: float = 0
+
+    def _cg_id(self, currency: str) -> Optional[str]:
+        return self.PRODUCT_TO_CG.get(currency)
+
+    def _fetch_market_chart(self, cg_id: str) -> Optional[Dict]:
+        import time, json, urllib.request
+        now = time.time()
+        if cg_id in self._cache and now - self._cache_ts < self.cache_ttl:
+            return self._cache.get(cg_id)
+        try:
+            url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency=usd&days=2"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+            self._cache[cg_id] = data
+            self._cache_ts = now
+            return data
+        except Exception as e:
+            logger.debug("ExchangeFlowSignal fetch failed for %s: %s", cg_id, e)
+            return None
+
+    def on_bar(
+        self,
+        close: float,
+        closes: List[float],
+        volumes: Optional[List[float]] = None,
+        highs: Optional[List[float]] = None,
+        lows: Optional[List[float]] = None,
+        currency: Optional[str] = None,
+    ) -> Optional[Signal]:
+        if not currency:
+            return None
+        cg_id = self._cg_id(currency)
+        if not cg_id:
+            return None
+
+        data = self._fetch_market_chart(cg_id)
+        if not data:
+            return None
+
+        prices = data.get("prices", [])
+        vols = data.get("total_volumes", [])
+        if len(prices) < 24 or len(vols) < 24:
+            return None
+
+        # Extract last 48 intervals
+        recent_prices = [p[1] for p in prices[-48:]]
+        recent_vols = [v[1] for v in vols[-48:]]
+
+        if len(recent_prices) < 12 or len(recent_vols) < 12:
+            return None
+
+        # Compute volume anomaly
+        recent_48_vols = [v[1] for v in vols[-96:]] if len(vols) >= 96 else recent_vols
+        avg_vol = sum(recent_48_vols) / len(recent_48_vols) if recent_48_vols else 1.0
+        if avg_vol <= 0:
+            return None
+        current_vol = recent_vols[-1]
+        vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0.0
+
+        # Price trend over last 24 periods
+        price_start = recent_prices[0]
+        price_end = recent_prices[-1]
+        price_change_pct = (price_end - price_start) / price_start * 100.0 if price_start > 0 else 0.0
+
+        if vol_ratio < self.vol_spike_threshold:
+            return None
+
+        # Volume spike detected — evaluate direction
+        if price_change_pct > 2.0:
+            # Volume spike on up-move → possible distribution
+            conf = min((vol_ratio - self.vol_spike_threshold) / 5.0, 0.85)
+            return Signal(
+                "SELL", close, max(conf, 0.1),
+                f"Exchange flow: {cg_id} vol {vol_ratio:.1f}x avg +{price_change_pct:.1f}% (distribution)",
+                "exchange_flow",
+            )
+        elif price_change_pct < -2.0:
+            # Volume spike on down-move → possible accumulation
+            conf = min((vol_ratio - self.vol_spike_threshold) / 5.0, 0.85)
+            return Signal(
+                "BUY", close, max(conf, 0.1),
+                f"Exchange flow: {cg_id} vol {vol_ratio:.1f}x avg {price_change_pct:.1f}% (accumulation)",
+                "exchange_flow",
+            )
+        return None
+
+
+class BTCDXYCorrelation:
+    """BTC-DXY correlation reversion signal.
+
+    When the rolling 90-day correlation between BTC-USD and the US
+    Dollar Index (DXY) deviates significantly from its 1-year mean,
+    bet on reversion toward the mean correlation.
+    """
+
+    def __init__(self, lookback_days: int = 90, history_days: int = 365):
+        self.lookback_days = lookback_days
+        self.history_days = history_days
+        self._cache: Dict = {}
+        self._cache_ts: float = 0
+
+    def _fetch_data(self) -> Optional[Dict]:
+        import time, json, urllib.request
+        now = time.time()
+        if self._cache and now - self._cache_ts < 3600:
+            return self._cache
+        try:
+            # Fetch BTC and DXY from Yahoo Finance public API
+            # Use direct Yahoo chart API (same as cross_asset_regime.py)
+            results: Dict[str, List[float]] = {}
+            for symbol, label in [("BTC-USD", "btc"), ("DX-Y.NYB", "dxy")]:
+                period = f"{self.history_days}d"
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={period}&interval=1d"
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    chart = json.loads(resp.read().decode())
+                quotes = chart.get("chart", {}).get("result", [{}])[0].get("indicators", {}).get("quote", [{}])[0]
+                closes_raw = quotes.get("close", [])
+                results[label] = [c for c in closes_raw if c is not None]
+            self._cache = results
+            self._cache_ts = now
+            return results
+        except Exception as e:
+            logger.debug("BTCDXYCorrelation fetch failed: %s", e)
+            return None
+
+    @staticmethod
+    def _rolling_corr(a: List[float], b: List[float], window: int) -> float:
+        n = min(len(a), len(b))
+        if n < window:
+            return 0.0
+        a_slice = a[-window:]
+        b_slice = b[-window:]
+        n_w = len(a_slice)
+        mean_a = sum(a_slice) / n_w
+        mean_b = sum(b_slice) / n_w
+        cov = sum((ai - mean_a) * (bi - mean_b) for ai, bi in zip(a_slice, b_slice)) / n_w
+        std_a = (sum((ai - mean_a) ** 2 for ai in a_slice) / n_w) ** 0.5
+        std_b = (sum((bi - mean_b) ** 2 for bi in b_slice) / n_w) ** 0.5
+        if std_a < 1e-15 or std_b < 1e-15:
+            return 0.0
+        return cov / (std_a * std_b)
+
+    def on_bar(
+        self,
+        close: float,
+        closes: List[float],
+        volumes: Optional[List[float]] = None,
+        highs: Optional[List[float]] = None,
+        lows: Optional[List[float]] = None,
+        currency: Optional[str] = None,
+    ) -> Optional[Signal]:
+        if currency and currency != "BTC-USD":
+            return None  # Only meaningful for BTC
+
+        data = self._fetch_data()
+        if not data or "btc" not in data or "dxy" not in data:
+            return None
+
+        btc_prices = data["btc"]
+        dxy_prices = data["dxy"]
+
+        if len(btc_prices) < self.history_days // 2 or len(dxy_prices) < self.history_days // 2:
+            return None
+
+        # Compute rolling correlation over lookback
+        current_corr = self._rolling_corr(btc_prices, dxy_prices, self.lookback_days)
+
+        # Compute mean of rolling correlations over the full history
+        min_len = min(len(btc_prices), len(dxy_prices))
+        corrs = []
+        for i in range(self.lookback_days, min_len):
+            c = self._rolling_corr(btc_prices[:i], dxy_prices[:i], min(self.lookback_days, i))
+            corrs.append(c)
+
+        if len(corrs) < 20:
+            return None
+
+        mean_corr = sum(corrs) / len(corrs)
+        var_corr = sum((c - mean_corr) ** 2 for c in corrs) / len(corrs)
+        std_corr = var_corr ** 0.5 if var_corr > 0 else 0.01
+
+        z = (current_corr - mean_corr) / std_corr if std_corr > 0 else 0.0
+
+        if z > 2.0:
+            # BTC-DXY correlation abnormally high → expect decoupling
+            # If correlation is positive-high and BTC is up, both could reverse
+            conf = min((z - 2.0) / 3.0, 0.85)
+            return Signal(
+                "SELL", close, max(conf, 0.1),
+                f"BTC-DXY corr {current_corr:.2f} (z={z:.1f}, mean={mean_corr:.2f}) — reversion expected",
+                "btc_dxy_corr",
+            )
+        elif z < -2.0:
+            # BTC-DXY correlation abnormally low → expect recoupling
+            conf = min((-z - 2.0) / 3.0, 0.85)
+            return Signal(
+                "BUY", close, max(conf, 0.1),
+                f"BTC-DXY corr {current_corr:.2f} (z={z:.1f}, mean={mean_corr:.2f}) — reversion expected",
+                "btc_dxy_corr",
+            )
         return None
 
 
@@ -1685,13 +2072,29 @@ ALL_STRATEGIES = {
     "range_exp_idx": RangeExpansionIndex,
     "ema_dev": EMADeviation,
     "snr_idx": SignalToNoiseRatio,
+    "funding_contrarian": FundingRateContrarian,
+    "exchange_flow": ExchangeFlowSignal,
+    "btc_dxy_corr": BTCDXYCorrelation,
     "kalshi": KalshiSignal,
     "polymarket": PolymarketSignal,
+    # Rust-only strategies — no Python class, dispatch handled by _HAS_RUST check
+    "candle_pat": None, "sup_res": None, "liq_vac": None, "cvd_flow": None, "vcp": None,
+    "impulse_exh": None, "mom_accel": None, "rsi_fail": None, "avwap": None, "donch_pull": None,
+    "vol_prof": None, "bb_squeeze": None, "multi_rsi": None, "linreg_slope": None, "hurst": None,
+    "elder_ray": None, "klinger": None, "pivot_points": None, "ichimoku": None, "choppiness": None,
+    "true_cci": None, "dpo": None, "kst": None, "mass_idx": None, "ulcer": None,
+    "mfi": None, "stoch": None, "emv": None, "ad_div": None, "envelope": None, "atr_channel": None,
+    "kama": None, "dmi_cross": None, "vma": None, "vortex": None, "rvi": None, "coppock": None,
+    "std_channel": None, "vol_ratio": None, "vwap_macd": None, "nvi": None, "de_marker": None, "gap_revert": None,
+    "supertrend": None, "fisher": None, "ultimate_osc": None, "vw_rsi": None,
+    "kalman_mr": None, "hp_trend": None,
 }
 
 # Strategy-to-asset-class mapping
 CLASS_STRATEGIES = {
-    "safe": ["ema_cross", "macd", "vol_mom", "trix", "hma"],
+    "safe": ["ema_cross", "macd", "vol_mom", "trix", "hma",
+             "kalman_mr", "hp_trend",
+             "funding_contrarian", "exchange_flow", "btc_dxy_corr"],
     "growth": [
         "ema_cross",
         "macd",
@@ -1720,6 +2123,19 @@ CLASS_STRATEGIES = {
         "snr_idx",
         "kalshi",
         "polymarket",
+        "elder_ray", "klinger", "pivot_points", "ichimoku", "choppiness",
+        "true_cci", "dpo", "kst", "mass_idx", "ulcer",
+        # Rust-only
+        "candle_pat", "sup_res", "liq_vac", "cvd_flow", "vcp",
+        "impulse_exh", "mom_accel", "rsi_fail", "avwap", "donch_pull",
+        "vol_prof", "bb_squeeze", "multi_rsi", "linreg_slope", "hurst",
+        "mfi", "stoch", "emv", "ad_div", "envelope", "atr_channel",
+        "kama", "dmi_cross", "vma", "vortex", "rvi", "coppock",
+        "std_channel", "vol_ratio", "vwap_macd", "nvi", "de_marker", "gap_revert",
+        "supertrend", "fisher", "ultimate_osc", "vw_rsi",
+        # ── External-data strategies ──
+        "kalman_mr", "hp_trend",
+        "funding_contrarian", "exchange_flow", "btc_dxy_corr",
     ],
     "speculative": [
         "rsi_revert",
@@ -1746,32 +2162,40 @@ CLASS_STRATEGIES = {
         "snr_idx",
         "kalshi",
         "polymarket",
+        "elder_ray", "klinger", "pivot_points", "ichimoku", "choppiness",
+        "true_cci", "dpo", "kst", "mass_idx", "ulcer",
+        # Rust-only
+        "candle_pat", "sup_res", "liq_vac", "cvd_flow", "vcp",
+        "impulse_exh", "mom_accel", "rsi_fail", "avwap", "donch_pull",
+        "vol_prof", "bb_squeeze", "multi_rsi", "linreg_slope", "hurst",
+        "mfi", "stoch", "emv", "ad_div", "envelope", "atr_channel",
+        "kama", "dmi_cross", "vma", "vortex", "rvi", "coppock",
+        "std_channel", "vol_ratio", "vwap_macd", "nvi", "de_marker", "gap_revert",
+        # ── External-data strategies ──
+        "kalman_mr", "hp_trend",
+        "funding_contrarian", "exchange_flow",
     ],
 }
 
 # Strategies that accept volume data
 VOLUME_STRATEGIES = {
-    "vol_mom",
-    "vwap_revert",
-    "obv_div",
-    "chaikin_mf",
-    "force_idx",
-    "vpt",
-    "kama",
-    "rv_idx",
+    "vol_mom", "vwap_revert", "obv_div", "chaikin_mf",
+    "force_idx", "vpt", "price_eff", "klinger", "vol_prof",
+    "mfi", "emv", "ad_div", "vwap_macd", "nvi", "cvd_flow",
+    "avwap", "impulse_exh", "linreg_slope", "mom_accel",
+    "vw_rsi",
 }
 
 # Strategies that accept high/low data (candles with OHLC)
 HIGH_LOW_STRATEGIES = {
-    "adx",
-    "keltner",
-    "chaikin_mf",
-    "williams_r",
-    "psar",
-    "donchian",
-    "aroon",
-    "cci",
-    "mass_idx",
+    "adx", "keltner", "chaikin_mf", "williams_r",
+    "psar", "donchian", "aroon", "mass_idx",
+    "range_exp_idx", "bb_squeeze", "choppiness",
+    "stoch", "emv", "ad_div", "atr_channel",
+    "dmi_cross", "vortex", "vol_ratio", "de_marker",
+    "klinger", "vcp", "sup_res", "liq_vac",
+    "elder_ray", "ichimoku", "pivot_points", "true_cci",
+    "supertrend", "ultimate_osc",
 }
 
 
@@ -1784,11 +2208,45 @@ def run_strategies(
     highs: Optional[List[float]] = None,
     lows: Optional[List[float]] = None,
 ) -> List[Signal]:
-    """Run all applicable strategies for an asset and return ranked signals."""
+    """Run all applicable strategies for an asset and return ranked signals.
+    Uses Rust native acceleration for supported strategies.
+    """
+    _clear_cache()  # per-call indicator cache
     strategy_names = CLASS_STRATEGIES.get(asset_class, ["rsi_revert", "boll_break"])
     signals = []
 
     for name in strategy_names:
+        # Try Rust acceleration for supported strategies
+        if _HAS_RUST and name in _RUST_STRATEGIES:
+            rust_signal: Optional[Signal] = None
+            try:
+                # Avoid O(n) allocation: pass closes as opens with last element duplicated
+                # run_strategy_opens_py handles the shift internally
+                opens = closes
+                hs = highs if highs else []
+                ls = lows if lows else []
+                vs = volumes if volumes else []
+                # Skip Rust path if strategy needs data that isn't available
+                has_hl = len(hs) >= 20 and len(ls) >= 20
+                has_vol = len(vs) > 0
+                if (not has_hl and name in HIGH_LOW_STRATEGIES) or (not has_vol and name in VOLUME_STRATEGIES):
+                    rust_signal = None
+                else:
+                    result = _rust_core.run_strategy_opens_py(
+                        name, closes, opens, vs, hs, ls,
+                    )
+                    if result is not None:
+                        action, confidence, reason = result
+                        rust_signal = Signal(action=action, confidence=confidence, reason=reason)
+            except Exception as e:
+                logger.debug("Rust strategy %s failed: %s", name, e)
+                rust_signal = None
+
+            if rust_signal is not None and rust_signal.action != "HOLD":
+                rust_signal.strategy = name
+                signals.append(rust_signal)
+                continue
+
         cls = ALL_STRATEGIES.get(name)
         if not cls:
             continue
@@ -1796,6 +2254,9 @@ def run_strategies(
             strat = cls()
             needs_hl = name in HIGH_LOW_STRATEGIES
             needs_vol = name in VOLUME_STRATEGIES
+            extra_kwargs = {}
+            if name in {"funding_contrarian", "exchange_flow", "btc_dxy_corr"}:
+                extra_kwargs["currency"] = currency
 
             if needs_hl:
                 sig = strat.on_bar(
@@ -1804,11 +2265,12 @@ def run_strategies(
                     volumes=volumes if needs_vol else None,
                     highs=highs,
                     lows=lows,
+                    **extra_kwargs,
                 )
             elif needs_vol:
-                sig = strat.on_bar(current_price, closes, volumes=volumes)
+                sig = strat.on_bar(current_price, closes, volumes=volumes, **extra_kwargs)
             else:
-                sig = strat.on_bar(current_price, closes)
+                sig = strat.on_bar(current_price, closes, **extra_kwargs)
 
             if sig and sig.action != "HOLD":
                 sig.strategy = name
@@ -1869,7 +2331,17 @@ def backtest_strategy(
 
     Returns a BacktestVerdict with passed=True if the strategy shows positive
     win rate, Sharpe > 0.3, and profit factor > 1.1 over the window.
+    Uses Rust native acceleration when available.
     """
+    # Try Rust acceleration first for supported strategies
+    if _HAS_RUST and strategy_name in _RUST_STRATEGIES:
+        rust_result = _rust_backtest_strategy(
+            strategy_name, currency, closes, volumes,
+            highs=highs, lows=lows, warmup=warmup,
+        )
+        if rust_result is not None:
+            return rust_result
+
     cls = ALL_STRATEGIES.get(strategy_name)
     if not cls or len(closes) < warmup + 10:
         return BacktestVerdict(
@@ -2023,24 +2495,28 @@ def backtest_strategy(
     # Regime classification
     regime = _classify_regime(closes)
 
+    dd_pct = dd * 100.0
     passed = (
-        win_rate >= 0.4
-        and sharpe > 0.2
-        and profit_factor > 1.05
-        and total_return > -20.0
+        win_rate >= 0.50
+        and sharpe > 0.5
+        and profit_factor > 1.20
+        and dd_pct < 15.0
+        and total_return > -10.0
     )
-    if not passed and win_rate >= 0.5 and sharpe > 0.5:
+    if not passed and win_rate >= 0.55 and sharpe > 0.8:
         passed = True  # high win rate overrides
 
     reasons = []
     if not passed:
-        if win_rate < 0.4:
-            reasons.append(f"win_rate {win_rate:.0%} < 40%")
-        if sharpe <= 0.2:
-            reasons.append(f"Sharpe {sharpe:.2f} <= 0.2")
-        if profit_factor <= 1.05:
-            reasons.append(f"profit_factor {profit_factor:.2f} <= 1.05")
-        if total_return <= -20.0:
+        if win_rate < 0.50:
+            reasons.append(f"win_rate {win_rate:.0%} < 50%")
+        if sharpe <= 0.5:
+            reasons.append(f"Sharpe {sharpe:.2f} <= 0.5")
+        if profit_factor <= 1.20:
+            reasons.append(f"profit_factor {profit_factor:.2f} <= 1.20")
+        if dd_pct >= 15.0:
+            reasons.append(f"max_drawdown {dd_pct:.1f}% >= 15%")
+        if total_return <= -10.0:
             reasons.append(f"return {total_return:.1f}% too negative")
 
     return BacktestVerdict(
@@ -2077,3 +2553,264 @@ def _classify_regime(closes: List[float]) -> str:
     elif price_range < 8 and avg_vol < 0.01:
         return "RANGING"
     return "VOLATILE"
+
+
+# ── Rust native acceleration (fallback to pure Python) ─────────────
+
+_RUST_STRATEGIES: set = {
+    "ema_cross", "rsi_revert", "boll_break", "zscore_revert", "vol_mom",
+    "macd", "vwap_revert", "obv_div", "cmo", "trix", "adx", "keltner",
+    "chaikin_mf", "williams_r", "psar", "hma", "force_idx", "vpt",
+    "donchian", "aroon", "price_eff", "scci", "range_exp_idx", "ema_dev",
+    "snr_idx",
+    # ── 10 new strategies ──
+    "candle_pat", "sup_res", "liq_vac", "cvd_flow", "vcp",
+    "impulse_exh", "mom_accel", "rsi_fail", "avwap", "donch_pull",
+    # ── 5 newest strategies ──
+    "vol_prof", "bb_squeeze", "multi_rsi", "linreg_slope", "hurst",
+    # ── 10 newest strategies (41-50) ──
+    "elder_ray", "klinger", "pivot_points", "ichimoku", "choppiness",
+    "true_cci", "dpo", "kst", "mass_idx", "ulcer",
+    # ── 6 new OHLCV strategies (51-56) ──
+    "mfi", "stoch", "emv", "ad_div", "envelope", "atr_channel",
+    # ── 12 new strategies (57-68) ──
+    "kama", "dmi_cross", "vma", "vortex", "rvi", "coppock",
+    "std_channel", "vol_ratio", "vwap_macd", "nvi", "de_marker", "gap_revert",
+    # ── 4 new growth-focused strategies (69-72) ──
+    "supertrend", "fisher", "ultimate_osc", "vw_rsi",
+    # ── 2 new Rust strategies (73-74) ──
+    "kalman_mr", "hp_trend",
+}
+
+# ── Rust native: run ALL strategies on ALL products ────────────────
+
+def batch_signals_rust(
+    products: List[Tuple[str, str]],
+    closes_dict: Dict[str, List[float]],
+    volumes_dict: Dict[str, List[float]],
+    highs_dict: Dict[str, List[float]],
+    lows_dict: Dict[str, List[float]],
+) -> Dict[str, Dict[str, str]]:
+    """Run ALL 50 technical strategies on ALL products using Rust evaluate_all.
+
+    Returns per-product dict of {strategy_name: "BUY"|"SELL"|"HOLD"}.
+    Falls back to empty dict if Rust not available.
+    """
+    if not _HAS_RUST:
+        return {}
+    results: Dict[str, Dict[str, str]] = {}
+    for pid, _ in products:
+        closes = closes_dict.get(pid) or []
+        volumes = volumes_dict.get(pid) or []
+        highs = highs_dict.get(pid) or []
+        lows = lows_dict.get(pid) or []
+        if len(closes) < 30:
+            results[pid] = {}
+            continue
+        try:
+            opens = closes[:-1] + closes[-1:]
+            raw = _rust_core.evaluate_all_opens_py(closes, opens, volumes, highs, lows)
+            pid_sigs: Dict[str, str] = {}
+            for s_name, action, confidence, reason in raw:
+                pid_sigs[s_name] = action
+            results[pid] = pid_sigs
+        except Exception as e:
+            logger.debug("Rust evaluate_all failed for %s: %s", pid, e)
+            results[pid] = {}
+    return results
+
+
+# ── Compute backend integration (GPU/CPU batch acceleration) ─────
+
+try:
+    from trading_system.core.compute_backend import (
+        get_compute_backend, NumpyBackend, TorchBackend,
+    )
+    _COMPUTE_BACKEND = get_compute_backend()
+    _HAS_COMPUTE_BACKEND = True
+except ImportError:
+    _COMPUTE_BACKEND = None
+    _HAS_COMPUTE_BACKEND = False
+
+
+def batch_signals_fast(
+    products: List[Tuple[str, str]],
+    closes_dict: Dict[str, List[float]],
+    volumes_dict: Dict[str, List[float]],
+    highs_dict: Dict[str, List[float]],
+    lows_dict: Dict[str, List[float]],
+) -> Dict[str, Dict[str, str]]:
+    """Run ALL strategies on ALL products — Rust native (all 25) > NumPy (5) > fallback.
+
+    Args:
+        products: list of (product_id, asset_class) tuples
+        closes_dict: product_id -> list of closes
+        volumes_dict: product_id -> list of volumes
+        highs_dict: product_id -> list of highs
+        lows_dict: product_id -> list of lows
+
+    Returns::
+
+        {"BTC-USD": {"ema_cross": "BUY", "rsi_revert": "HOLD", ...},
+         "ETH-USD": {...}, ...}
+    """
+    # Priority 1: Rust native — all 25 strategies, compiled, fastest
+    if _HAS_RUST:
+        return batch_signals_rust(products, closes_dict, volumes_dict, highs_dict, lows_dict)
+
+    # Priority 2: NumPy vectorized backend — 5 strategies (legacy path)
+    if not _HAS_COMPUTE_BACKEND:
+        return {}
+    import numpy as np
+    n = len(products)
+    if n == 0:
+        return {}
+
+    # Build matrices (n_products, n_candles)
+    # Find max length for padding
+    max_len = max((len(closes_dict.get(pid, [])) for pid, _ in products), default=0)
+    if max_len < 30:
+        return {}
+
+    closes_mat = np.zeros((n, max_len), dtype=np.float64)
+    vols_mat = np.zeros((n, max_len), dtype=np.float64)
+    highs_mat = np.zeros((n, max_len), dtype=np.float64)
+    lows_mat = np.zeros((n, max_len), dtype=np.float64)
+
+    for i, (pid, _) in enumerate(products):
+        c = closes_dict.get(pid, [])
+        v = volumes_dict.get(pid, [])
+        h = highs_dict.get(pid, [])
+        lo = lows_dict.get(pid, [])
+        ln = len(c)
+        closes_mat[i, :ln] = c
+        if v:
+            vols_mat[i, :ln] = v[:ln]
+        if h:
+            highs_mat[i, :ln] = h[:ln]
+        if lo:
+            lows_mat[i, :ln] = lo[:ln]
+
+    # Compute all signals for all products in one shot
+    backend = get_compute_backend()
+    batch_results = backend.batch_signals(closes_mat, vols_mat, highs_mat, lows_mat)
+
+    # Transpose to per-product dict
+    results: Dict[str, Dict[str, str]] = {}
+    for i, (pid, _) in enumerate(products):
+        product_signals: Dict[str, str] = {}
+        for strat_name in batch_results:
+            signals_list = batch_results[strat_name]
+            if i < len(signals_list):
+                product_signals[strat_name] = signals_list[i]
+        results[pid] = product_signals
+    return results
+
+
+# ── Accelerated batch backtest ────────────────────────────────────
+
+def batch_backtest_rust(
+    strategies: List[Tuple[str, str, List[float], List[float], Optional[List[float]], Optional[List[float]]]],
+    warmup: int = 30,
+) -> Dict[str, "BacktestVerdict"]:
+    """Backtest Rust-supported strategies grouped by product, in parallel via rayon.
+
+    Args:
+        strategies: list of (strategy_name, currency, closes, volumes, highs, lows) tuples
+        warmup: number of bars to skip at start
+
+    Returns:
+        dict of cache_key -> BacktestVerdict
+    """
+    if not _HAS_RUST:
+        return {}
+    results: Dict[str, BacktestVerdict] = {}
+
+    # Group strategies by product
+    by_product: Dict[str, Dict[str, Any]] = {}
+    for s_name, currency, closes, volumes, highs, lows in strategies:
+        if s_name not in _RUST_STRATEGIES:
+            continue
+        if currency not in by_product:
+            by_product[currency] = {"names": set(), "closes": closes, "volumes": volumes, "highs": highs, "lows": lows}
+        by_product[currency]["names"].add(s_name)
+
+    for currency, info in by_product.items():
+        names = sorted(info["names"])
+        if not names:
+            continue
+        closes = info["closes"]
+        volumes = info["volumes"] if info["volumes"] else [1.0] * len(closes)
+        highs = info.get("highs")
+        lows = info.get("lows")
+        try:
+            raw = _rust_core.backtest_multi_py(names, closes, volumes, warmup, highs=highs, lows=lows)
+            for s_name, metrics in raw:
+                ck = f"{s_name}/{currency}"
+                if len(metrics) >= 9:
+                    passed = bool(metrics[8])
+                    results[ck] = BacktestVerdict(
+                        strategy=s_name,
+                        currency=currency,
+                        total_trades=int(metrics[0]),
+                        winning_trades=int(metrics[1]),
+                        losing_trades=int(metrics[2]),
+                        win_rate=metrics[3],
+                        total_return_pct=metrics[4],
+                        sharpe_ratio=metrics[5],
+                        profit_factor=metrics[6],
+                        max_drawdown_pct=metrics[7],
+                        regime="AUTO",
+                        passed=passed,
+                        reason="Rust batch" if passed else "Rust batch: below thresholds",
+                    )
+        except Exception as e:
+            logger.debug("Rust batch backtest for %s failed: %s", currency, e)
+    return results
+
+try:
+    import rust_core as _rust_core
+    _HAS_RUST = True
+    logger.info("Rust core loaded — native acceleration enabled (%d strategies)",
+                len(_RUST_STRATEGIES))
+except ImportError:
+    _HAS_RUST = False
+    logger.info("Rust core not available — using pure Python")
+    _rust_core = None  # type: ignore
+
+
+def _rust_backtest_strategy(
+    strategy_name: str,
+    currency: str,
+    closes: List[float],
+    volumes: List[float],
+    highs: Optional[List[float]] = None,
+    lows: Optional[List[float]] = None,
+    warmup: int = 30,
+) -> Optional[BacktestVerdict]:
+    """Run backtest in Rust for supported strategies, returning None for unsupported ones."""
+    if not _HAS_RUST or strategy_name not in _RUST_STRATEGIES:
+        return None
+    try:
+        bt = _rust_core.backtest_strategy_py(strategy_name, closes, volumes, warmup, highs=highs, lows=lows)
+        if bt is None or len(bt) < 9:
+            return None
+        passed = bool(bt[8])
+        return BacktestVerdict(
+            strategy=strategy_name,
+            currency=currency,
+            total_trades=int(bt[0]),
+            winning_trades=int(bt[1]),
+            losing_trades=int(bt[2]),
+            win_rate=bt[3],
+            total_return_pct=bt[4],
+            sharpe_ratio=bt[5],
+            profit_factor=bt[6],
+            max_drawdown_pct=bt[7],
+            regime="AUTO",
+            passed=passed,
+            reason="Rust backtest: passed" if passed else "Rust backtest: below thresholds",
+        )
+    except Exception as e:
+        logger.debug("Rust backtest failed for %s/%s: %s", strategy_name, currency, e)
+        return None

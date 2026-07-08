@@ -239,7 +239,7 @@ class NewsResearcher:
             for art in articles:
                 text = f"{art.get('title', '')} {art.get('description', '')}"
                 matched = sum(1 for kw in keywords if kw in text.lower())
-                if matched > 0:
+                if matched > 0 and keywords:
                     results.append(SearchResult(
                         source=source_name,
                         title=art.get("title", ""),

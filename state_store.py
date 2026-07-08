@@ -77,7 +77,7 @@ class StateStore:
                 );
                 CREATE TABLE IF NOT EXISTS position_ages (
                     currency TEXT PRIMARY KEY,
-                    age INTEGER NOT NULL DEFAULT 0
+                    age REAL NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
@@ -130,7 +130,7 @@ class StateStore:
         with self._lock:
             conn = self._conn()
             rows = conn.execute(
-                "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?", (limit,)
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -177,7 +177,7 @@ class StateStore:
         with self._lock:
             conn = self._conn()
             rows = conn.execute(
-                "SELECT * FROM snapshots ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT * FROM snapshots ORDER BY timestamp DESC LIMIT ?", (limit,)
             ).fetchall()
             result = []
             for r in rows:
@@ -220,6 +220,9 @@ class StateStore:
                 "SELECT key, verdict_json FROM bt_cache WHERE created_at > ?",
                 (cutoff,),
             ).fetchall()
+            # Prune stale entries on load
+            conn.execute("DELETE FROM bt_cache WHERE created_at < ?", (cutoff,))
+            conn.commit()
             return {r["key"]: json.loads(r["verdict_json"]) for r in rows}
 
     def prune_bt_cache(self, ttl: float = 86400):
@@ -231,7 +234,7 @@ class StateStore:
 
     # ── Position ages ─────────────────────────────────────────────
 
-    def save_position_ages(self, ages: Dict[str, int]) -> None:
+    def save_position_ages(self, ages: Dict[str, float]) -> None:
         with self._lock:
             conn = self._conn()
             conn.execute("DELETE FROM position_ages")
@@ -242,7 +245,7 @@ class StateStore:
                 )
             conn.commit()
 
-    def load_position_ages(self) -> Dict[str, int]:
+    def load_position_ages(self) -> Dict[str, float]:
         with self._lock:
             conn = self._conn()
             rows = conn.execute("SELECT currency, age FROM position_ages").fetchall()

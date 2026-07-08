@@ -26,10 +26,10 @@ run_test() {
 
 cd "$ROOT"
 
-run_test "Paper Trading System Tests" "python3 test_paper_trading_system.py"
-run_test "Unified Signal Accumulator Tests" "python3 test_unified_signal_accumulator.py"
-# run_test "Unified Signal Integration Tests" "python3 test_unified_signal_integration.py"
-# run_test "Strategy Tests" "python3 test_strategies.py"
+run_test "Rust Core (strategies + confidence + streaming) Tests" "cd rust_core && cargo test 2>&1"
+# Legacy Python tests archived — ported to Rust:
+#   test_paper_trading_system.py (imported paper_trading_system → archived)
+#   test_unified_signal_accumulator.py (imported backtester → archived)"
 
 echo ""
 echo "======================================================================"

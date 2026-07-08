@@ -4,6 +4,19 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 
+# Rust-native regime detection (all computation in Rust, Python fallback)
+try:
+    from rust_core import (
+        detect_regime_py as _rust_detect,
+        regime_recommended_strategies_py as _rust_strategies,
+        regime_features_py as _rust_features,
+    )
+    _HAS_RUST_REGIME = True
+except ImportError:
+    _HAS_RUST_REGIME = False
+
+REGIME_CACHE: Dict[str, str] = {}
+
 
 class Regime(Enum):
     STRONG_UPTREND = "strong_uptrend"
@@ -18,35 +31,60 @@ class Regime(Enum):
 
 REGIME_STRATEGY_MAP: Dict[Regime, List[str]] = {
     Regime.STRONG_UPTREND: [
-        "ema_cross", "macd", "donchian", "adx", "hma",
-        "trix", "psar", "aroon", "force_idx", "vpt",
+        "ema_cross", "macd", "trix", "adx", "psar", "hma", "aroon",
+        "elder_ray", "ichimoku", "dpo", "kama", "dmi_cross", "vma",
+        "donchian", "keltner", "force_idx", "vpt",
+        "vol_mom", "chaikin_mf", "klinger", "price_eff", "vwap_macd",
+        "mom_accel", "multi_rsi", "pivot_points", "donch_pull",
+        "linreg_slope", "std_channel", "kst", "vortex",
     ],
     Regime.WEAK_UPTREND: [
-        "ema_cross", "macd", "donchian", "adx", "vwap_revert",
-        "keltner", "chaikin_mf",
+        "ema_cross", "macd", "adx", "hma", "aroon",
+        "kama", "dmi_cross", "vma", "dpo",
+        "vwap_revert", "keltner", "envelope", "std_channel",
+        "chaikin_mf", "vpt", "mfi", "vwap_macd",
+        "sup_res", "donch_pull", "vortex", "avwap", "hurst", "ulcer",
     ],
     Regime.RANGING: [
-        "rsi_revert", "boll_break", "zscore_revert", "williams_r",
-        "cmo", "scci", "ema_dev", "snr_idx",
+        "rsi_revert", "zscore_revert", "williams_r", "cmo",
+        "scci", "ema_dev", "snr_idx", "stoch", "rvi", "coppock",
+        "boll_break", "bb_squeeze", "choppiness", "vol_ratio", "envelope",
+        "obv_div", "nvi", "emv", "ad_div",
+        "candle_pat", "sup_res", "gap_revert", "de_marker",
+        "vortex", "hurst", "rsi_fail", "true_cci",
     ],
     Regime.WEAK_DOWNTREND: [
-        "rsi_revert", "boll_break", "zscore_revert", "williams_r",
-        "vwap_revert", "obv_div",
+        "rsi_revert", "zscore_revert", "williams_r",
+        "stoch", "rvi", "de_marker", "cmo", "true_cci",
+        "boll_break", "vwap_revert", "keltner", "envelope", "atr_channel",
+        "obv_div", "chaikin_mf", "vpt", "ad_div",
+        "candle_pat", "gap_revert",
     ],
     Regime.STRONG_DOWNTREND: [
-        "psar", "aroon", "adx", "donchian", "range_exp_idx",
-        "force_idx", "vpt",
+        "psar", "aroon", "adx", "dmi_cross", "donchian",
+        "range_exp_idx", "force_idx", "vpt",
+        "vol_mom", "chaikin_mf", "mom_accel",
+        "liq_vac", "pivot_points", "klinger", "kst",
     ],
     Regime.HIGH_VOLATILITY: [
-        "boll_break", "keltner", "donchian", "vol_mom",
-        "range_exp_idx", "snr_idx",
+        "boll_break", "keltner", "donchian", "bb_squeeze",
+        "vcp", "choppiness", "mass_idx", "vol_ratio",
+        "atr_channel", "std_channel",
+        "vol_mom", "cvd_flow", "impulse_exh",
+        "liq_vac", "range_exp_idx", "snr_idx",
+        "vol_prof",
     ],
     Regime.LOW_VOLATILITY: [
-        "rsi_revert", "zscore_revert", "scci", "ema_dev",
-        "vwap_revert",
+        "rsi_revert", "zscore_revert", "cmo", "scci",
+        "ema_dev", "stoch", "rvi", "de_marker",
+        "vwap_revert", "envelope", "atr_channel",
+        "nvi", "emv",
+        "gap_revert", "vma", "ulcer",
     ],
     Regime.UNKNOWN: [
         "ema_cross", "rsi_revert", "boll_break", "donchian",
+        "adx", "stoch", "mfi", "vwap_macd",
+        "std_channel", "de_marker", "gap_revert",
     ],
 }
 
@@ -87,9 +125,30 @@ class RegimeDetector:
     def detect(self, closes: List[float], highs: Optional[List[float]] = None,
                lows: Optional[List[float]] = None,
                volumes: Optional[List[float]] = None) -> Tuple[Regime, RegimeFeatures]:
+        if _HAS_RUST_REGIME and len(closes) >= 30:
+            return self._detect_rust(closes, highs, lows, volumes)
         features = self._compute_features(closes, highs, lows, volumes)
         regime = self._classify(features)
         features.regime = regime
+        return regime, features
+
+    def _detect_rust(self, closes, highs, lows, volumes) -> Tuple[Regime, RegimeFeatures]:
+        regime_str, adx, trend, vol, price_pos = _rust_detect(
+            closes, highs, lows, volumes, self.adx_period, self.lookback,
+        )
+        feats = _rust_features(closes, highs, lows, volumes) if _HAS_RUST_REGIME else []
+        regime = next((r for r in Regime if r.value == regime_str), Regime.UNKNOWN)
+        features = RegimeFeatures(
+            regime=regime,
+            adx=adx,
+            trend_strength=trend,
+            volatility=vol,
+            price_position=price_pos,
+            hurst_exponent=feats[5] if len(feats) > 5 else 0.5,
+            serial_correlation=feats[6] if len(feats) > 6 else 0.0,
+            skewness=feats[7] if len(feats) > 7 else 0.0,
+            kurtosis=feats[8] if len(feats) > 8 else 3.0,
+        )
         return regime, features
 
     def _compute_features(self, closes: List[float],
@@ -141,6 +200,8 @@ class RegimeDetector:
         return Regime.UNKNOWN
 
     def recommended_strategies(self, regime: Regime) -> List[str]:
+        if _HAS_RUST_REGIME:
+            return _rust_strategies(regime.value)
         return REGIME_STRATEGY_MAP.get(regime, REGIME_STRATEGY_MAP[Regime.UNKNOWN])
 
     @staticmethod
@@ -169,7 +230,6 @@ class RegimeDetector:
         return (prices[-1] - lo) / (hi - lo)
 
     def _compute_adx(self, closes: List[float], highs: List[float], lows: List[float]) -> float:
-        """Approximate ADX from directional movement and true range."""
         if len(closes) < 2 or not highs or not lows:
             return 25.0
 
@@ -288,7 +348,6 @@ class AdaptiveStrategySelector:
         return self._current_regime
 
     def set_regime(self, regime: Regime | str) -> Regime:
-        """Set the active regime from an enum or string label."""
         if isinstance(regime, Regime):
             self._current_regime = regime
         else:
@@ -315,7 +374,6 @@ class AdaptiveStrategySelector:
         return self.detector.recommended_strategies(self._current_regime)
 
     def select(self, strategy_name: str) -> Dict[str, object]:
-        """Backward-compatible strategy gate used by the live trader."""
         active = set(self.active_strategies())
         return {
             "enabled": strategy_name in active,

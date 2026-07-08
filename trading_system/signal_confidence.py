@@ -154,13 +154,17 @@ class ConfidenceEngine:
                 sum(leader_changes) / len(leader_changes) if leader_changes else 0
             )
 
-            if signal.action == "BUY" and avg_leader_change < -1.0:
+            leader_change = avg_leader_change
+            if abs(leader_change) > 1.0:
+                leader_change /= 100.0
+
+            if signal.action == "BUY" and leader_change < -0.01:
                 confidence *= 0.8
                 modifiers_applied.append("cross_correlation")
                 notes.append(
                     "Cross-correlation penalty applied (market leaders dumping)."
                 )
-            elif signal.action == "SELL" and avg_leader_change > 1.0:
+            elif signal.action == "SELL" and leader_change > 0.01:
                 confidence *= 0.8
                 modifiers_applied.append("cross_correlation")
                 notes.append(

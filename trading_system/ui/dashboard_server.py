@@ -16,9 +16,10 @@ Endpoints:
   GET /prediction-markets       — Ranked prediction market universe
   GET /arbitrage/opportunities  — Cross-venue arbitrage rankings
   GET /crypto-divergence        — Crypto price vs prediction market divergence
-  GET /signals/opportunities    — BTC-XXX ranked opportunities
-  GET /signals/feed             — Full signal queue (from accumulator)
-  GET /strategies/performance   — Strategy performance breakdown
+   GET /signals/opportunities    — BTC-XXX ranked opportunities
+   GET /signals/feed             — Full signal queue (from accumulator)
+   GET /signals/diversification  — Diversification strategies signal overview (5 new: kalman_mr, hp_trend, funding_contrarian, exchange_flow, btc_dxy_corr)
+   GET /strategies/performance   — Strategy performance breakdown
   GET /dashboard                — Dashboard HTML
   GET /                         — Dashboard HTML
 
@@ -35,8 +36,10 @@ import json
 import argparse
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -54,11 +57,13 @@ SIGNAL_CACHE_PATH = str(ROOT / 'data' / '.unified_signal_cache.json')
 APPROVALS_PATH = str(ROOT / 'data' / 'pending_approvals.json')
 STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
 CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
+EQUITY_SUMMARY_PATH = str(ROOT / 'data' / 'equity_summary.json')
 OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data' / 'operator-actions.json'))
 OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
 ARBITRAGE_CACHE = {"ts": 0.0, "data": None}
 GRAPH_CACHE = {"ts": 0.0, "data": None}
+_SHARED_CACHE_LOCK = threading.Lock()
 PREDICTION_MARKETS_TTL_SECS = 300
 ARBITRAGE_TTL_SECS = 180
 GRAPH_TTL_SECS = 300
@@ -181,15 +186,18 @@ def _get_graph_store():
     except Exception:
         return None
 
-    cached = GRAPH_CACHE.get("data")
+    cached = None
     now = time.time()
-    if cached is not None and now - float(GRAPH_CACHE.get("ts", 0.0) or 0.0) < GRAPH_TTL_SECS:
-        return cached
+    with _SHARED_CACHE_LOCK:
+        cached = GRAPH_CACHE.get("data")
+        if cached is not None and now - float(GRAPH_CACHE.get("ts", 0.0) or 0.0) < GRAPH_TTL_SECS:
+            return cached
 
     try:
         store = CryptoGraphStore()
-        GRAPH_CACHE["data"] = store
-        GRAPH_CACHE["ts"] = now
+        with _SHARED_CACHE_LOCK:
+            GRAPH_CACHE["data"] = store
+            GRAPH_CACHE["ts"] = now
         return store
     except Exception as e:
         logger.debug("Graph store unavailable: %s", e)
@@ -252,7 +260,7 @@ def _normalize_capital_policy(policy: dict | None = None) -> dict:
         "core_min_allocation_pct": max(float(raw.get("core_min_allocation_pct", DEFAULT_CAPITAL_POLICY["core_min_allocation_pct"])), 0.0),
         "core_batch_fraction": max(min(float(raw.get("core_batch_fraction", DEFAULT_CAPITAL_POLICY["core_batch_fraction"])), 0.5), 0.0),
         "opportunity_batch_fraction": max(min(float(raw.get("opportunity_batch_fraction", DEFAULT_CAPITAL_POLICY["opportunity_batch_fraction"])), 0.5), 0.0),
-        "max_deployable_usd": max(float(raw.get("max_deployable_usd", 0.0) or 0.0), 0.0),
+        "max_deployable_usd": float(raw.get("max_deployable_usd", 0.0) or 0.0),
         "live_test_started_at": str(raw.get("live_test_started_at", "") or ""),
         "updated_at": str(raw.get("updated_at", "") or ""),
         "preset_name": str(raw.get("preset_name", "custom")),
@@ -473,6 +481,8 @@ def _get_prediction_client():
             pass
         from event_markets.unified_client import UnifiedPredictionMarketClient
         return UnifiedPredictionMarketClient(
+            kalshi_email=os.environ.get("KALSHI_EMAIL", ""),
+            kalshi_password=os.environ.get("KALSHI_PASSWORD", ""),
             kalshi_api_key_id=os.environ.get("KALSHI_API_KEY_ID", ""),
             kalshi_private_key_path=os.environ.get("KALSHI_PRIVATE_KEY_PATH", ""),
         )
@@ -488,16 +498,64 @@ def _get_event_arbitrage_scanner():
         return None
 
 
+_SHARED_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dash_io")
+
+# ── TTL cache for expensive computations ──────────────────────────
+
+_CACHE_LOCK = threading.Lock()
+_TTL_CACHE = {}  # key -> (value, expiry_ts)
+
+def _ttl_cache_get(key):
+    with _CACHE_LOCK:
+        entry = _TTL_CACHE.get(key)
+        if entry and entry[1] > time.time():
+            return entry[0]
+    return None
+
+def _ttl_cache_set(key, value, ttl=5.0):
+    with _CACHE_LOCK:
+        _TTL_CACHE[key] = (value, time.time() + ttl)
+
+
+def _compute_capital_in_play(store, hard_cap, start_dt, limit=2000):
+    """Compute live-test capital in play with TTL caching."""
+    cache_key = f"cap_in_play_{start_dt}_{limit}"
+    cached = _ttl_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    total = 0.0
+    if store and hard_cap > 0 and start_dt is not None:
+        for t in store.load_trades(limit=limit):
+            # Treat trade as live unless explicitly marked dry_run
+            if bool(t.get('dry_run', 0)):
+                continue
+            try:
+                trade_dt = datetime.fromisoformat(str(t.get('timestamp', '')).replace('Z', '+00:00'))
+            except Exception:
+                continue
+            if trade_dt.tzinfo is None:
+                trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+            if trade_dt < start_dt:
+                continue
+            size = max(float(t.get('size_usd', 0) or 0), 0.0)
+            side = str(t.get('side', '')).upper()
+            # Deployed capital = absolute notional of all live trades (not net flow);
+            # only count BUY-side (capital deployed), not SELL-side (capital returned)
+            if side == "BUY":
+                total += size
+    result = total
+    _ttl_cache_set(cache_key, result, ttl=5.0)
+    return result
+
 def _call_with_timeout(fn, timeout_secs: float):
-    executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(fn)
+    future = _SHARED_EXECUTOR.submit(fn)
     try:
         return future.result(timeout=timeout_secs)
     except FuturesTimeoutError:
         future.cancel()
         return None
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        return None
 
 
 def _get_regime(change_pct):
@@ -542,8 +600,9 @@ def _get_accumulator():
 def _refresh_cache():
     global _cache, _cache_ts
     now = time.time()
-    if now - _cache_ts < _CACHE_TTL and _cache:
-        return
+    with _SHARED_CACHE_LOCK:
+        if now - _cache_ts < _CACHE_TTL and _cache:
+            return
 
     # Prefer the persisted cache written by the daemon. It is much faster than
     # recomputing the accumulator live on every request.
@@ -552,28 +611,30 @@ def _refresh_cache():
     if cached_signals:
         queue = list(cached_signals)
         queue.sort(key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0), reverse=True)
-        _cache = {
-            "status": signal_cache.get("status", "ok") if isinstance(signal_cache, dict) else "ok",
-            "source": "cache",
-            "queue": queue,
-            "signals": queue,
-            "total_signals": len(queue),
-            "buy_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "BUY"),
-            "sell_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "SELL"),
-            "quality_score": round(sum(float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0) for s in queue[:5]) / len(queue[:5]) if queue[:5] else 0, 3),
-            "updated_at": signal_cache.get("updated_at") if isinstance(signal_cache, dict) else None,
-        }
-        _cache_ts = now
+        with _SHARED_CACHE_LOCK:
+            _cache = {
+                "status": signal_cache.get("status", "ok") if isinstance(signal_cache, dict) else "ok",
+                "source": "cache",
+                "queue": queue,
+                "signals": queue,
+                "total_signals": len(queue),
+                "buy_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "BUY"),
+                "sell_signals": sum(1 for s in queue if str(s.get("action", "")).upper() == "SELL"),
+                "quality_score": round(sum(float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0) for s in queue[:5]) / len(queue[:5]) if queue[:5] else 0, 3),
+                "updated_at": signal_cache.get("updated_at") if isinstance(signal_cache, dict) else None,
+            }
+            _cache_ts = now
         return
 
-    if _cache:
-        _cache["status"] = _cache.get("status", "stale")
-        _cache["source"] = "stale"
-        _cache_ts = now
-        return
+    with _SHARED_CACHE_LOCK:
+        if _cache:
+            _cache["status"] = _cache.get("status", "stale")
+            _cache["source"] = "stale"
+            _cache_ts = now
+            return
 
-    _cache = {"status": "unavailable", "source": "empty", "queue": [], "signals": []}
-    _cache_ts = now
+        _cache = {"status": "unavailable", "source": "empty", "queue": [], "signals": []}
+        _cache_ts = now
 
 
 # ── API Handlers ────────────────────────────────────────────────
@@ -615,7 +676,7 @@ def api_health():
         try:
             hb_age = time.time() - float(Path(heartbeat_path).read_text().strip())
             state["daemon_heartbeat_age_sec"] = round(hb_age, 1)
-            state["components"]["daemon_heartbeat"] = "ok" if hb_age < 180 else f"stale ({hb_age:.0f}s)"
+            state["components"]["daemon_heartbeat"] = "ok" if hb_age < 180 else "stale"
         except (ValueError, OSError):
             state["components"]["daemon_heartbeat"] = "unreadable"
     else:
@@ -627,9 +688,9 @@ def api_health():
 
     state["operator_state_exists"] = os.path.exists(OPERATOR_STATE_PATH)
 
+    healthy_states = {"ok", "empty", "stale"}
     all_ok = all(
-        v == "ok" or (isinstance(v, str) and not v.startswith(("error", "stale", "missing"))) or (isinstance(v, (int, float)) and v >= 0)
-        for v in state["components"].values()
+        v in healthy_states for v in state["components"].values()
     )
     state["status"] = "healthy" if all_ok else "degraded"
     return state
@@ -686,6 +747,7 @@ def api_positions():
 
     formatted = []
     total_unrealized_pnl = 0
+    total_position_value = 0
     for p in positions_raw:
         symbol = p.get("symbol", "")
         qty = float(p.get("quantity", 0))
@@ -702,6 +764,7 @@ def api_positions():
             unrealized_pnl_pct = 0
 
         total_unrealized_pnl += unrealized_pnl
+        total_position_value += qty * current_price if current_price else 0
 
         formatted.append({
             "instrument": symbol,
@@ -726,7 +789,7 @@ def api_positions():
         "total_positions": len(formatted),
         "total_unrealized_pnl_usd": round(total_unrealized_pnl, 2),
         "total_unrealized_pnl_pct": round(
-            total_unrealized_pnl * 100 if total_unrealized_pnl else 0, 2
+            (total_unrealized_pnl / max(total_position_value, 1) * 100) if total_unrealized_pnl else 0, 2
         ),
         "positions": formatted,
     }
@@ -895,9 +958,8 @@ def api_universe():
 
     pm = _get_prediction_client()
     if pm:
-        executor = ThreadPoolExecutor(max_workers=1)
+        future = _SHARED_EXECUTOR.submit(pm.search_all_categories, limit_per_platform=8, min_volume=0, max_spread=0.25)
         try:
-            future = executor.submit(pm.search_all_categories, limit_per_platform=8, min_volume=0, max_spread=0.25)
             cats = future.result(timeout=3)
             prediction = {cat: len(items) for cat, items in cats.items()}
         except FuturesTimeoutError:
@@ -905,8 +967,6 @@ def api_universe():
             future.cancel()
         except Exception:
             prediction = {}
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
 
     if coinbase:
         graph = _graph_summary_for_products(coinbase[:25], limit=10)
@@ -976,29 +1036,14 @@ def api_execution():
         'core': round(total_value * float(policy.get('targets', {}).get('core', 0.20)), 2),
         'opportunity': round(total_value * float(policy.get('targets', {}).get('opportunity', 0.30)), 2),
     }
-    hard_cap = float(policy.get('max_deployable_usd', 0) or 0)
+    hard_cap_raw = policy.get('max_deployable_usd', None)
+    hard_cap = float(hard_cap_raw) if hard_cap_raw is not None else 0.0
     started_at = str(policy.get('live_test_started_at', '') or policy.get('updated_at', '') or '')
     try:
         start_dt = datetime.fromisoformat(started_at.replace('Z', '+00:00')) if started_at else None
     except Exception:
         start_dt = None
-    live_test_capital_in_play = 0.0
-    if hard_cap > 0 and start_dt is not None:
-        for t in store.load_trades(limit=2000) if store else []:
-            if bool(t.get('dry_run', 1)):
-                continue
-            try:
-                trade_dt = datetime.fromisoformat(str(t.get('timestamp', '')).replace('Z', '+00:00'))
-            except Exception:
-                continue
-            if trade_dt.tzinfo is None:
-                trade_dt = trade_dt.replace(tzinfo=timezone.utc)
-            if trade_dt < start_dt:
-                continue
-            size = max(float(t.get('size_usd', 0) or 0), 0.0)
-            side = str(t.get('side', '')).upper()
-            live_test_capital_in_play += size if side == 'BUY' else -size
-        live_test_capital_in_play = max(live_test_capital_in_play, 0.0)
+    live_test_capital_in_play = _compute_capital_in_play(store, hard_cap, start_dt, limit=2000)
     remaining_hard_cap = max(hard_cap - live_test_capital_in_play, 0.0) if hard_cap > 0 else 0.0
     deployable_buy_power = min(raw_cash_buy_power, remaining_hard_cap) if hard_cap > 0 else raw_cash_buy_power
     graph = _graph_summary_for_products(graph_products, limit=10) if graph_products else {"available": False, "products": [], "top_assets": [], "avg_score": 0.0}
@@ -1209,9 +1254,10 @@ def api_prediction_markets():
         categories = {}
 
     if categories is None:
-        cached = PREDICTION_MARKETS_CACHE["data"]
-        if cached and (time.time() - PREDICTION_MARKETS_CACHE["ts"] <= PREDICTION_MARKETS_TTL_SECS):
-            return cached
+        with _SHARED_CACHE_LOCK:
+            cached = PREDICTION_MARKETS_CACHE["data"]
+            if cached and (time.time() - PREDICTION_MARKETS_CACHE["ts"] <= PREDICTION_MARKETS_TTL_SECS):
+                return cached
         logger.warning("Prediction market scan timed out")
         return {"markets": [], "rankings": [], "categories": {}, "total_markets": 0}
 
@@ -1257,8 +1303,9 @@ def api_prediction_markets():
         "categories": category_counts,
         "total_markets": len(flattened),
     }
-    PREDICTION_MARKETS_CACHE["ts"] = time.time()
-    PREDICTION_MARKETS_CACHE["data"] = payload
+    with _SHARED_CACHE_LOCK:
+        PREDICTION_MARKETS_CACHE["ts"] = time.time()
+        PREDICTION_MARKETS_CACHE["data"] = payload
     return payload
 
 
@@ -1273,9 +1320,10 @@ def api_arbitrage_opportunities():
         opportunities = []
 
     if opportunities is None:
-        cached = ARBITRAGE_CACHE["data"]
-        if cached and (time.time() - ARBITRAGE_CACHE["ts"] <= ARBITRAGE_TTL_SECS):
-            return cached
+        with _SHARED_CACHE_LOCK:
+            cached = ARBITRAGE_CACHE["data"]
+            if cached and (time.time() - ARBITRAGE_CACHE["ts"] <= ARBITRAGE_TTL_SECS):
+                return cached
         logger.warning("Arbitrage scan timed out")
         return {"opportunities": [], "total_opportunities": 0}
 
@@ -1298,8 +1346,9 @@ def api_arbitrage_opportunities():
         })
 
     payload = {"opportunities": rankings[:50], "total_opportunities": len(rankings)}
-    ARBITRAGE_CACHE["ts"] = time.time()
-    ARBITRAGE_CACHE["data"] = payload
+    with _SHARED_CACHE_LOCK:
+        ARBITRAGE_CACHE["ts"] = time.time()
+        ARBITRAGE_CACHE["data"] = payload
     return payload
 
 
@@ -1388,7 +1437,8 @@ def _enrich_signals_with_graph(queue: list[dict]) -> list[dict]:
 
 def api_opportunities():
     _refresh_cache()
-    report = dict(_cache or {})
+    with _SHARED_CACHE_LOCK:
+        report = dict(_cache or {})
     queue = list(report.get("queue", []))
 
     queue.sort(key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0), reverse=True)
@@ -1407,12 +1457,14 @@ def api_opportunities():
 
 def api_signal_feed():
     _refresh_cache()
-    return _cache
+    with _SHARED_CACHE_LOCK:
+        return dict(_cache or {})
 
 
 def api_strategies_performance():
     _refresh_cache()
-    breakdown = _cache.get("strategy_breakdown", {})
+    with _SHARED_CACHE_LOCK:
+        breakdown = _cache.get("strategy_breakdown", {})
     strategies = []
     for name, count in sorted(breakdown.items()):
         strategies.append({
@@ -1435,8 +1487,15 @@ def api_strategies_performance():
         exists = next((s for s in strategies if s["name"] == name), None)
         avg_conf = sum(float(s.get("confidence", 0)) for s in sig_list) / len(sig_list) if sig_list else 0
         if exists:
-            exists["total_signals"] += len(sig_list)
-            exists["avg_confidence"] = round((exists["avg_confidence"] + avg_conf) / 2, 2)
+            old_count = exists.get("total_signals", 0)
+            new_count = len(sig_list)
+            total_count = old_count + new_count
+            if total_count > 0:
+                exists["avg_confidence"] = round(
+                    (exists["avg_confidence"] * old_count + avg_conf * new_count) / total_count,
+                    2,
+                )
+            exists["total_signals"] = total_count
         else:
             strategies.append({
                 "name": name,
@@ -1457,6 +1516,8 @@ def api_strategies_performance():
             "Multi:RSI Oscillator", "Multi:Breakout",
             "Multi:ATR Volatility", "Multi:Scalper",
             "NewsSentiment",
+            "kalman_mr", "hp_trend",
+            "funding_contrarian", "exchange_flow", "btc_dxy_corr",
         ]
         for name in defaults:
             strategies.append({
@@ -1469,6 +1530,42 @@ def api_strategies_performance():
             })
 
     return {"strategies": strategies}
+
+
+DIVERSIFICATION_STRATEGIES = [
+    {"name": "kalman_mr", "label": "Kalman Filter Mean Reversion", "source": "OHLCV (price only)", "group": "momentum_adv", "asset_class": "growth/speculative", "type": "rust", "description": "Adaptive mean reversion via 1D Kalman filter; trades >2σ deviations"},
+    {"name": "hp_trend", "label": "Hodrick-Prescott Trend", "source": "OHLCV (price only)", "group": "trend", "asset_class": "growth/speculative", "type": "rust", "description": "HP filter trend-cycle decomposition; trades cycle extremes & zero-crossings"},
+    {"name": "funding_contrarian", "label": "Funding Rate Contrarian", "source": "Binance Futures funding rates", "group": "derivatives", "asset_class": "growth", "type": "external", "description": "Extreme funding → fade crowded positions"},
+    {"name": "exchange_flow", "label": "Exchange Flow Signal", "source": "CoinGecko on-chain volume", "group": "onchain", "asset_class": "growth/speculative", "type": "external", "description": "Volume spike anomaly → distribution/accumulation detection"},
+    {"name": "btc_dxy_corr", "label": "BTC-DXY Correlation", "source": "Yahoo Finance macro (DXY)", "group": "macro_risk", "asset_class": "safe", "type": "external", "description": "BTC-DXY correlation >2σ deviation → reversion trade"},
+]
+
+
+def api_diversification_signals():
+    _refresh_cache()
+    with _SHARED_CACHE_LOCK:
+        queue = list(_cache.get("queue", []))
+
+    sig_names = {s["name"] for s in DIVERSIFICATION_STRATEGIES}
+    active_signals = [s for s in queue if s.get("strategy_name", "").lower() in sig_names]
+
+    strategies_out = []
+    for meta in DIVERSIFICATION_STRATEGIES:
+        matches = [s for s in active_signals if s.get("strategy_name", "").lower() == meta["name"]]
+        strategies_out.append({
+            **meta,
+            "active": len(matches) > 0,
+            "total_signals": len(matches),
+            "latest_signal": matches[0] if matches else None,
+        })
+
+    return {
+        "strategies": strategies_out,
+        "total_strategies": len(DIVERSIFICATION_STRATEGIES),
+        "active_strategies": sum(1 for s in strategies_out if s["active"]),
+        "total_signals": sum(s["total_signals"] for s in strategies_out),
+        "source_groups": list({s["group"] for s in DIVERSIFICATION_STRATEGIES}),
+    }
 
 
 def api_crypto_divergence():
@@ -1614,9 +1711,11 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/trade-plans": lambda: api_trade_plans(),
             "/capital/bucket-presets": lambda: api_bucket_presets(),
             "/capital/buckets": lambda: _load_json(CAPITAL_BUCKETS_PATH, {"buckets": []}),
+            "/equity-summary": lambda: _load_json(EQUITY_SUMMARY_PATH, {}),
             "/actions": lambda: api_operator_actions(),
             "/signals/opportunities": lambda: api_opportunities(),
             "/signals/feed": lambda: api_signal_feed(),
+            "/signals/diversification": lambda: api_diversification_signals(),
             "/strategies/performance": lambda: api_strategies_performance(),
         }
 
@@ -1730,8 +1829,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if not os.path.exists(dashboard_path):
             dashboard_path = os.path.join(project_root, 'trading_system', 'ui', 'dashboard.html')
         if not os.path.exists(dashboard_path):
-            dashboard_path = 'ui/dashboard.html'
-        if not os.path.exists(dashboard_path):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"Dashboard not found")
@@ -1791,6 +1888,7 @@ def main():
     print(f"  GET /trade-plans               — Full execution-intent plans")
     print(f"  GET /signals/opportunities    — BTC-XXX opportunities")
     print(f"  GET /signals/feed             — Signal queue")
+    print(f"  GET /signals/diversification  — Diversification strategies signal overview")
     print(f"  GET /strategies/performance   — Strategy breakdown")
     print(f"  GET /dashboard                — Dashboard HTML")
     print(f"Serving at http://{args.host}:{args.port}")

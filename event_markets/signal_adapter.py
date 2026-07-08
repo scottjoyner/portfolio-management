@@ -142,7 +142,7 @@ class PredictionMarketAdapter:
                     signals.extend(sigs)
             else:
                 all_cats = self.categories if self.categories != ["*"] else None
-                limit = 12 if all_cats else 12
+                limit = 20 if all_cats else 12
                 categories = self._client.search_all_categories(
                     limit_per_platform=limit, min_volume=self.min_volume, max_spread=0.25
                 )
@@ -228,9 +228,13 @@ class PredictionMarketAdapter:
     @staticmethod
     def _question_to_symbol(question: str, category: str = "general") -> str:
         """Map a prediction market question to the most relevant tradeable symbol."""
+        import re
         q = question.lower()
         for kw, sym in EVENT_SYMBOL_MAP:
-            if kw in q:
+            # Use word-boundary matching to avoid substring false positives
+            # e.g. "pol" shouldn't match "politics"
+            pattern = r"\b" + re.escape(kw) + r"\b"
+            if re.search(pattern, q):
                 return sym
         # Fallback by category
         cat_map = {

@@ -56,8 +56,10 @@ class PredictionMarket:
 
     @property
     def mid_price(self) -> float:
-        yes = self.outcome_prices.get("YES") or self.outcome_prices.get(next(iter(self.outcome_prices), ""), 0)
-        return float(yes) if yes else 0.0
+        yes = self.outcome_prices.get("YES")
+        if yes is None and self.outcome_prices:
+            yes = next(iter(self.outcome_prices.values()))
+        return float(yes) if yes is not None else 0.0
 
     @property
     def probability_extremity(self) -> float:
@@ -190,9 +192,9 @@ class UnifiedPredictionMarketClient:
             spread = pm.spread
             bid = pm.yes_bid
             ask = pm.yes_ask
-            if spread <= 0 and pm.tokens:
+            if spread <= 0 and pm.tokens and "token_id" in pm.tokens[0]:
                 book = self._polymarket.get_order_book(
-                    pm.tokens[0]["token_id"] if pm.tokens else ""
+                    pm.tokens[0]["token_id"]
                 )
                 spread = book.spread
                 bid = max((p for p, _ in book.bids), default=0)

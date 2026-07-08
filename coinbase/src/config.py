@@ -1,78 +1,274 @@
 from __future__ import annotations
+
 import os
-import sys
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
+
+log = logging.getLogger(__name__)
+
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+FALSE_VALUES = {"0", "false", "no", "n", "off"}
+
+_HAS_PYDANTIC = False
 try:
-    from pydantic import BaseModel
-except Exception:
-    class BaseModel:
-        def __init__(self, **data):
-            for k, v in data.items():
-                setattr(self, k, v)
-try:
-    from dotenv import load_dotenv
-except Exception:
-    def load_dotenv(*args, **kwargs):
-        return False
+    from pydantic import BaseModel, Field, field_validator
+    _HAS_PYDANTIC = True
+except ImportError:
+    BaseModel = object
+    def Field(default=None, **kw): return default
+    def field_validator(*a, **kw): return lambda f: f
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "graph-alpha-bot", "app", "strategies"))
-try:
-    from coinbase_universe import COINBASE_SPOT_PAIRS
-except Exception:
-    COINBASE_SPOT_PAIRS = ["BTC-USD", "ETH-USD", "SOL-USD"]
 
-load_dotenv(override=False)
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in TRUE_VALUES
 
-class Settings(BaseModel):
-    dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
-    products: list[str] = os.getenv("PRODUCTS", ",".join(COINBASE_SPOT_PAIRS)).split(",")
-    cash_ccy: str = os.getenv("CASH", "USD")
-    bar_granularity: str = os.getenv("BAR_GRANULARITY", "ONE_HOUR")
-    lookback_days: int = int(os.getenv("LOOKBACK_DAYS", "240"))
-    target_vol: float = float(os.getenv("TARGET_VOL", "0.10"))
-    risk_per_trade: float = float(os.getenv("RISK_PER_TRADE", "0.01"))
-    max_drawdown: float = float(os.getenv("MAX_DD", "0.15"))
-    min_notional: float = float(os.getenv("MIN_NOTIONAL", "10"))
-SETTINGS = Settings()
 
-class BracketSettings(BaseModel):
-    min_rr: float = float(os.getenv("MIN_RR", "2.0"))
-    stop_atr_mult: float = float(os.getenv("STOP_ATR_MULT", "2.0"))
-    target_atr_mult: float = float(os.getenv("TARGET_ATR_MULT", "3.0"))
-    trail_atr_mult: float = float(os.getenv("TRAIL_ATR_MULT", "0.0"))
-    break_even_after_r: float = float(os.getenv("BREAK_EVEN_AFTER_R", "1.0"))
-    manager_poll_secs: int = int(os.getenv("MANAGER_POLL_SECS", "5"))
-    max_open_brackets: int = int(os.getenv("MAX_OPEN_BRACKETS", "10"))
-BRACKETS = BracketSettings()
+def _env_float(name: str, default: float = 0.0) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
 
-class KellySettings(BaseModel):
-    enable: bool = os.getenv("ENABLE_KELLY", "true").lower() == "true"
-    cap: float = float(os.getenv("KELLY_CAP", "0.5"))
-    floor: float = float(os.getenv("KELLY_FLOOR", "0.1"))
-    default_rr: float = float(os.getenv("DEFAULT_RR", "2.0"))
-KELLY = KellySettings()
 
-class KellyCaps(BaseModel):
-    product_caps_json: str = os.getenv("KELLY_CAPS_PRODUCT_JSON", "{}")
-    setup_caps_json: str = os.getenv("KELLY_CAPS_SETUP_JSON", "{}")
-    @property
-    def product_caps(self) -> dict:
-        import json
-        try: return json.loads(self.product_caps_json or "{}")
-        except Exception: return {}
-    @property
-    def setup_caps(self) -> dict:
-        import json
-        try: return json.loads(self.setup_caps_json or "{}")
-        except Exception: return {}
-KELLY_CAPS = KellyCaps()
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
 
-class BanditSettings(BaseModel):
-    mode: str = os.getenv("BANDIT_MODE", "ucb1")
-    ucb_c: float = float(os.getenv("UCB_C", "0.8"))
-BANDIT = BanditSettings()
 
-class TCostSettings(BaseModel):
-    taker_fee_bps: float = float(os.getenv("TAKER_FEE_BPS", "8.0"))
-    slippage_bps: float = float(os.getenv("SLIPPAGE_BPS", "0.0"))
-    impact_coeff: float = float(os.getenv("IMPACT_COEFF", "1.5"))
-TCOST = TCostSettings()
+if _HAS_PYDANTIC:
+    from pydantic import BaseModel as _BM
+    class TradingConfig(_BM):
+        """Runtime trading configuration — overridable via env vars."""
+        mode: str = Field(default="paper")
+        dry_run: bool = Field(default=True)
+        kill_switch: bool = Field(default=True)
+        live_trading_enabled: bool = Field(default=False)
+        require_approvals: bool = Field(default=True)
+        products: str = Field(default="")
+        risk_per_trade_pct: float = Field(default=0.01)
+        max_notional_per_trade_usd: float = Field(default=100.0)
+        max_notional_per_tick_usd: float = Field(default=500.0)
+        max_positions: int = Field(default=6)
+        max_position_pct: float = Field(default=0.10)
+        max_daily_loss_pct: float = Field(default=0.03)
+        max_drawdown_pct: float = Field(default=0.10)
+        max_consecutive_losses: int = Field(default=5)
+        min_risk_reward: float = Field(default=1.5)
+        min_edge_bps: float = Field(default=15.0)
+        min_confidence: float = Field(default=0.40)
+        min_win_rate: float = Field(default=0.50)
+        min_sharpe: float = Field(default=0.5)
+        kelly_fraction: float = Field(default=0.25)
+        bracket_stop_atr_mult: float = Field(default=2.5)
+        bracket_target_atr_mult: float = Field(default=4.0)
+        breakeven_r_multiple: float = Field(default=1.5)
+        # Regime-specific ATR multipliers (override base when regime detected)
+        regime_atr_stop_mult: Dict[str, float] = Field(default_factory=lambda: {
+            "high_volatility": 3.0,
+            "ranging": 1.5,
+            "trending": 2.0,
+            "trending_bullish": 2.0,
+            "trending_bearish": 2.5,
+        })
+        regime_atr_target_mult: Dict[str, float] = Field(default_factory=lambda: {
+            "high_volatility": 5.0,
+            "ranging": 2.5,
+            "trending": 4.0,
+            "trending_bullish": 4.5,
+            "trending_bearish": 3.5,
+        })
+        coinbase_api_key: str = ""
+        coinbase_api_secret: str = ""
+        coinbase_cli_path: str = Field(default="coinbase")
+        coinbase_cli_env: str = Field(default="live")
+        products_override: Optional[List[str]] = None
+
+        @field_validator("mode")
+        @classmethod
+        def _validate_mode(cls, v: str) -> str:
+            v = v.lower().strip()
+            if v not in ("paper", "approval", "live"):
+                raise ValueError(f"mode must be paper|approval|live, got {v!r}")
+            return v
+
+        @classmethod
+        def from_env(cls) -> TradingConfig:
+            return cls(
+                mode=os.getenv("TRADER_MODE", "paper"),
+                dry_run=_env_bool("COINBASE_DRY_RUN", True),
+                kill_switch=_env_bool("KILL_SWITCH", True),
+                live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED", False),
+                require_approvals=_env_bool("REQUIRE_APPROVALS", True),
+                products=os.getenv("PRODUCTS", ""),
+                risk_per_trade_pct=float(os.getenv("RISK_PER_TRADE_PCT", "0.01")),
+                max_notional_per_trade_usd=float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "100")),
+                max_notional_per_tick_usd=float(os.getenv("TRADER_MAX_NOTIONAL_PER_TICK", "500")),
+                max_positions=int(os.getenv("MAX_POSITIONS", "30")),
+                max_position_pct=float(os.getenv("MAX_POSITION_PCT", "0.10")),
+                max_daily_loss_pct=float(os.getenv("MAX_DAILY_LOSS_PCT", "3")) / 100.0,
+                max_drawdown_pct=float(os.getenv("MAX_DRAWDOWN_PCT", "10")) / 100.0,
+                max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5")),
+                min_risk_reward=float(os.getenv("MIN_RISK_REWARD", "1.5")),
+                min_edge_bps=float(os.getenv("MIN_EDGE_BPS", "15")),
+                min_confidence=float(os.getenv("PAPER_MIN_CONFIDENCE", "0.40")),
+                min_win_rate=float(os.getenv("PAPER_MIN_WIN_RATE", "0.50")),
+                min_sharpe=float(os.getenv("PAPER_MIN_SHARPE", "0.5")),
+                kelly_fraction=float(os.getenv("KELLY_FRACTION", "0.25")),
+                bracket_stop_atr_mult=float(os.getenv("BRACKET_STOP_ATR_MULT", "2.5")),
+                bracket_target_atr_mult=float(os.getenv("BRACKET_TARGET_ATR_MULT", "4.0")),
+                breakeven_r_multiple=float(os.getenv("BREAKEVEN_R_MULTIPLE", "1.5")),
+                coinbase_api_key=os.getenv("COINBASE_API_KEY", ""),
+                coinbase_api_secret=os.getenv("COINBASE_API_SECRET", ""),
+                coinbase_cli_path=os.getenv("COINBASE_CLI_PATH", "coinbase"),
+                coinbase_cli_env=os.getenv("COINBASE_CLI_ENV", "live"),
+            )
+else:
+    @dataclass
+    class TradingConfig:
+        mode: str = "paper"
+        dry_run: bool = True
+        kill_switch: bool = True
+        live_trading_enabled: bool = False
+        require_approvals: bool = True
+        products: str = ""
+        risk_per_trade_pct: float = 0.01
+        max_notional_per_trade_usd: float = 100.0
+        max_notional_per_tick_usd: float = 500.0
+        max_positions: int = 6
+        max_position_pct: float = 0.10
+        max_daily_loss_pct: float = 0.03
+        max_drawdown_pct: float = 0.10
+        max_consecutive_losses: int = 5
+        min_risk_reward: float = 1.5
+        min_edge_bps: float = 15.0
+        min_confidence: float = 0.40
+        min_win_rate: float = 0.50
+        min_sharpe: float = 0.5
+        kelly_fraction: float = 0.25
+        bracket_stop_atr_mult: float = 2.5
+        bracket_target_atr_mult: float = 4.0
+        breakeven_r_multiple: float = 1.5
+        regime_atr_stop_mult: Dict[str, float] = field(default_factory=lambda: {
+            "high_volatility": 3.0,
+            "ranging": 1.5,
+            "trending": 2.0,
+            "trending_bullish": 2.0,
+            "trending_bearish": 2.5,
+        })
+        regime_atr_target_mult: Dict[str, float] = field(default_factory=lambda: {
+            "high_volatility": 5.0,
+            "ranging": 2.5,
+            "trending": 4.0,
+            "trending_bullish": 4.5,
+            "trending_bearish": 3.5,
+        })
+        coinbase_api_key: str = ""
+        coinbase_api_secret: str = ""
+        coinbase_cli_path: str = "coinbase"
+        coinbase_cli_env: str = "live"
+        products_override: Optional[List[str]] = None
+
+        @classmethod
+        def from_env(cls) -> TradingConfig:
+            return cls(
+                mode=os.getenv("TRADER_MODE", "paper"),
+                dry_run=_env_bool("COINBASE_DRY_RUN", True),
+                kill_switch=_env_bool("KILL_SWITCH", True),
+                live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED", False),
+                require_approvals=_env_bool("REQUIRE_APPROVALS", True),
+                products=os.getenv("PRODUCTS", ""),
+                risk_per_trade_pct=float(os.getenv("RISK_PER_TRADE_PCT", "0.01")),
+                max_notional_per_trade_usd=float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "100")),
+                max_notional_per_tick_usd=float(os.getenv("TRADER_MAX_NOTIONAL_PER_TICK", "500")),
+                max_positions=int(os.getenv("MAX_POSITIONS", "30")),
+                max_position_pct=float(os.getenv("MAX_POSITION_PCT", "0.10")),
+                max_daily_loss_pct=float(os.getenv("MAX_DAILY_LOSS_PCT", "3")) / 100.0,
+                max_drawdown_pct=float(os.getenv("MAX_DRAWDOWN_PCT", "10")) / 100.0,
+                max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "5")),
+                min_risk_reward=float(os.getenv("MIN_RISK_REWARD", "1.5")),
+                min_edge_bps=float(os.getenv("MIN_EDGE_BPS", "15")),
+                min_confidence=float(os.getenv("PAPER_MIN_CONFIDENCE", "0.40")),
+                min_win_rate=float(os.getenv("PAPER_MIN_WIN_RATE", "0.50")),
+                min_sharpe=float(os.getenv("PAPER_MIN_SHARPE", "0.5")),
+                kelly_fraction=float(os.getenv("KELLY_FRACTION", "0.25")),
+                bracket_stop_atr_mult=float(os.getenv("BRACKET_STOP_ATR_MULT", "2.5")),
+                bracket_target_atr_mult=float(os.getenv("BRACKET_TARGET_ATR_MULT", "4.0")),
+                breakeven_r_multiple=float(os.getenv("BREAKEVEN_R_MULTIPLE", "1.5")),
+                coinbase_api_key=os.getenv("COINBASE_API_KEY", ""),
+                coinbase_api_secret=os.getenv("COINBASE_API_SECRET", ""),
+                coinbase_cli_path=os.getenv("COINBASE_CLI_PATH", "coinbase"),
+                coinbase_cli_env=os.getenv("COINBASE_CLI_ENV", "live"),
+            )
+
+
+class LiveSafetyValidator:
+    """Validates that the system is safe to go live."""
+
+    @staticmethod
+    def check(config: TradingConfig) -> List[str]:
+        issues: List[str] = []
+
+        if config.kill_switch:
+            issues.append("KILL_SWITCH is active — set KILL_SWITCH=false to enable live trading")
+        if not config.live_trading_enabled:
+            issues.append("LIVE_TRADING_ENABLED is false — set to true for live mode")
+        if config.mode == "live" and config.dry_run:
+            issues.append("mode=live but COINBASE_DRY_RUN=true — orders will be preview-only")
+
+        if config.max_notional_per_trade_usd <= 0:
+            issues.append("MAX_NOTIONAL_PER_TRADE_USD must be > 0")
+        if config.risk_per_trade_pct <= 0 or config.risk_per_trade_pct > 0.5:
+            issues.append(f"RISK_PER_TRADE_PCT={config.risk_per_trade_pct} is out of range (0.001-0.50)")
+
+        if config.max_daily_loss_pct <= 0 or config.max_daily_loss_pct > 0.5:
+            issues.append(f"MAX_DAILY_LOSS_PCT={config.max_daily_loss_pct*100:.1f}% is out of range")
+
+        import shutil
+        if config.mode in ("live", "approval"):
+            if not config.coinbase_api_key or not config.coinbase_api_secret:
+                issues.append("COINBASE_API_KEY or COINBASE_API_SECRET not set")
+            cli = shutil.which(config.coinbase_cli_path)
+            if not cli:
+                cli = shutil.which("coinbase")
+            if not cli:
+                issues.append(f"Coinbase CLI '{config.coinbase_cli_path}' not found on PATH")
+
+        return issues
+
+    @staticmethod
+    def assert_safe(config: TradingConfig) -> None:
+        issues = LiveSafetyValidator.check(config)
+        if issues:
+            for i in issues:
+                log.error("LIVE SAFETY: %s", i)
+            raise RuntimeError(
+                f"Live safety checks failed ({len(issues)} issues):\n  "
+                + "\n  ".join(issues)
+            )
+
+
+class KillSwitch:
+    """File-based kill switch — touch data/trading_kill_switch to halt."""
+
+    KILL_PATH = Path("data/trading_kill_switch")
+
+    @classmethod
+    def is_active(cls) -> bool:
+        if _env_bool("KILL_SWITCH", True):
+            return True
+        return cls.KILL_PATH.exists()
+
+    @classmethod
+    def engage(cls) -> None:
+        cls.KILL_PATH.touch()
+
+    @classmethod
+    def disengage(cls) -> None:
+        cls.KILL_PATH.unlink(missing_ok=True)

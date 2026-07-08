@@ -8,12 +8,12 @@ Multi-module algorithmic trading platform spanning Python (primary) and Node.js/
 
 | Path | Purpose |
 |------|---------|
-| `coinbase/src/` | **Execution engine**: `cb_client.py` (RESTClient wrapper), `execution.py` (order placement + bracket management + trailing stop + poll loop), `data.py` (candle fetching + cache), `config.py` (pydantic Settings), `bandit.py` (UCB1 / Thompson), `tcost.py` (transaction cost), `bridge_execution.py` (Node subprocess bridge), `run_trader.py` (main trading loop — rebalance, rr-trades, manage-brackets), `run_trader_v2.py` (hardened unified trader with startup validation, graceful shutdown, health endpoint, ranking persistence) |
-| `trading_system/` | Core domain: `core/portfolio_manager.py`, `core/state_manager.py`, `core/models/`, `ui/dashboard_server.py` (12 REST endpoints), `ui/dashboard.html`, `signal_confidence.py` (ConfidenceEngine with 8 modifiers) |
+| `coinbase/src/` | **Execution engine**: `cb_client.py` (RESTClient wrapper), `execution.py` (order placement + bracket management + trailing stop + poll loop), `data.py` (candle fetching + cache), `config.py` (pydantic Settings), `bandit.py` (UCB1 / Thompson), `tcost.py` (transaction cost), `bridge_execution.py` (Node subprocess bridge), `run_trader.py` (main trading loop), `run_trader_v2.py` (hardened unified trader), `run_trader_v4.py` (EventTraderV4 with Rust path + batch scan), `pair_discovery.py` (discovers 400+ Exchange pairs by volume), `rest_feed.py` (urllib3 batch candle fetcher) |
+| `trading_system/` | Core domain: `core/portfolio_manager.py`, `core/state_manager.py`, `core/models/`, `core/signal_aggregator.py` (unified cross-product SignalAggregator with 25-strategy scan), `ui/dashboard_server.py` (12 REST endpoints), `ui/dashboard.html`, `signal_confidence.py` (ConfidenceEngine with 8 modifiers) |
 | `graph-alpha-bot/` | Graph-based AI trading bot: ~30 strategies using Neo4j knowledge graph, news ingestion pipeline, MCP server |
 | `backtester.py` | 14+ Coinbase-specific strategies + `MarketDataFetcher` + `Backtester` + benchmark runner |
-| `strategy_engine.py` | 25 general strategies + `run_strategies()` + `backtest_strategy()` with pass/fail verdict |
-| `portfolio_optimizer.py` | Continuous daemon: TLH detection, fee-tier optimization, rebalancing (80/15/5), strategy signal integration + **unified signal accumulator integration** (news, PM, arb, divergence), uses ConfidenceMatrix + ConfidenceEngine |
+| `strategy_engine.py` | 74+ strategies (72 Rust + 2 PM + 3 external-data) + `run_strategies()` + `backtest_strategy()` with pass/fail verdict. Imports Rust native path for all 74 Rust strategies when `_HAS_RUST` is True. External-data strategies: `FundingRateContrarian` (Binance funding), `ExchangeFlowSignal` (CoinGecko flows), `BTCDXYCorrelation` (Yahoo Finance cross-asset). |
+| `portfolio_optimizer.py` | Continuous daemon: TLH detection, fee-tier optimization, rebalancing (80/15/5), strategy signal integration + **unified signal accumulator integration** (news, PM, arb, divergence) + **SignalAggregator integration** (universe-wide cross-product ranking), uses ConfidenceMatrix + ConfidenceEngine |
 | `portfolio_manager.py` | Backtesting framework: Position/Portfolio classes, run strategies on historical CSV data |
 | `approval_server.py` | Lightweight HTTP server for human-in-the-loop trade approval via email approve/deny links |
 | `state_store.py` | Thread-safe SQLite persistence: trades, snapshots, bt_cache, position_ages, meta tables |
@@ -42,7 +42,7 @@ A unified pipeline consolidates the previously fragmented implementations (4 Kal
 
 **`event_markets/signal_adapter.py`** — `PredictionMarketAdapter` converts prediction market data into `AccumulatedSignal` objects for the UnifiedSignalAccumulator. Maps market questions to crypto symbols (BTC-USD, ETH-USD, etc.), generates BUY on high YES probability, SELL on low YES probability.
 
-**`strategy_engine.py: KalshiSignal + PolymarketSignal`** — Strategy classes that implement `on_bar()` (matching the 25-strategy interface) but fetch live prediction market data via the unified client. Registered in `ALL_STRATEGIES` as `"kalshi"` and `"polymarket"`, mapped to `CLASS_STRATEGIES` for growth/speculative asset classes.
+**`strategy_engine.py: KalshiSignal + PolymarketSignal`** — Strategy classes that implement `on_bar()` (matching the strategy interface) but fetch live prediction market data via the unified client. Registered in `ALL_STRATEGIES` as `"kalshi"` and `"polymarket"`, mapped to `CLASS_STRATEGIES` for growth/speculative asset classes.
 
 **`confidence_matrix.py`** — Added `"prediction_market"` independence group (strategies: `kalshi`, `polymarket`), default weights (0.5 each), and `CLASS_BOOST` entries (safe=0.9, growth=1.0, speculative=1.2).
 
@@ -116,7 +116,7 @@ PredictionMarket (mid_price=0.75)
 
 ### Signal Generation Layer (3 parallel engines)
 
-**`strategy_engine.py`** — 25 strategies across 4 rounds/families:
+**`strategy_engine.py`** — 74+ strategies across 4 rounds/families:
 - Trend: EMA_Crossover, MACD, TRIX, ADX, ParabolicSAR, HullMA, Aroon
 - Momentum: RSI_MeanReversion, ChandeMomentum, WilliamsR, ZScoreReversion, ForceIndex
 - Volatility: BollingerBreakout, VWAP_Reversion, KeltnerChannels, DonchianChannels
@@ -129,15 +129,64 @@ PredictionMarket (mid_price=0.75)
 
 **`graph-alpha-bot/`** — Graph-based strategies (MA crossover on graph, news centrality momentum, supply chain shock diffusion, insider cluster drift).
 
-### Confidence Scoring Pipeline
+**External-data strategies (3)** — Pure Python strategies fetching independent data sources:
+- `FundingRateContrarian` (`strategy_engine.py`) — Binance Futures public API (`premiumIndex`);
+  extreme funding > 0.1bps → fade (crowded long SELL, crowded short BUY). Completely
+  independent of price action — uses derivatives market data.
+- `ExchangeFlowSignal` (`strategy_engine.py`) — CoinGecko `market_chart` volume anomaly
+  detection; volume spike on up-move = distribution (SELL), on down-move = accumulation
+  (BUY). Uses on-chain volume proxy, independent of technical indicators.
+- `BTCDXYCorrelation` (`strategy_engine.py`) — Yahoo Finance BTC-USD × DXY rolling 90-day
+  correlation; > 2σ deviation from 1yr mean → reversion trade. Macro cross-asset signal.
+
+### SignalAggregator — Universe-Wide Cross-Product Ranking
+
+**`trading_system/core/signal_aggregator.py`** — Runs all 25 Rust strategies on every product simultaneously, backtest-validates each signal, computes long-term trend, and produces `UnifiedSignal` per product with a unified score (-1 to +1) and cross-product priority.
+
+**`UnifiedSignal` fields:**
+- `unified_score` — net direction magnitude (-1 strong SELL to +1 strong BUY)
+- `consensus_score` — weighted consensus from all 25 strategies
+- `backtest_quality` — avgs `win_rate × sharpe × profit_factor` of passing strategies
+- `trend_score` — long-term trend from 50/200 SMA, ADX, volume ratio
+- `conviction` — fraction of strategies agreeing on dominant direction
+- `priority` — composite for cross-product ranking (= abs(score) × conviction × bt_quality)
+- `top_strategies` — top 5 strategies by (confidence × backtest quality)
+
+**Integration into portfolio_optimizer.py:**
+- `_detect_aggregator_signals()` runs as the **10th detection dimension** (after accumulator, before event markets)
+- Gets top-50 pairs by 24h USD volume via `pair_discovery`
+- Fetches 100 hourly candles via `rest_feed.fetch_candles_batch()` (parallel)
+- Runs `SignalAggregator.scan_universe()` → ranked results
+- Filters to top-5 BUY/SELL with `priority >= 0.05`
+- Trend-aligned trades (BUY + bullish trend, SELL + bearish trend) get **1.2× confidence multiplier**
+- Creates `OpportunityType.STRATEGY_SIGNAL` opportunities with full metadata
+- 300s cooldown
+
+**Flow:**
+```
+top_coinbase_pairs(n=50) → fetch_candles_batch(50 pairs)
+  → SignalAggregator.scan_universe()
+    → Rust evaluate_all (0.04ms × 50 = 2ms)
+    → batch_backtest_rust (rayon, ~2ms)
+    → _compute_trend (50/200 SMA + ADX + volume)
+    → _compute_unified (consensus × bt_quality × trend × conviction)
+  → ranked UnifiedSignal list
+  → _detect_aggregator_signals() → top-5 → Opportunity[]
+```
+
+## Confidence Scoring Pipeline
 
 ```
-Raw Signal → ConfidenceMatrix (confidence_matrix.py)
-               Groups strategies into 4 independence families:
-               trend, momentum, volatility, volume
-               Weights by backtest cache performance
+Raw Signal → ConfidenceMatrix (rust_core/src/confidence.rs)
+               Groups 74+ strategies into 12 independence families:
+               trend (13), momentum (11), volatility (10), volume (11),
+               pattern (8), momentum_adv (9), prediction_market (2), sentiment (1),
+               derivatives (1), onchain (1), order_flow (1), macro_risk (2)
+               + Regime-aware group weighting (trending/ranging/volatile)
+               + Correlation penalty (sqrt scaling within each group)
                +15% per additional agreeing group
-               1.1x for 3+ strategies
+               1.15x for 5+ strategies, 1.1x for 3+
+               Extended: aggregate_ext(signals, asset, currency, bt_weights, regime)
 
            → ConfidenceEngine (trading_system/signal_confidence.py)
                8 modifiers applied in order:
@@ -223,8 +272,18 @@ Detection order per tick: TLH → coinbase universe → stock → fee tier → r
 
 ```
 Coinbase API/CLI ──→ MarketDataFetcher (backtester.py) ──┐
-                                                          ▼
-YFinance/Alpha Vantage ──→ data/unified_fetcher.py ──→ strategy_engine.py (25 strategies)
+            ┌───── pair_discovery (400+ pairs) ─────┐     │
+            │           ▼                            │     ▼
+            │  rest_feed.fetch_candles_batch()       │
+            │           ▼                            │
+            │  SignalAggregator.scan_universe()      │
+            │  (50 Rust strategies, backtest, trend) │
+            │           ▼                            │
+            │  UnifiedSignal ranked list             │
+            └───── ─ ─ ─ ─ ─ ─ ─ ─ ─ ── ─ ─ ─ ─ ─ ┘
+                                                      │
+                                                      ▼
+YFinance/Alpha Vantage ──→ data/unified_fetcher.py ──→ strategy_engine.py (74 strategies)
                                                           │
                                                           ▼
                                                   ConfidenceMatrix (group & weight)
@@ -233,7 +292,10 @@ YFinance/Alpha Vantage ──→ data/unified_fetcher.py ──→ strategy_engi
                                                   ConfidenceEngine (8 modifiers)
                                                           │
                                                           ▼
-                                                  portfolio_optimizer.py (TLH/fee/rebalance/signals)
+                                                  portfolio_optimizer.py (10 detection dimensions)
+                                                    TLH / universe / stock / fee-tier / rebalance /
+                                                    strategy signals / volume cycles / accumulator /
+                                                    **aggregator** / event markets
                                                           │
                                                           ▼
                                                   approval_server.py (email approve/deny)
@@ -306,6 +368,33 @@ python3 -m unittest test_paper_trading_system
 python3 -m unittest test_unified_signal_accumulator
 ```
 
+## Restart / Redeploy
+
+```bash
+# Check current state
+python3 run_production.py status
+
+# Restart everything under systemd (preferred after code/UI changes)
+sudo systemctl restart portfolio-trader.service
+
+# Stop all managed processes
+sudo systemctl stop portfolio-trader.service
+
+# Start the full stack again
+sudo systemctl start portfolio-trader.service
+```
+
+Recommended order for a code/UI redeploy:
+1. Run the relevant compile checks or tests.
+2. Update the dashboard/UI if new API fields were added.
+3. Restart the supervisor with `sudo systemctl restart portfolio-trader.service`.
+4. Confirm `run_production.py status` shows all children healthy.
+
+Notes:
+1. `run_production.py start` is systemd-aware and stays in the foreground when invoked by the unit.
+2. `deploy/portfolio-trader.service` is the canonical unit definition for future installs.
+3. If the installed unit drifts, copy the repo unit into `/etc/systemd/system/portfolio-trader.service` and run `sudo systemctl daemon-reload`.
+
 ## Config Files
 
 | File | Purpose |
@@ -317,11 +406,138 @@ python3 -m unittest test_unified_signal_accumulator
 
 ## Strategy Count
 
-- **strategy_engine.py**: 25 strategies
+- **strategy_engine.py / rust_core**: 74+ strategies across 12 independence groups
 - **backtester.py**: 14+ strategies (9 core + 6 novel)
 - **graph-alpha-bot**: ~30 graph-based strategies
 - **multi_strategy_paper_trading.py**: 6 strategies (momentum, mean-reversion, RSI, breakout, volatility, scalping)
-- **Total**: ~75+ strategies across all engines (some overlap)
+- **External-data custom**: 3 strategies (funding_contrarian, exchange_flow, btc_dxy_corr)
+- **Total**: ~120+ strategies across all engines (some overlap)
+
+## All-Rust Signal Pipeline (74 strategies)
+
+All 50 technical strategies run in native Rust via `evaluate_all_py()` / `evaluate_all_opens_py()`. The old NumPy/GPU batch path (5 strategies) and Python `run_strategies()` are fallbacks only.
+
+### Rust Strategy Modules
+
+| File | Contents |
+|------|----------|
+| `rust_core/src/indicators.rs` | 20+ indicators: SMA, EMA, EMA slice, WMA, WMA slice, RSI, Bollinger, Z-score, MACD, TRIX, ATR, highest, lowest, index_of_highest/lowest, OBV series, VPT series, SAR series, Wilder smooth, `ema_last_two()` |
+| `rust_core/src/strategies.rs` | All 25 strategy functions + `evaluate()` (single) + `evaluate_all()` (batch). Crossover detection computed from data slices (no state tracking). |
+| `rust_core/src/backtest.rs` | Walk-forward backtester for all 25 strategies. Symmetric entry/exit on opposite signals. |
+| `rust_core/src/confidence.rs` | Confidence Matrix — multi-strategy signal aggregation with independence groups, backtest weighting, asset-class boosts. Mirrors `confidence_matrix.py`. |
+| `rust_core/src/streaming.rs` | Streaming (incremental) indicators — RingBuffer, StreamingIndicators (EMA/SMA/RSI/MACD), StreamingEngine. O(1) per-tick. Mirrors `trading_system/core/streaming.py`. |
+| `rust_core/src/regime.rs` | Regime detection — ADX, trend strength, volatility, Hurst exponent, skewness, kurtosis, price position, serial correlation. 8 regime classifier. Mirrors `coinbase/src/regime.py`. |
+| `rust_core/src/lib.rs` | PyO3 bindings: `evaluate_all_py()`, `run_strategy_py()`, `backtest_strategy_py()`, `backtest_multi_py()`, `confidence_aggregate_py()`, `detect_regime_py()`, `PyStreamingEngine`, `PyStreamingIndicators`, indicator wrappers |
+
+### All 74 Strategies
+
+| # | Name | Type | Data Req'd | Logic |
+|---|------|------|-----------|-------|
+| 1 | `ema_cross` | Trend | closes | EMA(9) × EMA(21) crossover |
+| 2 | `rsi_revert` | Momentum | closes | RSI(14) < 30 or > 70 |
+| 3 | `boll_break` | Volatility | closes | Price × Bollinger(20,2) |
+| 4 | `zscore_revert` | Momentum | closes | Z-score(30) < -2 or > 2 |
+| 5 | `vol_mom` | Volume | closes, volumes | Vol > 1.5× avg + price Δ > 5% |
+| 6 | `macd` | Trend | closes | MACD(12,26,9) histogram × 0 |
+| 7 | `vwap_revert` | Volatility | closes, volumes | Price 3% from VWAP |
+| 8 | `obv_div` | Volume | closes, volumes | Price/OBV divergence over 14 bars |
+| 9 | `cmo` | Momentum | closes | CMO(14) < -50 or > 50 |
+| 10 | `trix` | Trend | closes | Triple EMA(15) × 0 |
+| 11 | `adx` | Trend | closes, highs, lows | ADX(14) > 25 + DI crossover |
+| 12 | `keltner` | Volatility | closes, highs, lows | EMA(20) ± ATR(14)×2 |
+| 13 | `chaikin_mf` | Volume | closes, volumes, highs, lows | CMF(21) > 0.1 or < -0.1 |
+| 14 | `williams_r` | Momentum | closes, highs, lows | %R(14) < -80 or > -20 |
+| 15 | `psar` | Trend | closes, highs, lows | Parabolic SAR flip (af=0.02) |
+| 16 | `hma` | Trend | closes | HMA(9) × HMA(21) crossover |
+| 17 | `force_idx` | Volume | closes, volumes | Force Index(13) × 0 |
+| 18 | `vpt` | Volume | closes, volumes | VPT × EMA(21) crossover |
+| 19 | `donchian` | Volatility | closes, highs, lows | 20-bar channel breakout |
+| 20 | `aroon` | Trend | closes, highs, lows | Aroon(25) oscillator × 50 |
+| 21 | `price_eff` | Volume | closes, volumes | Efficiency WMA(7) × 0.8 |
+| 22 | `scci` | Momentum | closes | sCCI(28) < -30 or > 30 |
+| 23 | `range_exp_idx` | Volatility | closes, highs, lows | REI(21) × 0 |
+| 24 | `ema_dev` | Trend | closes | EMA(14) deviation × 0 |
+| 25 | `snr_idx` | Momentum | closes | Signal-to-Noise ratio > 1.0 |
+| 26 | `candle_pat` | Pattern | closes, opens, highs, lows | Engulfing, doji, hammer + volume confirm |
+| 27 | `sup_res` | Pattern | closes, opens, highs, lows | Swing-based S/R bounce signal |
+| 28 | `liq_vac` | Pattern | closes, opens, highs, lows, volumes | ATR breakout after tight range |
+| 29 | `cvd_flow` | Momentum | closes, opens, highs, lows, volumes | CVD divergence vs price |
+| 30 | `vcp` | Volatility | closes, opens, highs, lows | Volatility compression pattern |
+| 31 | `impulse_exh` | Pattern | closes, opens, highs, lows, volumes | After 3+ strong bars + fading volume |
+| 32 | `mom_accel` | Momentum | closes, volumes | ROC(5) acceleration > threshold |
+| 33 | `rsi_fail` | Momentum | closes | RSI failure swing (M/W top/bottom) |
+| 34 | `avwap` | Pattern | closes, opens, highs, lows, volumes | VWAP bounces through volume profile |
+| 35 | `donch_pull` | Pattern | closes, opens, highs, lows | Pullback to Donchian mean after breakout |
+| 36 | `vol_prof` | Volume | closes, opens, highs, lows, volumes | Volume profile 70% value area at S/R |
+| 37 | `bb_squeeze` | Volatility | closes, opens, highs, lows | Bollinger band squeeze + ATR pop |
+| 38 | `multi_rsi` | Momentum | closes | RSI(7) × RSI(21) crossover |
+| 39 | `linreg_slope` | Momentum | closes, volumes | Linreg slope > 0.1 with volume |
+| 40 | `hurst` | Momentum | closes, opens, volumes | Hurst < 0.5 mean-reversion, > 0.5 trend |
+| 41 | `elder_ray` | Trend | closes, highs, lows | Bull/Bear Power vs EMA(13) |
+| 42 | `klinger` | Volume | closes, volumes, highs, lows | VF MA(13) × MA(55) crossover |
+| 43 | `pivot_points` | Pattern | closes, highs, lows | Swing high/low breakout |
+| 44 | `ichimoku` | Trend | closes, highs, lows | Conversion(9) × Base(26) cross |
+| 45 | `choppiness` | Volatility | closes, highs, lows | CI > 60 range / < 30 trend |
+| 46 | `true_cci` | Momentum | closes, highs, lows | CCI(20) < -100 or > 100 |
+| 47 | `dpo` | Trend | closes | DPO(20) × 0 cross |
+| 48 | `kst` | Momentum | closes | 4-period summed ROC MA cross |
+| 49 | `mass_idx` | Volatility | closes, highs, lows | MI > 27 reversal after extension |
+| 50 | `ulcer` | Momentum | closes | UI drawdown recovery / risk rise |
+| ... | (51-72 updated previously) | | | |
+| 73 | `kalman_mr` | Momentum | closes | Kalman filter adaptive mean reversion; 1D state-space model, trade > 2σ deviation |
+| 74 | `hp_trend` | Trend | closes | HP filter trend-cycle decomposition; trade cycle extremes & zero-crossings |
+
+### Performance
+
+| Operation | Latency | Speedup vs Old |
+|-----------|---------|----------------|
+| 1 product × 50 strategies | **0.04ms** | 25× (was 1ms for 5 strat NumPy) |
+| 5 products × 50 strategies | **0.2ms** | 80× (was 16ms) |
+| 34 products × 50 strategies | **~1.4ms** | projected |
+| All 50 backtests (rayon) | **~2ms** | similar |
+| **Full tick (34 prods)** | **~8ms** | — |
+| **WebSocket → eval** | **~34ms** | 26ms network + 8ms compute |
+
+### Architecture
+
+```
+WebSocket (~1s ticker)
+  → StreamingIndicators.update()          O(1) per tick
+    → _evaluate(product_id)               on price change > 0.05%
+      → rust_core.evaluate_all_py()       0.04ms per product
+      → batch_backtest_rust()             ~2ms rayon-parallel
+      → opportunity ranking               confidence × win-rate × sharpe
+                                          (regime-weighted + correlation-penalized)
+```
+
+### Key Files
+
+- `strategy_engine.py` — `batch_signals_rust()` (prefers Rust), `batch_signals_fast()` (NumPy fallback), `_RUST_STRATEGIES` (all 50), `batch_backtest_rust()`
+- `coinbase/src/sentiment/crypto_news_sentiment.py` — `CryptoNewsSentiment` fetches 6 crypto RSS feeds (CoinDesk, CoinTelegraph, CryptoSlate, The Block, Decrypt, Bitcoin Magazine), maps articles to product IDs via `KNOWN_CRYPTO_SYMBOLS`, scores sentiment with expanded keyword lists (+90 positive, +60 negative), generates BUY/SELL signals with confidence. Integrates as background thread in `run_trader_v4.py`, feeds opportunities via `_paper_execute()`, appears in `health_status["news_sentiment"]`. 5-min TTL in-memory cache.
+- `coinbase/src/run_trader_v4.py` — `EventTraderV4` using `rust_core.evaluate_all_py()` as primary path. Structured logging with per-strategy counters, best-opp summary, periodic stats dump every 50 ticks.
+  - **Paper trader config** (all tunable via CLI):
+    - `paper_min_confidence=0.55` — minimum signal confidence (was 0.40)
+    - `paper_min_edge_bps=15.0` — minimum net edge in bps after fees (was 5.0)
+    - `paper_min_trade_usd=100` — minimum trade notional (was $25)
+    - `paper_min_win_rate=0.60` — minimum strategy backtest win rate (was 0.55)
+    - `paper_min_sharpe=0.8` — minimum Sharpe for strategy entry (was 0.5)
+    - `paper_max_new_positions=12` — max concurrent open positions (was 30)
+    - `paper_product_cooldown_s=1800` — per-product cooldown in seconds (was 900)
+    - `paper_maker_pct=0.50` — fraction of orders simulated as maker (limit) vs taker
+  - **Dynamic fee model**: Uses `FEE_TIERS` matching Coinbase Advanced fee schedule. `_fee_tier()` returns (tier, taker_bps, maker_bps) based on `paper_trailing_volume_30d`. Effective rate blended by `paper_maker_pct`. Persisted across restarts.
+  - **Unknown-regime skip**: Products with `regime="unknown"` or `atr_14<=0` are skipped (insufficient data).
+  - **Pulse-aware confidence gate**: Repeat signals on same product+strategy >3 pulses within 1800s get confidence halved.
+  - **Health endpoint**: Exposes `fee_tier`, `trailing_volume_30d`, `taker_bps`, `maker_bps`, `effective_fee_bps`, `maker_pct`.
+- `rust_core/src/` — Complete Rust implementation: indicators, strategies, backtest, confidence matrix, streaming, PyO3 bindings
+- `trading_system/core/streaming.py` — StreamingIndicators (O(1) incremental)
+- `trading_system/core/timing.py` — LatencyProfiler (per-stage p50/p95/p99)
+- `trading_system/core/signal_aggregator.py` — UnifiedSignal dataclass, SignalAggregator with scan_universe(), _compute_trend() (50/200 SMA, ADX, volume), _compute_unified() (consensus × backtest_quality × trend × conviction)
+- `trading_system/core/performance_model.py` — LatencyProfile, expected_round_trip_ms(), expected_fill_delay_ms(), expected_exit_delay_ms(), latency_tuned_priority()
+- `coinbase/src/pair_discovery.py` — get_all_coinbase_pairs() (volume-filtered 400+ pairs), top_coinbase_pairs() (top N by volume)
+- `coinbase/src/multi_hop.py` — route planner for direct and bridged conversion paths
+- `coinbase/src/rest_feed.py` — fetch_candles_rest() (urllib3 keep-alive), fetch_candles_batch() (parallel, max_workers)
+- `strategy_engine.py`: `FundingRateContrarian`, `ExchangeFlowSignal`, `BTCDXYCorrelation` — 3 Python
+  external-data strategies (funding rates, CoinGecko flows, Yahoo Finance macro)
 
 ## Critical Safety Rules
 

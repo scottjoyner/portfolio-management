@@ -2,7 +2,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from time import monotonic_ns
-from pydantic import BaseModel, Field
+try:
+    from pydantic import BaseModel, Field
+except ImportError:
+    BaseModel = object
+    def Field(default=..., **kwargs):
+        if kwargs.get("default_factory") is not None:
+            return kwargs["default_factory"]()
+        return default if default is not ... else None
 from typing import List, Optional, Dict, Any
 
 class CapitalBucketType(str, Enum):

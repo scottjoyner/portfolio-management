@@ -4,6 +4,8 @@ This plan defines the next implementation sequence after the P2 opportunity/risk
 
 Live trading remains blocked. All work below is for paper/review workflows until a separate live-certification release exists.
 
+Cross-asset bearish-regime expansion is a distinct upcoming workstream. The current trader is crypto-spot oriented; the roadmap now includes regime-aware decline handling and later short-capable / hedge-capable adapters.
+
 ## Current baseline assumptions
 
 The system now has these major product surfaces:
@@ -61,6 +63,21 @@ pnpm migrations:validate
 ```
 
 All should run without syntax failures.
+
+## P0.4 Cross-asset bearish-regime spec
+
+Before any execution changes, publish and review the bearish-regime plan:
+
+- Define `risk_on | risk_off | crash | rebound` regime states.
+- Map BTC + SPX weakness into explicit bearish policy.
+- Define supported intents for future adapters (`LONG`, `SHORT`, `HEDGE`, `FLAT`).
+- Decide the first short-capable venue path (likely crypto perpetuals before equities).
+
+Acceptance criteria:
+
+- The roadmap is approved before code changes.
+- The trader remains crypto-only until the adapter layer is certified.
+- The plan is visible in the repo and linked from architecture/runbook docs.
 
 ## P1 — Browser-level operator workflow testing
 

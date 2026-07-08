@@ -1,136 +1,129 @@
 from __future__ import annotations
-import math
+
+import logging
 import random
-from dataclasses import dataclass
-from typing import Optional
-from .protocols import Direction, BacktestFill, FillModel
+from dataclasses import dataclass, field
+from typing import Dict, Optional
+
+log = logging.getLogger(__name__)
+
+# Typical slippage bps by volume tier (24h USD volume)
+SLIPPAGE_TABLE: list[tuple[float, float, float]] = [
+    (50_000_000, 0.3, 0.5),    # Mega-cap: BTC, ETH
+    (10_000_000, 0.5, 1.0),    # Large-cap: SOL, XRP
+    (1_000_000, 1.0, 2.0),     # Mid-cap: ADA, DOT, LINK
+    (100_000, 2.0, 4.0),       # Small-cap
+    (0, 4.0, 8.0),             # Micro-cap
+]
 
 
 @dataclass
-class OrderBookLevel:
-    price: float
-    size: float
+class FillEstimate:
+    entry_price: float = 0.0
+    exit_price: float = 0.0
+    entry_slippage_bps: float = 0.0
+    exit_slippage_bps: float = 0.0
+    fill_seconds: float = 0.0
+    partial_fill_pct: float = 1.0
 
 
-@dataclass
-class OrderBookSnapshot:
-    bids: list[OrderBookLevel]
-    asks: list[OrderBookLevel]
-    spread_bps: float
-    mid_price: float
-    total_bid_volume: float
-    total_ask_volume: float
+class FillModel:
+    """Realistic fill simulation for paper trading.
 
+    Models:
+      - Slippage based on 24h volume tier (wider for smaller pairs)
+      - Random variance around base slippage
+      - Partial fills on low-volume pairs (some orders don't fill)
+      - Fill delay based on liquidity
+      - Maker/taker fee assignment consistent with execution quality
 
-class OrderBookSimulator:
-    def __init__(self, mid_price: float, volume_24h: float,
-                 avg_spread_bps: float = 3.0, depth_levels: int = 10):
-        self.mid_price = mid_price
-        self.volume_24h = volume_24h
-        self.avg_spread_bps = avg_spread_bps
-        self.depth_levels = depth_levels
+    Usage:
+        fill = FillModel()
+        estimate = fill.estimate(product_id, side, qty, price, volume_24h)
+        # Use estimate.entry_price / .exit_price instead of raw price
+    """
 
-    def snapshot(self) -> OrderBookSnapshot:
-        spread = self.mid_price * self.avg_spread_bps / 10000
-        bid = self.mid_price - spread / 2
-        ask = self.mid_price + spread / 2
-        vol_per_level = self.volume_24h / 24 / 3600 * 5
-        bids = []
-        asks = []
-        decay = 0.7
-        for i in range(self.depth_levels):
-            level_vol = vol_per_level * (decay ** i) * random.uniform(0.8, 1.2)
-            bids.append(OrderBookLevel(
-                price=bid * (1 - i * self.avg_spread_bps / 10000),
-                size=level_vol / max(bid, 1e-9),
-            ))
-            asks.append(OrderBookLevel(
-                price=ask * (1 + i * self.avg_spread_bps / 10000),
-                size=level_vol / max(ask, 1e-9),
-            ))
-        total_bid_vol = sum(l.size * l.price for l in bids)
-        total_ask_vol = sum(l.size * l.price for l in asks)
-        return OrderBookSnapshot(
-            bids=bids, asks=asks,
-            spread_bps=self.avg_spread_bps,
-            mid_price=self.mid_price,
-            total_bid_volume=total_bid_vol,
-            total_ask_volume=total_ask_vol,
-        )
+    def __init__(self, seed: Optional[int] = None):
+        self._rng = random.Random(seed)
 
+    def estimate(
+        self,
+        product_id: str,
+        side: str,
+        qty: float,
+        price: float,
+        volume_24h: float,
+    ) -> FillEstimate:
+        volume_tier = self._volume_tier(volume_24h)
+        base_slippage, max_slippage = volume_tier
 
-class AdaptiveFillModel(FillModel):
-    def __init__(self, fee_bps: float = 8.0, base_slippage_bps: float = 1.5,
-                 impact_coeff: float = 2.0, partial_fill_threshold: float = 0.3):
-        self.fee_bps = fee_bps
-        self.base_slippage_bps = base_slippage_bps
-        self.impact_coeff = impact_coeff
-        self.partial_fill_threshold = partial_fill_threshold
+        # Larger orders relative to market volume get worse fills.
+        notional = max(qty * price, 0.0)
+        size_impact = 1.0
+        if volume_24h > 0:
+            participation = notional / max(volume_24h, 1e-9)
+            # 0.1% of daily volume starts to matter; 1% becomes expensive.
+            size_impact = 1.0 + min(3.0, participation * 25.0)
 
-    def fill(self, direction: Direction, price: float, size: float,
-             bid: float, ask: float, volume: float) -> BacktestFill:
-        book = OrderBookSimulator(price, volume, depth_levels=15)
-        snapshot = book.snapshot()
-        actual_spread = snapshot.spread_bps
-        notional = price * size
-        impact_bps = self._market_impact(notional, volume, price) if volume > 0 else 0.0
-        total_slippage = self.base_slippage_bps + impact_bps
-        if direction == Direction.LONG:
-            fill_price = price * (1 + (self.fee_bps + total_slippage) / 10000)
+        # Random variance: 0.5x to 1.5x of base slippage
+        slippage_mult = 0.5 + self._rng.random()
+        slippage_bps = min(base_slippage * slippage_mult * size_impact, max_slippage)
+
+        # Bid-ask spread proxy: slippage / 2
+        half_spread_bps = slippage_bps / 2.0
+
+        # Entry: market order buys at ask (higher), sells at bid (lower)
+        side_u = side.upper() if side else ""
+        if side_u == "BUY":
+            entry_slippage = half_spread_bps * (0.8 + self._rng.random() * 0.4)
+            entry_price = price * (1.0 + entry_slippage / 10_000.0)
         else:
-            fill_price = price * (1 - (self.fee_bps + total_slippage) / 10000)
-        fees = notional * (self.fee_bps / 10000)
-        partial = False
-        fill_pct = 1.0
-        if actual_spread > 10:
-            fill_pct = max(0.0, min(1.0, 1.0 - (actual_spread - 10) / 200))
-        if actual_spread > 50:
-            partial = True
-            fill_pct = max(0.0, 1.0 - (actual_spread - 50) / 100)
-        if notional > 0 and volume > 0:
-            market_depth_ratio = notional / max(volume * price, 1e-9)
-            if market_depth_ratio > self.partial_fill_threshold:
-                partial = True
-                fill_pct *= max(0.0, 1.0 - (market_depth_ratio - self.partial_fill_threshold))
-        final_size = size * max(0.0, fill_pct)
-        return BacktestFill(
-            timestamp=0.0,
-            price=fill_price,
-            size=final_size,
-            fees=fees,
-            slippage=total_slippage,
-            partial=partial,
+            entry_slippage = half_spread_bps * (0.8 + self._rng.random() * 0.4)
+            entry_price = price * (1.0 - entry_slippage / 10_000.0)
+
+        # Exit: opposite side, additional slippage
+        if side_u == "BUY":
+            exit_slippage = half_spread_bps * (0.8 + self._rng.random() * 0.4) * 1.1
+            exit_price = price * (1.0 - exit_slippage / 10_000.0)
+        else:
+            exit_slippage = half_spread_bps * (0.8 + self._rng.random() * 0.4) * 1.1
+            exit_price = price * (1.0 + exit_slippage / 10_000.0)
+
+        # Fill delay based on volume
+        if volume_24h >= 50_000_000:
+            fill_seconds = 0.1 + self._rng.random() * 0.3
+        elif volume_24h >= 10_000_000:
+            fill_seconds = 0.3 + self._rng.random() * 1.0
+        elif volume_24h >= 1_000_000:
+            fill_seconds = 0.5 + self._rng.random() * 2.0
+        elif volume_24h >= 100_000:
+            fill_seconds = 1.0 + self._rng.random() * 5.0
+        else:
+            fill_seconds = 2.0 + self._rng.random() * 10.0
+
+        # Partial fill risk for thin markets
+        if volume_24h < 100_000:
+            partial_fill_pct = 0.7 + self._rng.random() * 0.3
+        elif volume_24h < 1_000_000:
+            partial_fill_pct = 0.85 + self._rng.random() * 0.15
+        else:
+            partial_fill_pct = 0.95 + self._rng.random() * 0.05
+
+        return FillEstimate(
+            entry_price=round(entry_price, 6),
+            exit_price=round(exit_price, 6),
+            entry_slippage_bps=round(entry_slippage, 2),
+            exit_slippage_bps=round(exit_slippage, 2),
+            fill_seconds=round(fill_seconds, 2),
+            partial_fill_pct=round(min(1.0, partial_fill_pct), 4),
         )
 
-    @staticmethod
-    def _market_impact(notional: float, volume_24h: float, price: float) -> float:
-        adv = volume_24h * price
-        if adv <= 0:
-            return 2.0
-        participation = notional / max(adv, 1e-9)
-        return min(50.0, 5.0 * math.sqrt(participation * 100)) if participation > 0 else 0.0
+    def is_maker(self, maker_pct: float) -> bool:
+        """Randomly determine if this fill was a maker (limit) or taker (market)."""
+        return self._rng.random() < maker_pct
 
-
-class FillEngine:
-    def __init__(self, model: Optional[FillModel] = None):
-        self.model = model or AdaptiveFillModel()
-        self._fills: list[BacktestFill] = []
-
-    def execute(self, direction: Direction, price: float, size: float,
-                bid: float, ask: float, volume: float) -> BacktestFill:
-        fill = self.model.fill(direction, price, size, bid, ask, volume)
-        self._fills.append(fill)
-        return fill
-
-    def stats(self) -> dict:
-        if not self._fills:
-            return {"avg_slippage_bps": 0.0, "total_fees": 0.0, "partial_fills": 0}
-        total_fees = sum(f.fees for f in self._fills)
-        avg_slip = sum(f.slippage for f in self._fills) / len(self._fills)
-        partials = sum(1 for f in self._fills if f.partial)
-        return {
-            "avg_slippage_bps": round(avg_slip, 2),
-            "total_fees": round(total_fees, 4),
-            "partial_fills": partials,
-            "total_fills": len(self._fills),
-        }
+    def _volume_tier(self, volume_24h: float) -> tuple[float, float]:
+        for threshold, min_s, max_s in SLIPPAGE_TABLE:
+            if volume_24h >= threshold:
+                return min_s, max_s
+        return SLIPPAGE_TABLE[-1][1], SLIPPAGE_TABLE[-1][2]

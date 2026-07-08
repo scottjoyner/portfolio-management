@@ -1,0 +1,118 @@
+# Portfolio Trading System Configuration
+# All settings can be overridden via environment variables (see config_manager.py)
+
+mode: "paper"                    # "paper", "live", "approval"
+environment: "development"       # "development", "staging", "production"
+
+feature_flags:
+  # Core features
+  enable_live_trading: false
+  enable_paper_trading: true
+  enable_shorts: true
+  enable_leverage: true
+  enable_prediction_markets: true
+  enable_news_sentiment: true
+  enable_macro_risk: true
+  enable_pair_trading: false
+  
+  # Scanning
+  enable_minute_scan: true
+  enable_batch_scan: true
+  enable_full_scan: true
+  
+  # Risk
+  enable_portfolio_risk: true
+  enable_correlation_clustering: true
+  enable_dynamic_leverage: true
+  enable_kelly_sizing: true
+  
+  # Execution
+  enable_bracket_orders: true
+  enable_trailing_stops: true
+  enable_trailing_take_profit: true
+  enable_maker_orders: true
+  
+  # WebSocket
+  enable_public_ws: true
+  enable_advanced_ws: true
+  
+  # Observability
+  enable_metrics_server: true
+  enable_structured_logging: true
+  enable_approval_server: true
+
+scan:
+  minute_scan_interval: 60
+  minute_scan_top_n: 150
+  minute_scan_min_top_n: 10
+  minute_scan_max_top_n: 80
+  minute_scan_use_hotset: false
+  minute_scan_hotset_size: 150
+  
+  batch_scan_interval: 300
+  batch_scan_top_n: 50
+  batch_scan_min_volume: 1000
+  
+  full_scan_interval: 900
+  full_scan_granularity: 3600
+
+risk:
+  # Portfolio limits
+  max_portfolio_drawdown_pct: 15.0
+  max_daily_loss_pct: 5.0
+  max_sector_exposure_pct: 30.0
+  max_single_asset_pct: 10.0
+  max_correlated_positions: 3
+  max_leverage: 1.5
+  min_cash_buffer_pct: 5.0
+  
+  # Per-trade limits
+  risk_per_trade_pct: 1.0
+  min_risk_reward: 1.5
+  max_notional_per_trade_usd: 5000.0
+  
+  # Sizing
+  kelly_fraction: 0.25
+  max_position_pct: 0.10
+  min_trade_usd: 25.0
+  
+  # Cooldowns
+  product_cooldown_seconds: 300
+  max_new_positions: 50
+
+thresholds:
+  paper_min_confidence: 0.30
+  paper_min_win_rate: 0.35
+  paper_min_sharpe: 0.3
+  paper_min_edge_bps: 0.5
+  paper_maker_pct: 0.50
+  min_change_pct: 0.05
+
+live:
+  require_approval: true
+  approval_base_url: "http://localhost:8080"
+  dry_run: true
+  max_positions: 10
+  max_position_pct: 0.05
+  max_drawdown_pct: 10.0
+  max_daily_loss_pct: 3.0
+  max_notional_per_trade_usd: 100.0
+  risk_per_trade_pct: 0.5
+  min_risk_reward: 2.0
+
+log_level: "INFO"
+log_file: "logs/trader-v4.log"
+
+health_port: 9090
+metrics_port: 9091
+
+ws_url: "wss://ws-feed.exchange.coinbase.com"
+adv_ws_url: "wss://advanced-trade-ws.coinbase.com"
+
+candle_cache_ttl:
+  60: 15.0
+  300: 45.0
+  900: 90.0
+  3600: 180.0
+  21600: 300.0
+  86400: 600.0

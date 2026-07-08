@@ -33,6 +33,11 @@ This is a **complete paper trading system** that bridges backtesting with real m
 - ✅ Mock execution fallback for testing without credentials
 - ✅ Comprehensive error handling
 
+### **Current Scope Limitations**
+- Crypto trader execution is spot-oriented today.
+- Bearish BTC / SPX regimes are detected as risk context, but not yet expressed with dedicated short-capable execution.
+- Equity, ETF, and futures adapters are part of the roadmap, not the current paper trader.
+
 ---
 
 ## 🔑 Prerequisites
@@ -100,6 +105,12 @@ python3 paper_trading_system.py
 # ✅ Alpaca Paper Trading Connected (sandbox mode)
 # 📊 System ready for paper trading!
 ```
+
+---
+
+## 📌 Roadmap Note
+
+If you are operating this system during broad market weakness, treat the current trader as a long-biased crypto engine with regime gating. The next planned expansion is a cross-asset bearish-regime layer that can block longs, add hedges, and eventually trade short-capable instruments.
 
 ---
 

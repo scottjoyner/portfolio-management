@@ -6,6 +6,13 @@ from typing import List, Optional, Dict, Tuple, Any
 
 from .protocols import Direction, Opportunity
 
+# Try Rust-native fee optimizer backend
+try:
+    from rust_core import PyFeeTracker as _RustFeeTracker
+    _HAS_RUST_FEE = True
+except ImportError:
+    _HAS_RUST_FEE = False
+
 
 @dataclass
 class FeeTier:
@@ -27,14 +34,25 @@ COINBASE_FEE_TIERS: List[FeeTier] = [
 
 class FeeTracker:
     def __init__(self, initial_volume_30d: float = 0.0):
-        self._initial_volume = initial_volume_30d
-        self._trades_30d: List[Tuple[float, float]] = []
+        if _HAS_RUST_FEE:
+            self._rust = _RustFeeTracker(initial_volume_30d)
+        else:
+            self._initial_volume = initial_volume_30d
+            self._trades_30d: List[Tuple[float, float]] = []
 
     @property
     def rolling_30d_volume(self) -> float:
+        if _HAS_RUST_FEE:
+            return self._rust.rolling_30d_volume()
         return self._initial_volume + sum(v for _, v in self._trades_30d)
 
     def get_current_tier(self) -> FeeTier:
+        if _HAS_RUST_FEE:
+            return FeeTier(
+                min_volume=self._rust.current_tier_min_volume(),
+                maker_rate=self._rust.current_tier_maker_rate(),
+                taker_rate=self._rust.current_tier_taker_rate(),
+            )
         vol = self.rolling_30d_volume
         for tier in reversed(COINBASE_FEE_TIERS):
             if vol >= tier.min_volume:
@@ -42,6 +60,14 @@ class FeeTracker:
         return COINBASE_FEE_TIERS[0]
 
     def get_next_tier(self) -> Optional[FeeTier]:
+        if _HAS_RUST_FEE:
+            mv = self._rust.next_tier_min_volume()
+            if mv is None:
+                return None
+            for tier in COINBASE_FEE_TIERS:
+                if tier.min_volume == mv:
+                    return tier
+            return FeeTier(min_volume=mv, maker_rate=0.0, taker_rate=0.0)
         current = self.get_current_tier()
         for tier in COINBASE_FEE_TIERS:
             if tier.min_volume > current.min_volume:
@@ -49,6 +75,8 @@ class FeeTracker:
         return None
 
     def volume_to_next_tier(self) -> float:
+        if _HAS_RUST_FEE:
+            return self._rust.volume_to_next_tier()
         current = self.get_current_tier()
         next_tier = self.get_next_tier()
         if next_tier:
@@ -56,21 +84,32 @@ class FeeTracker:
         return 0.0
 
     def record_trade(self, volume_usd: float, timestamp: Optional[float] = None):
-        self._trades_30d.append((timestamp or time.time(), volume_usd))
-        self._prune()
+        if _HAS_RUST_FEE:
+            self._rust.record_trade(volume_usd, timestamp)
+        else:
+            self._trades_30d.append((timestamp or time.time(), volume_usd))
+            self._prune()
 
     def fee_cost(self, trade_volume: float, is_maker: bool) -> float:
+        if _HAS_RUST_FEE:
+            return self._rust.fee_cost(trade_volume, is_maker)
         tier = self.get_current_tier()
         rate = tier.maker_rate if is_maker else tier.taker_rate
         return trade_volume * rate
 
     def maker_rate(self) -> float:
+        if _HAS_RUST_FEE:
+            return self._rust.maker_rate()
         return self.get_current_tier().maker_rate
 
     def taker_rate(self) -> float:
+        if _HAS_RUST_FEE:
+            return self._rust.taker_rate()
         return self.get_current_tier().taker_rate
 
     def savings_to_next_tier(self, projected_monthly_volume: float) -> float:
+        if _HAS_RUST_FEE:
+            return self._rust.savings_to_next_tier(projected_monthly_volume)
         current = self.get_current_tier()
         next_tier = self.get_next_tier()
         if not next_tier:
@@ -80,11 +119,20 @@ class FeeTracker:
         return maker_savings + taker_savings
 
     def to_state(self) -> dict:
+        if _HAS_RUST_FEE:
+            initial_vol, trades = self._rust.to_state()
+            return {"initial_volume_30d": initial_vol, "trades_30d": list(trades)}
         return {"initial_volume_30d": self._initial_volume, "trades_30d": self._trades_30d}
 
     @classmethod
     def from_state(cls, state: Optional[dict] = None) -> FeeTracker:
         state = state or {}
+        if _HAS_RUST_FEE:
+            initial_vol = float(state.get("initial_volume_30d", 0.0))
+            trades = [(float(ts), float(v)) for ts, v in (state.get("trades_30d", []) or [])]
+            ft = cls.__new__(cls)
+            ft._rust = _RustFeeTracker.from_state(initial_vol, trades)
+            return ft
         tracker = cls(initial_volume_30d=float(state.get("initial_volume_30d", 0.0)))
         trades = state.get("trades_30d", []) or []
         tracker._trades_30d = [(float(ts), float(v)) for ts, v in trades]

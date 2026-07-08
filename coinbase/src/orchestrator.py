@@ -24,6 +24,7 @@ from .fear_greed import FearGreedSignalAdapter
 from .news_risk import NewsRiskAdjuster
 from .market_condition import MarketConditionStrategySelector, MarketConditionProfile
 from .capital_buckets import CapitalBucketLedger
+from trading_system.core.performance_model import LatencyProfile, expected_fill_delay_ms
 log = logging.getLogger(__name__)
 
 
@@ -74,6 +75,7 @@ class ExecutionOrchestrator:
         futures_portfolio_uuid: str = "",
         futures_margin_type: str = "CROSS",
         futures_default_leverage: float = 2.0,
+        pending_file: str = "data/pending_approvals.json",
     ):
         self.cb = cb
         if self.cb is None and mode != TradeMode.PAPER:
@@ -86,6 +88,12 @@ class ExecutionOrchestrator:
             pass
         self.mode = mode
         self.dry_run = dry_run
+        self.pending_file = pending_file
+        self.live_min_cash_reserve_usd = self._env_float("TRADER_LIVE_MIN_CASH_RESERVE_USD", 100.0)
+        self.live_max_order_usd = self._env_float("TRADER_LIVE_MAX_ORDER_USD", 50.0)
+        self.live_max_total_notional_usd = self._env_float("TRADER_LIVE_MAX_TOTAL_NOTIONAL_USD", 50.0)
+        self.live_max_open_positions = self._env_int("TRADER_LIVE_MAX_OPEN_POSITIONS", 1)
+        self.live_allow_short = self._env_bool("TRADER_LIVE_ALLOW_SHORT", False)
         self.exec_engine = NativeExecutionEngine(self.cb, dry_run) if self.cb else None
         self.bracket_mgr = BracketManager(self.exec_engine)
         self.futures_exec = None
@@ -134,10 +142,149 @@ class ExecutionOrchestrator:
         self.news_risk = NewsRiskAdjuster()
         self.market_selector = MarketConditionStrategySelector()
         self.bucket_ledger = CapitalBucketLedger.from_env()
+        self.latency_profile = LatencyProfile()
+        self.min_live_edge_bps = self._env_float("TRADER_MIN_LIVE_EDGE_BPS", 25.0)
+        self.min_live_confidence = self._env_float("TRADER_MIN_LIVE_CONFIDENCE", 0.95)
         if self.mode == TradeMode.PAPER:
             seed_cash = float(self.bucket_ledger.summary().get("total_value_usd", 0.0))
             self.state.cash = seed_cash
             self.state.equity = seed_cash
+
+    @staticmethod
+    def _env_bool(name: str, default: bool = False) -> bool:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(float(os.getenv(name, str(default))))
+        except (TypeError, ValueError):
+            return default
+
+    def _kill_switch_active(self) -> bool:
+        if self._env_bool("TRADER_KILL_SWITCH", False):
+            return True
+        kill_path = os.getenv("TRADER_KILL_SWITCH_PATH", "data/trading_kill_switch")
+        try:
+            return os.path.exists(kill_path)
+        except Exception:
+            return False
+
+    def _blocked_result(self, sig: TradeSignal, reason: str, status: str = "blocked") -> Dict[str, Any]:
+        return {
+            "success": False,
+            "status": status,
+            "reason": reason,
+            "product_id": sig.product_id,
+            "side": sig.direction.value,
+            "size": sig.size,
+            "entry": sig.entry_price,
+            "notional": sig.size * sig.entry_price,
+            "mode": self.mode.value,
+            "bucket_id": sig.bucket_id,
+        }
+
+    def _estimated_live_edge_bps(self, sig: TradeSignal) -> float:
+        """Estimate whether a live trade can overcome fees and latency."""
+
+        horizon_ms = 60.0 * 60.0 * 1000.0
+        if sig.strategy_name:
+            name = sig.strategy_name.lower()
+            if name in {"arb", "cross_exchange_arb"}:
+                horizon_ms = 5.0 * 60.0 * 1000.0
+            elif name in {"mean_reversion", "rsi_revert", "zscore_revert"}:
+                horizon_ms = 120.0 * 60.0 * 1000.0
+            elif name in {"prediction_market", "kalshi", "polymarket"}:
+                horizon_ms = 240.0 * 60.0 * 1000.0
+
+        confidence = max(0.0, min(1.0, sig.confidence))
+        rr = abs(sig.target_price - sig.entry_price) / max(abs(sig.entry_price - sig.stop_price), 1e-9)
+        gross_bps = (0.55 * confidence + 0.25 * min(rr / 3.0, 1.0) + 0.20 * min(sig.opportunity_score, 1.0)) * 70.0
+        fill_ms = expected_fill_delay_ms(self.latency_profile, liquidity_score=1.0, crossing_spread=True)
+        latency_bps = min(20.0, fill_ms / 100.0)
+        fee_bps = 10.0 + 5.0
+        return gross_bps - fee_bps - latency_bps
+
+    def _pre_execution_block_reason(self, sig: TradeSignal) -> Optional[str]:
+        if self._kill_switch_active():
+            return "kill_switch"
+        notional = sig.size * sig.entry_price
+        max_order = self._env_float(
+            "TRADER_CHALLENGE_MAX_ORDER_USD",
+            self._env_float("MAX_NOTIONAL_PER_TRADE_USD", 10000.0),
+        )
+        if max_order > 0 and notional > max_order:
+            return "max_order_notional"
+        if self._env_bool("TRADER_LIVE_CHALLENGE_ONLY", False):
+            bucket_id = (sig.bucket_id or "challenge").strip()
+            if bucket_id != "challenge":
+                return "bucket_not_allowed"
+        if self.mode != TradeMode.PAPER:
+            if sig.direction != Direction.LONG and not self.live_allow_short:
+                return "shorts_disabled_for_live_spot"
+            if sig.confidence < self.min_live_confidence:
+                return "min_live_confidence"
+            if self._estimated_live_edge_bps(sig) < self.min_live_edge_bps:
+                return "insufficient_live_edge"
+            if sig.direction == Direction.LONG:
+                live_cash = self._available_live_cash_usd()
+                if live_cash is not None and notional > max(0.0, live_cash - self.live_min_cash_reserve_usd):
+                    return "insufficient_live_cash"
+            if len(self.state.open_positions) >= self.live_max_open_positions:
+                return "live_max_open_positions"
+            if self.live_max_order_usd > 0 and notional > self.live_max_order_usd:
+                return "live_max_order_usd"
+            if self.live_max_total_notional_usd > 0 and self._live_open_notional() + notional > self.live_max_total_notional_usd:
+                return "live_max_total_notional_usd"
+        return None
+
+    def _available_live_cash_usd(self) -> Optional[float]:
+        if not self.cb:
+            return None
+        try:
+            accounts = self.cb.list_accounts()
+        except Exception as exc:
+            log.debug("Unable to fetch live balances: %s", exc)
+            return None
+
+        items = accounts.get("accounts") or accounts.get("data") or accounts
+        if not isinstance(items, list):
+            return None
+        for acct in items:
+            if not isinstance(acct, dict):
+                continue
+            currency = str(acct.get("currency") or acct.get("asset") or "").upper()
+            if currency != "USD":
+                continue
+            avail = acct.get("available_balance") or acct.get("available") or acct.get("balance") or 0
+            if isinstance(avail, dict):
+                avail = avail.get("value", 0)
+            try:
+                return float(avail or 0.0)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _live_open_notional(self) -> float:
+        total = 0.0
+        for pos in self.state.open_positions.values():
+            try:
+                size = float(pos.get("size", 0.0))
+                entry = float(pos.get("entry", 0.0))
+                total += max(0.0, size * entry)
+            except Exception:
+                continue
+        return total
 
     def set_risk_appetite(self, controller: DynamicRiskController):
         self.risk_appetite = controller
@@ -273,7 +420,29 @@ class ExecutionOrchestrator:
 
     def execute_signals(self, signals: List[TradeSignal]) -> List[Dict[str, Any]]:
         results = []
-        for sig in signals:
+        executed_count = 0
+        tick_notional = 0.0
+        default_max_orders = 3 if self.mode == TradeMode.PAPER else 1
+        max_orders = max(0, self._env_int("TRADER_MAX_ORDERS_PER_TICK", default_max_orders))
+        max_tick_notional = self._env_float("TRADER_MAX_NOTIONAL_PER_TICK", 0.0)
+
+        for sig in sorted(signals, key=lambda s: s.opportunity_score, reverse=True):
+            block_reason = self._pre_execution_block_reason(sig)
+            if block_reason:
+                result = self._blocked_result(sig, block_reason)
+                results.append(result)
+                continue
+
+            notional = sig.size * sig.entry_price
+            if max_orders > 0 and executed_count >= max_orders:
+                result = self._blocked_result(sig, "max_orders_per_tick", status="deferred")
+                results.append(result)
+                continue
+            if max_tick_notional > 0 and tick_notional + notional > max_tick_notional:
+                result = self._blocked_result(sig, "max_notional_per_tick", status="deferred")
+                results.append(result)
+                continue
+
             if self.mode == TradeMode.PAPER:
                 result = self._paper_execute(sig)
             elif self.mode == TradeMode.LIVE_APPROVAL:
@@ -283,12 +452,15 @@ class ExecutionOrchestrator:
             else:
                 result = self._live_execute(sig)
             results.append(result)
+            if result.get("success"):
+                executed_count += 1
+                tick_notional += notional
             for listener in self._listeners:
                 try:
                     listener(sig, result)
                 except Exception:
                     pass
-        self.state.daily_trades += len(results)
+        self.state.daily_trades += len([r for r in results if r.get("success")])
         self.state.daily_volume += sum(
             r.get("notional", 0) for r in results if r.get("success")
         )
@@ -355,9 +527,12 @@ class ExecutionOrchestrator:
     def _live_execute(self, sig: TradeSignal) -> Dict[str, Any]:
         if not self.cb or not self.exec_engine:
             return {"success": False, "reason": "no CB client", "product_id": sig.product_id}
+        if sig.direction != Direction.LONG and not self.live_allow_short:
+            return {"success": False, "reason": "shorts_disabled_for_live_spot", "product_id": sig.product_id}
+        side = "BUY" if sig.direction == Direction.LONG else "SELL"
         bracket = self.bracket_mgr.place_bracket(
             product_id=sig.product_id,
-            side=sig.direction.value,
+            side=side,
             base_size=sig.size,
             entry_price=sig.entry_price,
             stop_price=sig.stop_price,
@@ -414,14 +589,14 @@ class ExecutionOrchestrator:
         }
         pending = {}
         try:
-            if os.path.exists("pending_approvals.json"):
-                with open("pending_approvals.json") as f:
+            if os.path.exists(self.pending_file):
+                with open(self.pending_file) as f:
                     fcntl.flock(f, fcntl.LOCK_SH)
                     pending = json.load(f)
         except Exception:
             pass
         pending[token] = approval
-        with open("pending_approvals.json", "w") as f:
+        with open(self.pending_file, "w") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             json.dump(pending, f, indent=2, default=str)
         self.state.pending_approvals.append(approval)
@@ -449,16 +624,7 @@ class ExecutionOrchestrator:
 
         self.bucket_ledger.open_position(bucket_id, sig.product_id, sig.direction.value, sig.size, sig.entry_price, sig.strategy_name)
 
-        self.state.open_positions[sig.product_id] = {
-            "direction": sig.direction.value,
-            "size": sig.size,
-            "entry": sig.entry_price,
-            "stop": sig.stop_price,
-            "target": sig.target_price,
-            "strategy": sig.strategy_name,
-            "bucket_id": bucket_id,
-            "timestamp": time.time(),
-        }
+        self.state.open_positions[sig.product_id] = self._merged_position_state(sig, bucket_id)
         self.fee_tracker.record_trade(notional)
         self.volume_generator.record_generated(notional)
         log.info(f"[PAPER] {sig.direction.value} {sig.product_id} {sig.size:.4f} @ {sig.entry_price:.2f}")
@@ -472,6 +638,32 @@ class ExecutionOrchestrator:
             "mode": "paper",
             "cash_remaining": self.state.cash,
             "bucket_id": bucket_id,
+        }
+
+    def _merged_position_state(self, sig: TradeSignal, bucket_id: str) -> Dict[str, Any]:
+        existing = self.state.open_positions.get(sig.product_id) or {}
+        if existing.get("direction") == sig.direction.value:
+            old_size = float(existing.get("size", 0.0))
+            old_entry = float(existing.get("entry", sig.entry_price))
+            combined_size = old_size + sig.size
+            if combined_size > 0:
+                entry = ((old_size * old_entry) + (sig.size * sig.entry_price)) / combined_size
+                size = combined_size
+            else:
+                entry = sig.entry_price
+                size = sig.size
+        else:
+            entry = sig.entry_price
+            size = sig.size
+        return {
+            "direction": sig.direction.value,
+            "size": size,
+            "entry": entry,
+            "stop": sig.stop_price,
+            "target": sig.target_price,
+            "strategy": sig.strategy_name,
+            "bucket_id": bucket_id,
+            "timestamp": time.time(),
         }
 
     def generate_fee_volume(self, product_id: str, current_price: float,
@@ -569,6 +761,26 @@ class ExecutionOrchestrator:
         self.state.daily_trades = 0
         self.state.daily_volume = 0.0
 
+    def execution_guard_status(self) -> Dict[str, Any]:
+        default_max_orders = 3 if self.mode == TradeMode.PAPER else 1
+        return {
+            "kill_switch_active": self._kill_switch_active(),
+            "kill_switch_path": os.getenv("TRADER_KILL_SWITCH_PATH", "data/trading_kill_switch"),
+            "challenge_max_order_usd": self._env_float(
+                "TRADER_CHALLENGE_MAX_ORDER_USD",
+                self._env_float("MAX_NOTIONAL_PER_TRADE_USD", 10000.0),
+            ),
+            "max_orders_per_tick": max(0, self._env_int("TRADER_MAX_ORDERS_PER_TICK", default_max_orders)),
+            "max_notional_per_tick": self._env_float("TRADER_MAX_NOTIONAL_PER_TICK", 0.0),
+            "live_challenge_only": self._env_bool("TRADER_LIVE_CHALLENGE_ONLY", False),
+            "live_min_cash_reserve_usd": self.live_min_cash_reserve_usd,
+            "live_max_order_usd": self.live_max_order_usd,
+            "live_max_total_notional_usd": self.live_max_total_notional_usd,
+            "live_max_open_positions": self.live_max_open_positions,
+            "live_allow_short": self.live_allow_short,
+            "bucket_state_path": self.bucket_ledger.state_path,
+        }
+
     def status(self) -> Dict[str, Any]:
         return {
             "mode": self.mode.value,
@@ -582,6 +794,7 @@ class ExecutionOrchestrator:
             "risk_limit": self.risk_mgr.limit.value,
             "fee_tier": self.fee_tracker.tier_display(),
             "capital_buckets": self.bucket_ledger.summary(),
+            "execution_guards": self.execution_guard_status(),
             "fee_tier_volume_30d": round(self.fee_tracker.rolling_30d_volume, 2),
             "volume_to_next_tier": round(self.fee_tracker.volume_to_next_tier(), 2),
         }

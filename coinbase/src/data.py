@@ -121,7 +121,7 @@ class _MiniEWM:
         ema = None
         for v in self.series:
             if v is None:
-                out.append(ema)
+                out.append(ema)  # Keep last valid EMA instead of None
                 continue
             ema = v if ema is None else (self.alpha * v) + ((1 - self.alpha) * ema)
             out.append(ema)

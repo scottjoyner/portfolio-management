@@ -32,12 +32,13 @@ class DataSourceFactory:
         Create a data source instance by name.
         
         Args:
-            name: Source identifier ('yfinance', 'alphavantage')
+            name: Source identifier ('yahoo_direct', 'yfinance', 'alphavantage')
             
         Returns:
             Configured DataSource instance
         """
         sources = {
+            'yahoo_direct': self._create_yahoo_direct,
             'yfinance': self._create_yfinance,
             'alphavantage': self._create_alphavantage,
             'default': self._create_default
@@ -48,6 +49,11 @@ class DataSourceFactory:
         
         return sources[name]()
     
+    def _create_yahoo_direct(self) -> Any:
+        """Create Yahoo Finance direct data source (bypasses yfinance cookie issues)."""
+        from .yahoo_direct import YahooDirectDataSource
+        return YahooDirectDataSource()
+
     def _create_yfinance(self) -> Any:
         """Create yfinance data source."""
         from .yfinance import YFinanceDataSource
@@ -80,7 +86,7 @@ class DataSourceFactory:
         """
         results = {}
         
-        for name in ['yfinance', 'alphavantage']:
+        for name in ['yahoo_direct', 'yfinance', 'alphavantage']:
             try:
                 source = self.create_source(name)
                 if hasattr(source, 'health_check'):
@@ -111,8 +117,8 @@ class DataSourceFactory:
             Data from the first successful source, or empty with error info
         """
         if preferred_sources is None:
-            # Default order: yfinance -> alphavantage -> default
-            preferred_sources = ['yfinance', 'alphavantage', 'default']
+            # Default order: yahoo_direct -> alphavantage -> yfinance -> default
+            preferred_sources = ['yahoo_direct', 'alphavantage', 'yfinance', 'default']
         
         for source_name in preferred_sources:
             try:

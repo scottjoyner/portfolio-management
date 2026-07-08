@@ -5,12 +5,25 @@ Production supervisor for the unified market system.
 Launches and monitors:
   1. unified_market_daemon.py — scans Coinbase WS + prediction markets + arbitrage
   2. dashboard_server.py     — serves the web UI on port 8002
+  3. trader-v4               — EventTraderV4 paper trading with all-Rust strategies,
+                                cross-asset regime, config.py pydantic fallback
+  4. llm-watchdog             — multi-model LLM risk oversight daemon
 
-Automatically restarts crashed processes. Writes PID files for external
-monitoring. Traps SIGINT/SIGTERM for graceful shutdown.
+ The supervisor normally forks to background on `start`, writes per-process PID files,
+ and auto-restarts crashed children. When launched under systemd (or via `run`), it stays
+ in the foreground so `Type=simple` units work correctly. Traps SIGINT/SIGTERM for graceful shutdown.
+
+Hardening applied in trader-v4 (all internal):
+  - Cross-asset regime gates long entries & scales sizing
+  - config.py falls back to @dataclass when pydantic is absent
+  - Per-product cooldown (1800s) prevents re-entry chatter
+  - Maker/taker split (50% maker) reduces simulated fee impact
+  - Min price change filter (0.05%) avoids noise evaluations
+  - Minute-level scans (60s) + batch scans (300s) + full scans (3600s)
+  - Hot-ticker prioritisation for minute scans
 
 Usage:
-    python3 run_production.py {start|stop|restart|status}
+    python3 run_production.py {start|run|stop|restart|status}
 """
 
 import os
@@ -47,9 +60,52 @@ PROCESSES: dict[str, dict] = {
         "logfile": LOGDIR / "dashboard.log",
         "proc": None,
     },
+    "trader-v4": {
+        "script": "coinbase/src/run_trader_v4.py",
+        "args": [
+            "--mode", "paper",
+            "--health-port", "9090",
+            "--log-file", "logs/trader-v4.log",
+            "--enable-shorts",
+            "--enable-leverage",
+            "--max-leverage", "2.0",
+            "--minute-scan-interval", "60",
+            "--minute-scan-top", "150",
+            "--minute-scan-min-top", "10",
+            "--minute-scan-max-top", "80",
+            "--minute-scan-use-hotset",
+            "--minute-scan-hotset-size", "150",
+            "--scan-interval", "300",
+            "--scan-top", "50",
+            "--scan-min-vol", "1000",
+            "--full-scan-interval", "300",
+            "--paper-product-cooldown-seconds", "300",
+            "--paper-maker-pct", "0.80",
+            "--min-change", "0.05",
+        ],
+        "pidfile": LOGDIR / "trader-v4.pid",
+        "logfile": LOGDIR / "trader-v4.log",
+        "proc": None,
+    },
+    "llm-watchdog": {
+        "script": "scripts/trading/llm_watchdog_daemon.py",
+        "args": [
+            "--status-url", "http://localhost:9090/health",
+        ],
+        "pidfile": LOGDIR / "llm-watchdog.pid",
+        "logfile": LOGDIR / "llm-watchdog.log",
+        "proc": None,
+    },
 }
 
 _shutdown_requested = False
+
+# Crash-loop backoff tracking
+_restart_counts: dict[str, int] = {}
+_last_restart_ts: dict[str, float] = {}
+_START_BACKOFF_S: float = 5.0
+_MAX_BACKOFF_S: float = 300.0
+_HEALTHY_UPTIME_S: float = 60.0
 
 
 def _signal_handler(signum: int, _frame) -> None:
@@ -59,8 +115,54 @@ def _signal_handler(signum: int, _frame) -> None:
     sys.stdout.flush()
 
 
+def _running_under_systemd() -> bool:
+    return bool(os.environ.get("INVOCATION_ID") or os.environ.get("NOTIFY_SOCKET") or os.environ.get("JOURNAL_STREAM"))
+
+
+def _pidfile_path() -> Path:
+    return LOGDIR / "supervisor.pid"
+
+
+def _write_supervisor_pid(pidfile: Path) -> None:
+    pidfile.write_text(str(os.getpid()))
+
+
+def _remove_supervisor_pid(pidfile: Path) -> None:
+    try:
+        pidfile.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _backoff_delay(name: str, now: float) -> float:
+    """Exponential backoff: 5s, 10s, 20s, 40s, ... max 300s."""
+    n = _restart_counts.get(name, 0)
+    if n == 0:
+        return 0.0
+    delay = min(_START_BACKOFF_S * (2 ** (n - 1)), _MAX_BACKOFF_S)
+    return delay
+
+
 def _start(name: str) -> subprocess.Popen:
     cfg = PROCESSES[name]
+    now = time.time()
+
+    # Crash-loop backoff: if restarted too recently, wait
+    delay = _backoff_delay(name, now)
+    if delay > 0:
+        last_ts = _last_restart_ts.get(name, 0.0)
+        elapsed = now - last_ts
+        if elapsed < delay:
+            wait = delay - elapsed
+            sys.stdout.write(f"  {name}: crash-loop backoff, waiting {wait:.0f}s (restart #{_restart_counts.get(name, 0)})\n")
+            sys.stdout.flush()
+            for _ in range(int(wait)):
+                if _shutdown_requested:
+                    break
+                time.sleep(1)
+            if _shutdown_requested:
+                return cfg.get("proc")
+
     fh = open(cfg["logfile"], "a")
     fh.write(f"\n--- Started at {time.strftime('%Y-%m-%dT%H:%M:%S')} ---\n")
     fh.flush()
@@ -72,7 +174,9 @@ def _start(name: str) -> subprocess.Popen:
     )
     cfg["proc"] = proc
     cfg["pidfile"].write_text(str(proc.pid))
-    sys.stdout.write(f"  {name}: PID {proc.pid}\n")
+    _restart_counts[name] = _restart_counts.get(name, 0) + 1
+    _last_restart_ts[name] = now
+    sys.stdout.write(f"  {name}: PID {proc.pid} (restart #{_restart_counts[name]})\n")
     sys.stdout.flush()
     return proc
 
@@ -118,8 +222,17 @@ def supervise() -> None:
     sys.stdout.flush()
 
     while not _shutdown_requested:
+        now = time.time()
         for name in PROCESSES:
-            proc = PROCESSES[name]["proc"]
+            cfg = PROCESSES[name]
+            proc = cfg.get("proc")
+            # Reset restart counter if process has been healthy for HEALTHY_UPTIME_S
+            last_ts = _last_restart_ts.get(name, 0.0)
+            if last_ts > 0 and (now - last_ts) >= _HEALTHY_UPTIME_S:
+                if _restart_counts.get(name, 0) > 0:
+                    sys.stdout.write(f"  {name}: healthy for {_HEALTHY_UPTIME_S:.0f}s, resetting restart counter\n")
+                    sys.stdout.flush()
+                _restart_counts[name] = 0
             if proc and proc.poll() is not None:
                 ret = proc.poll()
                 sys.stdout.write(f"  {name} exited code {ret}, restarting...\n")
@@ -135,8 +248,17 @@ def supervise() -> None:
     _shutdown_all()
 
 
+def run_foreground() -> None:
+    pidfile = _pidfile_path()
+    _write_supervisor_pid(pidfile)
+    try:
+        supervise()
+    finally:
+        _remove_supervisor_pid(pidfile)
+
+
 def status() -> None:
-    sup_pidfile = LOGDIR / "supervisor.pid"
+    sup_pidfile = _pidfile_path()
     if sup_pidfile.exists():
         try:
             pid = int(sup_pidfile.read_text().strip())
@@ -171,7 +293,7 @@ def status() -> None:
 
 
 def stop() -> None:
-    sup_pidfile = LOGDIR / "supervisor.pid"
+    sup_pidfile = _pidfile_path()
     pid = None
     if sup_pidfile.exists():
         try:
@@ -218,10 +340,7 @@ def stop() -> None:
             cfg["pidfile"].unlink(missing_ok=True)
         except OSError:
             pass
-    try:
-        sup_pidfile.unlink(missing_ok=True)
-    except OSError:
-        pass
+    _remove_supervisor_pid(sup_pidfile)
     print("Stopped.")
 
 
@@ -229,7 +348,7 @@ def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "start"
 
     if cmd == "start":
-        pidfile = LOGDIR / "supervisor.pid"
+        pidfile = _pidfile_path()
         if pidfile.exists():
             try:
                 pid = int(pidfile.read_text().strip())
@@ -239,20 +358,11 @@ def main() -> None:
             except OSError:
                 pass
 
-        pid = os.fork()
-        if pid == 0:
-            os.setsid()
-            os.chdir("/")
-            os.umask(0)
-            sys.stdin.close()
-            pidfile.write_text(str(os.getpid()))
-            supervise()
-        else:
-            print(f"Supervisor started (PID {pid})")
-            sys.stdout.flush()
-            time.sleep(6)
-            status()
-            sys.exit(0)
+        os.chdir(str(ROOT))
+        run_foreground()
+    elif cmd == "run":
+        os.chdir(str(ROOT))
+        run_foreground()
     elif cmd == "stop":
         stop()
     elif cmd == "restart":
@@ -262,7 +372,7 @@ def main() -> None:
     elif cmd == "status":
         status()
     else:
-        print(f"Usage: {sys.argv[0]} {{start|stop|restart|status}}")
+        print(f"Usage: {sys.argv[0]} {{start|run|stop|restart|status}}")
         sys.exit(1)
 
 
