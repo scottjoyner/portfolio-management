@@ -124,3 +124,4 @@ packages/web-ui/node_modules/
 *~
 .DS_Store
 Thumbs.db
+rust_core/target/
