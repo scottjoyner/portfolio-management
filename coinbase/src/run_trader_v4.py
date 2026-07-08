@@ -123,6 +123,15 @@ class PaperPosition:
         return self.side in ("SHORT", "SELL")
 
     @property
+    def break_even_price(self) -> float:
+        if self.entry_price <= 0 or self.entry_notional <= 0:
+            return self.entry_price
+        fee_pct = self.fees_paid / self.entry_notional
+        if self.is_long:
+            return self.entry_price * (1.0 + fee_pct)
+        return self.entry_price * (1.0 - fee_pct)
+
+    @property
     def current_r_multiple(self) -> float:
         if self.initial_stop_dist <= 0:
             return 0.0
@@ -253,11 +262,11 @@ class EventTraderV4:
         "paper_product_cooldown_s":(int,   0,    86400,300,   "Per-product cooldown after exit"),
         "max_hold_s":              (int,   300,  604800,86400,"Max position hold time (seconds)"),
         "max_leverage":            (float, 1.00, 10.0, 2.00,  "Max leverage multiplier"),
-        "min_change_pct":          (float, 0.01, 5.00, 0.05,  "Min price change % to trigger eval"),
+        "min_change_pct":          (float, 0.01, 5.00, 0.02,  "Min price change % to trigger eval"),
         "_max_cluster_exposure_pct":(float,0.00, 1.00, 0.30,  "Max % of portfolio per correlation cluster"),
         "_pulse_window_s":         (float, 30.0, 3600, 300.0, "Pulse tracking window (seconds)"),
         "_fingerprint_ttl_s":      (float, 5.00, 300,  30.0,  "Signal dedup TTL (seconds)"),
-        "_min_eval_interval":      (float, 0.10, 30.0, 1.00,  "Min seconds between eval per product"),
+        "_min_eval_interval":      (float, 0.10, 30.0, 0.25,  "Min seconds between eval per product"),
         "_core_holdings_enabled":  (int,   0,    1,    1,     "Enable core holdings DCA (0/1)"),
         "_core_dca_dip_pct":       (float, 0.50, 30.0, 3.00,  "Dip % to trigger core DCA buy"),
         "_core_dca_cooldown_s":    (int,   60,   86400,3600,  "Cooldown between DCA buys (seconds)"),
@@ -328,7 +337,7 @@ class EventTraderV4:
         min_change_pct: float = 0.05,
         paper_product_cooldown_s: int = 300,
         paper_maker_pct: float = 0.80,
-        minute_scan_interval: int = 60,
+        minute_scan_interval: int = 30,
         minute_scan_top_n: int = 150,
         minute_scan_min_top_n: int = 10,
         minute_scan_max_top_n: int = 50,
@@ -496,11 +505,12 @@ class EventTraderV4:
         self._full_scan_thread: Optional[threading.Thread] = None
 
         self._last_eval: Dict[str, float] = {}
-        self._min_eval_interval: float = 1.0
+        self._min_eval_interval: float = 0.25
         self._adaptive_eval_enabled: bool = True
         self._last_price: Dict[str, float] = {}
         self._last_volume_24h: Dict[str, float] = {}
         self._last_ticker_ts: float = 0.0
+        self._last_pos_mgmt_ts: float = 0.0
         self._last_eval_ts: float = 0.0
         self._last_scan_ts: float = 0.0
         self._last_minute_scan_ts: float = 0.0
@@ -947,6 +957,14 @@ class EventTraderV4:
             try:
                 while not self._shutdown:
                     self._drain_ticker_cache()
+                    # Position management every 10s
+                    now_pos = time.time()
+                    if now_pos - self._last_pos_mgmt_ts >= 10.0:
+                        self._last_pos_mgmt_ts = now_pos
+                        if self.mode == "paper" and self.paper_positions:
+                            self._tighten_all_position_stops()
+                        elif self.mode in ("live", "approval") and self._bracket_mgr:
+                            self._minute_live_trailing()
                     # Mid-run WS health check — if feed disconnected too long, switch to polling
                     ws_running = self._ws_feed and self._ws_feed._running and self._ws_feed._thread and self._ws_feed._thread.is_alive()
                     if not ws_running and self._last_ticker_ts and (time.time() - self._last_ticker_ts) > 15:
@@ -1006,10 +1024,10 @@ class EventTraderV4:
 
     def _polling_loop(self):
         self.health_status["status"] = "polling"
-        log.info("Polling mode: checking ticker every 5s")
+        log.info("Polling mode: checking ticker every 1s")
         while not self._shutdown:
             self._drain_ticker_cache()
-            time.sleep(5)
+            time.sleep(1)
 
     # ── Ticker Processing ────────────────────────────────────────────
 
@@ -1766,12 +1784,12 @@ class EventTraderV4:
         mean_price = sum(recent) / len(recent)
         vol_ratio = atr / max(mean_price, 1e-9)
         if vol_ratio < 0.001:
-            return 5.0
+            return 2.5
         if vol_ratio < 0.003:
-            return 2.0
-        if vol_ratio < 0.01:
             return 1.0
-        return 0.5
+        if vol_ratio < 0.01:
+            return 0.5
+        return 0.25
 
     # ── Signal Pulse Tracking ─────────────────────────────────────────
 
@@ -2329,7 +2347,7 @@ class EventTraderV4:
                     size=p.qty,
                     entry_price=p.entry_price,
                     current_price=self._last_price.get(pid, p.entry_price),
-                    unrealized_pnl=(self._last_price.get(pid, p.entry_price) - p.entry_price) * p.qty * p.leverage if p.is_long else (p.entry_price - self._last_price.get(pid, p.entry_price)) * p.qty * p.leverage,
+                    unrealized_pnl=(self._last_price.get(pid, p.break_even_price) - p.break_even_price) * p.qty * p.leverage if p.is_long else (p.break_even_price - self._last_price.get(pid, p.break_even_price)) * p.qty * p.leverage,
                     notional=p.qty * self._last_price.get(pid, p.entry_price),
                     leverage=p.leverage,
                     cluster=self._portfolio_risk.get_cluster(pid),
@@ -4321,9 +4339,10 @@ class HealthServer:
                         total_equity = trader._paper_equity(prices_for_equity)
                         for pid, pos in snap_positions.items():
                             current_price = prices_for_equity.get(pid, pos.entry_price)
-                            raw_pnl = (current_price - pos.entry_price) * pos.qty
+                            be = pos.break_even_price
+                            raw_pnl = (current_price - be) * pos.qty
                             unrealized_pnl = raw_pnl if pos.is_long else -raw_pnl
-                            raw_pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100.0
+                            raw_pnl_pct = (current_price - be) / be * 100.0 if be > 0 else 0.0
                             unrealized_pnl_pct = raw_pnl_pct if pos.is_long else -raw_pnl_pct
                             notional = pos.qty * current_price
                             position_size_pct = (notional / total_equity * 100.0) if total_equity > 0 else 0.0

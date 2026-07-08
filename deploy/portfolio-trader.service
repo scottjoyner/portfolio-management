@@ -26,17 +26,17 @@ ExecStart=/home/scott/git/portfolio-management/.venv/bin/python3 \
   --enable-shorts \
   --enable-leverage \
   --max-leverage 2.0 \
-  --minute-scan-interval 120 \
+  --minute-scan-interval 30 \
   --minute-scan-top 34 \
   --minute-scan-min-top 5 \
   --minute-scan-max-top 34 \
   --minute-scan-use-hotset \
   --minute-scan-hotset-size 34 \
-  --scan-interval 300 \
+  --scan-interval 60 \
   --scan-top 34 \
   --scan-min-vol 1000 \
-  --full-scan-interval 300 \
-  --paper-product-cooldown-seconds 600 \
+  --full-scan-interval 120 \
+  --paper-product-cooldown-seconds 300 \
   --paper-maker-pct 0.50 \
   --paper-max-new-positions 6 \
   --min-change 0.10
