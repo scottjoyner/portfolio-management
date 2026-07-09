@@ -378,6 +378,20 @@
           </div>
         </section>
 
+        <!-- Active Brackets -->
+        <section class="panel" id="brackets-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Active Brackets</div><div class="panel-sub">Stop-loss &amp; take-profit orders</div></div>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <span class="tag" id="brackets-count" style="font-size:.6rem;">0</span>
+              <button class="btn" onclick="cancelBracketAll()" style="font-size:.6rem;padding:2px 6px;color:var(--bad);border-color:color-mix(in srgb, var(--bad) 30%, var(--border));">Cancel All</button>
+            </div>
+          </div>
+          <div class="panel-body compact" id="brackets-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
         <!-- Config Knobs -->
         <section class="panel" id="config-panel">
           <div class="panel-head">
@@ -395,6 +409,50 @@
             <div><div class="panel-title">Strategy Analytics</div><div class="panel-sub">Per-strategy win rate, P&amp;L, exit reasons</div></div>
           </div>
           <div class="panel-body compact" id="analytics-card">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Prediction-Market Arbitrage -->
+        <section class="panel" id="arbitrage-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Prediction-Market Arbitrage</div><div class="panel-sub">Kalshi ↔ Polymarket cross-venue edges &amp; settlement</div></div>
+            <span class="tag" id="arb-count" style="font-size:.6rem;">0 edges</span>
+          </div>
+          <div class="panel-body compact" id="arbitrage-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Kalshi Internal Arbitrage (single-venue) -->
+        <section class="panel" id="kalshi-internal-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Kalshi Internal Arbitrage</div><div class="panel-sub">Single-venue mutually-exclusive event locks (no Polymarket needed)</div></div>
+            <span class="tag" id="kalshi-internal-count" style="font-size:.6rem;">0</span>
+          </div>
+          <div class="panel-body compact" id="kalshi-internal-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Prediction-Market Universe -->
+        <section class="panel" id="pm-universe-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Prediction-Market Universe</div><div class="panel-sub">Top Kalshi + Polymarket markets by heat score</div></div>
+            <span class="tag" id="pm-universe-count" style="font-size:.6rem;">0 mkts</span>
+          </div>
+          <div class="panel-body compact" id="pm-universe-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Crypto vs Prediction-Market Divergence -->
+        <section class="panel" id="crypto-divergence-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Crypto ↔ PM Divergence</div><div class="panel-sub">Spot-implied fair value vs market probability</div></div>
+            <span class="tag" id="crypto-div-count" style="font-size:.6rem;">0</span>
+          </div>
+          <div class="panel-body compact" id="crypto-divergence-body">
             <div class="shimmer shimmer-line"></div>
           </div>
         </section>
@@ -447,6 +505,46 @@
             <span class="tag accent" id="plans-count" style="font-size:.6rem;">0</span>
           </div>
           <div class="panel-body compact" id="plans-panel">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Signal Intelligence (Meta-learning + Ensemble + Orderflow) -->
+        <section class="panel" id="signal-intel-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Signal Intelligence</div><div class="panel-sub">Meta-learning source weights &amp; ensemble posteriors</div></div>
+          </div>
+          <div class="panel-body compact" id="signal-intel-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Cross-Asset Regime (enhanced) -->
+        <section class="panel" id="regime-enhanced-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Market Risk</div><div class="panel-sub">Cross-asset regime &amp; support/resistance</div></div>
+          </div>
+          <div class="panel-body compact" id="regime-enhanced-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- Parameter Optimization -->
+        <section class="panel" id="param-opt-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Parameter Optimization</div><div class="panel-sub">Walk-forward results</div></div>
+          </div>
+          <div class="panel-body compact" id="param-opt-body">
+            <div class="shimmer shimmer-line"></div>
+          </div>
+        </section>
+
+        <!-- TLH / Wash-Sale State -->
+        <section class="panel" id="tlh-panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Tax-Loss Harvesting</div><div class="panel-sub">Wash-sale cooldowns</div></div>
+          </div>
+          <div class="panel-body compact" id="tlh-body">
             <div class="shimmer shimmer-line"></div>
           </div>
         </section>
@@ -1264,6 +1362,213 @@
       }).join('');
     }
 
+    // ── Signal Intelligence (Meta-weights + Ensemble + Orderflow) ──
+    async function loadSignalIntel() {
+      try {
+        const [mw, ens, of] = await Promise.all([
+          fetch('/signals/meta-weights', { signal: AbortSignal.timeout(5000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch('/signals/ensemble', { signal: AbortSignal.timeout(5000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch('/signals/orderflow', { signal: AbortSignal.timeout(5000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+        return { metaWeights: mw, ensemble: ens, orderflow: of };
+      } catch { return null; }
+    }
+
+    function renderSignalIntel(data) {
+      const el = document.getElementById('signal-intel-body');
+      if (!el) return;
+      if (!data || (!data.metaWeights && !data.ensemble && !data.orderflow)) {
+        el.innerHTML = '<div class="muted small">No signal intelligence data yet.</div>';
+        return;
+      }
+      let html = '';
+
+      // Meta source weights
+      const mw = data.metaWeights;
+      if (mw && mw.weights) {
+        const entries = Object.entries(mw.weights).sort((a, b) => b[1] - a[1]);
+        html += '<div class="label" style="font-size:.6rem;margin:2px 0;">Source Weights</div>';
+        html += '<div style="display:grid;gap:2px;">' +
+          entries.map(([src, w]) => {
+            const pct = (w * 100).toFixed(0);
+            const barColor = w > 0.7 ? 'var(--good)' : w > 0.4 ? 'var(--warn)' : 'var(--bad)';
+            return '<div style="display:flex;align-items:center;gap:4px;font-size:.6rem;">' +
+              '<span class="mono" style="min-width:80px;">' + esc(src) + '</span>' +
+              '<div style="flex:1;height:8px;background:var(--surface);border-radius:4px;overflow:hidden;">' +
+                '<div style="height:100%;width:' + pct + '%;background:' + barColor + ';border-radius:4px;"></div>' +
+              '</div>' +
+              '<span class="mono muted">' + pct + '%</span>' +
+            '</div>';
+          }).join('') +
+        '</div>';
+      }
+
+      // Ensemble posteriors (top strategies by weight)
+      const ens = data.ensemble;
+      if (ens && ens.posteriors) {
+        const top = Object.entries(ens.posteriors)
+          .sort((a, b) => (b[1].weight_credible_lower || 0) - (a[1].weight_credible_lower || 0))
+          .slice(0, 5);
+        html += '<div class="label" style="font-size:.6rem;margin:4px 0 2px;">Top Ensemble Strategies</div>';
+        html += '<div style="display:grid;gap:2px;">' +
+          top.map(([name, p]) => {
+            const wr = (p.win_rate * 100).toFixed(0);
+            const w = (p.weight_credible_lower * 100).toFixed(0);
+            return '<div style="display:flex;justify-content:space-between;font-size:.55rem;padding:1px 4px;background:var(--surface);border-radius:3px;">' +
+              '<span class="mono">' + esc(name.slice(0, 28)) + '</span>' +
+              '<span class="muted">WR=' + wr + '% w=' + w + '% t=' + p.trades + '</span>' +
+            '</div>';
+          }).join('') +
+        '</div>';
+      }
+
+      // Order flow signals
+      const of = data.orderflow;
+      if (of && of.signals) {
+        const entries = Object.entries(of.signals);
+        html += '<div class="label" style="font-size:.6rem;margin:4px 0 2px;">Order Flow (' + entries.length + ' products)</div>';
+        entries.forEach(([pid, sig]) => {
+          const action = sig.action || 'HOLD';
+          const badge = action === 'BUY' ? 'buy' : action === 'SELL' ? 'sell' : '';
+          html += '<div style="display:flex;justify-content:space-between;font-size:.55rem;padding:1px 4px;">' +
+            '<span class="mono">' + esc(pid) + '</span>' +
+            '<span><span class="badge ' + badge + '" style="font-size:.5rem;">' + action + '</span> ' +
+            'z=' + sig.spread_z?.toFixed(1) + ' bps=' + sig.spread_bps?.toFixed(0) + '</span>' +
+          '</div>';
+        });
+      }
+
+      el.innerHTML = html || '<div class="muted small">No signal intelligence data yet.</div>';
+    }
+
+    // ── Enhanced Market Risk (Cross-asset regime + S/R levels) ──
+    async function loadMarketRisk() {
+      try {
+        const [cr, sr] = await Promise.all([
+          fetch('/market/cross-asset-regime', { signal: AbortSignal.timeout(5000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch('/optimizer/sr-levels', { signal: AbortSignal.timeout(5000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+        return { regime: cr, srLevels: sr };
+      } catch { return null; }
+    }
+
+    function renderMarketRisk(data) {
+      const el = document.getElementById('regime-enhanced-body');
+      if (!el) return;
+      if (!data || (!data.regime && !data.srLevels)) {
+        el.innerHTML = '<div class="muted small">No market risk data yet.</div>';
+        return;
+      }
+      let html = '';
+
+      // Cross-asset regime
+      const cr = data.regime;
+      if (cr && cr.regime) {
+        const r = cr.regime;
+        const regime = r.regime || 'mixed';
+        const riskMult = r.risk_multiplier || 0.75;
+        const bias = r.trend_bias || 'neutral';
+        const allowsLongs = r.allows_new_longs !== false;
+        const comp = r.components || {};
+        const compHtml = Object.entries(comp).map(([k, v]) =>
+          '<span class="mono" style="font-size:.5rem;">' + k + '=' + (typeof v === 'number' ? v.toFixed(2) : v) + '</span>'
+        ).join(' ');
+        html += '<div class="regime-banner ' + regime + '" style="font-size:.6rem;margin:2px 0;">' +
+          esc(regime.toUpperCase()) + ' &middot; risk mult=' + riskMult.toFixed(2) + ' &middot; bias=' + bias +
+          (allowsLongs ? '' : ' &middot; NO NEW LONGS') +
+        '</div>';
+        html += '<div style="font-size:.5rem;display:flex;gap:3px;flex-wrap:wrap;">' + compHtml + '</div>';
+      }
+
+      // S/R levels
+      const sr = data.srLevels;
+      if (sr && sr.products) {
+        Object.entries(sr.products).forEach(([pid, info]) => {
+          html += '<div class="label" style="font-size:.55rem;margin:4px 0 1px;">' + esc(pid) +
+            ' &middot; ATR=' + info.atr?.toFixed(2) + ' &middot; regime=' + info.regime + '</div>';
+          if (info.levels && info.levels.length) {
+            info.levels.slice(0, 4).forEach(L => {
+              const color = L.kind === 'support' ? 'var(--good)' : 'var(--bad)';
+              html += '<div style="display:flex;justify-content:space-between;font-size:.5rem;padding:1px 4px;">' +
+                '<span style="color:' + color + ';">' + esc(L.kind) + '</span>' +
+                '<span class="mono">' + L.price.toFixed(4) + '</span>' +
+                '<span class="muted">strength=' + L.strength + '</span>' +
+              '</div>';
+            });
+          }
+        });
+      }
+
+      el.innerHTML = html || '<div class="muted small">No market risk data yet.</div>';
+    }
+
+    // ── Parameter Optimization ──
+    async function loadParamOpt() {
+      try {
+        const res = await fetch('/optimizer/param-opt', { signal: AbortSignal.timeout(5000) });
+        return res.ok ? await res.json() : null;
+      } catch { return null; }
+    }
+
+    function renderParamOpt(data) {
+      const el = document.getElementById('param-opt-body');
+      if (!el) return;
+      if (!data || !data.results) {
+        el.innerHTML = '<div class="muted small">No parameter optimization results yet (runs weekly).</div>';
+        return;
+      }
+      let html = '<div style="font-size:.55rem;">Last run: ' + (data.updated_at || '--') + ' &middot; Interval: ' + (data.interval_days || 7) + 'd</div>';
+      Object.entries(data.results).forEach(([group, result]) => {
+        if (group.startsWith('_')) return;
+        const params = result.best_params || {};
+        const paramStr = Object.entries(params).map(([k, v]) => k + '=' + v).join(' ');
+        html += '<div style="margin:3px 0;padding:2px 4px;background:var(--surface);border-radius:3px;">' +
+          '<div style="display:flex;justify-content:space-between;font-size:.6rem;">' +
+            '<span class="label">' + esc(group) + '</span>' +
+            '<span class="mono muted" style="font-size:.5rem;">' + esc(paramStr) + '</span>' +
+          '</div>';
+        if (result.windows && result.windows.length) {
+          const avgTrain = (result.windows.reduce((s, w) => s + (w.train_score || 0), 0) / result.windows.length).toFixed(2);
+          const avgTest = (result.windows.reduce((s, w) => s + (w.test_score || 0), 0) / result.windows.length).toFixed(2);
+          html += '<div style="font-size:.5rem;color:var(--muted);">train=' + avgTrain + ' test=' + avgTest + ' windows=' + result.windows.length + '</div>';
+        }
+        html += '</div>';
+      });
+      el.innerHTML = html || '<div class="muted small">No results.</div>';
+    }
+
+    // ── TLH / Wash-Sale State ──
+    async function loadTLHState() {
+      try {
+        const res = await fetch('/optimizer/wash-sale', { signal: AbortSignal.timeout(5000) });
+        return res.ok ? await res.json() : null;
+      } catch { return null; }
+    }
+
+    function renderTLHState(data) {
+      const el = document.getElementById('tlh-body');
+      if (!el) return;
+      if (!data || !data.cooldowns || !Object.keys(data.cooldowns).length) {
+        el.innerHTML = '<div class="muted small">No active wash-sale cooldowns.</div>';
+        return;
+      }
+      const now = Date.now() / 1000;
+      let html = '<div style="font-size:.6rem;margin:2px 0;">Wash-sale cooldowns (30d per currency):</div>';
+      Object.entries(data.cooldowns).forEach(([cur, ts]) => {
+        const remaining = Math.max(0, 86400 * 30 - (now - ts));
+        const days = (remaining / 86400).toFixed(1);
+        const pct = Math.min(100, ((86400 * 30 - remaining) / (86400 * 30)) * 100);
+        html += '<div style="display:flex;align-items:center;gap:4px;font-size:.55rem;padding:1px 4px;">' +
+          '<span class="mono" style="min-width:50px;">' + esc(cur) + '</span>' +
+          '<div style="flex:1;height:6px;background:var(--surface);border-radius:3px;overflow:hidden;">' +
+            '<div style="height:100%;width:' + pct.toFixed(0) + '%;background:var(--accent);border-radius:3px;"></div>' +
+          '</div>' +
+          '<span class="muted">' + days + 'd left</span>' +
+        '</div>';
+      });
+      el.innerHTML = html;
+    }
+
     // ── Load & render runtime config knobs ──
     let _configData = null;
     async function loadConfig() {
@@ -1391,6 +1696,453 @@
           '<td class="mono muted" style="max-width:100px;overflow:hidden;text-overflow:ellipsis;" title="' + esc(exitReasons) + '">' + exitReasons + '</td>' +
         '</tr>';
       }).join('') + '</tbody></table>';
+
+      // ── Backtest-vs-live divergence warnings ──
+      const divs = data.divergences || [];
+      if (divs.length) {
+        el.innerHTML += '<div class="muted small" style="margin-top:8px;">' +
+          '<b class="bad">Backtest → Live divergence</b> (strategies underperforming their backtest)</div>' +
+          '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+          '<th>Strategy</th><th>Backtest WR</th><th>Live WR</th><th>Gap</th><th>Trades</th><th>P&amp;L</th>' +
+          '</tr></thead><tbody>' + divs.map(d =>
+            '<tr>' +
+            '<td style="font-weight:600;">' + esc(d.strategy) + '</td>' +
+            '<td class="mono muted">' + ((d.backtest_win_rate||0)*100).toFixed(0) + '%</td>' +
+            '<td class="mono bad">' + ((d.live_win_rate||0)*100).toFixed(0) + '%</td>' +
+            '<td class="mono bad">-' + ((d.gap||0)*100).toFixed(0) + '%</td>' +
+            '<td class="mono">' + d.trades + '</td>' +
+            '<td class="mono ' + ((d.total_pnl||0)>=0?'good':'bad') + '">' + fmtUsd(d.total_pnl||0) + '</td>' +
+            '</tr>').join('') + '</tbody></table>';
+      }
+
+      // ── Live expectancy (worst-first) ──
+      const exp = data.expectancy || [];
+      if (exp.length) {
+        const worst = exp.slice(0, 8);
+        el.innerHTML += '<div class="muted small" style="margin-top:8px;">' +
+          '<b>Live expectancy</b> (avg P&amp;L/trade, worst first)</div>' +
+          '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+          '<th>Strategy</th><th>Trades</th><th>Win Rate</th><th>Expectancy</th><th>Profit Factor</th><th>P&amp;L</th><th>Status</th>' +
+          '</tr></thead><tbody>' + worst.map(e => {
+            const pf = e.profit_factor == null ? '∞' : e.profit_factor.toFixed(2);
+            return '<tr>' +
+              '<td style="font-weight:600;">' + esc(e.strategy) + '</td>' +
+              '<td class="mono">' + e.trades + '</td>' +
+              '<td class="mono ' + ((e.win_rate||0)>=0.5?'good':(e.win_rate||0)>=0.4?'warn':'bad') + '">' + ((e.win_rate||0)*100).toFixed(0) + '%</td>' +
+              '<td class="mono ' + ((e.expectancy||0)>=0?'good':'bad') + '">' + fmtUsd(e.expectancy||0) + '</td>' +
+              '<td class="mono muted">' + pf + '</td>' +
+              '<td class="mono ' + ((e.total_pnl||0)>=0?'good':'bad') + '">' + fmtUsd(e.total_pnl||0) + '</td>' +
+              '<td class="mono ' + (e.disabled?'bad':'good') + '" title="' + esc(e.disable_reason||'') + '">' + (e.disabled?'DISABLED':'active') + '</td>' +
+              '</tr>';
+          }).join('') + '</tbody></table>';
+      }
+    }
+
+    // ── Prediction-market arbitrage & settlement ──
+    async function loadArbitrage() {
+      const el = document.getElementById('arbitrage-body');
+      if (!el) return;
+      try {
+        const [arbRes, ptRes, balRes, exRes] = await Promise.all([
+          fetch('/arbitrage/opportunities', { signal: AbortSignal.timeout(12000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch('/paper-trades', { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch('/venue/balances', { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          fetch('/arbitrage/execution-status', { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]);
+        window._arbOpps = (arbRes && arbRes.opportunities) || [];
+        window._arbExecStatus = exRes || null;
+        renderArbitrage(arbRes, ptRes, balRes, exRes);
+      } catch (err) {
+        console.error('arb load', err);
+      }
+    }
+
+    function venueChip(name, v) {
+      if (!v) return '';
+      if (!v.configured) {
+        return '<span class="pill" title="' + esc(v.note || v.error || 'not configured') + '">' +
+          esc(name) + ': <span class="muted">not configured</span></span>';
+      }
+      if (v.error) {
+        return '<span class="pill" title="' + esc(v.error) + '">' + esc(name) + ': <span class="bad">error</span></span>';
+      }
+      const bal = v.balance_usd != null ? fmtUsd(v.balance_usd) : '—';
+      const pv = v.portfolio_value_usd != null ? (' &middot; pos ' + fmtUsd(v.portfolio_value_usd)) : '';
+      const nPos = (v.positions && v.positions.length) ? (' &middot; ' + v.positions.length + ' pos') : '';
+      return '<span class="pill">' + esc(name) + ': <b class="good">' + bal + '</b>' + pv + nPos + '</span>';
+    }
+
+    function renderArbitrage(arb, pt, bal, ex) {
+      const el = document.getElementById('arbitrage-body');
+      if (!el) return;
+      const opps = (arb && arb.opportunities) || [];
+      const settle = (pt && pt.settlement_summary) || {};
+      const trades = (pt && pt.trades) || [];
+      const countEl = document.getElementById('arb-count');
+      if (countEl) countEl.textContent = opps.length + ' edges';
+
+      let html = '';
+
+      // ── Execution mode badge ──
+      if (ex && ex.available) {
+        const live = ex.mode === 'live';
+        const kReady = ex.venues && ex.venues.kalshi && ex.venues.kalshi.live_ready;
+        const pReady = ex.venues && ex.venues.polymarket && ex.venues.polymarket.live_ready;
+        html += '<div style="margin-bottom:6px;">' +
+          '<span class="tag ' + (live?'bad':'warn') + '" style="font-size:.6rem;">' + (live?'LIVE':'DRY-RUN') + '</span> ' +
+          '<span class="muted small">max ' + fmtUsd(ex.max_notional_usd||0) + '/exec &middot; venues: ' +
+          'Kalshi ' + (kReady?'<span class="good">ready</span>':'<span class="bad">no</span>') + ', ' +
+          'Polymarket ' + (pReady?'<span class="good">ready</span>':'<span class="bad">no</span>') +
+          (ex.kill_switch?' &middot; <span class="bad">KILL-SWITCH ON</span>':'') + '</span></div>';
+      }
+
+      // ── Venue balances strip ──
+      if (bal) {
+        html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">' +
+          venueChip('Kalshi', bal.kalshi) + venueChip('Polymarket', bal.polymarket) + '</div>';
+      }
+
+      // ── Settlement summary strip ──
+      if (settle && (settle.total_trades || 0) > 0) {
+        const byStatus = settle.by_status || {};
+        const statusStr = Object.entries(byStatus).map(([k, v]) => esc(k) + ':' + v).join(' &middot; ') || '—';
+        html += '<div class="muted small" style="margin-bottom:6px;">' +
+          'Paper trades: <b>' + (settle.total_trades || 0) + '</b> &middot; ' +
+          'Realized: <b class="' + ((settle.realized_pnl||0)>=0?'good':'bad') + '">' + fmtUsd(settle.realized_pnl||0) + '</b> &middot; ' +
+          'Open expected: <b class="' + ((settle.open_expected_pnl||0)>=0?'good':'bad') + '">' + fmtUsd(settle.open_expected_pnl||0) + '</b> &middot; ' +
+          'Diverged: <b class="' + ((settle.diverged_pairs||0)>0?'bad':'muted') + '">' + (settle.diverged_pairs||0) + '</b><br>' +
+          '<span class="muted">Status: ' + statusStr + '</span></div>';
+      }
+
+      // ── Opportunities table ──
+      if (!opps.length) {
+        html += '<div class="muted small">No arbitrage edges detected right now.</div>';
+      } else {
+        html += '<div class="muted small" style="margin:2px 0 3px;"><b>Live edges</b></div>' +
+          '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+          '<th>Event</th><th>Cat</th><th>Buy leg</th><th>Hedge leg</th><th>Cost</th><th>Payout</th><th>Edge</th><th>Conf</th><th></th>' +
+          '</tr></thead><tbody>' + opps.slice(0, 15).map((o, i) => {
+            const edgePct = ((o.edge_pct || 0) * 100).toFixed(1);
+            const edgeClass = (o.edge_pct || 0) > 0 ? 'good' : 'bad';
+            const edgeUsd = o.edge != null ? fmtUsd(o.edge) : '';
+            const payout = o.guaranteed_payout != null ? o.guaranteed_payout.toFixed(3) : '—';
+            const srcMk = (o.source_markets && Object.keys(o.source_markets).length)
+              ? Object.entries(o.source_markets).map(([k, v]) => esc(k) + '=' + esc(String(v))).join('\n') : '';
+            const titleTip = (o.reason ? ('Reason: ' + o.reason) : '') + (srcMk ? ('\n' + srcMk) : '');
+            const depthStr = (dp) => dp ? ('<br><span class="muted" style="font-size:.5rem;">bk ' +
+              (dp.yes_bid!=null?dp.yes_bid:'—') + '/' + (dp.yes_ask!=null?dp.yes_ask:'—') +
+              ' d' + (dp.yes_depth||0) + '</span>') : '';
+            return '<tr title="' + esc(titleTip) + '">' +
+              '<td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;">' + esc(o.event_key||'') + '</td>' +
+              '<td class="muted">' + esc(o.category||'') + '</td>' +
+              '<td class="mono muted">' + esc(o.platform_buy||'') + ' @' + (o.buy_yes_price||0).toFixed(2) + depthStr(o.depth_buy) + '</td>' +
+              '<td class="mono muted">' + esc(o.platform_hedge||'') + ' @' + (o.hedge_yes_price||0).toFixed(2) + depthStr(o.depth_hedge) + '</td>' +
+              '<td class="mono">' + (o.total_cost||0).toFixed(3) + '</td>' +
+              '<td class="mono muted">' + payout + '</td>' +
+              '<td class="mono ' + edgeClass + '" title="' + esc(edgeUsd) + '">' + edgePct + '%</td>' +
+              '<td class="mono muted">' + ((o.confidence||0)*100).toFixed(0) + '%</td>' +
+              '<td><button class="btn" style="font-size:.55rem;padding:2px 6px;" onclick="openExecModal(' + i + ')">Exec</button></td>' +
+              '</tr>';
+          }).join('') + '</tbody></table>';
+      }
+
+      // ── Recent paper trades (individual) ──
+      if (trades.length) {
+        html += '<div class="muted small" style="margin:8px 0 3px;"><b>Recent trades</b> (' + (pt.total || trades.length) + ' total)</div>' +
+          '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+          '<th>Time</th><th>Event</th><th>Buy→Hedge</th><th>Notional</th><th>Status</th><th>P&amp;L / Exp</th>' +
+          '</tr></thead><tbody>' + trades.slice(0, 20).map(t => {
+            const st = t.status || 'open';
+            const stClass = st === 'settled' ? 'good' : st === 'expired' ? 'muted' : 'warn';
+            const realized = t.realized_pnl != null && (st === 'settled' || st === 'expired');
+            const pnlVal = realized ? t.realized_pnl : (t.expected_profit || 0);
+            const pnlClass = (pnlVal >= 0) ? 'good' : 'bad';
+            const legs = esc((t.platform_buy||'?')) + '→' + esc((t.platform_hedge||'?'));
+            let tsSec = t.timestamp;
+            if (typeof tsSec === 'string') { const p = Date.parse(tsSec); tsSec = isNaN(p) ? 0 : p/1000; }
+            return '<tr>' +
+              '<td class="mono muted" style="white-space:nowrap;">' + esc(tsSec ? (ago(tsSec)+' ago') : '—') + '</td>' +
+              '<td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;" title="' + esc(t.event_key||'') + '">' + esc(t.event_key||'') + '</td>' +
+              '<td class="mono muted">' + legs + '</td>' +
+              '<td class="mono">' + fmtUsd(t.notional || 0) + '</td>' +
+              '<td class="mono ' + stClass + '">' + esc(st) + '</td>' +
+              '<td class="mono ' + pnlClass + '">' + fmtUsd(pnlVal) + (realized ? '' : ' <span class="muted">exp</span>') + '</td>' +
+              '</tr>';
+          }).join('') + '</tbody></table>';
+      }
+
+      el.innerHTML = html || '<div class="muted small">No arbitrage data yet.</div>';
+    }
+
+    // ── Arbitrage execute modal ──
+    function openExecModal(idx) {
+      const opps = window._arbOpps || [];
+      const o = opps[idx];
+      if (!o) return;
+      const ex = window._arbExecStatus || {};
+      const live = ex.mode === 'live';
+      const bothReady = ex.venues && ex.venues.kalshi && ex.venues.kalshi.live_ready &&
+                        ex.venues.polymarket && ex.venues.polymarket.live_ready;
+      const maxN = ex.max_notional_usd || 100;
+      const defN = Math.min(50, maxN);
+      const m = document.getElementById('exec-modal');
+      const body = document.getElementById('exec-modal-body');
+      body.innerHTML =
+        '<div class="muted small" style="margin-bottom:8px;">' + esc(o.event_key||'') + ' &middot; ' + esc(o.category||'') + '</div>' +
+        '<table class="table" style="font-size:.62rem;margin-bottom:8px;"><tbody>' +
+        '<tr><td>Buy YES</td><td class="mono">' + esc(o.platform_buy||'') + ' @ ' + (o.buy_yes_price||0).toFixed(3) + '</td></tr>' +
+        '<tr><td>Buy NO (hedge)</td><td class="mono">' + esc(o.platform_hedge||'') + ' @ ' + (1-(o.hedge_yes_price||0)).toFixed(3) + '</td></tr>' +
+        '<tr><td>Total cost / $1 payout</td><td class="mono">' + (o.total_cost||0).toFixed(3) + '</td></tr>' +
+        '<tr><td>Edge</td><td class="mono ' + ((o.edge_pct||0)>0?'good':'bad') + '">' + ((o.edge_pct||0)*100).toFixed(1) + '%</td></tr>' +
+        '</tbody></table>' +
+        '<div class="muted small" style="margin-bottom:8px;">Kalshi fees (~' + (((ex.kalshi_fee_rate!=null?ex.kalshi_fee_rate:0.07))*100).toFixed(0) + '% &times; C &times; P(1-P)) are estimated and subtracted; ' + (ex.require_net_profit===false ? 'net-profit check <b>disabled</b>.' : 'trades unprofitable after fees are <b>rejected</b>.') + '</div>' +
+        '<label class="muted small">Notional (USD, max ' + fmtUsd(maxN) + ')</label>' +
+        '<input id="exec-notional" type="number" min="1" max="' + maxN + '" value="' + defN + '" ' +
+          'style="width:100%;margin:4px 0 8px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--fg);">' +
+        '<label class="small" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">' +
+          '<input id="exec-live" type="checkbox" ' + (bothReady && live ? '' : 'disabled') + '> ' +
+          '<span class="' + (bothReady && live ? '' : 'muted') + '">Place REAL orders (live)' +
+          (bothReady && live ? '' : ' — unavailable: ' + (!live ? 'dry-run mode' : 'a venue is not live-ready')) + '</span>' +
+        '</label>' +
+        '<div id="exec-result" class="small muted" style="margin-bottom:8px;"></div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+          '<button class="btn" onclick="closeExecModal()">Cancel</button>' +
+          '<button class="btn" id="exec-go" style="background:var(--accent);" onclick="submitExec(' + idx + ')">Execute</button>' +
+        '</div>';
+      m.style.display = 'flex';
+    }
+
+    function closeExecModal() {
+      const m = document.getElementById('exec-modal');
+      if (m) m.style.display = 'none';
+    }
+
+    async function submitExec(idx) {
+      const opps = window._arbOpps || [];
+      const o = opps[idx];
+      if (!o) return;
+      const notional = parseFloat(document.getElementById('exec-notional').value || '0');
+      const liveEl = document.getElementById('exec-live');
+      const live = !!(liveEl && liveEl.checked);
+      const resEl = document.getElementById('exec-result');
+      const goBtn = document.getElementById('exec-go');
+      if (live && !confirm('Place REAL orders on both venues for ' + fmtUsd(notional) + '? This spends real money.')) return;
+      goBtn.disabled = true; resEl.className = 'small muted'; resEl.textContent = 'Submitting…';
+      try {
+        const res = await fetch('/arbitrage/execute', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ event_key: o.event_key, notional, live, confirm: true }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          resEl.className = 'small good';
+          resEl.innerHTML = '✓ ' + esc(data.status) + (data.plan ? (' — ' + data.plan.contracts + ' contracts, gross ' + fmtUsd(data.plan.expected_profit) + ', fees ' + fmtUsd(data.plan.estimated_fees || 0) + ', net ' + fmtUsd(data.plan.net_expected_profit != null ? data.plan.net_expected_profit : data.plan.expected_profit)) : '') +
+            (data.reasons && data.reasons.length ? '<br><span class="muted">' + esc(data.reasons.join('; ')) + '</span>' : '');
+          setTimeout(() => { closeExecModal(); refreshAll(); }, 1500);
+        } else {
+          resEl.className = 'small bad';
+          resEl.innerHTML = '✗ ' + esc(data.error || data.status || 'rejected') +
+            (data.reasons && data.reasons.length ? '<br><span class="muted">' + esc(data.reasons.join('; ')) + '</span>' : '');
+        }
+      } catch (err) {
+        resEl.className = 'small bad';
+        resEl.textContent = 'Error: ' + err.message;
+      } finally {
+        goBtn.disabled = false;
+      }
+    }
+
+    // ── Prediction-market universe ──
+    async function loadPmUniverse() {
+      const el = document.getElementById('pm-universe-body');
+      if (!el) return;
+      try {
+        const res = await fetch('/prediction-markets', { signal: AbortSignal.timeout(10000) });
+        renderPmUniverse(res.ok ? await res.json() : null);
+      } catch (err) { console.error('pm universe', err); }
+    }
+
+    function renderPmUniverse(data) {
+      const el = document.getElementById('pm-universe-body');
+      if (!el) return;
+      const mkts = (data && data.markets) || [];
+      const cEl = document.getElementById('pm-universe-count');
+      if (cEl) cEl.textContent = (data && data.total_markets != null ? data.total_markets : mkts.length) + ' mkts';
+      if (!mkts.length) { el.innerHTML = '<div class="muted small">No prediction markets loaded.</div>'; return; }
+      el.innerHTML = '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+        '<th>Venue</th><th>Question</th><th>Cat</th><th>Vol</th><th>Bid/Ask</th><th>Spread</th><th>Heat</th>' +
+        '</tr></thead><tbody>' + mkts.slice(0, 20).map(m => {
+          const bidAsk = (m.yes_bid||0).toFixed(2) + '/' + (m.yes_ask||0).toFixed(2);
+          const vEsc = esc(m.platform||'');
+          const vClass = /kalshi/i.test(vEsc) ? 'accent' : 'good';
+          return '<tr>' +
+            '<td><span class="tag ' + vClass + '" style="font-size:.55rem;">' + vEsc + '</span></td>' +
+            '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="' + esc(m.question||'') + '">' + esc(m.question||'') + '</td>' +
+            '<td class="muted">' + esc(m.category||'') + '</td>' +
+            '<td class="mono muted">' + fmtUsd(m.volume||0) + '</td>' +
+            '<td class="mono muted">' + bidAsk + '</td>' +
+            '<td class="mono ' + ((m.spread||0)<=0.05?'good':(m.spread||0)<=0.15?'warn':'bad') + '">' + ((m.spread||0)*100).toFixed(1) + '%</td>' +
+            '<td class="mono muted">' + (m.heat_score>=1000 ? (m.heat_score/1000).toFixed(0)+'k' : (m.heat_score||0).toFixed(0)) + '</td>' +
+            '</tr>';
+        }).join('') + '</tbody></table>';
+    }
+
+    // ── Crypto ↔ prediction-market divergence ──
+    async function loadKalshiInternal() {
+      const el = document.getElementById('kalshi-internal-body');
+      if (!el) return;
+      try {
+        const res = await fetch('/arbitrage/kalshi-internal', { signal: AbortSignal.timeout(12000) });
+        renderKalshiInternal(res.ok ? await res.json() : {__error:true});
+      } catch (err) { renderKalshiInternal({__error:true}); }
+    }
+
+    function renderKalshiInternal(data) {
+      const el = document.getElementById('kalshi-internal-body');
+      if (!el) return;
+      const cEl = document.getElementById('kalshi-internal-count');
+      if (data && data.__error) { el.innerHTML = '<div class="small bad">Scan failed or timed out — retrying next refresh.</div>'; if(cEl) cEl.textContent='err'; return; }
+      const opps = (data && data.opportunities) || [];
+      window._kalshiInternalOpps = opps;
+      if (cEl) cEl.textContent = (data && data.guaranteed_count!=null ? (data.guaranteed_count + ' lock / ' + (data.conditional_count||0) + ' cond') : opps.length);
+      if (!opps.length) { el.innerHTML = '<div class="muted small">No Kalshi internal-arb candidates right now.</div>'; return; }
+      el.innerHTML = '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+        '<th>Type</th><th>Event</th><th>Cat</th><th>N</th><th>Cost</th><th>Payout</th><th>Net edge</th><th>Conf</th><th></th>' +
+        '</tr></thead><tbody>' + opps.slice(0, 15).map((o, i) => {
+          const g = o.guaranteed;
+          const typeTag = g ? '<span class="tag good" style="font-size:.5rem;" title="Guaranteed by mutual exclusivity">LOCK</span>'
+                            : '<span class="tag warn" style="font-size:.5rem;" title="Only a lock if outcomes are collectively exhaustive - verify manually">cond?</span>';
+          return '<tr>' +
+            '<td>' + typeTag + '</td>' +
+            '<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;" title="' + esc(o.event_title||o.event_key||'') + '">' + esc(o.event_key||'') + '</td>' +
+            '<td class="muted">' + esc(o.category||'') + '</td>' +
+            '<td class="mono muted">' + (o.n_outcomes||0) + '</td>' +
+            '<td class="mono">' + (o.total_cost||0).toFixed(3) + '</td>' +
+            '<td class="mono muted">' + (o.guaranteed_payout||0).toFixed(0) + '</td>' +
+            '<td class="mono ' + ((o.net_edge||0)>0?'good':'bad') + '">' + (o.net_edge||0).toFixed(3) + ' (' + ((o.edge_pct||0)*100).toFixed(1) + '%)</td>' +
+            '<td class="mono muted">' + ((o.confidence||0)*100).toFixed(0) + '%</td>' +
+            '<td><button class="btn" style="font-size:.55rem;padding:2px 6px;" onclick="openInternalExecModal(' + i + ')">Exec</button></td>' +
+            '</tr>';
+        }).join('') + '</tbody></table>';
+    }
+
+    function openInternalExecModal(idx) {
+      const opps = window._kalshiInternalOpps || [];
+      const o = opps[idx];
+      if (!o) return;
+      const ex = window._arbExecStatus || {};
+      const live = ex.mode === 'live';
+      const kReady = ex.venues && ex.venues.kalshi && ex.venues.kalshi.live_ready;
+      const canLive = live && kReady && o.guaranteed;
+      const maxN = ex.max_notional_usd || 100;
+      const defN = Math.min(50, maxN);
+      const m = document.getElementById('exec-modal');
+      const body = document.getElementById('exec-modal-body');
+      const legRows = (o.legs||[]).map(l => '<tr><td class="mono">' + esc(l.ticker||'') + '</td><td>buy ' + esc(l.side||'') + '</td><td class="mono">@' + (l.price||0).toFixed(3) + '</td></tr>').join('');
+      body.innerHTML =
+        '<div class="muted small" style="margin-bottom:8px;">' + esc(o.event_key||'') + ' &middot; ' + esc(o.strategy||'') + ' &middot; ' + (o.guaranteed ? '<span class="good">GUARANTEED lock</span>' : '<span class="warn">conditional - needs exhaustive outcomes</span>') + '</div>' +
+        '<table class="table" style="font-size:.58rem;margin-bottom:6px;"><tbody>' + legRows + '</tbody></table>' +
+        '<table class="table" style="font-size:.62rem;margin-bottom:8px;"><tbody>' +
+        '<tr><td>Outcomes</td><td class="mono">' + (o.n_outcomes||0) + ' legs</td></tr>' +
+        '<tr><td>Cost / set</td><td class="mono">' + (o.total_cost||0).toFixed(3) + '</td></tr>' +
+        '<tr><td>Worst-case payout</td><td class="mono">' + (o.guaranteed_payout||0).toFixed(0) + '</td></tr>' +
+        '<tr><td>Net edge</td><td class="mono ' + ((o.net_edge||0)>0?'good':'bad') + '">' + (o.net_edge||0).toFixed(3) + ' (' + ((o.edge_pct||0)*100).toFixed(1) + '%)</td></tr>' +
+        '</tbody></table>' +
+        (o.guaranteed ? '' : '<div class="small bad" style="margin-bottom:8px;">Not a guaranteed lock: pays $0 if an unlisted outcome wins. Live execution is blocked; dry-run only.</div>') +
+        '<label class="muted small">Notional (USD, max ' + fmtUsd(maxN) + ')</label>' +
+        '<input id="exec-notional" type="number" min="1" max="' + maxN + '" value="' + defN + '" style="width:100%;margin:4px 0 8px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--fg);">' +
+        '<label class="small" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">' +
+          '<input id="exec-live" type="checkbox" ' + (canLive ? '' : 'disabled') + '> ' +
+          '<span class="' + (canLive ? '' : 'muted') + '">Place REAL orders (live)' + (canLive ? '' : ' - ' + (!o.guaranteed ? 'not a guaranteed lock' : (!live ? 'dry-run mode' : 'Kalshi not live-ready'))) + '</span>' +
+        '</label>' +
+        '<div id="exec-result" class="small muted" style="margin-bottom:8px;"></div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+          '<button class="btn" onclick="closeExecModal()">Cancel</button>' +
+          '<button class="btn" id="exec-go" style="background:var(--accent);" onclick="submitInternalExec(' + idx + ')">Execute</button>' +
+        '</div>';
+      m.style.display = 'flex';
+    }
+
+    async function submitInternalExec(idx) {
+      const opps = window._kalshiInternalOpps || [];
+      const o = opps[idx];
+      if (!o) return;
+      const notional = parseFloat(document.getElementById('exec-notional').value) || 0;
+      const live = !!(document.getElementById('exec-live') && document.getElementById('exec-live').checked);
+      const resEl = document.getElementById('exec-result');
+      const goBtn = document.getElementById('exec-go');
+      if (live && !confirm('Place REAL orders on ' + (o.n_outcomes||0) + ' Kalshi legs for ' + fmtUsd(notional) + '? This spends real money.')) return;
+      goBtn.disabled = true; resEl.className = 'small muted'; resEl.textContent = 'Submitting...';
+      try {
+        const res = await fetch('/arbitrage/execute', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ event_key: o.event_key, kind: 'kalshi_internal', notional, live, confirm: true }),
+          signal: AbortSignal.timeout(45000),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          resEl.className = 'small good';
+          resEl.innerHTML = 'OK ' + esc(data.status) + (data.plan ? (' - ' + data.plan.contracts + ' sets, net ' + fmtUsd(data.plan.net_expected_profit!=null?data.plan.net_expected_profit:data.plan.expected_profit)) : '') +
+            (data.reasons && data.reasons.length ? '<br><span class="muted">' + esc(data.reasons.join('; ')) + '</span>' : '');
+          setTimeout(() => { closeExecModal(); refreshAll(); }, 1500);
+        } else {
+          resEl.className = 'small bad';
+          resEl.innerHTML = 'X ' + esc(data.error || data.status || 'rejected') +
+            (data.reasons && data.reasons.length ? '<br><span class="muted">' + esc(data.reasons.join('; ')) + '</span>' : '');
+        }
+      } catch (err) { resEl.className = 'small bad'; resEl.textContent = 'Error: ' + err.message; }
+      finally { goBtn.disabled = false; }
+    }
+
+    async function loadCryptoDivergence() {
+      const el = document.getElementById('crypto-divergence-body');
+      if (!el) return;
+      try {
+        const res = await fetch('/crypto-divergence', { signal: AbortSignal.timeout(15000) });
+        renderCryptoDivergence(res.ok ? await res.json() : { __error: 'HTTP ' + res.status });
+      } catch (err) {
+        console.error('crypto divergence', err);
+        renderCryptoDivergence({ __error: err && err.name === 'TimeoutError' ? 'request timed out' : 'request failed' });
+      }
+    }
+
+    function renderCryptoDivergence(data) {
+      const el = document.getElementById('crypto-divergence-body');
+      if (!el) return;
+      if (data && data.__error) {
+        el.innerHTML = '<div class="warn small">Could not load divergences: ' + esc(data.__error) + '</div>';
+        return;
+      }
+      const divs = (data && (data.opportunities || data.divergences)) || [];
+      const sigCount = data && (data.significant_count != null ? data.significant_count : data.total_significant);
+      const cEl = document.getElementById('crypto-div-count');
+      if (cEl) cEl.textContent = (sigCount != null ? sigCount + ' sig' : divs.length);
+      if (!divs.length) {
+        if (data && (data.stale || data.error)) {
+          el.innerHTML = '<div class="warn small">Divergence scan unavailable (' + esc(data.error || 'stale') + '); no cached data.</div>';
+        } else {
+          el.innerHTML = '<div class="muted small">No crypto/PM divergences detected.</div>';
+        }
+        return;
+      }
+      const staleNote = (data && data.stale) ? '<div class="warn small" style="margin-bottom:4px;">Showing cached data (' + esc(data.error || 'stale') + ').</div>' : '';
+      const sorted = divs.slice().sort((a,b) => Math.abs(b.divergence||0) - Math.abs(a.divergence||0));
+      el.innerHTML = staleNote + '<table class="table" style="font-size:.6rem;"><thead><tr>' +
+        '<th>Asset</th><th>Question</th><th>Mkt P</th><th>Fair P</th><th>Div</th><th>Signal</th><th>Conf</th>' +
+        '</tr></thead><tbody>' + sorted.slice(0, 15).map(d => {
+          const sig = esc(d.signal||'');
+          const sigClass = /OVERPRICING/.test(sig) ? 'bad' : /UNDERPRICING/.test(sig) ? 'good' : 'muted';
+          return '<tr' + (d.is_significant ? ' style="font-weight:600;"' : '') + '>' +
+            '<td class="mono">' + esc(d.asset_symbol||'') + '</td>' +
+            '<td style="max-width:170px;overflow:hidden;text-overflow:ellipsis;" title="' + esc(d.question||'') + '">' + esc(d.question||'') + '</td>' +
+            '<td class="mono">' + ((d.market_probability||0)*100).toFixed(0) + '%</td>' +
+            '<td class="mono muted">' + ((d.fair_probability||0)*100).toFixed(0) + '%</td>' +
+            '<td class="mono ' + (Math.abs(d.divergence||0)>=0.2?'bad':'warn') + '">' + ((d.divergence_pct!=null?d.divergence_pct:(d.divergence||0)*100)).toFixed(0) + '%</td>' +
+            '<td class="' + sigClass + '" style="font-size:.55rem;">' + sig.replace(/_/g,' ') + '</td>' +
+            '<td class="mono muted">' + ((d.confidence||0)*100).toFixed(0) + '%</td>' +
+            '</tr>';
+        }).join('') + '</tbody></table>';
     }
 
     // ── Refresh ──
@@ -1470,10 +2222,105 @@
       '</div>';
     }
 
+    // ── Active Brackets ──
+    async function loadBrackets() {
+      try {
+        const res = await fetch('/execution/brackets', { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) return null;
+        return await res.json();
+      } catch { return null; }
+    }
+
+    function renderBrackets(data) {
+      const el = document.getElementById('brackets-body');
+      const countEl = document.getElementById('brackets-count');
+      if (!el) return;
+      const brackets = (data && data.brackets) || {};
+      const ids = Object.keys(brackets);
+      if (!ids.length) {
+        el.innerHTML = '<div class="muted small">No active brackets.</div>';
+        if (countEl) countEl.textContent = '0';
+        return;
+      }
+      if (countEl) countEl.textContent = String(ids.length);
+      el.innerHTML = ids.map(id => {
+        const b = brackets[id];
+        const side = String(b.side || 'BUY').toUpperCase();
+        const entry = Number(b.entry_price || 0);
+        const stop = Number(b.stop_price || 0);
+        const target = Number(b.target_price || 0);
+        const current = Number(b.highest_price || b.entry_price || 0);
+        const stopDistAbs = Math.abs(current - stop);
+        const stopDistPct = entry > 0 ? (stopDistAbs / entry * 100) : 0;
+        const targetDistAbs = Math.abs(target - current);
+        const targetDistPct = entry > 0 ? (targetDistAbs / entry * 100) : 0;
+        const status = String(b.status || 'OPEN');
+        const tags = [];
+        if (b.breakeven_set) tags.push('<span class="tag" style="font-size:.55rem;color:var(--accent-2);border-color:color-mix(in srgb, var(--accent-2) 30%, var(--border));">breakeven</span>');
+        if (b.trailing_activated) tags.push('<span class="tag" style="font-size:.55rem;color:var(--warn);border-color:color-mix(in srgb, var(--warn) 25%, var(--border));">trailing</span>');
+        return '<div class="signal-card" style="padding:5px 8px;">' +
+          '<div class="signal-head">' +
+            '<span class="mono" style="font-weight:700;">' + esc(b.product_id || id) + '</span>' +
+            '<span style="display:flex;gap:3px;">' +
+              '<span class="badge ' + (side === 'BUY' ? 'buy' : 'sell') + '">' + side + '</span>' +
+              '<span class="tag" style="font-size:.55rem;">' + esc(status) + '</span>' +
+            '</span>' +
+          '</div>' +
+          '<div class="signal-meta">' +
+            'Entry: <b>' + fmtUsd(entry) + '</b> &middot; Stop: <b>' + fmtUsd(stop) + '</b> &middot; Target: <b>' + fmtUsd(target) + '</b>' +
+          '</div>' +
+          '<div class="signal-meta" style="font-size:.62rem;">' +
+            'Stop dist: <span class="' + (stopDistPct < 2 ? 'bad' : 'muted') + '">' + fmtUsd(stopDistAbs) + ' (' + stopDistPct.toFixed(1) + '%)</span> &middot; ' +
+            'Target dist: <span class="good">' + fmtUsd(targetDistAbs) + ' (' + targetDistPct.toFixed(1) + '%)</span>' +
+          '</div>' +
+          '<div class="signal-meta" style="display:flex;justify-content:space-between;align-items:center;">' +
+            '<span class="muted" style="font-size:.58rem;">' + ago(b.timestamp) + ' ago' + (b.strategy_id ? ' &middot; ' + esc(b.strategy_id) : '') + '</span>' +
+            '<span style="display:flex;gap:3px;align-items:center;">' +
+              tags.join('') +
+              '<button class="btn" onclick="cancelBracket(\'' + id + '\')" style="font-size:.55rem;padding:1px 5px;color:var(--bad);border-color:color-mix(in srgb, var(--bad) 30%, var(--border));">Cancel</button>' +
+            '</span>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    async function cancelBracket(bracket_id) {
+      try {
+        const res = await fetch('/execution/brackets/cancel', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({bracket_id})
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'HTTP ' + res.status);
+        }
+        refreshAll();
+      } catch (err) {
+        alert('Cancel failed: ' + err.message);
+      }
+    }
+
+    async function cancelBracketAll() {
+      try {
+        const res = await fetch('/execution/brackets/cancel-all', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'HTTP ' + res.status);
+        }
+        refreshAll();
+      } catch (err) {
+        alert('Cancel all failed: ' + err.message);
+      }
+    }
+
     async function refreshAll() {
       _resetCountdown();
       try {
-        const [health, history, posData, analytics, signalFeed, plans, buckets, config, holdings, alloc, divSignals] = await Promise.all([
+        const [health, history, posData, analytics, signalFeed, plans, buckets, config, holdings, alloc, divSignals, brackets] = await Promise.all([
           loadTraderHealth(),
           loadPaperHistory(),
           loadPaperPositions(),
@@ -1485,6 +2332,7 @@
           loadCoreHoldings(),
           loadCapitalAllocation(),
           loadDiversificationSignals(),
+          loadBrackets(),
         ]);
         if (health) {
           renderHealth(health);
@@ -1523,6 +2371,21 @@
         if (divSignals) {
           renderDiversificationSignals(divSignals);
         }
+        if (brackets) {
+          renderBrackets(brackets);
+        }
+        const intelData = await loadSignalIntel();
+        if (intelData) renderSignalIntel(intelData);
+        const mktRisk = await loadMarketRisk();
+        if (mktRisk) renderMarketRisk(mktRisk);
+        const paramOpt = await loadParamOpt();
+        if (paramOpt) renderParamOpt(paramOpt);
+        const tlhState = await loadTLHState();
+        if (tlhState) renderTLHState(tlhState);
+        loadArbitrage();
+        loadPmUniverse();
+        loadKalshiInternal();
+        loadCryptoDivergence();
         state.lastRefresh = Date.now();
         document.getElementById('refresh-age').textContent = 'just now';
       } catch (err) {
@@ -1568,5 +2431,12 @@
     setInterval(refreshAll, REFRESH_INTERVAL_MS);
     setInterval(refreshTickerPrices, 3000);
   </script>
+  <!-- Arbitrage execution modal -->
+  <div id="exec-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center;" onclick="if(event.target===this)closeExecModal()">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;width:min(420px,92vw);box-shadow:0 10px 40px rgba(0,0,0,.5);">
+      <div style="font-weight:600;margin-bottom:10px;">Execute Arbitrage</div>
+      <div id="exec-modal-body"></div>
+    </div>
+  </div>
 </body>
 </html>

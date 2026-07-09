@@ -93,9 +93,11 @@ class KalshiMarket:
     no_bid: float
     no_ask: float
     volume: float
+    open_interest: float
     close_date: str
     status: str
     settled: bool
+    category: str = ""
 
 
 class KalshiClient:
@@ -146,6 +148,13 @@ class KalshiClient:
         if private_key is None:
             raise RuntimeError("Kalshi private key not configured")
         path_no_query = path.split("?")[0]
+        # Kalshi signs the FULL request path, which includes the base_url prefix
+        # (e.g. "/trade-api/v2"). base_url is like
+        # "https://api.elections.kalshi.com/trade-api/v2"; its path must be
+        # prepended or the signature is rejected with HTTP 401.
+        base_path = urllib.parse.urlsplit(self.base_url).path.rstrip("/")
+        if base_path and not path_no_query.startswith(base_path):
+            path_no_query = f"{base_path}{path_no_query}"
         message = f"{timestamp_ms}{method.upper()}{path_no_query}".encode("utf-8")
         signature = private_key.sign(
             message,
@@ -199,7 +208,7 @@ class KalshiClient:
             logger.warning("Kalshi login failed: %s", e)
             self._token = ""
 
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    def _get(self, path: str, params: Optional[Dict[str, Any]] = None, _retries: int = 3) -> Any:
         url = f"{self.base_url}{path}"
         if params:
             parts = []
@@ -214,10 +223,43 @@ class KalshiClient:
         except urllib.error.HTTPError as e:
             if e.code == 401 and self._token:
                 self._login()
-                return self._get(path, params)
+                return self._get(path, params, _retries)
+            # Rate limited (common on the unauthenticated public tier): back off + retry.
+            if e.code == 429 and _retries > 0:
+                wait = float(e.headers.get("Retry-After", 0) or 0) or (2.0 * (4 - _retries))
+                time.sleep(min(wait, 10.0))
+                return self._get(path, params, _retries - 1)
             raise
 
-    def search_markets(self, term: str = "", limit: int = 50) -> List[KalshiMarket]:
+    def _write(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Any:
+        """Signed write request (POST/DELETE/PUT) for order/portfolio endpoints.
+
+        Requires API-key auth (RSA-PSS). The signature covers the full request
+        path including the base-URL prefix (handled in `_sign_request`).
+        """
+        if not self._use_api_key_auth():
+            raise RuntimeError("Kalshi write ops require API-key auth (api_key_id + private_key_path)")
+        url = f"{self.base_url}{path}"
+        data = json.dumps(body).encode() if body is not None else None
+        headers = self._auth_header(method, path)
+        headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode()
+            except Exception:
+                pass
+            logger.warning("Kalshi %s %s failed: HTTP %s %s", method, path, e.code, detail)
+            raise
+
+    def search_markets(self, term: str = "", limit: int = 50,
+                       min_volume: float = 0, max_spread: float = 1.0,
+                       min_open_interest: float = 0) -> List[KalshiMarket]:
         params: Dict[str, Any] = {"limit": min(limit, 100), "status": "open"}
         if term:
             params["search_term"] = term
@@ -227,99 +269,207 @@ class KalshiClient:
             logger.warning("Kalshi search failed: %s", e)
             return []
         raw = data.get("markets", [])
-        return [self._parse_market(m) for m in raw]
+        results = [self._parse_market(m) for m in raw]
+        # Filter by volume, open_interest, and spread
+        filtered = []
+        for m in results:
+            if m.volume < min_volume:
+                continue
+            if m.open_interest < min_open_interest:
+                continue
+            spread = m.yes_ask - m.yes_bid
+            if spread > max_spread:
+                continue
+            filtered.append(m)
+        filtered.sort(key=lambda m: m.volume, reverse=True)
+        return filtered[:limit]
 
-    def get_event_markets(self, event_ticker: str) -> List[KalshiMarket]:
+    def get_market(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single market's raw record by ticker (includes settlement result)."""
+        if not ticker:
+            return None
         try:
-            data = self._get(f"/events/{event_ticker}")
+            data = self._get(f"/markets/{ticker}")
         except Exception as e:
-            logger.debug("Kalshi event %s failed: %s", event_ticker, e)
-            return []
-        raw = data.get("markets", []) if isinstance(data, dict) else []
-        return [self._parse_market(m) for m in raw]
+            logger.debug("Kalshi get_market failed for %s: %s", ticker, e)
+            return None
+        return data.get("market") if isinstance(data, dict) else None
 
-    def get_series(self, limit: int = 50) -> List[KalshiSeries]:
-        """Fetch available series (thematic event groups)."""
-        try:
-            data = self._get("/series", {"limit": min(limit, 100), "status": "open"})
-        except Exception as e:
-            logger.debug("Kalshi series failed: %s", e)
-            return []
-        return [
-            KalshiSeries(
-                series_ticker=s.get("series_ticker", ""),
-                title=s.get("title", ""),
-                category=s.get("category", ""),
-                status=s.get("status", ""),
-            )
-            for s in data.get("series", [])
-        ]
+    def get_settlement(self, ticker: str) -> Optional[int]:
+        """Return 1 if the market settled YES, 0 if settled NO, else None (unresolved)."""
+        m = self.get_market(ticker)
+        if not m:
+            return None
+        settled = bool(m.get("settled", False)) or str(m.get("status", "")).lower() in (
+            "settled", "finalized", "closed",
+        )
+        if not settled:
+            return None
+        result = str(m.get("result", "")).lower()
+        if result in ("yes", "y"):
+            return 1
+        if result in ("no", "n"):
+            return 0
+        return None
 
-    def search_events_by_category(self, category: str, limit: int = 20) -> List[KalshiMarket]:
-        """Fetch events for a specific category and return their markets."""
-        try:
-            data = self._get("/events", {"limit": min(limit, 100), "status": "open", "category": category})
-        except Exception as e:
-            logger.debug("Kalshi category %s failed: %s", category, e)
-            return []
-        event_tickers = [e.get("event_ticker", "") for e in data.get("events", []) if e.get("event_ticker")]
+    def get_relevant_markets(self, limit: int = 50,
+                              min_volume: float = 1000,
+                              max_spread: float = 0.15,
+                              min_open_interest: float = 100) -> List[KalshiMarket]:
+        """Search events by crypto/macro keywords, get their markets with filters."""
+        all_events = self.fetch_all_events()
+        event_tickers = self._filter_events_by_keywords(all_events, WATCHED_EVENTS)
+        results = []
+        seen: set = set()
+        for et in event_tickers:
+            for m in self.get_event_markets(et):
+                if m.ticker not in seen:
+                    spread = m.yes_ask - m.yes_bid
+                    if m.volume >= min_volume and m.open_interest >= min_open_interest and spread <= max_spread:
+                        seen.add(m.ticker)
+                        results.append(m)
+            if len(results) >= limit:
+                break
+        # Fall back to market search
+        if not results:
+            for term in WATCHED_EVENTS:
+                markets = self.search_markets(term=term, limit=10,
+                                             min_volume=min_volume, max_spread=max_spread,
+                                             min_open_interest=min_open_interest)
+                for m in markets:
+                    if m.ticker not in seen:
+                        seen.add(m.ticker)
+                        results.append(m)
+                if len(results) >= limit:
+                    break
+        results.sort(key=lambda m: m.volume, reverse=True)
+        return results[:limit]
+
+    def search_broad(self, limit: int = 50,
+                     min_volume: float = 0, max_spread: float = 1.0,
+                     min_open_interest: float = 0) -> List[KalshiMarket]:
+        """Search across all event categories with filters."""
+        all_events = self.fetch_all_events()
+        event_tickers = self._filter_events_by_keywords(all_events, BROAD_SEARCH_TERMS)
         results = []
         seen: set = set()
         for et in event_tickers:
             try:
                 for m in self.get_event_markets(et):
                     if m.ticker not in seen:
-                        seen.add(m.ticker)
-                        results.append(m)
+                        spread = m.yes_ask - m.yes_bid
+                        if m.volume >= min_volume and m.open_interest >= min_open_interest and spread <= max_spread:
+                            seen.add(m.ticker)
+                            results.append(m)
             except Exception:
                 continue
+            if len(results) >= limit:
+                break
+        # Fall back to market search
+        if len(results) < limit:
+            for term in BROAD_SEARCH_TERMS:
+                try:
+                    markets = self.search_markets(term=term, limit=10,
+                                                 min_volume=min_volume, max_spread=max_spread,
+                                                 min_open_interest=min_open_interest)
+                    for m in markets:
+                        if m.ticker not in seen:
+                            seen.add(m.ticker)
+                            results.append(m)
+                    if len(results) >= limit:
+                        break
+                except Exception:
+                    continue
         results.sort(key=lambda m: m.volume, reverse=True)
         return results[:limit]
 
-    def get_markets_by_categories(
-        self, total_event_limit: int = 20
-    ) -> Dict[str, List[KalshiMarket]]:
-        """Fetch all open events, group by Kalshi category, and get markets.
+    def get_event_markets(self, event_ticker: str) -> List[KalshiMarket]:
+        """Fetch all open markets belonging to a single event."""
+        if not event_ticker:
+            return []
+        try:
+            data = self._get("/markets", {"event_ticker": event_ticker, "status": "open", "limit": 100})
+        except Exception as e:
+            logger.debug("Kalshi get_event_markets failed for %s: %s", event_ticker, e)
+            return []
+        raw = data.get("markets", []) if isinstance(data, dict) else []
+        return [self._parse_market(m) for m in raw]
 
-        Limits to *total_event_limit* events across all categories (not per-category)
-        to keep API call count manageable. Prioritizes categories most likely to
-        overlap with Polymarket: Sports, Entertainment, Politics, Elections.
+    def fetch_events_with_markets(self, limit: int = 200,
+                                  categories: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Fetch open events with their nested markets in batched calls.
+
+        Uses `with_nested_markets=true` so each event dict carries its markets
+        (avoids an N+1 call per event). Each returned event gains a
+        ``parsed_markets`` key (List[KalshiMarket]). Preserves ``category`` and
+        ``mutually_exclusive`` from the event record (needed for internal-arb).
         """
-        all_events = self.fetch_all_events(limit=100)
-        # Priority order: categories most likely to match Polymarket first
-        priority = ["Sports", "Entertainment", "Politics", "Elections",
-                    "Crypto", "Economics", "Financials", "Science and Technology",
-                    "Climate and Weather", "Companies", "Social", "World"]
-        by_category: Dict[str, List[str]] = {}
-        for e in all_events:
-            cat = e.get("category", "unknown")
-            ticker = e.get("event_ticker", "")
-            if ticker:
-                by_category.setdefault(cat, []).append(ticker)
-
-        # Flatten by priority up to total_event_limit
-        selected: list[tuple[str, str]] = []
-        for cat in priority:
-            for t in by_category.get(cat, []):
-                if len(selected) >= total_event_limit:
-                    break
-                selected.append((cat, t))
-            if len(selected) >= total_event_limit:
+        events: List[Dict[str, Any]] = []
+        cursor = ""
+        want = min(limit, 1000)
+        cats = set(categories) if categories else None
+        while len(events) < want:
+            params: Dict[str, Any] = {
+                "limit": min(200, want - len(events)),
+                "status": "open",
+                "with_nested_markets": "true",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                data = self._get("/events", params)
+            except Exception as e:
+                logger.debug("Kalshi fetch_events_with_markets failed: %s", e)
                 break
+            batch = data.get("events", []) if isinstance(data, dict) else []
+            if not batch:
+                break
+            for e in batch:
+                if cats and e.get("category", "") not in cats:
+                    continue
+                e["parsed_markets"] = [self._parse_market(m) for m in e.get("markets", [])]
+                events.append(e)
+            cursor = data.get("cursor", "") if isinstance(data, dict) else ""
+            if not cursor:
+                break
+        return events
 
+    def get_markets_by_categories(self, priority: Optional[List[str]] = None,
+                                  total_event_limit: int = 20) -> Dict[str, List[KalshiMarket]]:
+        """Return open markets grouped by Kalshi category, priority-ordered.
+
+        Fetches up to ``total_event_limit`` events (highest-priority categories
+        first) and flattens their markets into ``{category: [KalshiMarket, ...]}``.
+        """
+        priority = priority or [
+            "Crypto", "Economics", "Financials", "Politics", "Elections",
+            "Sports", "Science and Technology", "Entertainment",
+            "World", "Climate and Weather",
+        ]
+        all_events = self.fetch_events_with_markets(limit=max(total_event_limit * 3, 100))
+        by_category: Dict[str, List[Dict[str, Any]]] = {}
+        for e in all_events:
+            by_category.setdefault(e.get("category", "unknown"), []).append(e)
+
+        ordered_cats = priority + [c for c in by_category if c not in priority]
         result: Dict[str, List[KalshiMarket]] = {}
         seen: set = set()
-        for cat, et in selected:
-            try:
-                for m in self.get_event_markets(et):
+        count = 0
+        for cat in ordered_cats:
+            for e in by_category.get(cat, []):
+                if count >= total_event_limit:
+                    break
+                for m in e.get("parsed_markets", []):
                     if m.ticker not in seen:
                         seen.add(m.ticker)
                         result.setdefault(cat, []).append(m)
-            except Exception:
-                continue
+                count += 1
+            if count >= total_event_limit:
+                break
         for cat in result:
             result[cat].sort(key=lambda m: m.volume, reverse=True)
         return result
+
 
     def fetch_all_events(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Fetch all open events (batched once, avoid per-keyword calls)."""
@@ -349,64 +499,6 @@ class KalshiClient:
                     break
         return matched
 
-    def get_relevant_markets(self, limit: int = 50) -> List[KalshiMarket]:
-        """Search events by crypto/macro keywords, get their markets."""
-        all_events = self.fetch_all_events()
-        event_tickers = self._filter_events_by_keywords(all_events, WATCHED_EVENTS)
-        results = []
-        seen: set = set()
-        for et in event_tickers:
-            for m in self.get_event_markets(et):
-                if m.ticker not in seen:
-                    seen.add(m.ticker)
-                    results.append(m)
-            if len(results) >= limit:
-                break
-        # Fall back to market search
-        if not results:
-            for term in WATCHED_EVENTS:
-                markets = self.search_markets(term=term, limit=10)
-                for m in markets:
-                    if m.ticker not in seen:
-                        seen.add(m.ticker)
-                        results.append(m)
-                if len(results) >= limit:
-                    break
-        results.sort(key=lambda m: m.volume, reverse=True)
-        return results[:limit]
-
-    def search_broad(self, limit: int = 50) -> List[KalshiMarket]:
-        """Search across all event categories."""
-        all_events = self.fetch_all_events()
-        event_tickers = self._filter_events_by_keywords(all_events, BROAD_SEARCH_TERMS)
-        results = []
-        seen: set = set()
-        for et in event_tickers:
-            try:
-                for m in self.get_event_markets(et):
-                    if m.ticker not in seen:
-                        seen.add(m.ticker)
-                        results.append(m)
-            except Exception:
-                continue
-            if len(results) >= limit:
-                break
-        # Fall back to market search
-        if len(results) < limit:
-            for term in BROAD_SEARCH_TERMS:
-                try:
-                    markets = self.search_markets(term=term, limit=10)
-                    for m in markets:
-                        if m.ticker not in seen:
-                            seen.add(m.ticker)
-                            results.append(m)
-                except Exception:
-                    continue
-                if len(results) >= limit:
-                    break
-        results.sort(key=lambda m: m.volume, reverse=True)
-        return results[:limit]
-
     def get_order_book(self, ticker: str) -> Dict[str, Any]:
         try:
             return self._get(f"/markets/{ticker}/orderbook")
@@ -421,6 +513,97 @@ class KalshiClient:
             logger.debug("Kalshi balance failed: %s", e)
             return {}
 
+    # ── Trading / portfolio (write) ──────────────────────────────────
+    # These require API-key auth. Kalshi v2 trade API:
+    #   POST   /portfolio/orders          create an order
+    #   DELETE /portfolio/orders/{id}     cancel an order
+    #   GET    /portfolio/orders          list orders
+    #   GET    /portfolio/positions       list positions
+    #   GET    /portfolio/fills           list fills
+
+    def create_order(self, ticker: str, side: str, action: str, count: int,
+                     order_type: str = "limit", price: Optional[float] = None,
+                     client_order_id: Optional[str] = None,
+                     time_in_force: str = "immediate_or_cancel",
+                     self_trade_prevention_type: str = "taker_at_cross",
+                     post_only: bool = False) -> Dict[str, Any]:
+        """Place an order via the Kalshi V2 endpoint (POST /portfolio/events/orders).
+
+        Ergonomic wrapper: `side` in {"yes","no"}, `action` in {"buy","sell"}.
+        The V2 book is quoted from the YES leg only ("bid"=buy YES, "ask"=sell
+        YES); buying NO at q == selling YES at 1-q. We translate accordingly.
+
+        `price` is dollars in [0,1]. `count` is number of contracts.
+        `time_in_force` in {fill_or_kill, good_till_canceled, immediate_or_cancel}.
+        For arbitrage we default to IOC (don't rest / leg risk).
+        """
+        import uuid
+        if price is None:
+            raise ValueError("price is required (V2 orders are always priced)")
+        p = float(price)
+        # Map (side, action) -> V2 book side + YES-quoted price.
+        if side == "yes":
+            book_side = "bid" if action == "buy" else "ask"
+            yes_price = p
+        elif side == "no":
+            # buy NO == sell YES @ 1-p ; sell NO == buy YES @ 1-p
+            book_side = "ask" if action == "buy" else "bid"
+            yes_price = 1.0 - p
+        else:
+            raise ValueError("side must be 'yes' or 'no'")
+        yes_price = max(0.0, min(1.0, yes_price))
+        body: Dict[str, Any] = {
+            "ticker": ticker,
+            "side": book_side,
+            "count": f"{int(count)}",
+            "price": f"{yes_price:.4f}",
+            "time_in_force": time_in_force,
+            "self_trade_prevention_type": self_trade_prevention_type,
+            "client_order_id": client_order_id or str(uuid.uuid4()),
+        }
+        if post_only:
+            body["post_only"] = True
+        return self._write("POST", "/portfolio/events/orders", body)
+
+    def cancel_order(self, order_id: str) -> Dict[str, Any]:
+        # V2 cancel endpoint (legacy /portfolio/orders/{id} is deprecated / 410).
+        return self._write("DELETE", f"/portfolio/events/orders/{order_id}")
+
+    def get_orders(self, ticker: str = "", status: str = "") -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {}
+        if ticker:
+            params["ticker"] = ticker
+        if status:
+            params["status"] = status
+        try:
+            data = self._get("/portfolio/orders", params or None)
+            return data.get("orders", []) if isinstance(data, dict) else []
+        except Exception as e:
+            logger.debug("Kalshi get_orders failed: %s", e)
+            return []
+
+    def get_positions(self) -> List[Dict[str, Any]]:
+        try:
+            data = self._get("/portfolio/positions")
+            if isinstance(data, dict):
+                # v2 returns {"market_positions": [...], "event_positions": [...]}
+                return data.get("market_positions", data.get("positions", []))
+            return []
+        except Exception as e:
+            logger.debug("Kalshi get_positions failed: %s", e)
+            return []
+
+    def get_fills(self, ticker: str = "", limit: int = 100) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"limit": min(limit, 1000)}
+        if ticker:
+            params["ticker"] = ticker
+        try:
+            data = self._get("/portfolio/fills", params)
+            return data.get("fills", []) if isinstance(data, dict) else []
+        except Exception as e:
+            logger.debug("Kalshi get_fills failed: %s", e)
+            return []
+
     def _parse_market(self, raw: dict) -> KalshiMarket:
         # Kalshi v2 API uses _dollars suffix (already in 0-1 range)
         # v1 API returns cents (divide by 100).
@@ -431,7 +614,9 @@ class KalshiClient:
         no_bid = raw.get("no_bid_dollars") if has_v2 else raw.get("no_bid", 0)
         no_ask = raw.get("no_ask_dollars") if has_v2 else raw.get("no_ask", 0)
         volume = raw.get("volume_24h_fp") if has_v2 else raw.get("volume", 0)
+        open_interest = raw.get("open_interest_fp") if has_v2 else raw.get("open_interest", 0)
         close_date = raw.get("close_time") if has_v2 else raw.get("close_date", "")
+        category = raw.get("category", "")
         return KalshiMarket(
             ticker=raw.get("ticker", ""),
             title=raw.get("title", ""),
@@ -441,9 +626,11 @@ class KalshiClient:
             no_bid=float(no_bid or 0) / div,
             no_ask=float(no_ask or 0) / div,
             volume=float(volume or 0),
+            open_interest=float(open_interest or 0),
             close_date=close_date,
             status=raw.get("status", ""),
             settled=bool(raw.get("settled", False)),
+            category=category,
         )
 
 

@@ -158,6 +158,8 @@ class UnifiedPredictionMarketClient:
             if spread > max_spread:
                 continue
             ls = min(m.volume / 50000, 1.0) * max(0, 1 - spread * 3)
+            category = self._detect_category(m.title)
+            keywords = [kw for kw in CRYPTO_KEYWORDS if kw in m.title.lower()]
             results.append(PredictionMarket(
                 platform="kalshi",
                 market_id=m.ticker,
@@ -171,6 +173,9 @@ class UnifiedPredictionMarketClient:
                 yes_ask=m.yes_ask,
                 spread=spread,
                 liquidity_score=ls,
+                category=category,
+                keywords=keywords,
+                raw_data={"event_ticker": m.event_ticker},
             ))
         results.sort(key=lambda p: p.volume, reverse=True)
         return results[:limit]
@@ -303,11 +308,8 @@ class UnifiedPredictionMarketClient:
     ) -> Dict[str, List[PredictionMarket]]:
         """Search ALL event categories across both platforms.
 
-        Uses per-category API endpoints where available (Polymarket Gamma tags,
-        Kalshi category filter) and falls back to broad keyword search otherwise.
-
-        Results are cached for 45 seconds to avoid redundant API calls when
-        both the prediction market scan and arbitrage scan are in the same cycle.
+        Uses keyword-based categorization since Polymarket Gamma tags don't
+        reliably filter by category. Results cached for 45 seconds.
         """
         now = time.time()
         if self._category_cache and (now - self._category_cache_ts) < 45:
@@ -316,15 +318,20 @@ class UnifiedPredictionMarketClient:
         categories = ["crypto", "sports", "politics", "entertainment", "economics", "technology"]
         result: Dict[str, List[PredictionMarket]] = {c: [] for c in categories}
 
-        # Polymarket: per-tag search via Gamma API
-        for cat in categories:
-            try:
-                raw = self._polymarket.get_markets_by_tag(cat, limit=limit_per_platform)
-                unified = self._polymarket_to_unified(raw, limit_per_platform, min_volume, max_spread)
-                result[cat].extend(unified)
-            except Exception as e:
-                logger.debug("Polymarket tag %s failed: %s", cat, e)
+        # Polymarket: fetch once, categorize by keyword matching
+        try:
+            all_raw = self._polymarket.fetch_markets(limit=limit_per_platform * 4)
+            all_poly = self._polymarket_to_unified(all_raw, len(all_raw), min_volume, max_spread)
+            for m in all_poly:
+                cat = self._detect_category(m.question)
+                if cat in result:
+                    m.category = cat
+                    m.keywords = [kw for kw in CRYPTO_KEYWORDS if kw in m.question.lower()]
+                    result[cat].append(m)
+        except Exception as e:
+            logger.debug("Polymarket category search failed: %s", e)
 
+        # Kalshi: category-based search if API auth available
         KALSHI_CAT_MAP: dict[str, str] = {
             "Sports": "sports",
             "Entertainment": "entertainment",
@@ -344,27 +351,28 @@ class UnifiedPredictionMarketClient:
                     unified_cat = KALSHI_CAT_MAP.get(kalshi_cat, "general")
                     if unified_cat not in result:
                         continue
-                    existing_ids = {m.market_id for m in result[unified_cat]}
                     for m in self._kalshi_to_unified(markets, len(markets), min_volume, max_spread):
-                        if m.market_id not in existing_ids:
-                            existing_ids.add(m.market_id)
+                        if m.market_id not in {x.market_id for x in result[unified_cat]}:
                             result[unified_cat].append(m)
             except Exception as e:
                 logger.debug("Kalshi category search failed: %s", e)
+        else:
+            # Fallback: keyword-filter broad search
             try:
-                kalshi_raw = self._kalshi.search_broad(limit=limit_per_platform * 2)
+                kalshi_raw = self._kalshi.search_broad(limit=limit_per_platform * 4)
                 unified = self._kalshi_to_unified(kalshi_raw, len(kalshi_raw), min_volume, max_spread)
-                existing_ids = {m.market_id for cat_mkts in result.values() for m in cat_mkts}
                 for m in unified:
-                    if m.market_id not in existing_ids:
-                        mc = self._detect_category(m.question)
-                        if mc in result:
-                            result[mc].append(m)
+                    cat = self._detect_category(m.question)
+                    if cat in result and m.market_id not in {x.market_id for x in result[cat]}:
+                        result[cat].append(m)
             except Exception as e:
                 logger.debug("Kalshi broad search failed: %s", e)
 
+        # Sort each category by volume and limit
         for cat in categories:
             result[cat].sort(key=lambda p: p.volume, reverse=True)
+            result[cat] = result[cat][:limit_per_platform]
+
         self._category_cache = result
         self._category_cache_ts = now
         return result

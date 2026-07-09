@@ -9,11 +9,16 @@ Follows the pattern of NewsSentimentAdapter (unified_signal_accumulator.py):
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from .unified_client import UnifiedPredictionMarketClient, PredictionMarket
 
 logger = logging.getLogger("prediction_market_adapter")
+
+# Order book cache: 30-second TTL
+_book_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 # Map non-crypto events to crypto symbols when they have market-moving potential
 # Sports / major events → general market sentiment
@@ -97,6 +102,11 @@ EVENT_SYMBOL_MAP: List[tuple] = [
 # Categories that get actionable Coinbase trades (vs read-only dashboard)
 ACTIONABLE_CATEGORIES = {"crypto", "economics", "technology"}
 
+# Fee constants
+KALSHI_FEE = 0.02  # 2% per trade
+POLYMARKET_FEE = 0.02  # 2% protocol fee
+ESTIMATED_GAS = 0.005  # ~0.5% gas on Polygon
+
 
 class PredictionMarketAdapter:
     """Adapts Kalshi/Polymarket data into AccumulatedSignal-compatible outputs.
@@ -111,18 +121,71 @@ class PredictionMarketAdapter:
         self,
         kalshi_email: str = "",
         kalshi_password: str = "",
+        kalshi_api_key_id: str = "",
+        kalshi_private_key_path: str = "",
         min_volume: float = 2000,
         min_extremity: float = 0.2,
+        min_open_interest: float = 100,
+        max_spread: float = 0.20,
         categories: Optional[List[str]] = None,
     ):
         self._client = UnifiedPredictionMarketClient(
             kalshi_email=kalshi_email or os.environ.get("KALSHI_EMAIL", ""),
             kalshi_password=kalshi_password or os.environ.get("KALSHI_PASSWORD", ""),
+            kalshi_api_key_id=kalshi_api_key_id or os.environ.get("KALSHI_API_KEY_ID", ""),
+            kalshi_private_key_path=kalshi_private_key_path or os.environ.get("KALSHI_PRIVATE_KEY_PATH", ""),
         )
         self.min_volume = min_volume
         self.min_extremity = min_extremity
+        self.min_open_interest = min_open_interest
+        self.max_spread = max_spread
         # Default: only crypto (fast, single keyword list). Enable all with categories=["*"].
         self.categories = categories or ["crypto"]
+
+    def _get_order_book_depth(self, market: PredictionMarket) -> Tuple[float, float]:
+        """Fetch and cache order book depth. Returns (bid_depth_1pct, ask_depth_1pct)."""
+        cache_key = f"{market.platform}:{market.market_id}"
+        now = time.time()
+        
+        if cache_key in _book_cache:
+            ts, data = _book_cache[cache_key]
+            if now - ts < 30:  # 30-second TTL
+                return data.get("bid_depth", 0), data.get("ask_depth", 0)
+        
+        try:
+            if market.platform == "kalshi":
+                book = self._client.get_kalshi_order_book_depth(market.market_id)
+                # Kalshi orderbook: bids/asks with price/size
+                bids = book.get("bids", [])
+                asks = book.get("asks", [])
+                mid = market.mid_price
+                bid_depth = sum(s for p, s in bids if p >= mid * 0.99)
+                ask_depth = sum(s for p, s in asks if p <= mid * 1.01)
+            else:  # polymarket
+                token_ids = market.raw_data.get("token_ids", [])
+                if not token_ids:
+                    return 0, 0
+                book = self._client.get_polymarket_order_book(token_ids[0])
+                mid = market.mid_price
+                bid_depth = sum(s for p, s in book.bids if p >= mid * 0.99)
+                ask_depth = sum(s for p, s in book.asks if p <= mid * 1.01)
+            
+            _book_cache[cache_key] = (now, {"bid_depth": bid_depth, "ask_depth": ask_depth})
+            return bid_depth, ask_depth
+        except Exception as e:
+            logger.debug("Order book fetch failed for %s: %s", market.market_id, e)
+            return 0, 0
+
+    def _hours_to_expiry(self, end_date: str) -> float:
+        """Calculate hours until market expiry."""
+        try:
+            # Parse ISO format
+            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            hours = (end_dt - now).total_seconds() / 3600
+            return max(0, hours)
+        except Exception:
+            return 168  # Default 1 week
 
     def get_signals(self, price_map: Optional[Dict[str, float]] = None) -> List[Any]:
         """Fetch prediction market signals for configured categories.
@@ -138,6 +201,10 @@ class PredictionMarketAdapter:
                 for m in markets:
                     if not m.is_open or m.volume < self.min_volume:
                         continue
+                    if m.raw_data.get("open_interest", 0) < self.min_open_interest:
+                        continue
+                    if m.spread > self.max_spread:
+                        continue
                     sigs = self._market_to_signals(m)
                     signals.extend(sigs)
             else:
@@ -151,6 +218,10 @@ class PredictionMarketAdapter:
                         continue
                     for m in mkt_list:
                         if not m.is_open or m.volume < self.min_volume:
+                            continue
+                        if m.raw_data.get("open_interest", 0) < self.min_open_interest:
+                            continue
+                        if m.spread > self.max_spread:
                             continue
                         sigs = self._market_to_signals(m)
                         signals.extend(sigs)
@@ -178,7 +249,16 @@ class PredictionMarketAdapter:
         if extremity < self.min_extremity:
             return []
 
-        confidence = min(extremity * m.liquidity_score * 1.5, 0.95)
+        # Order book depth for liquidity validation
+        bid_depth, ask_depth = self._get_order_book_depth(m)
+        depth_score = min((bid_depth + ask_depth) / (m.volume * 0.01), 1.0) if m.volume > 0 else 0
+        
+        # Time to expiry weighting
+        hours_left = self._hours_to_expiry(m.end_date)
+        time_weight = min(1.0, hours_left / 168)  # Cap at 1 week
+        
+        # Confidence: extremity * liquidity * depth * time_weight
+        confidence = min(extremity * m.liquidity_score * 1.5 * depth_score * time_weight, 0.95)
         base_score = confidence * 0.5
 
         symbol = self._question_to_symbol(m.question, m.category)
@@ -189,7 +269,8 @@ class PredictionMarketAdapter:
         signals = []
         base_reason = (
             f"{m.platform} [{m.category}]: {m.question[:60]} → {mp*100:.0f}% YES "
-            f"(vol=${m.volume:.0f}, liq={m.liquidity_score:.2f})"
+            f"(vol=${m.volume:.0f}, liq={m.liquidity_score:.2f}, depth={depth_score:.2f}, "
+            f"hours_left={hours_left:.1f})"
         )
 
         if mp > 0.5 + self.min_extremity * 0.5:
@@ -204,26 +285,69 @@ class PredictionMarketAdapter:
         m: PredictionMarket, reason: str
     ) -> Dict[str, Any]:
         is_actionable = m.category in ACTIONABLE_CATEGORIES
+        
+        # Get order book depth
+        bid_depth, ask_depth = self._get_order_book_depth(m)
+        
+        # Kelly fraction for prediction markets: f = (p - q) / (1 - spread)
+        # where p = model prob, q = market prob, spread = bid-ask spread + fees
+        mp = m.mid_price
+        if action == "BUY":
+            p = mp if mp > 0.5 else 1 - mp
+        else:
+            p = mp if mp < 0.5 else 1 - mp
+        q = 1 - p
+        effective_spread = m.spread + (KALSHI_FEE if m.platform == "kalshi" else POLYMARKET_FEE + ESTIMATED_GAS)
+        kelly_f = max(0, (p - q) / (1 - effective_spread)) if effective_spread < 1 else 0
+        kelly_f = min(kelly_f, 0.5)  # Cap at half-Kelly
+
+        # Time-to-expiry weighting
+        hours_left = self._hours_to_expiry(m.end_date)
+        time_weight = min(1.0, hours_left / 168)  # Cap at 1 week
+        
+        adjusted_confidence = confidence * time_weight
+
         return {
             "symbol": symbol,
             "action": action,
             "base_confidence": round(confidence, 3),
-            "final_confidence": round(confidence, 3),
-            "opportunity_score": round(base_score * (1 + m.probability_extremity), 4),
+            "final_confidence": round(adjusted_confidence, 3),
+            "opportunity_score": round(base_score * (1 + m.probability_extremity) * time_weight, 4),
             "strategy_name": f"PM:{m.platform}:{m.category}",
             "signal_reason": reason,
             "estimated_volume_usd": round(confidence * m.volume * 0.1, 2),
+            "kelly_fraction": round(kelly_f, 4),
+            "hours_to_expiry": round(hours_left, 1),
             "market_data": {
                 "platform": m.platform,
                 "category": m.category,
                 "question": m.question,
                 "probability": m.mid_price,
                 "volume": m.volume,
+                "open_interest": m.raw_data.get("open_interest", 0),
                 "spread": m.spread,
                 "liquidity_score": m.liquidity_score,
+                "bid_depth_1pct": round(bid_depth, 2),
+                "ask_depth_1pct": round(ask_depth, 2),
                 "actionable": is_actionable,
             },
         }
+
+    def _hours_to_expiry(self, end_date: str) -> float:
+        """Calculate hours until market expiry."""
+        try:
+            # Parse ISO format, handle both with and without timezone
+            if end_date.endswith("Z"):
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            else:
+                end_dt = datetime.fromisoformat(end_date)
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            delta = end_dt - now
+            return max(0, delta.total_seconds() / 3600)
+        except Exception:
+            return 168  # Default to 1 week
 
     @staticmethod
     def _question_to_symbol(question: str, category: str = "general") -> str:

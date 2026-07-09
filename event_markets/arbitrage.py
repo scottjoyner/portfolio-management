@@ -24,6 +24,24 @@ ROOT = Path(__file__).resolve().parent.parent
 PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
 MAX_PAPER_AGE_DAYS = 7
 
+# Platform fee model (per leg, per unit notional):
+#  - Kalshi charges a trading fee that scales with contract price: fee ≈ rate·p·(1−p),
+#    which is largest near 0.50 and small near the extremes.
+#  - Polymarket has ~0 maker/taker trading fee but on-chain gas/relayer cost per leg.
+KALSHI_FEE_RATE = 0.07       # Kalshi fee coefficient (fee = rate * p * (1-p))
+POLYMARKET_FEE = 0.0         # Polymarket trading fee (currently ~0)
+POLYMARKET_GAS = 0.005       # Approx gas/relayer cost per leg (fraction of $1 notional)
+
+
+def _platform_fee(platform: str, price: float) -> float:
+    """Estimated per-unit fee for executing one leg at ``price`` on ``platform``."""
+    price = min(max(price, 0.0), 1.0)
+    if platform == "kalshi":
+        return KALSHI_FEE_RATE * price * (1.0 - price)
+    # polymarket (default)
+    return POLYMARKET_FEE + POLYMARKET_GAS
+
+
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "can", "could",
     "do", "does", "for", "from", "future", "if", "in", "is", "it", "may",
@@ -122,6 +140,30 @@ class ArbitrageOpportunity:
     reason: str
     source_markets: Dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Flatten to the dict schema the executor / dashboard consume.
+
+        Notably exposes top-level ``buy_market_id`` / ``hedge_market_id`` (which
+        the executor reads) rather than nesting them inside the leg objects.
+        """
+        return {
+            "event_key": self.event_key,
+            "category": self.category,
+            "platform_buy": self.platform_buy,
+            "platform_hedge": self.platform_hedge,
+            "buy_market_id": getattr(self.leg_buy, "market_id", ""),
+            "hedge_market_id": getattr(self.leg_hedge, "market_id", ""),
+            "buy_yes_price": float(self.buy_yes_price),
+            "hedge_yes_price": float(self.hedge_yes_price),
+            "total_cost": float(self.total_cost),
+            "guaranteed_payout": float(self.guaranteed_payout),
+            "edge": float(self.edge),
+            "edge_pct": float(self.edge_pct),
+            "confidence": float(self.confidence),
+            "reason": self.reason,
+            "source_markets": self.source_markets,
+        }
+
 
 def _tokenize(question: str) -> List[str]:
     q = question.lower()
@@ -139,6 +181,89 @@ def _tokenize(question: str) -> List[str]:
 def normalize_question(question: str) -> str:
     tokens = _tokenize(question)
     return " ".join(sorted(dict.fromkeys(tokens)))
+
+
+# ── Semantic matching helpers ────────────────────────────────────────────────
+_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([kmb])?", re.IGNORECASE)
+_SUFFIX_MULT = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+_ABOVE_WORDS = {"above", "over", "exceed", "exceeds", "higher", "greater", "reach", "reaches", "least", "more", "up", ">"}
+_BELOW_WORDS = {"below", "under", "beneath", "lower", "less", "fewer", "down", "most", "<"}
+
+
+def _extract_numbers(question: str) -> set:
+    """Extract normalized numeric thresholds (expanding k/m/b suffixes).
+
+    "$100k" -> 100000, "1.5M" -> 1500000. Percentages and years are included as-is.
+    Used to prevent matching markets with different strike thresholds.
+    """
+    out: set = set()
+    # Strip thousands separators so "100,000" parses as one number, not 100 + 000.
+    q = re.sub(r"(?<=\d),(?=\d)", "", question.lower())
+    for m in _NUM_RE.finditer(q):
+        try:
+            val = float(m.group(1))
+        except (ValueError, TypeError):
+            continue
+        suffix = (m.group(2) or "").lower()
+        if suffix in _SUFFIX_MULT:
+            val *= _SUFFIX_MULT[suffix]
+        out.add(round(val, 4))
+    return out
+
+
+def _numbers_compatible(left: set, right: set, tol: float = 0.02) -> bool:
+    """True if the numeric thresholds are compatible.
+
+    - If neither side has numbers -> compatible (nothing to disambiguate).
+    - If only one side has numbers -> weakly compatible (ambiguous, allow).
+    - If both have numbers -> require at least one pair within ``tol`` relative distance.
+    """
+    if not left or not right:
+        return True
+    for a in left:
+        for b in right:
+            hi = max(abs(a), abs(b), 1e-9)
+            if abs(a - b) / hi <= tol:
+                return True
+    return False
+
+
+def _comparator(question: str) -> str:
+    """Infer threshold direction: 'above', 'below', or '' (unknown)."""
+    q = question.lower()
+    if ">" in q or "≥" in q:
+        return "above"
+    if "<" in q or "≤" in q:
+        return "below"
+    words = set(re.findall(r"[a-z]+", q))
+    above = bool(words & _ABOVE_WORDS)
+    below = bool(words & _BELOW_WORDS)
+    if above and not below:
+        return "above"
+    if below and not above:
+        return "below"
+    return ""
+
+
+def _semantic_similarity(
+    left_q: str, right_q: str,
+    left_tokens: Sequence[str], right_tokens: Sequence[str],
+) -> float:
+    """Token Jaccard adjusted for numeric-threshold and comparator compatibility.
+
+    Returns 0.0 when the two markets clearly refer to different thresholds
+    (e.g. BTC>$100k vs BTC>$50k) even if their word tokens overlap heavily.
+    """
+    base = _similarity(left_tokens, right_tokens)
+    if base <= 0.0:
+        return 0.0
+    left_nums = _extract_numbers(left_q)
+    right_nums = _extract_numbers(right_q)
+    if not _numbers_compatible(left_nums, right_nums):
+        return 0.0  # different strike thresholds -> not the same event
+    # Opposite comparator direction with the same numbers is still the same event
+    # (YES above X == NO below X), so we don't penalize comparator mismatch here.
+    return base
 
 
 def _similarity(left: Sequence[str], right: Sequence[str]) -> float:
@@ -181,6 +306,56 @@ class EventArbitrageScanner:
         self.min_volume = min_volume
         self.similarity_threshold = similarity_threshold
         self.record_paper_trades = record_paper_trades
+        self._stream = None  # optional PredictionMarketStreamManager
+
+    # ── real-time streaming integration ──────────────────────────────────────
+    def attach_stream(self, manager) -> None:
+        """Attach a running PredictionMarketStreamManager. When set, scans use
+        fresh streamed prices (falling back to REST values per-market)."""
+        self._stream = manager
+
+    @staticmethod
+    def _stream_key(market: PredictionMarket) -> str:
+        """The identifier a market is subscribed under in the stream manager."""
+        if market.platform == "polymarket":
+            toks = (market.raw_data or {}).get("token_ids") or []
+            return toks[0] if toks else ""
+        return market.market_id  # kalshi ticker
+
+    def _apply_stream_prices(self, markets: Sequence[PredictionMarket]) -> int:
+        """Overlay fresh streamed YES prices/spreads onto markets in place."""
+        if not self._stream:
+            return 0
+        updated = 0
+        for m in markets:
+            key = self._stream_key(m)
+            if not key:
+                continue
+            upd = self._stream.latest(m.platform, key)
+            if upd is None or upd.yes_price <= 0:
+                continue
+            m.outcome_prices = dict(m.outcome_prices or {})
+            m.outcome_prices["YES"] = upd.yes_price
+            if upd.best_bid and upd.best_ask:
+                m.yes_bid = upd.best_bid
+                m.yes_ask = upd.best_ask
+                m.spread = abs(upd.best_ask - upd.best_bid)
+            updated += 1
+        return updated
+
+    def stream_subscriptions(self, markets: Sequence[PredictionMarket]) -> Dict[str, List[str]]:
+        """Extract subscribe lists from a market set: polymarket token ids + kalshi tickers."""
+        poly_ids: List[str] = []
+        kalshi_tickers: List[str] = []
+        for m in markets:
+            key = self._stream_key(m)
+            if not key:
+                continue
+            if m.platform == "polymarket":
+                poly_ids.append(key)
+            elif m.platform == "kalshi":
+                kalshi_tickers.append(key)
+        return {"polymarket_asset_ids": poly_ids, "kalshi_tickers": kalshi_tickers}
 
     def scan(self, limit_per_category: int = 20) -> List[ArbitrageOpportunity]:
         categories = self.client.search_all_categories(
@@ -205,6 +380,8 @@ class EventArbitrageScanner:
         return min(impact + half_spread, 200.0)
 
     def scan_markets(self, markets: Sequence[PredictionMarket]) -> List[ArbitrageOpportunity]:
+        # Overlay real-time streamed prices when a stream is attached.
+        self._apply_stream_prices(markets)
         # Collect ALL markets by platform, ignoring category boundaries
         by_platform: Dict[str, List[PredictionMarket]] = {}
         for market in markets:
@@ -225,7 +402,9 @@ class EventArbitrageScanner:
         opportunities: List[ArbitrageOpportunity] = []
         for left, left_tokens in kalshi_tokenized:
             for right, right_tokens in poly_tokenized:
-                sim = _similarity(left_tokens, right_tokens)
+                sim = _semantic_similarity(
+                    left.question, right.question, left_tokens, right_tokens
+                )
                 if sim < self.similarity_threshold:
                     continue
                 opp = self._pair_to_arb(left, right, sim)
@@ -257,12 +436,21 @@ class EventArbitrageScanner:
             buy_market, hedge_market = right, left
             buy_yes, hedge_yes = right_yes, left_yes
 
-        # Slippage estimate: volume-based price impact + spread + fees
+        # Slippage estimate: volume-based price impact + spread
         trade_size = 1000.0  # standard paper trade size
         buy_slip = self._slippage_bps(buy_market, trade_size) / 10000.0
         hedge_slip = self._slippage_bps(hedge_market, trade_size) / 10000.0
+
+        # Per-leg, per-platform fees (fee-adjusted edge). Buy leg takes YES at buy_yes;
+        # hedge leg takes NO at (1 - hedge_yes). Each incurs its own platform fee.
+        buy_price = buy_yes
+        hedge_price = 1.0 - hedge_yes
+        buy_fee = _platform_fee(buy_market.platform, buy_price)
+        hedge_fee = _platform_fee(hedge_market.platform, hedge_price)
+        total_fees = buy_fee + hedge_fee
+
         total_slippage = buy_slip + hedge_slip + self.fee_buffer
-        total_cost = buy_yes + (1.0 - hedge_yes) + total_slippage
+        total_cost = buy_price + hedge_price + total_slippage + total_fees
         guaranteed_payout = 1.0
         edge = guaranteed_payout - total_cost
         if edge <= self.min_edge:
@@ -299,7 +487,7 @@ class EventArbitrageScanner:
 
         reason = (
             f"{buy_market.platform} YES at {buy_yes:.2f} vs {hedge_market.platform} NO at {1.0 - hedge_yes:.2f}; "
-            f"locked edge {edge_pct*100:.1f}% (slippage {total_slippage*100:.1f}%, vol {buy_market.volume:,.0f}/{hedge_market.volume:,.0f})"
+            f"locked edge {edge_pct*100:.1f}% (fees {total_fees*100:.1f}%, slippage {total_slippage*100:.1f}%, vol {buy_market.volume:,.0f}/{hedge_market.volume:,.0f})"
         )
         event_key = self._event_key(left, right)
         category = f"{buy_market.category}/{hedge_market.category}" if buy_market.category != hedge_market.category else (buy_market.category or "general")

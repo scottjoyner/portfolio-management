@@ -62,10 +62,14 @@ OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data
 OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
 ARBITRAGE_CACHE = {"ts": 0.0, "data": None}
+KALSHI_INTERNAL_CACHE = {"ts": 0.0, "data": None}
+CRYPTO_DIVERGENCE_CACHE = {"ts": 0.0, "data": None}
 GRAPH_CACHE = {"ts": 0.0, "data": None}
 _SHARED_CACHE_LOCK = threading.Lock()
 PREDICTION_MARKETS_TTL_SECS = 300
 ARBITRAGE_TTL_SECS = 180
+KALSHI_INTERNAL_TTL_SECS = 180
+CRYPTO_DIVERGENCE_TTL_SECS = 180
 GRAPH_TTL_SECS = 300
 
 DEFAULT_STOCK_WATCHLIST = [
@@ -485,6 +489,7 @@ def _get_prediction_client():
             kalshi_password=os.environ.get("KALSHI_PASSWORD", ""),
             kalshi_api_key_id=os.environ.get("KALSHI_API_KEY_ID", ""),
             kalshi_private_key_path=os.environ.get("KALSHI_PRIVATE_KEY_PATH", ""),
+            kalshi_base_url=os.environ.get("KALSHI_API_BASE_URL", ""),
         )
     except Exception:
         return None
@@ -493,7 +498,10 @@ def _get_prediction_client():
 def _get_event_arbitrage_scanner():
     try:
         from event_markets.arbitrage import EventArbitrageScanner
-        return EventArbitrageScanner()
+        # Reuse the env-configured (authenticated, prod-endpoint) client so the
+        # scanner actually sees Kalshi markets instead of an unauthenticated default.
+        client = _get_prediction_client()
+        return EventArbitrageScanner(client=client) if client else EventArbitrageScanner()
     except Exception:
         return None
 
@@ -1201,6 +1209,154 @@ def api_price_estimates(instrument):
     }
 
 
+def _get_risk_dashboard_data():
+    """Get risk dashboard data with operational controls."""
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    store = _get_state_store()
+    
+    trades = []
+    if store:
+        try:
+            trades = store.load_trades(limit=100)
+        except Exception:
+            pass
+    
+    # Calculate risk metrics
+    total_exposure = sum(float(t.get("size_usd", 0) or 0) for t in trades)
+    by_currency = {}
+    for t in trades:
+        curr = t.get("currency", "")
+        if not curr:
+            continue
+        by_currency.setdefault(curr, {"long": 0.0, "short": 0.0, "notional": 0.0})
+        notional = float(t.get("size_usd", 0) or 0)
+        if curr not in by_currency:
+            by_currency[curr]["notional"] = notional
+        if str(t.get("side", "")).upper() in ("LONG", "BUY"):
+            by_currency[curr]["long"] += notional
+        elif str(t.get("side", "")).upper() in ("SHORT", "SELL"):
+            by_currency[curr]["short"] += notional
+    
+    # Risk heat map data
+    risk_heatmap = []
+    for curr, data in by_currency.items():
+        long_pct = (data["long"] / total_exposure * 100) if total_exposure > 0 else 0
+        short_pct = (data["short"] / total_exposure * 100) if total_exposure > 0 else 0
+        max_risk = max(long_pct, short_pct)
+        risk_level = "low" if max_risk < 10 else "medium" if max_risk < 25 else "high"
+        risk_heatmap.append({
+            "currency": curr,
+            "long_pct": round(long_pct, 1),
+            "short_pct": round(short_pct, 1),
+            "max_risk": round(max_risk, 1),
+            "risk_level": risk_level,
+            "notional": data["notional"],
+        })
+    
+    # Operational controls status
+    op_controls = {
+        "emergency_circuit_breaker": op.get("emergencyCircuitBreaker", False),
+        "pilot_mode": op.get("pilotMode", False),
+        "strict_volatility_gating": op.get("strictVolatilityGating", False),
+        "auto_override_enabled": op.get("autoOverrideEnabled", False),
+        "max_manual_override_pct": op.get("maxManualOverridePct", 10),
+        "cooldown_period_s": op.get("cooldownPeriodS", 300),
+    }
+    
+    # Recent manual operations
+    manual_ops_path = os.path.join(os.path.dirname(OPERATOR_STATE_PATH), ".manual_ops.json")
+    manual_ops = _load_json(manual_ops_path, {})
+    
+    return {
+        "risk_heatmap": risk_heatmap,
+        "operational_controls": op_controls,
+        "manual_operations": list(manual_ops.values())[-50:] if manual_ops else [],
+        "total_exposure_usd": round(total_exposure, 2),
+        "risk_distribution": {
+            "low_risk_positions": len([c for c in risk_heatmap if c["risk_level"] == "low"]),
+            "medium_risk_positions": len([c for c in risk_heatmap if c["risk_level"] == "medium"]),
+            "high_risk_positions": len([c for c in risk_heatmap if c["risk_level"] == "high"]),
+        },
+        "market_health_score": round(sum(1 - (c["max_risk"] / 100) for c in risk_heatmap) / len(risk_heatmap), 2) if risk_heatmap else 0,
+        "system_alerts": {
+            "emergency_breaker_active": op_controls["emergency_circuit_breaker"],
+            "pilot_mode_enabled": op_controls["pilot_mode"],
+            "strict_gating_enabled": op_controls["strict_volatility_gating"],
+        }
+    }
+
+
+def api_risk_dashboard():
+    """API endpoint for risk dashboard with operational controls."""
+    return _get_risk_dashboard_data()
+
+
+def _execute_manual_operation(op_type: str, params: dict) -> dict:
+    """Execute a manual operation."""
+    result = {"success": False, "message": "Operation failed", "operation": op_type}
+    
+    try:
+        manual_ops_path = os.path.join(os.path.dirname(OPERATOR_STATE_PATH), ".manual_ops.json")
+        manual_ops = _load_json(manual_ops_path, {})
+        
+        op_id = f"{op_type}_{int(time.time())}_{hash(str(params)) % 10000}"
+        
+        operation = {
+            "id": op_id,
+            "type": op_type,
+            "params": params,
+            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            "status": "pending",
+            "approver": params.get("approver", "operator-ui"),
+            "reason": params.get("reason", "Manual operation"),
+        }
+        
+        manual_ops[op_id] = operation
+        _write_json(manual_ops_path, manual_ops)
+        
+        # Update operator state
+        operator_state = _load_json(OPERATOR_STATE_PATH, {})
+        operator_state.setdefault("manualOperations", {})[op_id] = operation
+        _write_json(OPERATOR_STATE_PATH, operator_state)
+        
+        # For safety, if it's a dangerous operation, mark as requiring approval
+        if op_type in ("close_all", "emergency_hedge", "liquidate", "override_risk_limits"):
+            operation["status"] = "pending_approval"
+            operation["requires_approval"] = True
+        else:
+            operation["status"] = "executed"
+            operation["execution_time"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            result["success"] = True
+            result["message"] = "Operation executed successfully"
+            result["operation_id"] = op_id
+        
+        _write_json(manual_ops_path, manual_ops)
+        _write_json(OPERATOR_STATE_PATH, operator_state)
+        
+    except Exception as e:
+        result["message"] = f"Error: {str(e)}"
+    
+    return result
+
+
+def api_execute_manual_operation():
+    """API endpoint to execute manual operations."""
+    try:
+        from flask import request
+        data = request.get_json() or {}
+        
+        op_type = data.get("type", "")
+        params = data.get("params", {})
+        
+        if not op_type:
+            return {"success": False, "message": "Operation type required"}
+        
+        return _execute_manual_operation(op_type, params)
+        
+    except Exception as e:
+        return {"success": False, "message": f"Server error: {str(e)}"}
+
+
 def api_hypotheses():
     op = _load_json(OPERATOR_STATE_PATH, {})
     research = op.get("researchJobs", [])
@@ -1329,11 +1485,13 @@ def api_arbitrage_opportunities():
 
     rankings = []
     for opp in opportunities:
-        rankings.append({
+        rankings.append(opp.to_dict() if hasattr(opp, "to_dict") else {
             "event_key": opp.event_key,
             "category": opp.category,
             "platform_buy": opp.platform_buy,
             "platform_hedge": opp.platform_hedge,
+            "buy_market_id": getattr(opp.leg_buy, "market_id", ""),
+            "hedge_market_id": getattr(opp.leg_hedge, "market_id", ""),
             "buy_yes_price": float(opp.buy_yes_price),
             "hedge_yes_price": float(opp.hedge_yes_price),
             "total_cost": float(opp.total_cost),
@@ -1345,11 +1503,111 @@ def api_arbitrage_opportunities():
             "source_markets": opp.source_markets,
         })
 
+    # Best-effort order-book depth for the top opportunities. Kalshi legs resolve
+    # via ticker; Polymarket legs need a token_id (we only have condition_id) so
+    # they are skipped gracefully rather than erroring.
+    _attach_orderbook_depth(scanner, rankings[:6])
+
     payload = {"opportunities": rankings[:50], "total_opportunities": len(rankings)}
     with _SHARED_CACHE_LOCK:
         ARBITRAGE_CACHE["ts"] = time.time()
         ARBITRAGE_CACHE["data"] = payload
     return payload
+
+
+def _get_kalshi_internal_scanner():
+    try:
+        from event_markets.kalshi_internal_arb import KalshiInternalArbScanner
+        client = _get_prediction_client()
+        kc = getattr(client, "_kalshi", None) if client else None
+        if kc is None:
+            return None
+        return KalshiInternalArbScanner(kc)
+    except Exception:
+        return None
+
+
+def api_kalshi_internal_arb():
+    """Single-venue Kalshi arbitrage: mutually-exclusive event locks.
+
+    Returns guaranteed (mutex_no) and conditional (mutex_yes) opportunities.
+    Works with Kalshi alone (no Polymarket required).
+    """
+    scanner = _get_kalshi_internal_scanner()
+    if not scanner:
+        return {"available": False, "opportunities": [], "total": 0}
+    try:
+        opps = _call_with_timeout(lambda: scanner.scan(limit_events=300), 10)
+    except Exception as e:
+        logger.warning("Kalshi internal arb scan failed: %s", e)
+        opps = []
+
+    if opps is None:  # timed out
+        with _SHARED_CACHE_LOCK:
+            cached = KALSHI_INTERNAL_CACHE["data"]
+            if cached and (time.time() - KALSHI_INTERNAL_CACHE["ts"] <= KALSHI_INTERNAL_TTL_SECS):
+                return cached
+        return {"available": True, "stale": True, "opportunities": [], "total": 0,
+                "error": "scan timed out"}
+
+    rows = [o.to_dict() for o in opps]
+    guaranteed = [r for r in rows if r.get("guaranteed")]
+    payload = {
+        "available": True,
+        "opportunities": rows[:50],
+        "total": len(rows),
+        "guaranteed_count": len(guaranteed),
+        "conditional_count": len(rows) - len(guaranteed),
+    }
+    with _SHARED_CACHE_LOCK:
+        KALSHI_INTERNAL_CACHE["ts"] = time.time()
+        KALSHI_INTERNAL_CACHE["data"] = payload
+    return payload
+
+
+def _summarize_kalshi_book(book: dict) -> dict:
+    """Reduce a Kalshi orderbook to best bid/ask + total resting size per side.
+
+    Kalshi v2 (fixed-point) returns only BIDS in `orderbook_fp`:
+      {"orderbook_fp": {"yes_dollars": [[price, count], ...],
+                         "no_dollars":  [[price, count], ...]}}
+    Prices are dollar strings, arrays sorted ascending (best bid = last).
+    YES ask is implied from the best NO bid: yes_ask = 1 - best_no_bid.
+    """
+    ob = (book or {}).get("orderbook_fp") or (book or {}).get("orderbook") or {}
+    yes = ob.get("yes_dollars") or ob.get("yes") or []
+    no = ob.get("no_dollars") or ob.get("no") or []
+    out = {"yes_bid": None, "yes_ask": None, "yes_depth": 0.0, "no_depth": 0.0}
+    try:
+        if yes:
+            out["yes_bid"] = round(float(yes[-1][0]), 4)          # best (highest) YES bid
+            out["yes_depth"] = round(sum(float(r[1]) for r in yes), 2)
+        if no:
+            best_no_bid = float(no[-1][0])
+            out["yes_ask"] = round(1.0 - best_no_bid, 4)          # implied YES ask
+            out["no_depth"] = round(sum(float(r[1]) for r in no), 2)
+    except (ValueError, IndexError, TypeError):
+        pass
+    return out
+
+
+def _attach_orderbook_depth(scanner, rankings):
+    client = getattr(scanner, "client", None) or getattr(scanner, "_client", None)
+    kc = getattr(client, "_kalshi", None) if client else None
+    if kc is None:
+        return
+    for r in rankings:
+        for leg, mid_key in (("buy", "buy_market_id"), ("hedge", "hedge_market_id")):
+            platform = r.get(f"platform_{leg}", "")
+            mid = r.get(mid_key, "")
+            if platform == "kalshi" and mid:
+                try:
+                    book = _call_with_timeout(lambda: kc.get_order_book(mid), 3)
+                    if book:
+                        r[f"depth_{leg}"] = _summarize_kalshi_book(book)
+                except Exception as e:
+                    logger.debug("orderbook depth failed for %s: %s", mid, e)
+
 
 
 def api_market_regime():
@@ -1568,22 +1826,285 @@ def api_diversification_signals():
     }
 
 
-def api_crypto_divergence():
+def _crypto_divergence_from_operator_state():
+    """Fallback: return the last persisted divergence snapshot."""
     op = _load_json(OPERATOR_STATE_PATH, {})
     cd = op.get("marketIntelligence", {}).get("crypto_divergence", {})
+    if isinstance(cd, dict) and cd:
+        cd = dict(cd)
+        cd.setdefault("source", "operator-state")
+        cd.setdefault("available", True)
     return cd
+
+
+def _fetch_coinbase_spot(products):
+    """Best-effort spot prices for the given Coinbase product ids."""
+    cb = _get_coinbase_cli()
+    prices = {}
+    if not cb:
+        return prices
+    for pid in products:
+        try:
+            p = cb.get_price(pid)
+            val = float(p.get("price", p.get("bid", 0)) or 0)
+            if val > 0:
+                prices[pid] = val
+        except Exception:
+            continue
+    return prices
+
+
+def api_crypto_divergence():
+    """Live crypto price-divergence scan: prediction markets vs Coinbase spot.
+
+    Compares Kalshi/PM implied probabilities for crypto price-target questions
+    against a log-normal fair-value model anchored to Coinbase spot. Falls back
+    to the last persisted operator-state snapshot on timeout/error.
+    """
+    with _SHARED_CACHE_LOCK:
+        cached = CRYPTO_DIVERGENCE_CACHE["data"]
+        if cached and (time.time() - CRYPTO_DIVERGENCE_CACHE["ts"] <= CRYPTO_DIVERGENCE_TTL_SECS):
+            return cached
+
+    def _scan():
+        from event_markets.crypto_divergence import CryptoPriceDivergenceDetector
+        client = _get_prediction_client()
+        if client is None:
+            return None
+        categories = client.search_all_categories(
+            limit_per_platform=40, min_volume=0, max_spread=1.0
+        )
+        markets = []
+        for items in (categories or {}).values():
+            markets.extend(items)
+        prices = _fetch_coinbase_spot(["BTC-USD", "ETH-USD", "SOL-USD"])
+        detector = CryptoPriceDivergenceDetector(coinbase_prices=prices)
+        results = detector.analyze_markets(markets)
+        return results, prices
+
+    try:
+        scanned = _call_with_timeout(_scan, 12)
+    except Exception as e:
+        logger.warning("Crypto divergence scan failed: %s", e)
+        scanned = "error"
+
+    if scanned is None or scanned == "error":
+        fallback = _crypto_divergence_from_operator_state()
+        fallback = dict(fallback) if isinstance(fallback, dict) else {}
+        fallback.setdefault("available", bool(fallback))
+        fallback["stale"] = True
+        fallback["error"] = "scan timed out" if scanned is None else "scan error"
+        return fallback
+
+    results, prices = scanned
+    rows = [r.to_dict() for r in results]
+    significant = [r for r in rows if r.get("is_significant")]
+    payload = {
+        "available": True,
+        "source": "live",
+        "spot_prices": prices,
+        "opportunities": rows[:50],
+        "total": len(rows),
+        "significant_count": len(significant),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with _SHARED_CACHE_LOCK:
+        CRYPTO_DIVERGENCE_CACHE["ts"] = time.time()
+        CRYPTO_DIVERGENCE_CACHE["data"] = payload
+    return payload
 
 
 def api_paper_trades():
     PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
     if not PAPER_TRADES_PATH.exists():
-        return {"trades": [], "total": 0}
+        return {"trades": [], "total": 0, "settlement_summary": {}}
     try:
         trades = json.loads(PAPER_TRADES_PATH.read_text())
     except (json.JSONDecodeError, OSError):
-        return {"trades": [], "total": 0}
+        return {"trades": [], "total": 0, "settlement_summary": {}}
     trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
-    return {"trades": trades[:100], "total": len(trades)}
+    settlement_summary = {}
+    try:
+        from event_markets.settlement import SettlementTracker
+        settlement_summary = SettlementTracker(trades_path=PAPER_TRADES_PATH).summary()
+    except Exception as e:
+        logger.debug("settlement summary failed: %s", e)
+    return {"trades": trades[:100], "total": len(trades), "settlement_summary": settlement_summary}
+
+
+_LAST_SETTLE_TS = 0.0
+
+
+def api_settlement():
+    """Actively settle resolved arbitrage paper trades (throttled to every 5 min)."""
+    global _LAST_SETTLE_TS
+    PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
+    now = time.time()
+    result = None
+    try:
+        from event_markets.settlement import SettlementTracker
+        tracker = SettlementTracker(trades_path=PAPER_TRADES_PATH)
+        if now - _LAST_SETTLE_TS > 300:
+            result = tracker.settle_open_trades()
+            _LAST_SETTLE_TS = now
+        return {"settled_now": result, "summary": tracker.summary()}
+    except Exception as e:
+        logger.warning("Settlement failed: %s", e)
+        return {"settled_now": None, "summary": {}, "error": str(e)}
+
+
+_VENUE_BAL_CACHE = {"ts": 0.0, "data": None}
+_VENUE_BAL_TTL = 30.0
+
+
+def api_venue_balances():
+    """Account balances/positions for the prediction-market venues.
+
+    Kalshi: live authenticated balance (RSA-PSS). Polymarket: on-chain wallet
+    not yet configured -> reported as unconfigured rather than erroring.
+    """
+    now = time.time()
+    with _SHARED_CACHE_LOCK:
+        if _VENUE_BAL_CACHE["data"] and now - _VENUE_BAL_CACHE["ts"] < _VENUE_BAL_TTL:
+            return _VENUE_BAL_CACHE["data"]
+
+    kalshi = {"configured": False, "balance_usd": None, "portfolio_value_usd": None,
+              "positions": [], "error": None}
+    polymarket = {"configured": False, "balance_usd": None, "positions": [],
+                  "note": "On-chain wallet not configured (no private key / USDC approvals)."}
+
+    client = _get_prediction_client()
+    kc = getattr(client, "_kalshi", None) if client else None
+    _kalshi_ready = bool(kc is not None and (
+        (getattr(kc, "api_key_id", "") and getattr(kc, "private_key_path", ""))
+        or (getattr(kc, "email", "") and getattr(kc, "password", ""))
+    ))
+    if _kalshi_ready:
+        kalshi["configured"] = True
+        try:
+            bal = _call_with_timeout(lambda: kc.get_balance(), 6) or {}
+            # Kalshi returns integer cents in `balance` and a string dollars field.
+            if bal.get("balance_dollars") is not None:
+                kalshi["balance_usd"] = float(bal.get("balance_dollars") or 0.0)
+            elif bal.get("balance") is not None:
+                kalshi["balance_usd"] = round(float(bal.get("balance") or 0) / 100.0, 2)
+            pv = bal.get("portfolio_value")
+            if pv is not None:
+                kalshi["portfolio_value_usd"] = round(float(pv) / 100.0, 2)
+        except Exception as e:
+            kalshi["error"] = str(e)
+        try:
+            if hasattr(kc, "get_positions"):
+                positions = _call_with_timeout(lambda: kc.get_positions(), 6) or []
+                kalshi["positions"] = positions[:50] if isinstance(positions, list) else []
+        except Exception as e:
+            logger.debug("kalshi positions failed: %s", e)
+
+    # Polymarket: only reachable when a wallet private key is configured.
+    try:
+        from event_markets.polymarket_executor import PolymarketExecutionClient
+        pdata = getattr(client, "_polymarket", None) if client else None
+        pm = PolymarketExecutionClient(data_client=pdata)
+        ok, why = pm.is_configured()
+        if ok:
+            polymarket["configured"] = True
+            polymarket["note"] = None
+            polymarket["address"] = pm.address()
+            usdc = _call_with_timeout(lambda: pm.get_usdc_balance(), 6)
+            if usdc is not None:
+                polymarket["balance_usd"] = usdc
+        else:
+            polymarket["note"] = why
+    except Exception as e:
+        logger.debug("polymarket balance failed: %s", e)
+
+    payload = {"kalshi": kalshi, "polymarket": polymarket, "ts": now}
+    with _SHARED_CACHE_LOCK:
+        _VENUE_BAL_CACHE["ts"] = now
+        _VENUE_BAL_CACHE["data"] = payload
+    return payload
+
+
+def _get_arbitrage_executor():
+    try:
+        from event_markets.executor import ArbitrageExecutor, ExecConfig
+        client = _get_prediction_client()
+        return ArbitrageExecutor(client=client, config=ExecConfig.from_env())
+    except Exception as e:
+        logger.warning("executor init failed: %s", e)
+        return None
+
+
+def api_execution_status():
+    ex = _get_arbitrage_executor()
+    if not ex:
+        return {"available": False, "mode": "unavailable"}
+    st = ex.status()
+    st["available"] = True
+    return st
+
+
+def _find_cached_opportunity(event_key: str):
+    with _SHARED_CACHE_LOCK:
+        cached = ARBITRAGE_CACHE.get("data") or {}
+    for o in cached.get("opportunities", []):
+        if o.get("event_key") == event_key:
+            return o
+    return None
+
+
+def _find_cached_internal_opportunity(event_key: str):
+    with _SHARED_CACHE_LOCK:
+        cached = KALSHI_INTERNAL_CACHE.get("data") or {}
+    for o in cached.get("opportunities", []):
+        if o.get("event_key") == event_key:
+            return o
+    return None
+
+
+def api_execute_arbitrage(payload: dict):
+    """Execute (or dry-run) a detected arbitrage opportunity.
+
+    Body: {event_key, notional, confirm: true, live: false, opportunity?: {...}}
+    Safety: requires confirm==true; live also requires ARBITRAGE_LIVE_ENABLED and
+    both venues live-ready (enforced in the executor preflight).
+    """
+    if not payload.get("confirm"):
+        return {"ok": False, "error": "confirmation required (confirm=true)"}
+    ex = _get_arbitrage_executor()
+    if not ex:
+        return {"ok": False, "error": "executor unavailable"}
+
+    opp = payload.get("opportunity")
+    kind = str(payload.get("kind", "")).lower()  # "" | "cross_venue" | "kalshi_internal"
+    if not opp:
+        event_key = str(payload.get("event_key", ""))
+        if not event_key:
+            return {"ok": False, "error": "event_key or opportunity required"}
+        if kind == "kalshi_internal":
+            opp = _find_cached_internal_opportunity(event_key)
+        else:
+            opp = _find_cached_opportunity(event_key) or _find_cached_internal_opportunity(event_key)
+        if not opp:
+            return {"ok": False, "error": f"opportunity '{event_key}' not found in latest scan; refresh first"}
+
+    try:
+        notional = float(payload.get("notional", 0) or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid notional"}
+    want_live = bool(payload.get("live", False))
+
+    is_internal = kind == "kalshi_internal" or opp.get("type") == "kalshi_internal"
+    try:
+        if is_internal:
+            result = ex.execute_internal(opp, notional_usd=notional, want_live=want_live)
+        else:
+            result = ex.execute(opp, notional_usd=notional, want_live=want_live)
+        return result.to_dict()
+    except Exception as e:
+        logger.error("arbitrage execute error: %s", e)
+        return {"ok": False, "error": str(e)}
+
 
 
 def api_trade_plans():
@@ -1706,6 +2227,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/research/hypotheses": lambda: api_hypotheses(),
             "/prediction-markets": lambda: api_prediction_markets(),
             "/arbitrage/opportunities": lambda: api_arbitrage_opportunities(),
+            "/arbitrage/kalshi-internal": lambda: api_kalshi_internal_arb(),
+            "/arbitrage/settlement": lambda: api_settlement(),
+            "/venue/balances": lambda: api_venue_balances(),
+            "/arbitrage/execution-status": lambda: api_execution_status(),
             "/crypto-divergence": lambda: api_crypto_divergence(),
             "/paper-trades": lambda: api_paper_trades(),
             "/trade-plans": lambda: api_trade_plans(),
@@ -1717,6 +2242,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/signals/feed": lambda: api_signal_feed(),
             "/signals/diversification": lambda: api_diversification_signals(),
             "/strategies/performance": lambda: api_strategies_performance(),
+            "/signals/meta-weights": lambda: _load_json(ROOT / "data" / "meta_source_weights.json", {}),
+            "/signals/ensemble": lambda: _load_json(ROOT / "data" / "signal_ensemble.json", {}),
+            "/market/cross-asset-regime": lambda: _load_json(ROOT / "data" / "cross_asset_regime.json", {}),
+            "/signals/orderflow": lambda: _load_json(ROOT / "data" / "order_flow_signals.json", {}),
+            "/optimizer/param-opt": lambda: _load_json(ROOT / "data" / "param_opt_results.json", {}),
+            "/optimizer/wash-sale": lambda: _load_json(ROOT / "data" / "wash_sale_state.json", {}),
+            "/optimizer/sr-levels": lambda: _load_json(ROOT / "data" / "sr_levels.json", {}),
         }
 
         if path in handlers:
@@ -1769,6 +2301,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
 
+        elif path == "/execution/brackets":
+            try:
+                brackets = _load_json(ROOT / "data" / "optimizer_brackets.json", {})
+                self._json_response(json.dumps({"brackets": brackets}, default=str))
+            except Exception as e:
+                self._json_response(json.dumps({"error": str(e), "brackets": {}}, default=str), status=500)
+
         elif path in ("/dashboard", "", "/"):
             self._serve_dashboard()
 
@@ -1788,7 +2327,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run"}:
+        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all", "/arbitrage/execute"}:
             self._json_response(json.dumps({"error": "not found"}), status=404)
             return
 
@@ -1814,6 +2353,25 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 preset_name = str(payload.get('preset') or payload.get('name') or '')
                 saved = _save_capital_buckets(_build_bucket_preset(preset_name, payload))
                 self._json_response(json.dumps({"ok": True, "capital_buckets": saved}, default=str))
+            elif path == "/execution/brackets/cancel":
+                bracket_id = payload.get("bracket_id", "")
+                if not bracket_id:
+                    self._json_response(json.dumps({"error": "bracket_id required"}), status=400)
+                    return
+                brackets = _load_json(ROOT / "data" / "optimizer_brackets.json", {})
+                if bracket_id not in brackets:
+                    self._json_response(json.dumps({"error": "bracket not found"}), status=404)
+                    return
+                del brackets[bracket_id]
+                _write_json(ROOT / "data" / "optimizer_brackets.json", brackets)
+                self._json_response(json.dumps({"ok": True, "cancelled": bracket_id}, default=str))
+            elif path == "/execution/brackets/cancel-all":
+                _write_json(ROOT / "data" / "optimizer_brackets.json", {})
+                self._json_response(json.dumps({"ok": True, "cancelled": "all"}, default=str))
+            elif path == "/arbitrage/execute":
+                result = api_execute_arbitrage(payload)
+                status = 200 if result.get("ok") else 400
+                self._json_response(json.dumps(result, default=str), status=status)
             else:
                 saved = _save_capital_buckets(payload)
                 self._json_response(json.dumps({"ok": True, "capital_buckets": saved}, default=str))
