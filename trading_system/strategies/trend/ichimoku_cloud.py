@@ -44,7 +44,7 @@ class IchimokuCloudConfig:
     
     # Entry/Exit thresholds
     entry_threshold: float = 0.03  # Minimum cloud thickness for breakout (3%)
-    exit_threshold: float = -0.02  # Maximum cloud thickness for short (-2%)
+    exit_threshold: float = 0.40  # Maximum cloud thickness for long exit (40%)
     stop_loss_bps: float = 65.0  # Stop loss as basis points (0.65%)
     take_profit_bps: float = 190.0  # Take profit as basis points (1.9%)
     trailing_take_profit_bps: float = 95.0  # Trailing stop after profit
@@ -130,7 +130,7 @@ class IchimokuCloudStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price >= target_price:
+            elif close_price >= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -158,7 +158,7 @@ class IchimokuCloudStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price <= target_price:
+            elif close_price <= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -178,6 +178,10 @@ class IchimokuCloudStrategy:
         
         # No position - check for entry signals
         if cloud_thickness > self.config.entry_threshold and tenkan_sen > kijun_sen:
+            self.current_position = 'long'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': self.config.risk_per_trade / close_price,
@@ -186,6 +190,10 @@ class IchimokuCloudStrategy:
                 'reason': 'tk_cross_above_cloud'
             }
         elif cloud_thickness > self.config.entry_threshold and tenkan_sen < kijun_sen:
+            self.current_position = 'short'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': -self.config.risk_per_trade / close_price,

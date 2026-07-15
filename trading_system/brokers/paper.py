@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from apps.paper_exchange.engine import PaperExchangeEngine
-from brokers.base import (
+from trading_system.brokers.base import (
     BrokerAccount, BrokerAdapter, BrokerFill, BrokerOrder, BrokerPosition, OrderStatus, TimeInForce,
 )
 
@@ -73,11 +73,11 @@ class PaperBrokerAdapter(BrokerAdapter):
             side=po.side,
             order_type=po.order_type,
             size=po.size,
-            price=po.limit_price,
+            price=po.price,
             status=OrderStatus(po.status) if po.status else OrderStatus.OPEN,
             filled_size=po.filled_size,
             remaining_size=po.remaining_size,
-            fee=po.fees_paid if hasattr(po, 'fees_paid') else Decimal("0"),
+            fee=po.fee if hasattr(po, 'fee') else Decimal("0"),
             created_at=po.created_at,
         )
 
@@ -116,8 +116,8 @@ class PaperBrokerAdapter(BrokerAdapter):
                 product_id=p.product_id,
                 side=p.side if hasattr(p, 'side') else "long",
                 size=p.size,
-                entry_price=p.entry_price,
-                current_price=self._engine.mid_prices.get(p.product_id, p.entry_price),
+                entry_price=p.cost_basis,
+                current_price=self._engine.mid_prices.get(p.product_id, p.cost_basis),
                 unrealized_pnl=p.unrealized_pnl if hasattr(p, 'unrealized_pnl') else Decimal("0"),
                 realized_pnl=p.realized_pnl if hasattr(p, 'realized_pnl') else Decimal("0"),
             )

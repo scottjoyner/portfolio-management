@@ -34,14 +34,16 @@ INDEPENDENCE_GROUPS: Dict[str, set] = {
                "vol_prof", "klinger", "price_eff", "snr_idx",
                "mfi", "emv", "ad_div", "vwap_macd", "nvi"},
     "pattern": {"candle_pat", "pivot_points", "sup_res", "liq_vac",
-                "donch_pull", "impulse_exh", "range_exp_idx",
-                "de_marker", "gap_revert"},
+                 "donch_pull", "impulse_exh", "range_exp_idx",
+                 "de_marker", "gap_revert"},
     "momentum_adv": {"rsi_fail", "cvd_flow", "avwap", "linreg_slope",
                      "hurst", "scci", "ulcer", "ema_dev"},
     "prediction_market": {"kalshi", "polymarket"},
     "sentiment": {"crypto_news"},
-    "order_flow": {"order_flow"},
-    "macro_risk": {"macro_risk"},
+    "order_flow": {"order_flow", "order_flow_cvd", "wick_pressure"},
+    "onchain": {"exchange_flow", "exchange_netflow", "stablecoin_flow"},
+    "derivatives": {"funding_contrarian"},
+    "macro_risk": {"macro_risk", "btc_dxy_corr"},
 }
 
 # Flat lookup: strategy_name -> group_name
@@ -75,19 +77,25 @@ DEFAULT_STRATEGY_WEIGHTS: Dict[str, float] = {
     # External
     "kalshi": 0.5, "polymarket": 0.5, "crypto_news": 0.55,
     "order_flow": 0.5, "macro_risk": 0.5,
+    # New order-flow + on-chain strategies
+    "order_flow_cvd": 0.55, "wick_pressure": 0.55, "exchange_netflow": 0.5, "stablecoin_flow": 0.55,
+    "funding_contrarian": 0.5, "exchange_flow": 0.5, "btc_dxy_corr": 0.5,
 }
 
 # Asset class boost multipliers
 CLASS_BOOST = {
     "safe": {"trend": 1.3, "momentum": 0.7, "volatility": 0.8, "volume": 1.0,
-             "pattern": 0.9, "momentum_adv": 0.7, "prediction_market": 0.9,
-             "sentiment": 1.0, "order_flow": 1.1, "macro_risk": 1.3},
+              "pattern": 0.9, "momentum_adv": 0.7, "prediction_market": 0.9,
+              "sentiment": 1.0, "order_flow": 1.1, "onchain": 1.1, "derivatives": 1.2,
+              "macro_risk": 1.3},
     "growth": {"trend": 1.1, "momentum": 1.1, "volatility": 1.0, "volume": 1.0,
                "pattern": 1.0, "momentum_adv": 1.1, "prediction_market": 1.0,
-               "sentiment": 1.0, "order_flow": 1.0, "macro_risk": 1.0},
+               "sentiment": 1.0, "order_flow": 1.0, "onchain": 1.0, "derivatives": 1.1,
+               "macro_risk": 1.0},
     "speculative": {"trend": 0.8, "momentum": 1.3, "volatility": 1.2, "volume": 1.1,
                     "pattern": 1.1, "momentum_adv": 1.3, "prediction_market": 1.2,
-                    "sentiment": 1.1, "order_flow": 1.0, "macro_risk": 0.8},
+                    "sentiment": 1.1, "order_flow": 1.0, "onchain": 1.1, "derivatives": 0.9,
+                    "macro_risk": 0.8},
 }
 
 # Rust acceleration
@@ -233,14 +241,19 @@ class ConfidenceMatrix:
 
             total_possible_groups = len(INDEPENDENCE_GROUPS)
             agreeing = len(unique_groups)
+            
+            # Group agreement boost: 10% per additional group, max 1.5x
             if agreeing >= 2:
-                boost = 1.0 + (agreeing - 1) * 0.15
-                avg_conf = min(avg_conf * boost, 1.0)
+                boost = 1.0 + (agreeing - 1) * 0.10
+                avg_conf = min(avg_conf * min(boost, 1.5), 1.0)
             elif agreeing == 0:
                 avg_conf *= 0.5
 
-            if len(unique_names) >= 3:
-                avg_conf = min(avg_conf * 1.1, 1.0)
+            # Strategy count diversity bonus: smaller and after group boost
+            diversity_mult = 1.05 if len(unique_names) >= 3 else 1.0
+            if len(unique_names) >= 5:
+                diversity_mult = 1.10
+            avg_conf = min(avg_conf * diversity_mult, 1.0)
 
             results.append(AggregatedSignal(
                 asset=currency,

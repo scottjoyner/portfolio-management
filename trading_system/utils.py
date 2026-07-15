@@ -82,17 +82,17 @@ def ema(n: int):
             # First EMA initialization: use SMA of first n periods
             first_n = candles[start_idx:start_idx + n]
             initial_ema = sum(c['close'] for c in first_n) / n
-            
+
+            current_ema = initial_ema
             if index >= 0 and start_idx + n <= len(candles):
                 # Calculate EMAs forward to the requested index
-                current_ema = initial_ema
                 last_idx = min(index, len(candles) - 1)
-                
+
                 for i in range(start_idx, last_idx + 1):
                     if candles[i]:
                         price = candles[i]['close']
                         current_ema = price * k + current_ema * (1 - k)
-            
+
             return current_ema
         
         return wrapper
@@ -110,8 +110,8 @@ class SMA:
     """
     def __init__(self, n: int):
         self.n = n
-        self._func = sma(n)
-        self.callable = self._func.__get__(None, type(self))  # Make callable
+        self._func = sma(n)(lambda candles, index: None)
+        self.callable = self._func  # Make callable
     
     def __call__(self, candles: list[dict], index: int) -> float:
         """Calculate SMA value at given candle index."""
@@ -128,8 +128,8 @@ class EMA:
     """
     def __init__(self, n: int):
         self.n = n
-        self._func = ema(n)
-        self.callable = self._func.__get__(None, type(self))  # Make callable
+        self._func = ema(n)(lambda candles, index: None)
+        self.callable = self._func  # Make callable
     
     def __call__(self, candles: list[dict], index: int) -> float:
         """Calculate EMA value at given candle index."""

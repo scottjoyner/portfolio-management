@@ -24,7 +24,7 @@ class AlpacaProvider(BaseProvider):
         return "Alpaca"
 
     async def connect(self) -> None:
-        if self.api_key.endswith("_test") or self.paper_trading:
+        if (self.api_key and self.api_key.endswith("_test")) or self.paper_trading:
             print(f"Using Alpaca Paper Trading (sandbox mode)")
             self._connected = True
         else:

@@ -68,10 +68,12 @@ class AdaptiveStopLossSystem:
     """
     
     def __init__(self, config=None):
-        self.config = config or AdaptiveStopLossConfig()
+        self.config = config or self.AdaptiveStopLossConfig()
         self.volatility_history: List[float] = []
         self.trend_strength_history: List[float] = []
         self.stop_loss_history: List[float] = []
+        self.recent_bars: List[dict] = []
+        self.baseline_volatility: float = 0.0
         
         # Performance tracking
         self.num_successful_exits = 0
@@ -95,8 +97,8 @@ class AdaptiveStopLossSystem:
             raise ValueError(f"Need at least {min_bars} bars for adaptive stop-loss.")
         
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate ATR values
         true_ranges = []
@@ -114,6 +116,8 @@ class AdaptiveStopLossSystem:
         # Baseline volatility (median of recent ATR values)
         baseline_atr = sum(true_ranges[-min_bars:]) / min_bars
         self.baseline_volatility = baseline_atr
+        # Retain recent bars for ATR / trend-strength calculations.
+        self.recent_bars = list(data)
     
     def get_adaptive_stop(self, current_position: float) -> Tuple[float, str]:
         """
@@ -225,3 +229,7 @@ class AdaptiveStopLossSystem:
 
 
 __all__ = ['AdaptiveStopLossConfig', 'AdaptiveStopLossSystem']
+
+# Module-level alias for the nested configuration dataclass so that it can be
+# imported directly (``from adaptive_stop_loss import AdaptiveStopLossConfig``).
+AdaptiveStopLossConfig = AdaptiveStopLossSystem.AdaptiveStopLossConfig

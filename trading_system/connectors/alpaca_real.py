@@ -48,6 +48,7 @@ class AlpacaConnector:
         self.api_secret = api_secret or os.environ.get('ALPACA_API_SECRET', '')
         self.paper_trading = paper_trading
         self.oauth_token = oauth_token or os.environ.get('ALPACA_OAUTH_TOKEN', None)
+        self._connected = False
         
         # Set API base URL
         self.base_url = self.PAPER_API if paper_trading else self.LIVE_API

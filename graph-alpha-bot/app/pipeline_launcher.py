@@ -71,6 +71,7 @@ class SignalGenerator:
             
             matching = [a for a in kg.get('articles', []) if any(t in a.get('tickers', []) for t in [ticker_key, ticker_key.upper()])]
             
+            avg_sentiment = 0.0
             if len(matching) >= 2:
                 avg_sentiment = sum(a.get('sentiment_score', 0.5) for a in matching) / len(matching)
                 

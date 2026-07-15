@@ -47,154 +47,196 @@ class RateLimiter:
 
 
 class CBClient:
-    def __init__(self, api_key: str | None = None, api_secret: str | None = None, timeout: int | None = None):
+    def __init__(self, api_key: str | None = None, api_secret: str | None = None,
+                 timeout: int | None = None, environment: str | None = None,
+                 dry_run_cli: bool = False):
         api_key = api_key or os.getenv("COINBASE_API_KEY")
         api_secret = api_secret or os.getenv("COINBASE_API_SECRET")
-        # allow override via env; default to 30s
         timeout = timeout or int(float(os.getenv("CB_TIMEOUT_S", "30")))
         self.timeout = timeout
         self.api_key = api_key
         self.api_secret = api_secret
-        self.cli_env = os.getenv("COINBASE_CLI_ENV", "live")
+        self.cli_env = environment or os.getenv("COINBASE_CLI_ENV", "live")
         cli = os.getenv("COINBASE_CLI_PATH", "coinbase")
         self.cli = cli if shutil.which(cli) else (shutil.which("coinbase") or cli)
-        
+        # When True, mutating CLI calls append --dry-run so the assembled request
+        # is validated WITHOUT being sent. Used by the proof/test harness.
+        self.dry_run_cli = dry_run_cli
+
         # Rate limiter: 10 calls/second default (adjustable via env)
         max_calls = int(os.getenv("CB_RATE_LIMIT_CALLS", "10"))
         period = float(os.getenv("CB_RATE_LIMIT_PERIOD", "1.0"))
         self._rate_limiter = RateLimiter(max_calls=max_calls, period=period)
 
-    def _cli_json(self, *args: str) -> dict:
+        # Settlement currency: the fiat/stable the brokerage account actually
+        # trades in. Auto-detected from balances (env-overridable). The engine
+        # keeps speaking `*-USD`; CBClient translates to the real pair so buys
+        # draw on the account's actual cash (e.g. USDC), not a zero USD balance.
+        self.settlement_currency = self._detect_settlement_currency()
+
+    def _cli_json(self, *args: str, dry_run: bool = False) -> dict:
         self._rate_limiter.acquire()
-        cmd = [self.cli, "-e", self.cli_env, *args, "--jq", "."]
+        cmd = [self.cli, "-e", self.cli_env, *args]
+        if dry_run:
+            # --dry-run prints "would execute <action>\n{...json...}" — no --jq.
+            cmd.append("--dry-run")
+        else:
+            cmd.append("--jq")
+            cmd.append(".")
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
         if out.returncode != 0:
             raise RuntimeError((out.stderr or out.stdout or "coinbase cli failed").strip())
+        return self._parse_cli_output(out.stdout, dry_run)
+
+    @staticmethod
+    def _parse_cli_output(stdout: str, dry_run: bool) -> dict:
+        text = (stdout or "").strip()
+        if not text:
+            return {}
+        if not dry_run:
+            try:
+                return json.loads(text)
+            except Exception as exc:
+                raise RuntimeError(f"coinbase cli returned non-JSON output: {exc}")
+        # dry-run: "would execute <action>\n{ ...json... }"
+        start = text.find("{")
+        if start < 0:
+            return {}
         try:
-            return json.loads(out.stdout)
+            return json.loads(text[start:])
         except Exception as exc:
-            raise RuntimeError(f"coinbase cli returned non-JSON output: {exc}")
+            raise RuntimeError(f"coinbase cli dry-run returned non-JSON output: {exc}")
+
+    @staticmethod
+    def _norm_stop_direction(d: str) -> str:
+        """Normalize stop_direction to the CLI's `up`/`down` values."""
+        d = (d or "").lower()
+        if d in ("up", "down"):
+            return d
+        if d == "stop_direction_stop_up":
+            return "up"
+        if d == "stop_direction_stop_down":
+            return "down"
+        return d or "up"
+
+    def _remap(self, product_id: str) -> str:
+        """Translate an engine `*-USD` symbol to the account's settlement pair.
+
+        The engine and strategy universe speak `*-USD`; this account is funded in
+        USDC, so buys must route to `*-USDC`. Remapping at the client boundary
+        keeps the rest of the system unaware of the broker's settlement currency.
+        """
+        if not product_id or not self.settlement_currency:
+            return product_id
+        cur = self.settlement_currency.upper()
+        if cur != "USD" and product_id.upper().endswith("-USD"):
+            return product_id[:-4] + "-" + cur
+        return product_id
+
+    def _detect_settlement_currency(self) -> str:
+        env = os.getenv("COINBASE_SETTLEMENT_CURRENCY", "").strip().upper()
+        if env:
+            return env
+        try:
+            accts = self._cli_json("balance").get("accounts", [])
+            fiats: Dict[str, float] = {}
+            for a in accts:
+                cur = str(a.get("currency", "")).upper()
+                if cur in ("USD", "USDC", "USDT", "EUR", "GBP", "CGC", "PYUSD"):
+                    try:
+                        val = float((a.get("available_balance") or {}).get("value", 0) or 0)
+                    except Exception:
+                        val = 0.0
+                    if val > 0:
+                        fiats[cur] = fiats.get(cur, 0.0) + val
+            if fiats:
+                non_usd = {k: v for k, v in fiats.items() if k != "USD"}
+                if non_usd:
+                    return max(non_usd, key=non_usd.get)
+                return "USD"
+        except Exception:
+            pass
+        return "USD"
         
     def list_accounts(self) -> dict:
         return self._cli_json("balance")
     
     def get_positions(self) -> list[dict]:
-        """Get current open positions from Coinbase.
-        
-        Returns list of positions with product_id, side, size, entry_price, unrealized_pnl.
-        Uses the 'portfolio' endpoint if available, otherwise synthesizes from orders.
+        """Get current open spot positions from Coinbase.
+
+        Uses the real `portfolios list` + `portfolios get <uuid>` endpoints, which
+        return `spot_positions` (asset, balances, available_to_trade). Maps each
+        non-cash asset to its `{ASSET}-USD` product. Returns [] on any failure.
         """
         try:
-            # Try portfolio endpoint first (Advanced Trade)
-            data = self._cli_json("portfolio", "list")
-            positions = data.get("positions", [])
+            pf = self._cli_json("portfolios", "list")
+            portfolios = pf.get("portfolios", []) or []
+            if not portfolios:
+                return []
+            default = next((p for p in portfolios if p.get("type") == "DEFAULT"), portfolios[0])
+            uuid = default.get("uuid")
+            if not uuid:
+                return []
+            data = self._cli_json("portfolios", "get", uuid)
+            positions = data.get("spot_positions", []) or []
             result = []
             for pos in positions:
-                if float(pos.get("size", 0)) > 0:
-                    result.append({
-                        "product_id": pos.get("product_id"),
-                        "side": "LONG" if float(pos.get("size", 0)) > 0 else "SHORT",
-                        "size": float(pos.get("size", 0)),
-                        "entry_price": float(pos.get("average_entry_price", 0)),
-                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0)),
-                        "leverage": float(pos.get("leverage", 1.0)),
-                    })
-            if result:
-                return result
-        except Exception as e:
-            log.debug(f"portfolio list failed: {e}, falling back to orders")
-        
-        # Fallback: synthesize from recent filled orders
-        return self._synthesize_positions_from_orders()
-    
-    def _synthesize_positions_from_orders(self) -> list[dict]:
-        """Synthesize positions from recent filled orders."""
-        try:
-            orders = self.list_orders(status="FILLED")
-            positions: dict[str, dict] = {}
-            for order in orders:
-                if order.get("status") != "FILLED":
+                asset = (pos.get("asset") or "").upper()
+                size = float(pos.get("total_balance_crypto", 0) or 0)
+                if size <= 0:
                     continue
-                pid = order.get("product_id")
-                side = order.get("side", "").upper()
-                size = float(order.get("filled_size", 0))
-                price = float(order.get("average_filled_price", 0))
-                if not pid or size <= 0:
-                    continue
-                if pid not in positions:
-                    positions[pid] = {"product_id": pid, "side": "", "size": 0.0, "entry_price": 0.0, "unrealized_pnl": 0.0, "leverage": 1.0}
-                pos = positions[pid]
-                if not pos["side"]:
-                    pos["side"] = "LONG" if side == "BUY" else "SHORT"
-                if pos["side"] == "LONG" and side == "BUY":
-                    # Adding to long
-                    total_size = pos["size"] + size
-                    pos["entry_price"] = (pos["entry_price"] * pos["size"] + price * size) / total_size
-                    pos["size"] = total_size
-                elif pos["side"] == "SHORT" and side == "SELL":
-                    # Adding to short
-                    total_size = pos["size"] + size
-                    pos["entry_price"] = (pos["entry_price"] * pos["size"] + price * size) / total_size
-                    pos["size"] = total_size
-                elif pos["side"] == "LONG" and side == "SELL":
-                    # Reducing long
-                    pos["size"] -= size
-                elif pos["side"] == "SHORT" and side == "BUY":
-                    # Reducing short
-                    pos["size"] -= size
-            
-            # Filter out closed positions
-            return [p for p in positions.values() if p["size"] > 1e-9]
+                is_cash = bool(pos.get("is_cash", False))
+                fiat = float(pos.get("total_balance_fiat", 0) or 0)
+                entry = (fiat / size) if size > 0 else 0.0
+                result.append({
+                    "product_id": f"{asset}-{self.settlement_currency}",
+                    "asset": asset,
+                    "side": "LONG",
+                    "size": size,
+                    "entry_price": entry,
+                    "unrealized_pnl": 0.0,
+                    "available_to_trade_fiat": float(pos.get("available_to_trade_fiat", 0) or 0),
+                    "is_cash": is_cash,
+                    "portfolio_uuid": uuid,
+                })
+            return result
         except Exception as e:
-            log.warning(f"Failed to synthesize positions: {e}")
+            log.warning(f"get_positions failed: {e}")
             return []
 
-    def best_bid_ask(self, product_ids: list[str]) -> dict:
+    def best_bid_ask(self, product_ids: list[str] | str) -> dict:
         """
-        Fetch best bid/ask for many products.
-        - API expects product_ids as an array (string[]) -> encoded as repeated keys.
-        - We also chunk (50 per call) and merge results.
+        Fetch best bid/ask for one or more products via the real `products book`
+        endpoint (one call per product, proven to work). Accepts a single product
+        string or a list. Returns {"pricebooks": [ {product_id, bids, asks}, ... ]}.
+        Falls back to synthetic books (from candles) for any product that errors.
         """
-        pids = []
-        seen = set()
+        if isinstance(product_ids, str):
+            product_ids = [product_ids]
+        pids: list[str] = []
+        seen: set[str] = set()
         for p in product_ids or []:
             if not p:
                 continue
-            pid = p.strip()
-            if not pid or pid in seen:
-                continue
-            seen.add(pid)
-            pids.append(pid)
+            pid = self._remap(p.strip())
+            if pid and pid not in seen:
+                seen.add(pid)
+                pids.append(pid)
 
         merged = {"pricebooks": []}
-
-        for i in range(0, len(pids), 50):
-            batch = pids[i:i+50]
-            collected = 0
+        for pid in pids:
             try:
-                for pid in batch:
-                    data = self._cli_json("products", "book", pid)
-                    book = data.get("pricebook") or data.get("pricebooks") or data
-                    if isinstance(book, dict):
-                        merged["pricebooks"].append(book)
-                        collected += 1
-                    elif isinstance(book, list):
-                        for item in book:
-                            if isinstance(item, dict):
-                                merged["pricebooks"].append(item)
-                                collected += 1
-                            elif isinstance(item, list):
-                                nested = [b for b in item if isinstance(b, dict)]
-                                merged["pricebooks"].extend(nested)
-                                collected += len(nested)
+                data = self._cli_json("products", "book", pid)
+                book = data.get("pricebook") or data.get("pricebooks") or data
+                if isinstance(book, dict):
+                    merged["pricebooks"].append(book)
+                elif isinstance(book, list):
+                    for item in book:
+                        if isinstance(item, dict):
+                            merged["pricebooks"].append(item)
             except Exception:
-                log.warning("best_bid_ask failed for %d products — synthesizing from candles", len(batch))
-                merged["pricebooks"].extend(self._synthetic_books(batch))
-                continue
-
-            if collected == 0:
-                merged["pricebooks"].extend(self._synthetic_books(batch))
-
+                log.warning("best_bid_ask failed for %s — synthesizing from candles", pid)
+                merged["pricebooks"].extend(self._synthetic_books([pid]))
         return merged
 
     def _synthetic_books(self, product_ids: list[str]) -> list[dict]:
@@ -227,24 +269,25 @@ class CBClient:
     # ---------- FIXED PREVIEW ----------
     def preview_order(self, side: str, product_id: str, *, base_size: str | None = None, quote_size: str | None = None) -> dict:
         side_u = side.upper()
+        pid = self._remap(product_id)
         if side_u not in ("BUY", "SELL"):
             raise ValueError("side must be 'buy' or 'sell'")
         try:
             if side_u == "BUY":
                 if quote_size:
-                    return self._cli_json("orders", "preview", f"product_id={product_id}", "side=BUY", "type=market", f"quote_size={quote_size}")
+                    return self._cli_json("orders", "preview", f"product_id={pid}", "side=BUY", "type=market", f"quote_size={quote_size}")
                 elif base_size:
-                    return self._cli_json("orders", "preview", f"product_id={product_id}", "side=BUY", "type=market", f"base_size={base_size}")
+                    return self._cli_json("orders", "preview", f"product_id={pid}", "side=BUY", "type=market", f"base_size={base_size}")
                 else:
                     raise ValueError("buy preview needs quote_size or base_size")
             else:  # SELL
                 if not base_size:
                     raise ValueError("sell preview needs base_size")
-                return self._cli_json("orders", "preview", f"product_id={product_id}", "side=SELL", "type=market", f"base_size={base_size}")
+                return self._cli_json("orders", "preview", f"product_id={pid}", "side=SELL", "type=market", f"base_size={base_size}")
         except Exception as exc:
             return {
-                "preview_id": f"synthetic-{product_id}-{side.lower()}",
-                "product_id": product_id,
+                "preview_id": f"synthetic-{pid}-{side.lower()}",
+                "product_id": pid,
                 "side": side_u,
                 "status": "preview_error",
                 "error": str(exc),
@@ -259,22 +302,23 @@ class CBClient:
         client_order_id: str = "", preview_id: str | None = None
     ) -> dict:
         side_u = side.upper()
+        pid = self._remap(product_id)
         if side_u == "BUY":
             if quote_size:
-                args = ["orders", "create", f"product_id={product_id}", "side=BUY", "type=market", f"quote_size={quote_size}"]
+                args = ["orders", "create", f"product_id={pid}", "side=BUY", "type=market", f"quote_size={quote_size}"]
             elif base_size:
-                args = ["orders", "create", f"product_id={product_id}", "side=BUY", "type=market", f"base_size={base_size}"]
+                args = ["orders", "create", f"product_id={pid}", "side=BUY", "type=market", f"base_size={base_size}"]
             else:
                 raise ValueError("buy order needs quote_size or base_size")
         else:
             if not base_size:
                 raise ValueError("sell order needs base_size")
-            args = ["orders", "create", f"product_id={product_id}", "side=SELL", "type=market", f"base_size={base_size}"]
+            args = ["orders", "create", f"product_id={pid}", "side=SELL", "type=market", f"base_size={base_size}"]
         if client_order_id:
             args.append(f"client_order_id={client_order_id}")
         if preview_id:
             args.append(f"preview_id={preview_id}")
-        return self._cli_json(*args)
+        return self._cli_json(*args, dry_run=self.dry_run_cli)
 
     # Convenience wrappers
     def market_order(self, side: str, product_id: str, base_size: str | None = None, quote_size: str | None = None, client_order_id: str = "", preview_id: str | None = None) -> dict:
@@ -288,14 +332,15 @@ class CBClient:
         post_only: bool = False,
     ) -> dict:
         side_u = side.upper()
-        args = ["orders", "create", f"product_id={product_id}", f"side={side_u}",
+        pid = self._remap(product_id)
+        args = ["orders", "create", f"product_id={pid}", f"side={side_u}",
                 "type=limit", f"base_size={base_size}", f"limit_price={price}",
                 f"time_in_force={time_in_force}"]
         if post_only:
             args.append("post_only=true")
         if client_order_id:
             args.append(f"client_order_id={client_order_id}")
-        return self._cli_json(*args)
+        return self._cli_json(*args, dry_run=self.dry_run_cli)
 
     # ---------- STOP-LIMIT ORDER ----------
     def create_stop_limit_order(
@@ -305,41 +350,85 @@ class CBClient:
         stop_direction: str = "stop_direction_stop_up",
     ) -> dict:
         side_u = side.upper()
-        args = ["orders", "create", f"product_id={product_id}", f"side={side_u}",
-                "type=limit", f"base_size={base_size}",
+        pid = self._remap(product_id)
+        args = ["orders", "create", f"product_id={pid}", f"side={side_u}",
+                "type=stop_limit", f"base_size={base_size}",
                 f"limit_price={limit_price}", f"stop_price={stop_price}",
-                f"stop_direction={stop_direction}",
+                f"stop_direction={self._norm_stop_direction(stop_direction)}",
                 f"time_in_force={time_in_force}"]
         if client_order_id:
             args.append(f"client_order_id={client_order_id}")
-        return self._cli_json(*args)
+        return self._cli_json(*args, dry_run=self.dry_run_cli)
 
     # ---------- STOP MARKET ORDER ----------
+    # The CDP CLI only supports `type=stop_limit` (no bare `stop` market type),
+    # so a stop-market is expressed as a stop_limit whose limit_price == stop_price.
     def create_stop_market_order(
         self, side: str, product_id: str, *,
         base_size: str, stop_price: str,
         client_order_id: str = "", stop_direction: str = "stop_direction_stop_up",
     ) -> dict:
         side_u = side.upper()
-        args = ["orders", "create", f"product_id={product_id}", f"side={side_u}",
-                "type=stop", f"base_size={base_size}", f"stop_price={stop_price}",
-                f"stop_direction={stop_direction}"]
+        pid = self._remap(product_id)
+        args = ["orders", "create", f"product_id={pid}", f"side={side_u}",
+                "type=stop_limit", f"base_size={base_size}",
+                f"limit_price={stop_price}", f"stop_price={stop_price}",
+                f"stop_direction={self._norm_stop_direction(stop_direction)}"]
         if client_order_id:
             args.append(f"client_order_id={client_order_id}")
-        return self._cli_json(*args)
+        return self._cli_json(*args, dry_run=self.dry_run_cli)
+
+    # ---------- CLOSE POSITION ----------
+    def close_position(self, product_id: str, size: str | None = None,
+                       client_order_id: str = "") -> dict:
+        """Flatten an open position via the real `orders close-position` endpoint."""
+        if not client_order_id:
+            import uuid as _uuid
+            client_order_id = str(_uuid.uuid4())
+        pid = self._remap(product_id)
+        args = ["orders", "close-position", f"client_order_id={client_order_id}",
+                f"product_id={pid}"]
+        if size:
+            args.append(f"size={size}")
+        return self._cli_json(*args, dry_run=self.dry_run_cli)
 
     # ---------- CANCEL ORDER ----------
     def cancel_order(self, order_id: str) -> dict:
-        return self._cli_json("orders", "cancel", f"order_id={order_id}")
+        return self._cli_json("orders", "cancel", f"order_id={order_id}", dry_run=self.dry_run_cli)
 
     # ---------- LIST ORDERS ----------
     def list_orders(self, product_id: str | None = None, status: str | None = None) -> list[dict]:
         args = ["orders", "list"]
+        # `orders list` uses `==` query-param syntax; the CLI also reuses field
+        # values from the previous call, so always pass explicit fields.
         if product_id:
-            args.append(f"product_id={product_id}")
+            args.append(f"product_ids={product_id}")
         if status:
-            args.append(f"order_status={status}")
-        return self._cli_json(*args).get("orders", [])
+            args.append(f"status=={status}")
+        args.append("limit=100")
+        try:
+            return self._cli_json(*args).get("orders", [])
+        except Exception as e:
+            log.debug("list_orders failed: %s", e)
+            return []
+
+    def get_order(self, order_id: str) -> dict:
+        """Fetch a single order by id via the real `orders get` endpoint."""
+        if not order_id:
+            return {}
+        try:
+            return self._cli_json("orders", "get", order_id)
+        except Exception as e:
+            log.debug("get_order failed for %s: %s", order_id, e)
+            return {}
+
+    def get_fees(self) -> dict:
+        """Fetch real fee tier + 30d volume via the `fees` endpoint."""
+        try:
+            return self._cli_json("fees")
+        except Exception as e:
+            log.debug("get_fees failed: %s", e)
+            return {}
 
     # ---------- GET PRODUCTS ----------
     def get_products(self, product_type: str | None = None) -> list[dict]:
@@ -376,4 +465,5 @@ class CBClient:
             "SIX_HOUR": "6h",
             "ONE_DAY": "1d",
         }.get(granularity, granularity)
-        return self._cli_json("products", "candles", product_id, f"start={start}", f"end={end}", f"granularity={gran}", f"limit={int(limit)}")
+        pid = self._remap(product_id)
+        return self._cli_json("products", "candles", pid, f"start={start}", f"end={end}", f"granularity={gran}", f"limit={int(limit)}")

@@ -4,6 +4,7 @@ Simulates paper trading execution without live market connections.
 Validates strategies against historical data.
 """
 
+import random
 from typing import Dict, List, Optional
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -276,16 +277,9 @@ class StrategySimulator:
             ticker = self.instruments_config.get(signal.product_id, {}).get(
                 "ticker", signal.product_id)
                 
-            if not base_prices:
-                ticker_map = {
-                    "BTC": 69000, "ETH": 3800, "SOL": 170,
-                    "AVAX": 40, "LINK": 18, "ARB": 1.2, "OP": 2.5
-                }
-                base_price = ticker_map.get(ticker[:3].upper(), 5000)
-            else:
-                base_price = next((v for k, v in base_prices.items() 
-                                 if k.upper() in ticker[:3]), 5000)
-                                    
+            base_price = next((v for k, v in base_prices.items()
+                             if k.upper() in ticker[:3]), 5000)
+
             fill = self.simulate_signal_execution(signal, base_price)
             
             if fill:

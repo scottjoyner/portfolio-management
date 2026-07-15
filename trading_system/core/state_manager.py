@@ -13,7 +13,7 @@ class StateManager:
     def __init__(self, state_dir: str = "/home/scott/git/portfolio-management/trading_system/state"):
         self.state_dir = state_dir
         self.brackets_path = os.path.join(self.state_dir, "brackets.json")
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self._ensure_dir()
 
     def _ensure_dir(self) -> None:
@@ -33,8 +33,9 @@ class StateManager:
 
     def save_brackets(self, brackets: List[Bracket]) -> None:
         with self.lock:
+            payload = [b.model_dump() if hasattr(b, 'model_dump') else b.dict() for b in brackets]
             with open(self.brackets_path, "w") as f:
-                json.dump([b.model_dump() if hasattr(b, 'model_dump') else b.dict() for b in brackets], f, indent=2)
+                json.dump({"brackets": payload}, f, indent=2)
 
     def add_bracket(self, bracket: Bracket) -> None:
         with self.lock:

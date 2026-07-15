@@ -336,6 +336,78 @@ impl StreamingEngine {
 }
 
 #[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn test_ring_buffer_get_oob() {
+        let mut buf = RingBuffer::new(3);
+        buf.append(1.0);
+        assert_eq!(buf.get(5), None); // index >= size
+        assert_eq!(buf.get(0), Some(1.0));
+    }
+
+    #[test]
+    fn test_sma_seeded_and_bollinger() {
+        let mut ind = StreamingIndicators::new("TST", 100);
+        // unseeded period -> None paths
+        assert!(ind.sma(99).is_none());
+        assert!(ind.bollinger(99).is_none());
+        assert!(ind.ema(99).is_none());
+
+        // seed SMA and exercise both n<=period and n>period branches
+        ind.seed_sma(3, 100.0, 30000.0);
+        ind.update(101.0, 10.0); // n=1 -> else branch
+        ind.update(102.0, 10.0); // n=2 -> else branch
+        ind.update(103.0, 10.0); // n=3 -> else branch
+        ind.update(104.0, 10.0); // n=4 -> Some(oldest) branch
+        assert!(ind.sma(3).is_some());
+        let (mid, up, lo) = ind.bollinger(3).unwrap();
+        assert!(mid.is_finite() && up > lo);
+    }
+
+    #[test]
+    fn test_rsi_fresh_and_seed_edges() {
+        let mut ind = StreamingIndicators::new("TST", 100);
+        // rsi() before any update -> (None, None) -> 50
+        assert_eq!(ind.rsi(), 50.0);
+        // first update: prev None branch
+        ind.update(50000.0, 10.0);
+        // second update: (None, _) branch sets avg
+        ind.update(50100.0, 10.0);
+        assert!(ind.rsi().is_finite());
+        // seed_rsi with too-short closes -> 50
+        let short = vec![1.0, 2.0];
+        assert_eq!(ind.seed_rsi(&short, 14), 50.0);
+    }
+
+    #[test]
+    fn test_macd_unseeded() {
+        let mut ind = StreamingIndicators::new("TST", 100);
+        // update before seed -> _ branch in update_macd
+        ind.update(50100.0, 10.0);
+        // macd() before seed -> fast None -> None
+        assert!(ind.macd().is_none());
+    }
+
+    #[test]
+    fn test_engine_missing_product() {
+        let mut engine = StreamingEngine::new();
+        // update on unknown product -> no-op
+        engine.update("NOPE", 1.0, 1.0);
+        // accessors on unknown product -> None
+        assert!(engine.ema("NOPE", 9).is_none());
+        assert!(engine.rsi("NOPE").is_none());
+        assert!(engine.macd("NOPE").is_none());
+        // with a real product
+        engine.get_or_create("BTC-USD", 100).seed_ema(9, 50000.0);
+        engine.update("BTC-USD", 50100.0, 10.0);
+        assert!(engine.ema("BTC-USD", 9).is_some());
+        assert!(engine.rsi("BTC-USD").is_some());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -49,11 +49,11 @@ class KrakenProvider(BaseProvider):
         
         prices = {}
         for pair in pairs:
-            base = pair.split("/")[0] if "/" in pair else pair
-            if base in mid_prices:
-                prices[pair] = round(mid_prices[base], 2)
+            if pair in mid_prices:
+                prices[pair] = round(mid_prices[pair], 2)
             else:
-                prices[pair] = 0.0
+                base = pair.split("/")[0] if "/" in pair else pair
+                prices[pair] = round(mid_prices[base], 2) if base in mid_prices else 0.0
         return prices
 
     async def get_historical_prices(self, symbol: str, start_date: str, end_date: str, granularity: int = 60) -> List[Dict[str, Any]]:

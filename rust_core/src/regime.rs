@@ -399,6 +399,108 @@ fn serial_correlation(returns: &[f64], lag: usize) -> f64 {
 }
 
 #[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_all_branches() {
+        let det = RegimeDetector::new(14, 20, 50);
+
+        // StrongUptrend: volatile + trending + ts>0
+        let mut f = RegimeFeatures::new();
+        f.adx = 30.0; f.volatility = 0.05; f.trend_strength = 0.1;
+        assert_eq!(det.classify(&f), Regime::StrongUptrend);
+
+        // StrongDowntrend: volatile + trending + ts<0
+        f.trend_strength = -0.1;
+        assert_eq!(det.classify(&f), Regime::StrongDowntrend);
+
+        // WeakUptrend: trending (not volatile) + ts>0
+        f.volatility = 0.01; f.trend_strength = 0.1;
+        assert_eq!(det.classify(&f), Regime::WeakUptrend);
+
+        // WeakDowntrend: trending (not volatile) + ts<0
+        f.trend_strength = -0.1;
+        assert_eq!(det.classify(&f), Regime::WeakDowntrend);
+
+        // HighVolatility: volatile, not trending, hurst<=0.6
+        f.adx = 10.0; f.volatility = 0.05; f.trend_strength = 0.1; f.hurst_exponent = 0.4;
+        assert_eq!(det.classify(&f), Regime::HighVolatility);
+
+        // HighVolatility via hurst>0.6 but |ts|<=0.01
+        f.hurst_exponent = 0.7; f.trend_strength = 0.0;
+        assert_eq!(det.classify(&f), Regime::HighVolatility);
+
+        // Ranging
+        f = RegimeFeatures::new();
+        f.adx = 10.0; f.volatility = 0.01;
+        assert_eq!(det.classify(&f), Regime::Ranging);
+
+        // LowVolatility: not ranging, vol<0.01
+        f.adx = 22.0; f.volatility = 0.005;
+        assert_eq!(det.classify(&f), Regime::LowVolatility);
+
+        // Unknown
+        f.adx = 22.0; f.volatility = 0.02; f.trend_strength = 0.0;
+        assert_eq!(det.classify(&f), Regime::Unknown);
+    }
+
+    #[test]
+    fn test_detect_with_ohlc_sets_adx() {
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 + i as f64).collect();
+        let highs: Vec<f64> = closes.iter().map(|c| c + 2.0).collect();
+        let lows: Vec<f64> = closes.iter().map(|c| c - 2.0).collect();
+        let det = RegimeDetector::new(14, 20, 50);
+        let (regime, features) = det.detect(&closes, Some(&highs), Some(&lows), None);
+        assert!(features.adx >= 0.0 && features.adx <= 100.0);
+        assert!(regime != Regime::Unknown);
+    }
+
+    #[test]
+    fn test_compute_features_short() {
+        let det = RegimeDetector::new(14, 20, 50);
+        let (regime, features) = det.detect(&[1.0, 2.0, 3.0], None, None, None);
+        // <30 closes -> default features -> adx 0 (<20), vol 0 (<0.02) -> Ranging
+        assert_eq!(regime, Regime::Ranging);
+        assert_eq!(features.adx, 0.0);
+    }
+
+    #[test]
+    fn test_compute_adx_edges() {
+        let det = RegimeDetector::new(14, 20, 50);
+        assert_eq!(det.compute_adx(&[1.0], &[1.0], &[1.0]), 25.0); // n<2
+        let flat: Vec<f64> = vec![100.0; 30];
+        let adx = det.compute_adx(&flat, &flat, &flat); // tr_sum 0
+        assert_eq!(adx, 25.0);
+    }
+
+    #[test]
+    fn test_helper_edges() {
+        assert_eq!(compute_returns(&[1.0]).len(), 0);
+        assert_eq!(compute_volatility(&[0.01]), 0.0);
+        assert_eq!(compute_trend_strength(&[1.0; 10]), 0.0); // len<20
+        // n>=50 vs else branch
+        let long: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.1).collect();
+        assert!(compute_trend_strength(&long).is_finite());
+        assert_eq!(compute_price_position(&[5.0]), 0.5);
+        let flat = vec![5.0; 10];
+        assert_eq!(compute_price_position(&flat), 0.5); // hi==lo
+        assert_eq!(compute_skewness(&[0.01, 0.02]), 0.0); // len<3
+        let c = vec![0.01; 5];
+        assert_eq!(compute_skewness(&c), 0.0); // variance 0
+        assert_eq!(compute_kurtosis(&[0.01, 0.02, 0.03]), 3.0); // len<4
+        assert_eq!(compute_kurtosis(&c), 3.0); // variance 0
+        assert_eq!(hurst_exponent(&[1.0; 50]), 0.5); // len<100
+        assert_eq!(hurst_exponent(&[1.0; 5]), 0.5); // max_lag<=2
+        let const_prices: Vec<f64> = vec![10.0; 100];
+        assert_eq!(hurst_exponent(&const_prices), 0.5); // tau[0]<=0
+        assert_eq!(serial_correlation(&[0.01], 1), 0.0); // len<lag+2
+        let zero_var = vec![0.02; 6];
+        assert_eq!(serial_correlation(&zero_var, 1), 0.0); // den 0
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

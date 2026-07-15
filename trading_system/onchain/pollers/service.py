@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, List, Optional
 
+import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)

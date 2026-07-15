@@ -17,6 +17,18 @@ import math
 import json
 
 
+class TrendStrategyBase:
+    """Base class for additional trend-following strategies.
+
+    Subclasses pass a human-readable ``name`` followed by the indicator
+    lookback periods they care about.
+    """
+
+    def __init__(self, name: str, *periods) -> None:
+        self.name = name
+        self.periods = list(periods)
+
+
 class EMACrossover(TrendStrategyBase):
     """
     Exponential Moving Average Crossover Strategy
@@ -49,8 +61,8 @@ class EMACrossover(TrendStrategyBase):
             
         multiplier = 2.0 / (period + 1)
         
-        ema = sum(prices) / period
-        for price in reversed(prices[:-period]):
+        ema = sum(prices[:period]) / period
+        for price in prices[period:]:
             ema = (price - ema) * multiplier + ema
             
         return ema
@@ -67,7 +79,11 @@ class EMACrossover(TrendStrategyBase):
         slow_ema = self.compute_ema(prices, self.slow_period)
         
         current_ratio = fast_ema / slow_ema if slow_ema != 0 else float('inf')
-        
+
+        if fast_ema > slow_ema:
+            return 'LONG'
+        elif fast_ema < slow_ema:
+            return 'SHORT'
         return None
     
     def get_performance_metrics(self) -> Dict:
@@ -113,8 +129,8 @@ class TripleEMASystem(TrendStrategyBase):
             return sum(prices[-period:]) / period
             
         multiplier = 2.0 / (period + 1)
-        ema = sum(prices) / period
-        for price in reversed(prices[:-period]):
+        ema = sum(prices[:period]) / period
+        for price in prices[period:]:
             ema = (price - ema) * multiplier + ema
         return ema
     
@@ -183,7 +199,9 @@ class IchimokuCloudBreakout(TrendStrategyBase):
         
     def compute_tenkan_kijun(self, prices: List[float], high_low: Dict) -> tuple:
         """Compute Tenkan-sen and Kijun-sen weighted averages."""
-        close_prices = [high_low['close'] for _ in range(len(high_low))]
+        close_prices = high_low['close']
+        if not isinstance(close_prices, (list, tuple)):
+            close_prices = [close_prices]
         
         # Tenkan-sen (9-period weighted MA): 
         # 2/3 * last 2 days + 1/3 * previous 7 days
@@ -267,8 +285,8 @@ class KeltnerChannelBreakout(TrendStrategyBase):
             return sum(prices) / len(prices)
             
         multiplier = 2.0 / (period + 1)
-        ema = sum(prices) / period
-        for price in reversed(prices[:-period]):
+        ema = sum(prices[:period]) / period
+        for price in prices[period:]:
             ema = (price - ema) * multiplier + ema
         return ema
     
@@ -311,7 +329,7 @@ class KeltnerChannelBreakout(TrendStrategyBase):
         # Simplified: check price relative to EMA with ATR band
         upper_band = middle + (atr * self.multiplier)
         
-        if current_price > upper_band and len(self.upper_band_history, 0):
+        if current_price > upper_band:
             return 'LONG'
             
         return None
@@ -362,6 +380,8 @@ class VolumeProfileMomentum(TrendStrategyBase):
         min_price = min(closes[-self.profile_range:])
         max_price = max(closes[-self.profile_range:])
         bucket_size = abs(max_price - min_price) / 10
+        if bucket_size <= 0:
+            bucket_size = 1e-9
         
         profile = {}
         for i in range(len(closes)):

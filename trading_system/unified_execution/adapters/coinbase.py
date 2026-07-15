@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime
 import asyncio
 
-from .interfaces import (
+from ..interfaces import (
     ExchangeAdapter,
     OrderSide,
     OrderType,

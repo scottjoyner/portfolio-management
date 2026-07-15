@@ -223,12 +223,15 @@ class PolymarketAPI:
                     for e in results[:limit]:
                         event_slug = str(e['slug'])
                         # Get volume/bid from the data
-                        
+
                         try:
                             bid_pct = float(str(e.get('volume_1h', '0') or '0')) / 1000000 * 50  # Scale to reasonable percentage
                         except (ValueError, TypeError):
                             bid_pct = 0.5  # default middle value
-                        
+
+                        if category and category.lower() not in (e.get('primaryTopic', '') or '').lower():
+                            continue
+
                         events.append({
                             'slug': event_slug,
                             'question': e.get('title', ''),
@@ -236,10 +239,7 @@ class PolymarketAPI:
                             'id': event_slug,
                             'bid': min(bid_pct, 0.99),  # cap at 99%
                         })
-                        
-                        if category and category.lower() not in (e.get('primaryTopic', '') or '').lower():
-                            continue
-                        
+
                     return events
                     
             except Exception as e:
@@ -407,10 +407,10 @@ class ArbitrageOpportunity:
     def estimate_profit(self) -> Dict[str, float]:
         """Estimate profit/loss for this opportunity."""
         
-        buy_price = self.market_pair.buy_platform if self.buy_platform == 'kalshi' else \
+        buy_price = self.market_pair.kalshi_price if self.buy_platform == 'kalshi' else \
                     self.market_pair.polymarket_price
         
-        sell_price = 1.0 - (self.market_pair.sell_platform if self.sell_platform == 'kalshi' else \
+        sell_price = 1.0 - (self.market_pair.kalshi_price if self.sell_platform == 'kalshi' else \
                              self.market_pair.polymarket_price)
         
         buy_cost = self.buy_units * buy_price * 100
@@ -441,7 +441,7 @@ class ArbitrageOpportunity:
             'buy_fees': buy_fees,
             'sell_fees': sell_fees,
             'net_profit': net_profit,
-            'roi_pct': (net_profit / self.buy_cost * 100) if self.buy_cost > 0 else 0,
+            'roi_pct': (net_profit / buy_cost * 100) if buy_cost > 0 else 0,
         }
 
 
@@ -553,7 +553,7 @@ class ArbitrageManager:
                 logging.info(f"       Buy units: {opp.buy_units}, Sell units: {opp.sell_units}")
                 
                 # Execute buy order
-                buy_price = opp.market_pair.buy_platform if opp.buy_platform == 'kalshi' else \
+                buy_price = opp.market_pair.kalshi_price if opp.buy_platform == 'kalshi' else \
                             opp.market_pair.polymarket_price
                 
                 buy_order = None
@@ -574,7 +574,7 @@ class ArbitrageManager:
                 
                 # Execute sell order
                 sell_price = 1.0 - opp.market_pair.kalshi_price if \
-                               opp.market_pair.kalshi_market_id == 'KLS-' else \
+                               opp.sell_platform == 'kalshi' else \
                                1.0 - opp.market_pair.polymarket_price
                 
                 sell_order = None

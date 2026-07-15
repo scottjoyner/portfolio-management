@@ -117,13 +117,15 @@ class PlaidItem(Base):
     # Relationships
     accounts: Mapped[list["PlaidAccount"]] = relationship(
         "PlaidAccount",
-        back_populates="item",
+        primaryjoin="foreign(PlaidAccount.item_id) == PlaidItem.id",
+        viewonly=True,
         cascade="all, delete-orphan"
     )
     
     events: Mapped[list["PlaidItemEvent"]] = relationship(
         "PlaidItemEvent",
-        back_populates="item",
+        primaryjoin="foreign(PlaidItemEvent.item_id) == PlaidItem.id",
+        viewonly=True,
         cascade="all, delete-orphan"
     )
     
@@ -195,10 +197,15 @@ class PlaidAccount(Base):
     )
     
     # Relationships
-    item: Mapped[PlaidItem] = relationship("PlaidItem", back_populates="accounts")
+    item: Mapped[PlaidItem] = relationship(
+        "PlaidItem",
+        primaryjoin="foreign(PlaidAccount.item_id) == PlaidItem.id",
+        viewonly=True
+    )
     transactions: Mapped[list["PlaidTransaction"]] = relationship(
         "PlaidTransaction",
-        back_populates="account",
+        primaryjoin="foreign(PlaidTransaction.account_id) == PlaidAccount.account_id",
+        viewonly=True,
         cascade="all, delete-orphan"
     )
     
@@ -241,7 +248,11 @@ class PlaidTransaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
-    account: Mapped[PlaidAccount] = relationship("PlaidAccount", back_populates="transactions")
+    account: Mapped[PlaidAccount] = relationship(
+        "PlaidAccount",
+        primaryjoin="foreign(PlaidTransaction.account_id) == PlaidAccount.account_id",
+        viewonly=True
+    )
     
     @property
     def amount(self) -> int | None:
@@ -263,7 +274,11 @@ class PlaidItemEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
-    item: Mapped[PlaidItem] = relationship("PlaidItem", back_populates="events")
+    item: Mapped[PlaidItem] = relationship(
+        "PlaidItem",
+        primaryjoin="foreign(PlaidItemEvent.item_id) == PlaidItem.id",
+        viewonly=True
+    )
 
 
 class PlaidWebhook(Base):

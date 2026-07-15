@@ -55,12 +55,10 @@ _strategy_registry: dict[str, Callable] = {}
 
 def register_mean_reversion_strategy(strategy_class):
     """Decorator to register a mean reversion strategy with the factory."""
-    def wrapper(cls):
-        name = cls.__name__
-        _strategy_registry[name] = lambda config: create_strategy_instance(cls, config)
-        print(f"[MeanReversionRegistry] Registered: {name}")
-        return cls
-    return wrapper
+    name = strategy_class.__name__
+    _strategy_registry[name] = lambda config: create_strategy_instance(strategy_class, config)
+    print(f"[MeanReversionRegistry] Registered: {name}")
+    return strategy_class
 
 def get_available_strategies():
     """Return list of available mean reversion strategy names."""
@@ -93,7 +91,7 @@ class ZScoreConfig(StrategyConfig):
     def validate(self):
         """Validate configuration parameters."""
         if self.lookback_bars < 30:
-            raise ValueError(f"lookback_bars must be >= 30, got {self.lookback_bares}")
+            raise ValueError(f"lookback_bars must be >= 30, got {self.lookback_bars}")
         if self.z_score_threshold < 2.0 or self.z_score_threshold > 4.0:
             raise ValueError(f"z_score_threshold should be between 2.0-4.0, got {self.z_score_threshold}")
         return True
@@ -165,7 +163,7 @@ class ZScoreMeanReversionStrategy(StrategyBase):
         self.take_profit_pct = self.config.take_profit_pct
         
         # State variables for statistics calculation
-        self.price_buffer: List[float] = field(default_factory=list)
+        self.price_buffer: List[float] = []
         self.mean_price: Optional[float] = None
         self.std_price: Optional[float] = None
         
@@ -337,6 +335,7 @@ class ZScoreMeanReversionStrategy(StrategyBase):
                 
                 # BUY signal: price significantly below mean (oversold)
                 if current_zscore < -self.z_score_threshold:
+                    entry_price = close
                     signal_action = 'BUY'
                     confidence = min(0.9, abs(current_zscore + self.z_score_threshold) / 1.5)
                     

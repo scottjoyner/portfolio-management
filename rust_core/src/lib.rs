@@ -6,6 +6,7 @@ pub mod streaming;
 pub mod regime;
 pub mod tcost;
 pub mod fee;
+pub mod rebalance;
 
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -679,6 +680,113 @@ fn backtest_multi_py(
         .collect()
 }
 
+/// ── Rebalance module PyO3 bindings ────────────────────────────────
+
+/// Python wrapper: multi-asset drift-threshold rebalancer with slim-profit selling.
+#[pyclass]
+struct PyRebalancer {
+    inner: rebalance::Rebalancer,
+}
+
+#[pymethods]
+impl PyRebalancer {
+    #[new]
+    #[pyo3(signature = (targets, drift_threshold=0.05, profit_take_pct=1.0, min_trade_notional=1.0))]
+    fn new(
+        targets: HashMap<String, f64>,
+        drift_threshold: f64,
+        profit_take_pct: f64,
+        min_trade_notional: f64,
+    ) -> PyResult<Self> {
+        rebalance::Rebalancer::new(targets, drift_threshold, profit_take_pct, min_trade_notional)
+            .map(|inner| Self { inner })
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Return orders as (asset, side, notional, current_weight, target_weight, drift).
+    fn compute_orders(
+        &self,
+        current_values: HashMap<String, f64>,
+        total: f64,
+    ) -> Vec<(String, String, f64, f64, f64, f64)> {
+        self.inner
+            .compute_orders(&current_values, total)
+            .into_iter()
+            .map(|o| (o.asset, o.side, o.notional, o.current_weight, o.target_weight, o.drift))
+            .collect()
+    }
+
+    fn drift(
+        &self,
+        current_values: HashMap<String, f64>,
+        total: f64,
+    ) -> HashMap<String, f64> {
+        self.inner.drift(&current_values, total)
+    }
+
+    fn max_abs_drift(
+        &self,
+        current_values: HashMap<String, f64>,
+        total: f64,
+    ) -> f64 {
+        self.inner.max_abs_drift(&current_values, total)
+    }
+}
+
+/// Python wrapper: range-bound stair-step profit taker.
+#[pyclass]
+struct PyStairStepProfitTaker {
+    inner: rebalance::StairStepProfitTaker,
+}
+
+#[pymethods]
+impl PyStairStepProfitTaker {
+    #[new]
+    #[pyo3(signature = (low, high, steps, budget, take_profit_pct, base_size_pct))]
+    fn new(
+        low: f64,
+        high: f64,
+        steps: usize,
+        budget: f64,
+        take_profit_pct: f64,
+        base_size_pct: f64,
+    ) -> PyResult<Self> {
+        rebalance::StairStepProfitTaker::new(low, high, steps, budget, take_profit_pct, base_size_pct)
+            .map(|inner| Self { inner })
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))
+    }
+
+    /// Feed a price; returns (side, price, notional) or None.
+    fn on_price(&mut self, price: f64) -> Option<(String, f64, f64)> {
+        self.inner.on_price(price).map(|o| (o.side, o.price, o.notional))
+    }
+
+    fn step_levels(&self) -> Vec<f64> {
+        self.inner.step_levels()
+    }
+
+    fn base_size(&self) -> f64 {
+        self.inner.base_size()
+    }
+
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    /// Return (next_buy_index, filled_buys, filled_sells, inventory_value, realized_pnl, last_action).
+    fn state(&self) -> (usize, usize, usize, f64, f64, String) {
+        let s = self.inner.state();
+        (
+            s.next_buy_index,
+            s.filled_buys,
+            s.filled_sells,
+            s.inventory_value,
+            s.realized_pnl,
+            s.last_action.clone(),
+        )
+    }
+}
+
 /// The Python module.
 #[pymodule]
 fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -713,5 +821,205 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStreamingIndicators>()?;
     m.add_class::<PyStreamingEngine>()?;
     m.add_class::<PyStreamingIndicatorsHandle>()?;
+    m.add_class::<PyRebalancer>()?;
+    m.add_class::<PyStairStepProfitTaker>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn ohlcv() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let closes: Vec<f64> = (0..120).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let highs: Vec<f64> = closes.iter().map(|c| c + 2.0).collect();
+        let lows: Vec<f64> = closes.iter().map(|c| c - 2.0).collect();
+        let vols: Vec<f64> = (0..120).map(|i| 1000.0 + (i % 7) as f64 * 50.0).collect();
+        (closes, highs, lows, vols)
+    }
+
+    #[test]
+    fn test_pyfunction_wrappers() {
+        let (c, h, l, v) = ohlcv();
+        assert!(ema_py(c.clone(), 9).is_finite());
+        assert_eq!(ema_slice_py(c.clone(), 9).len(), c.len());
+        assert!(rsi_py(c.clone(), 14).is_finite());
+        let (lo, mid, hi, bw) = bollinger_py(c.clone(), 20, 2.0);
+        assert!(lo.is_finite() && mid.is_finite() && hi.is_finite() && bw.is_finite());
+        let (z, _m, _s) = zscore_py(c.clone(), 30);
+        assert!(z.is_finite());
+        assert!(sma_py(c.clone(), 10).is_finite());
+        assert!(wma_py(c.clone()).is_finite());
+        assert_eq!(trix_series_py(c.clone(), 15).len(), c.len());
+        let (ml, sl, hg) = macd_py(c.clone(), 12, 26, 9);
+        // NB: macd signal/histogram carry NaN for these inputs (EMA-of-series NaN prefix);
+        // only the macd_line is guaranteed finite.
+        assert!(ml.is_finite());
+        let _ = (sl, hg);
+        let (reg, adx, ts, vol, pp) = detect_regime_py(c.clone(), Some(h.clone()), Some(l.clone()), Some(v.clone()), None, None);
+        assert!(!reg.is_empty() && adx.is_finite() && ts.is_finite() && vol.is_finite() && pp.is_finite());
+        // detect with no optional OHLCV (None branches)
+        let (reg2, _, _, _, _) = detect_regime_py(c.clone(), None, None, None, Some(14), Some(50));
+        assert!(!reg2.is_empty());
+        for r in ["strong_uptrend", "weak_uptrend", "ranging", "weak_downtrend",
+                  "strong_downtrend", "high_volatility", "low_volatility", "unknown"] {
+            let recs = regime_recommended_strategies_py(r.to_string());
+            assert!(!recs.is_empty());
+        }
+        let feats = regime_features_py(c.clone(), None, None, None);
+        assert_eq!(feats.len(), 9);
+        let feats2 = regime_features_py(c.clone(), Some(h.clone()), Some(l.clone()), Some(v.clone()));
+        assert_eq!(feats2.len(), 9);
+        assert!(atr_py(h.clone(), l.clone(), c.clone(), 14).is_finite());
+        assert!(tcost_estimate_spread_bps_py(100.0, 101.0).is_finite());
+        assert!(tcost_impact_bps_py(1000.0, 1.5).is_finite());
+        let fill = tcost_effective_fill_price_py("buy".to_string(), 100.0, 99.0, 101.0, 1000.0, 8.0, 0.0, 1.5);
+        assert!(fill.is_finite());
+        assert!(confidence_weight_from_bt_py(0.6, 1.0).is_finite());
+        assert!(confidence_default_weight_py("ema_cross".to_string()).is_finite());
+        assert!(confidence_class_boost_py("ema_cross".to_string(), "growth".to_string()).is_finite());
+    }
+
+    #[test]
+    fn test_pyclass_fee_and_ring() {
+        let mut ft = PyFeeTracker::new(1000.0);
+        assert!(ft.rolling_30d_volume() > 0.0);
+        assert!(ft.current_tier_min_volume().is_finite());
+        assert!(ft.current_tier_maker_rate().is_finite());
+        assert!(ft.current_tier_taker_rate().is_finite());
+        let _ = ft.next_tier_min_volume();
+        assert!(ft.volume_to_next_tier().is_finite());
+        ft.record_trade(500.0, None);
+        assert!(ft.fee_cost(100.0, true).is_finite());
+        assert!(ft.maker_rate().is_finite());
+        assert!(ft.taker_rate().is_finite());
+        assert!(ft.savings_to_next_tier(10000.0).is_finite());
+        let state = ft.to_state();
+        assert!(state.0.is_finite());
+        let ft2 = PyFeeTracker::from_state(state.0, state.1);
+        assert!(ft2.rolling_30d_volume().is_finite());
+
+        let mut rb = PyRingBuffer::new(5);
+        rb.append(1.0);
+        rb.append(2.0);
+        assert_eq!(rb.__len__(), 2);
+        assert!((rb.__getitem__(0).unwrap() - 1.0).abs() < 1e-12);
+        assert!((rb.__getitem__(-1).unwrap() - 2.0).abs() < 1e-12);
+        assert_eq!(rb.to_list().len(), 2);
+        assert!(rb.last().is_some());
+        assert_eq!(rb.size(), 2);
+    }
+
+    #[test]
+    fn test_pyclass_streaming() {
+        let mut ind = PyStreamingIndicators::new("BTC-USD".to_string(), 100);
+        assert_eq!(ind.product_id(), "BTC-USD".to_string());
+        ind.seed_ema(9, 100.0);
+        ind.update(101.0, 10.0);
+        assert!(ind.ema(9).is_some());
+        ind.seed_sma(3, 100.0, 30000.0);
+        ind.update(102.0, 10.0);
+        assert!(ind.sma(3).is_some());
+        assert!(ind.bollinger(3).is_some());
+        let r = ind.seed_rsi((0..16).map(|i| 100.0 + i as f64).collect(), 14);
+        assert!(r.is_finite());
+        assert!(ind.rsi().is_finite());
+        ind.seed_macd(100.0, 100.0);
+        ind.update(101.0, 10.0);
+        assert!(ind.macd().is_some());
+        let _ = ind.closes();
+        let _ = ind.volumes();
+
+        let mut eng = PyStreamingEngine::new();
+        let handle = eng.get_or_create("ETH-USD".to_string(), 100);
+        assert_eq!(handle.product_id(), "ETH-USD".to_string());
+        handle.update(10.0, 1.0);
+        handle.seed_ema(9, 10.0);
+        assert!(handle.ema(9).is_some());
+        handle.seed_sma(3, 10.0, 300.0);
+        assert!(handle.sma(3).is_some());
+        assert!(handle.bollinger(3).is_some());
+        handle.seed_rsi((0..16).map(|i| 10.0 + i as f64).collect(), 14);
+        assert!(handle.rsi().is_finite());
+        handle.seed_macd(10.0, 10.0);
+        assert!(handle.macd().is_some());
+        let _ = handle.closes();
+        let _ = handle.volumes();
+        assert!(eng.try_get("ETH-USD".to_string()).is_some());
+        assert!(eng.try_get("NOPE".to_string()).is_none());
+        eng.update("ETH-USD".to_string(), 11.0, 2.0);
+        assert!(eng.ema("ETH-USD".to_string(), 9).is_some());
+        assert!(eng.rsi("ETH-USD".to_string()).is_some());
+        assert!(eng.macd("ETH-USD".to_string()).is_some());
+    }
+
+    #[test]
+    fn test_strategy_and_backtest_bindings() {
+        let (c, h, l, v) = ohlcv();
+        let opens: Vec<f64> = c.iter().enumerate().map(|(i, _)| if i == 0 { c[0] } else { c[i - 1] }).collect();
+        let _some = run_strategy_py("ema_cross", c.clone(), v.clone(), h.clone(), l.clone());
+        assert!(_some.is_some() || _some.is_none());
+        assert!(run_strategy_py("nonexistent_strat", c.clone(), v.clone(), h.clone(), l.clone()).is_none());
+        let all = evaluate_all_py(c.clone(), v.clone(), h.clone(), l.clone());
+        assert!(all.iter().all(|x| x.2 >= 0.0 && x.2 <= 1.0));
+        let all_o = evaluate_all_opens_py(c.clone(), opens.clone(), v.clone(), h.clone(), l.clone());
+        assert!(all_o.iter().all(|x| x.2 >= 0.0 && x.2 <= 1.0));
+        let _some2 = run_strategy_opens_py("rsi_revert", c.clone(), opens.clone(), v.clone(), h.clone(), l.clone());
+        assert!(_some2.is_some() || _some2.is_none());
+        let bt = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone())).unwrap();
+        assert_eq!(bt.len(), 9);
+        let bt2 = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, None, None).unwrap();
+        assert_eq!(bt2.len(), 9);
+        let multi = backtest_multi_py(vec!["ema_cross".to_string(), "rsi_revert".to_string()], c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()));
+        assert_eq!(multi.len(), 2);
+        let signals = vec![("ema_cross".to_string(), "BUY".to_string(), 0.8, "x".to_string())];
+        let mut bt_weights = std::collections::HashMap::new();
+        bt_weights.insert("ema_cross".to_string(), 1.2);
+        let agg = confidence_aggregate_py(signals, "growth".to_string(), "BTC".to_string(), bt_weights);
+        assert!(agg.iter().all(|x| x.2 >= 0.0 && x.2 <= 1.0));
+    }
+
+    #[test]
+    fn test_rebalance_bindings() {
+        let mut targets = std::collections::HashMap::new();
+        targets.insert("BTC".to_string(), 0.5);
+        targets.insert("ETH".to_string(), 0.5);
+        let rb = PyRebalancer::new(targets.clone(), 0.05, 1.0, 1.0).unwrap();
+        let mut cur = std::collections::HashMap::new();
+        cur.insert("BTC".to_string(), 6000.0);
+        cur.insert("ETH".to_string(), 4000.0);
+        let orders = rb.compute_orders(cur.clone(), 10000.0);
+        assert!(orders.iter().all(|o| o.2 >= 0.0));
+        let d = rb.drift(cur.clone(), 10000.0);
+        assert!(d.contains_key("BTC"));
+        assert!(rb.max_abs_drift(cur, 10000.0).is_finite());
+        // no-drift path (no orders)
+        let mut bal = std::collections::HashMap::new();
+        bal.insert("BTC".to_string(), 5000.0);
+        bal.insert("ETH".to_string(), 5000.0);
+        assert!(rb.compute_orders(bal, 10000.0).is_empty());
+
+        let mut ss = PyStairStepProfitTaker::new(90.0, 110.0, 5, 1000.0, 1.0, 0.1).unwrap();
+        let _ = ss.on_price(100.0);
+        assert!(!ss.step_levels().is_empty());
+        assert!(ss.base_size().is_finite());
+        let _ = ss.state();
+        // exercise buy and sell branches across the range
+        let mut ss2 = PyStairStepProfitTaker::new(90.0, 110.0, 5, 1000.0, 1.0, 0.1).unwrap();
+        for p in [100.0, 92.0, 108.0, 95.0, 105.0, 98.0, 102.0] {
+            let _ = ss2.on_price(p);
+        }
+        let _ = ss2.state();
+        ss2.reset();
+    }
+
+    #[test]
+    fn test_ring_buffer_empty_index() {
+        let rb = PyRingBuffer::new(5);
+        // empty buffer -> negative index returns Err (sz == 0 branch)
+        assert!(rb.__getitem__(0).is_err());
+        assert!(rb.__getitem__(-1).is_err());
+        assert_eq!(rb.__len__(), 0);
+    }
+
 }

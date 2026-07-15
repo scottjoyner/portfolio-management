@@ -1,5 +1,7 @@
 """Sentiment analysis agent for market research."""
 
+from typing import Any, Dict
+
 
 async def analyze_sentiment(instrument: str) -> Dict[str, Any]:
     """Analyze news and social sentiment for instrument.

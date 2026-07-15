@@ -79,7 +79,7 @@ class OpportunityDetector:
                     polymarket_price = float(pm_event['bid']) / 100
                     
                     arb_potential_pct = abs(
-                        pollymarket_price - kalshi_price
+                        polymarket_price - kalshi_price
                     ) * (1.5 + 0.1) if kalshi_price < polymarket_price else \
                     kalshi_price * (1.5 + 0.1) if polymarket_price < kalshi_price else \
                     (polymarket_price - kalshi_price) / min(kalshi_price, polymarket_price)

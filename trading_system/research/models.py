@@ -1,7 +1,11 @@
 """Database models for research and hypothesis generation."""
 
-from sqlalchemy import Column, Integer, Float, String, DateTime, ForeignKey, Text, JSON
-from sqlalchemy.orm import relationship
+from datetime import datetime
+
+from sqlalchemy import Column, Integer, Float, String, DateTime, ForeignKey, Text, JSON, Boolean
+from sqlalchemy.orm import declarative_base, relationship
+
+Base = declarative_base()
 
 
 class HypothesisModel(Base):

@@ -69,7 +69,12 @@ class SimpleMomentumStrategy(StrategyBase):
         
         # State variables for momentum calculation
         self.high_watermark: float = 0.0
-        self.recent_highs: List[float] = field(default_factory=lambda: [0.0] * self.momentum_periods)
+        # BUGFIX: ``field()`` is a dataclass helper and returns a Field object,
+        # not a list, when used in a plain ``__init__``.  Using it here left
+        # ``self.recent_highs`` as a Field instance, so ``self.recent_highs[-1]``
+        # raised ``TypeError: 'Field' object does not support item assignment``
+        # on the very first ``on_bar`` call.  Assign a real list instead.
+        self.recent_highs: List[float] = [0.0] * self.momentum_periods
         
     def init(self, data: dict) -> None:
         """

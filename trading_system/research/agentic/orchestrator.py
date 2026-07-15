@@ -1,6 +1,7 @@
 """Multi-agent market research orchestrator."""
 
 import asyncio
+import datetime
 from typing import Dict, Any
 
 
@@ -49,13 +50,35 @@ class ResearchOrchestrator:
         # Aggregate results with confidence scoring
         consensus_result = {
             'instrument': instrument,
-            'timestamp': str(__import__('datetime').utcnow().isoformat()),
+            'timestamp': str(datetime.datetime.utcnow().isoformat()),
             'agents': {},
             'consensus': self._calculate_consensus(results),
             'market_regime': self._detect_regime(results)
         }
         
         return consensus_result
+    
+    def _detect_regime(self, results: list) -> Dict[str, Any]:
+        """Infer a coarse market regime from agent results."""
+        bull = sum(
+            r.get('confidence', 0) for r in results
+            if isinstance(r, dict) and r.get('signal') == 'buy'
+        )
+        bear = sum(
+            r.get('confidence', 0) for r in results
+            if isinstance(r, dict) and r.get('signal') == 'sell'
+        )
+        if bull > bear:
+            regime = 'bullish'
+        elif bear > bull:
+            regime = 'bearish'
+        else:
+            regime = 'neutral'
+        return {
+            'regime': regime,
+            'bullish_confidence': bull,
+            'bearish_confidence': bear,
+        }
     
     def _calculate_consensus(self, results: list) -> Dict[str, Any]:
         """Calculate cross-agent agreement."""

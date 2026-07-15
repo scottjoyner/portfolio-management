@@ -351,24 +351,26 @@ pub fn aggregate_ext(
 
         // Boost confidence based on agreeing independent groups
         let agreeing = unique_groups.len();
-        let boosted_conf = if agreeing >= 2 {
-            let raw_boost = 1.0 + (agreeing as f64 - 1.0) * 0.15;
-            // Capped at 7 groups now
-            (avg_conf * raw_boost.min(1.9)).min(1.0)
+        let mut boosted_conf = if agreeing >= 2 {
+            let raw_boost = 1.0 + (agreeing as f64 - 1.0) * 0.10;  // 10% per group (was 15%)
+            avg_conf * raw_boost.min(1.5)  // cap boost at 1.5x (was 1.9x)
         } else if agreeing == 0 {
             avg_conf * 0.5
         } else {
             avg_conf
         };
 
-        // Strategy count diversity bonus
-        let final_conf = if unique_names.len() >= 5 {
-            (boosted_conf * 1.15).min(1.0)
+        // Strategy count diversity bonus - apply as multiplier on already-boosted
+        let diversity_mult = if unique_names.len() >= 5 {
+            1.10
         } else if unique_names.len() >= 3 {
-            (boosted_conf * 1.1).min(1.0)
+            1.05
         } else {
-            boosted_conf
+            1.0
         };
+
+        // Final confidence: apply diversity multiplier then HARD CAP at 1.0
+        let final_conf = (boosted_conf * diversity_mult).min(1.0);
 
         let raw_conf = if total_weight > 0.0 { weighted_conf / total_weight } else { 0.0 };
 
@@ -440,9 +442,9 @@ mod tests {
         let result = aggregate(&signals, "growth", "BTC-USD", &HashMap::new());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].agreeing_groups, 3);
-        // Boost: 1.0 + (3-1) * 0.15 = 1.30; avg_conf ~0.5; boosted = 0.5 * 1.3 = 0.65
-        // Then strategy_count >= 3: 0.65 * 1.1 = 0.715
-        assert!((result[0].confidence - 0.715).abs() < 0.01);
+        // Boost: 1.0 + (3-1) * 0.10 = 1.20; avg_conf ~0.5; boosted = 0.5 * 1.2 = 0.60
+        // Then strategy_count >= 3: 0.60 * 1.05 = 0.630
+        assert!((result[0].confidence - 0.630).abs() < 0.01);
     }
 
     #[test]
@@ -500,5 +502,121 @@ mod tests {
         let r2 = aggregate(&diff_groups, "growth", "BTC-USD", &HashMap::new());
         // 3 different groups should have higher confidence than 3 from same group
         assert!(r2[0].confidence > r1[0].confidence);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    const ALL_STRATS: &[&str] = &[
+        "ema_cross","macd","trix","adx","psar","hma","aroon","elder_ray","ichimoku",
+        "dpo","kama","dmi_cross","vma","hp_trend","rsi_revert","cmo","williams_r",
+        "zscore_revert","force_idx","true_cci","kst","mom_accel","multi_rsi","stoch",
+        "vortex","rvi","coppock","boll_break","vwap_revert","keltner","donchian",
+        "bb_squeeze","vcp","choppiness","mass_idx","envelope","atr_channel","std_channel",
+        "vol_ratio","vol_mom","obv_div","chaikin_mf","vpt","vol_prof","klinger","price_eff",
+        "snr_idx","mfi","emv","ad_div","vwap_macd","nvi","candle_pat","pivot_points",
+        "sup_res","liq_vac","donch_pull","impulse_exh","range_exp_idx","de_marker","gap_revert",
+        "rsi_fail","cvd_flow","avwap","linreg_slope","hurst","scci","ulcer","ema_dev","kalman_mr",
+        "kalshi","polymarket","crypto_news","funding_contrarian","exchange_flow","order_flow",
+        "macro_risk","btc_dxy_corr",
+    ];
+
+    const GROUP_REP: &[(&str, &str)] = &[
+        ("trend", "ema_cross"),
+        ("momentum", "rsi_revert"),
+        ("volatility", "boll_break"),
+        ("volume", "vol_mom"),
+        ("pattern", "candle_pat"),
+        ("momentum_adv", "rsi_fail"),
+        ("prediction_market", "kalshi"),
+        ("sentiment", "crypto_news"),
+        ("derivatives", "funding_contrarian"),
+        ("onchain", "exchange_flow"),
+        ("order_flow", "order_flow"),
+        ("macro_risk", "macro_risk"),
+    ];
+
+    #[test]
+    fn test_default_weight_all() {
+        for s in ALL_STRATS {
+            let w = default_weight(s);
+            assert!((0.0..=1.0).contains(&w), "{} weight {}", s, w);
+        }
+        // unknown -> default 0.5
+        assert_eq!(default_weight("zzz_unknown"), 0.5);
+    }
+
+    #[test]
+    fn test_strategy_group_all() {
+        for s in ALL_STRATS {
+            let g = strategy_group(s);
+            assert!(g.is_some(), "{} should map to a group", s);
+        }
+        assert!(strategy_group("zzz_unknown").is_none());
+    }
+
+    #[test]
+    fn test_class_boost_all() {
+        for ac in ["safe", "speculative", "growth", "other"] {
+            for (grp, rep) in GROUP_REP {
+                let b = class_boost(rep, ac);
+                assert!(b > 0.0, "{} {} boost {}", grp, ac, b);
+            }
+        }
+    }
+
+    #[test]
+    fn test_regime_group_multiplier_all() {
+        for regime in ["trending", "ranging", "volatile", ""] {
+            for (grp, _rep) in GROUP_REP {
+                let m = regime_group_multiplier(grp, regime);
+                assert!(m > 0.0, "{} {} mult {}", grp, regime, m);
+            }
+        }
+    }
+
+    #[test]
+    fn test_compute_weight_from_bt() {
+        assert_eq!(compute_weight_from_bt(0.0, 0.0), 0.5);
+        assert_eq!(compute_weight_from_bt(0.0, 0.8), 0.5);
+        assert_eq!(compute_weight_from_bt(-0.1, 0.8), 0.5);
+        let w = compute_weight_from_bt(0.6, 0.8);
+        assert!((w - 0.78).abs() < 1e-9, "got {}", w);
+    }
+
+    #[test]
+    fn test_strategy_weight_from_cache() {
+        let mut cache = HashMap::new();
+        cache.insert("ema_cross".to_string(), 0.9);
+        assert_eq!(strategy_weight_from_cache("ema_cross", &cache), 0.9);
+        assert_eq!(strategy_weight_from_cache("rsi_revert", &cache), default_weight("rsi_revert"));
+    }
+
+    #[test]
+    fn test_aggregate_ext_empty() {
+        assert!(aggregate_ext(&[], "growth", "BTC-USD", &HashMap::new(), "trending").is_empty());
+    }
+
+    fn sig(strategy: &str, action: &str, confidence: f64, reason: &str) -> RawSignal {
+        RawSignal {
+            strategy: strategy.to_string(),
+            action: action.to_string(),
+            confidence,
+            reason: reason.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_correlation_penalty_applied() {
+        // 2 strategies same group -> corr penalty sqrt(2) engaged
+        let signals = vec![
+            sig("ema_cross", "BUY", 0.6, "trend1"),
+            sig("macd", "BUY", 0.6, "trend2"),
+        ];
+        let r = aggregate(&signals, "growth", "BTC-USD", &HashMap::new());
+        assert_eq!(r.len(), 1);
+        assert!(r[0].confidence > 0.0);
     }
 }

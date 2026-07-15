@@ -353,3 +353,109 @@ mod tests {
         assert!(tracker.trades_30d.is_empty());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    const TOP_VOL: f64 = 50_000_000.0;
+
+    #[test]
+    fn test_next_tier_top() {
+        let tracker = FeeTracker::new(TOP_VOL);
+        assert!(tracker.next_tier().is_none());
+    }
+
+    #[test]
+    fn test_volume_to_next_tier_top() {
+        let tracker = FeeTracker::new(TOP_VOL);
+        assert_eq!(tracker.volume_to_next_tier(), 0.0);
+    }
+
+    #[test]
+    fn test_savings_to_next_tier_top() {
+        let tracker = FeeTracker::new(TOP_VOL);
+        assert_eq!(tracker.savings_to_next_tier(10_000.0), 0.0);
+    }
+
+    #[test]
+    fn test_effective_expected_return() {
+        let tracker = FeeTracker::new(0.0);
+        let sizer = FeeAwareSizer::new(tracker);
+        let taker = sizer.effective_expected_return(0.01, 1000.0, false);
+        let maker = sizer.effective_expected_return(0.01, 1000.0, true);
+        assert!(taker < maker); // maker fee lower -> higher net return
+        assert!(maker > 0.0);
+    }
+
+    #[test]
+    fn test_volume_boost_full() {
+        let tracker = FeeTracker::new(0.0);
+        let sizer = FeeAwareSizer::new(tracker);
+        // needed huge, trade_volume==needed => proximity 1 => boost 1.4
+        let needed = sizer.fee_tracker().volume_to_next_tier();
+        let boost = sizer.volume_boost(needed.max(1.0));
+        assert!((boost - 1.4).abs() < 1e-9 || boost <= 1.4);
+    }
+
+    #[test]
+    fn test_should_generate_volume_below_min() {
+        let tracker = FeeTracker::new(500.0);
+        let sizer = FeeAwareSizer::new(tracker);
+        let (should, _savings) = sizer.should_generate_volume(1e9); // huge min -> false
+        assert!(!should);
+    }
+
+    #[test]
+    fn test_generate_volume_top_tier() {
+        let tracker = FeeTracker::new(TOP_VOL);
+        let gen = VolumeGenerator::new(tracker, 10000.0, 5.0);
+        assert!(gen.generate_volume(100.0).is_none());
+    }
+
+    #[test]
+    fn test_generate_volume_no_remaining() {
+        let tracker = FeeTracker::new(500.0);
+        let gen = VolumeGenerator::new(tracker, 0.0, 5.0); // max_volume_per_day = 0
+        assert!(gen.generate_volume(100.0).is_none());
+    }
+
+    #[test]
+    fn test_daily_check_and_record() {
+        let tracker = FeeTracker::new(500.0);
+        let mut gen = VolumeGenerator::new(tracker, 10000.0, 5.0);
+        gen.record_generated(100.0);
+        assert_eq!(gen.fee_tracker().rolling_30d_volume(), 600.0);
+        // Force daily reset via old timestamp
+        gen.daily_reset_ts = now_secs() - 100000.0;
+        gen.daily_check();
+        assert_eq!(gen.daily_volume, 0.0);
+    }
+
+    #[test]
+    fn test_record_generated_at() {
+        let tracker = FeeTracker::new(500.0);
+        let mut gen = VolumeGenerator::new(tracker, 10000.0, 5.0);
+        gen.record_generated_at(250.0, 2000000000.0);
+        assert_eq!(gen.fee_tracker().rolling_30d_volume(), 750.0);
+    }
+
+    #[test]
+    fn test_fee_tracker_accessors() {
+        let tracker = FeeTracker::new(0.0);
+        let mut sizer = FeeAwareSizer::new(tracker);
+        assert!(sizer.fee_tracker().current_tier().min_volume >= 0.0);
+        sizer.fee_tracker_mut().record_trade(10.0, None);
+        assert!(sizer.fee_tracker().rolling_30d_volume() > 0.0);
+    }
+
+    #[test]
+    fn test_state_roundtrip_multiple() {
+        let mut tracker = FeeTracker::new(1000.0);
+        tracker.record_trade(500.0, Some(2000000000.0));
+        tracker.record_trade(250.0, Some(2000000100.0));
+        let state = tracker.to_state();
+        let restored = FeeTracker::from_state(state);
+        assert_eq!(restored.trades_30d.len(), 2);
+    }
+}

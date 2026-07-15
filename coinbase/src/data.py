@@ -130,7 +130,12 @@ class _MiniEWM:
 
 class _MiniFrame:
     def __init__(self, rows=None, columns=None):
-        self._rows = [dict(r) for r in (rows or [])]
+        rows = rows or []
+        if rows and isinstance(rows[0], (list, tuple)):
+            cols = list(columns or [])
+            self._rows = [dict(zip(cols, r)) for r in rows]
+        else:
+            self._rows = [dict(r) for r in (rows or [])]
         self._columns = list(columns or (self._rows[0].keys() if self._rows else []))
 
     def __len__(self):

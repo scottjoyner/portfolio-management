@@ -80,6 +80,7 @@ class TokenMetadataPoller:
     async def get_cached_metadata(
         self,
         address: str,
+        network: str = "base",
         force_refresh: bool = False,
     ) -> Optional[TokenMetadataRecord]:
         """Get cached token metadata."""

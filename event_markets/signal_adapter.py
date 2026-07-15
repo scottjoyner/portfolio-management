@@ -155,12 +155,15 @@ class PredictionMarketAdapter:
         try:
             if market.platform == "kalshi":
                 book = self._client.get_kalshi_order_book_depth(market.market_id)
-                # Kalshi orderbook: bids/asks with price/size
-                bids = book.get("bids", [])
-                asks = book.get("asks", [])
+                # Kalshi orderbook returns lists of {"price", "size"} dicts
+                # (prices/sizes may be strings); also accept (price, size) tuples.
+                bids = book.get("bids", []) if isinstance(book, dict) else []
+                asks = book.get("asks", []) if isinstance(book, dict) else []
                 mid = market.mid_price
-                bid_depth = sum(s for p, s in bids if p >= mid * 0.99)
-                ask_depth = sum(s for p, s in asks if p <= mid * 1.01)
+                bid_depth = sum(_depth_size(b) for b in bids
+                                if _depth_price(b) >= mid * 0.99)
+                ask_depth = sum(_depth_size(b) for b in asks
+                                if _depth_price(b) <= mid * 1.01)
             else:  # polymarket
                 token_ids = market.raw_data.get("token_ids", [])
                 if not token_ids:
@@ -176,17 +179,6 @@ class PredictionMarketAdapter:
             logger.debug("Order book fetch failed for %s: %s", market.market_id, e)
             return 0, 0
 
-    def _hours_to_expiry(self, end_date: str) -> float:
-        """Calculate hours until market expiry."""
-        try:
-            # Parse ISO format
-            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
-            hours = (end_dt - now).total_seconds() / 3600
-            return max(0, hours)
-        except Exception:
-            return 168  # Default 1 week
-
     def get_signals(self, price_map: Optional[Dict[str, float]] = None) -> List[Any]:
         """Fetch prediction market signals for configured categories.
 
@@ -201,7 +193,8 @@ class PredictionMarketAdapter:
                 for m in markets:
                     if not m.is_open or m.volume < self.min_volume:
                         continue
-                    if m.raw_data.get("open_interest", 0) < self.min_open_interest:
+                    oi = m.raw_data.get("open_interest")
+                    if oi is not None and oi < self.min_open_interest:
                         continue
                     if m.spread > self.max_spread:
                         continue
@@ -219,7 +212,8 @@ class PredictionMarketAdapter:
                     for m in mkt_list:
                         if not m.is_open or m.volume < self.min_volume:
                             continue
-                        if m.raw_data.get("open_interest", 0) < self.min_open_interest:
+                        oi = m.raw_data.get("open_interest")
+                        if oi is not None and oi < self.min_open_interest:
                             continue
                         if m.spread > self.max_spread:
                             continue
@@ -295,7 +289,8 @@ class PredictionMarketAdapter:
         if action == "BUY":
             p = mp if mp > 0.5 else 1 - mp
         else:
-            p = mp if mp < 0.5 else 1 - mp
+            # SELL = bet NO, so our winning probability is 1 - mp (the NO side).
+            p = 1 - mp if mp < 0.5 else mp
         q = 1 - p
         effective_spread = m.spread + (KALSHI_FEE if m.platform == "kalshi" else POLYMARKET_FEE + ESTIMATED_GAS)
         kelly_f = max(0, (p - q) / (1 - effective_spread)) if effective_spread < 1 else 0
@@ -370,3 +365,21 @@ class PredictionMarketAdapter:
             "technology": "NVDA",
         }
         return cat_map.get(category, "BTC-USD")
+
+
+def _depth_price(level) -> float:
+    """Extract the price from a Kalshi order-book level (dict or tuple)."""
+    if isinstance(level, dict):
+        return float(level.get("price", 0) or 0)
+    if isinstance(level, (list, tuple)) and len(level) >= 1:
+        return float(level[0])
+    return 0.0
+
+
+def _depth_size(level) -> float:
+    """Extract the size from a Kalshi order-book level (dict or tuple)."""
+    if isinstance(level, dict):
+        return float(level.get("size", 0) or 0)
+    if isinstance(level, (list, tuple)) and len(level) >= 2:
+        return float(level[1])
+    return 0.0

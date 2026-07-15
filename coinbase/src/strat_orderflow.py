@@ -65,7 +65,7 @@ class SmartMoneyFlowStrategy(BaseStrategy):
             return None
 
         estimate_bid_ask = self._estimate_bid_ask_volume(bars[-5:])
-        bid_vol, ask_vol = estimate_bid_ask_volume
+        bid_vol, ask_vol = estimate_bid_ask
 
         state.bid_volume.append(bid_vol)
         state.ask_volume.append(ask_vol)

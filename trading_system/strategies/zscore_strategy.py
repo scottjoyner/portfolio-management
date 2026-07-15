@@ -7,9 +7,9 @@ Statistical mean reversion strategy based on z-score bands.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence, Optional
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 try:
     from trading_system.strategies.base import OHLCVBar

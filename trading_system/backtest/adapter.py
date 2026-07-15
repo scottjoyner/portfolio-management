@@ -110,9 +110,9 @@ class MockMarketDataAdapter(MarketDataAdapter):
             daily_move = current_price * volatility * random.uniform(-1, 1)
             
             open_price = current_price
-            high_price = max(open_price, daily_move) * (1 + abs(daily_move)/high_price * 0.1)
-            low_price = min(open_price, daily_move) * (1 - abs(daily_move)/open_price * 0.1)
             close_price = current_price + daily_move
+            high_price = max(open_price, close_price) * (1 + abs(daily_move)/open_price * 0.1)
+            low_price = min(open_price, close_price) * (1 - abs(daily_move)/open_price * 0.1)
             
             # Volume with correlation to price movement
             base_volume = random.uniform(100, 500)

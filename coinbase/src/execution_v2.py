@@ -204,26 +204,12 @@ class NativeExecutionEngine:
         for cached_result in self._orders.values():
             if cached_result.order_id == order_id:
                 return cached_result
-        
-        # Fallback to API polling
+        # Fallback to the real `orders get <id>` endpoint (read-only, unambiguous)
         try:
-            cursor = None
-            while True:
-                args = ["orders", "list", f"order_status=ALL"]
-                if cursor:
-                    args.append(f"cursor={cursor}")
-                resp = self.cb._cli_json(*args)
-                orders = resp.get("orders", []) if isinstance(resp, dict) else []
-                for o in orders:
-                    if o.get("order_id") == order_id:
-                        return self._parse_listed_order(o)
-                if isinstance(resp, dict):
-                    cursor = resp.get("cursor") or resp.get("next_cursor") or None
-                    if not cursor:
-                        break
-                else:
-                    break
-            return None
+            raw = self.cb.get_order(order_id)
+            if not raw:
+                return None
+            return self._parse_listed_order(raw)
         except Exception:
             return None
 
@@ -274,23 +260,33 @@ class BracketManager:
 
         actual_entry = entry_result.fill_price if entry_result.fill_price else entry_price
 
-        # Validate stop/target sanity
+        # Validate stop/target sanity. If validation fails we cancel the entry
+        # order we just placed so we never leave a dangling open position with
+        # no stop or target.
         s = side.upper()
-        if s == "BUY":
-            if stop_price <= 0 or stop_price >= actual_entry:
-                raise ValueError(f"BUY stop_price ({stop_price}) must be > 0 and < entry ({actual_entry})")
-            if target_price <= 0 or target_price <= actual_entry:
-                raise ValueError(f"BUY target_price ({target_price}) must be > entry ({actual_entry})")
-        elif s == "SELL":
-            if stop_price <= 0 or stop_price <= actual_entry:
-                raise ValueError(f"SELL stop_price ({stop_price}) must be > entry ({actual_entry})")
-            if target_price <= 0 or target_price >= actual_entry:
-                raise ValueError(f"SELL target_price ({target_price}) must be < entry ({actual_entry})")
-        else:
-            raise ValueError(f"Invalid side: {side}")
+        try:
+            if s == "BUY":
+                if stop_price <= 0 or stop_price >= actual_entry:
+                    raise ValueError(f"BUY stop_price ({stop_price}) must be > 0 and < entry ({actual_entry})")
+                if target_price <= 0 or target_price <= actual_entry:
+                    raise ValueError(f"BUY target_price ({target_price}) must be > entry ({actual_entry})")
+            elif s == "SELL":
+                if stop_price <= 0 or stop_price <= actual_entry:
+                    raise ValueError(f"SELL stop_price ({stop_price}) must be > entry ({actual_entry})")
+                if target_price <= 0 or target_price >= actual_entry:
+                    raise ValueError(f"SELL target_price ({target_price}) must be < entry ({actual_entry})")
+            else:
+                raise ValueError(f"Invalid side: {side}")
 
-        if base_size <= 0:
-            raise ValueError(f"base_size must be > 0, got {base_size}")
+            if base_size <= 0:
+                raise ValueError(f"base_size must be > 0, got {base_size}")
+        except ValueError:
+            try:
+                self.engine.cancel(cid)
+            except Exception:
+                pass
+            self.engine._orders.pop(cid, None)
+            raise
 
         bracket_id = cid
         self._brackets[bracket_id] = {
@@ -325,7 +321,7 @@ class BracketManager:
     def _place_stop_loss(self, bracket_id: str):
         b = self._brackets[bracket_id]
         side = "SELL" if b["side"].upper() == "BUY" else "BUY"
-        stop_dir = "stop_direction_stop_down" if b["side"].upper() == "BUY" else "stop_direction_stop_up"
+        stop_dir = "down" if b["side"].upper() == "BUY" else "up"
         stop_intent = OrderIntent(
             side=side, product_id=b["product_id"],
             order_type=OrderType.STOP_MARKET,
@@ -394,7 +390,7 @@ class BracketManager:
                 continue
             try:
                 self.engine.cancel(order_id)
-            except Exception:
+            except Exception:  # pragma: no cover - engine.cancel already swallows
                 pass
 
     def force_flatten_bracket(self, bracket_id: str, reason: str = "forced_flatten") -> Dict[str, Any]:
@@ -406,14 +402,39 @@ class BracketManager:
 
         self._cancel_bracket_orders(b)
         flatten_side = "SELL" if b["side"].upper() == "BUY" else "BUY"
-        close_intent = OrderIntent(
-            side=flatten_side,
-            product_id=b["product_id"],
-            order_type=OrderType.MARKET,
-            base_size=_fmt_base(b["base_size"]),
-            metadata={"strategy": b["strategy_id"], "type": "forced_flatten", "parent": bracket_id},
-        )
-        result = self.engine.place(close_intent)
+        # Prefer the canonical `orders close-position` endpoint when available
+        # (flattens the whole position in one market order). Fall back to a
+        # direct market order otherwise.
+        raw = None
+        try:
+            if hasattr(self.engine.cb, "close_position"):
+                raw = self.engine.cb.close_position(
+                    b["product_id"], _fmt_base(b["base_size"]),
+                    client_order_id=str(uuid.uuid4()),
+                )
+        except Exception as e:
+            log.debug("close_position failed, falling back to market order: %s", e)
+        result = None
+        if raw:
+            oid = raw.get("order_id", raw.get("id", ""))
+            status = raw.get("status", "OPEN")
+            # A truthy payload with a FAILED/REJECTED/CANCELLED status is not a
+            # successful flatten — do not report success.
+            ok = status not in ("FAILED", "REJECTED", "CANCELLED")
+            result = OrderResult(
+                success=ok, order_id=oid,
+                status=OrderStatus(status),
+                raw=raw,
+            )
+        else:
+            close_intent = OrderIntent(
+                side=flatten_side,
+                product_id=b["product_id"],
+                order_type=OrderType.MARKET,
+                base_size=_fmt_base(b["base_size"]),
+                metadata={"strategy": b["strategy_id"], "type": "forced_flatten", "parent": bracket_id},
+            )
+            result = self.engine.place(close_intent)
         if result.success:
             b["status"] = "CLOSED"
             b["exit_reason"] = reason
@@ -550,12 +571,12 @@ class BracketManager:
         # Place new stop order and cancel old one
         try:
             # Cancel old stop order
-            if stop_order_id:
+            if stop_order_id:  # pragma: no cover - guarded non-None at top of method
                 self.engine.cancel(stop_order_id)
             
             # Place new stop order
             stop_side = "SELL" if side == "BUY" else "BUY"
-            stop_dir = "stop_direction_stop_down" if side == "BUY" else "stop_direction_stop_up"
+            stop_dir = "down" if side == "BUY" else "up"
             stop_intent = OrderIntent(
                 side=stop_side,
                 product_id=b["product_id"],
@@ -575,7 +596,7 @@ class BracketManager:
             else:
                 log.warning(f"[BRK-TRAIL] Failed to place new trailing stop for {b['product_id']}: {result.error}")
                 return False
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - engine.place swallows exceptions
             log.error(f"[BRK-TRAIL] Error updating trailing stop for {b['product_id']}: {e}")
             return False
 
@@ -606,3 +627,91 @@ class BracketManager:
             b["exit_reason"] = "target"
         
         return stop_filled or target_filled
+
+    def update_trailing_take_profit(
+        self,
+        bracket_id: str,
+        current_price: float,
+        highest_price: float,
+        lowest_price: float,
+        initial_stop_dist: float,
+        r_multiple: float,
+        max_hold_s: float,
+        age_s: float,
+        regime: str = "unknown",
+    ) -> bool:
+        """Update trailing take-profit for an open bracket to let winners run.
+        
+        Trail take-profit up (long) / down (short) as price moves favorably.
+        Returns True if take-profit was updated.
+        """
+        b = self._brackets.get(bracket_id)
+        if not b or b.get("status") != "OPEN":
+            return False
+
+        side = b["side"].upper()
+        if side not in ("BUY", "SELL"):
+            return False
+
+        # Only works in live mode
+        if self.engine.dry_run:
+            return False
+
+        target_order_id = b.get("target_order_id")
+        if not target_order_id:
+            return False
+
+        # Trail take-profit: at 2R start trailing, at 3R tighten
+        trail_mult = 1.0
+        if r_multiple >= 3.0:
+            trail_mult = 0.7  # Tight trail at 3R
+        elif r_multiple >= 2.0:
+            trail_mult = 1.0  # Start trailing at 2R
+        else:
+            return False  # Not yet at trailing TP threshold
+
+        new_target = None
+        old_target = b.get("target_price", 0.0)
+
+        if side == "BUY":
+            # Long: trail take-profit UP as price rises
+            trail_dist = initial_stop_dist * trail_mult
+            new_target = highest_price - trail_dist
+            if new_target <= old_target:
+                return False
+        else:
+            # Short: trail take-profit DOWN as price falls
+            trail_dist = initial_stop_dist * trail_mult
+            new_target = lowest_price + trail_dist
+            if new_target >= old_target:
+                return False
+
+        try:
+            # Cancel old target order
+            self.engine.cancel(target_order_id)
+            
+            # Place new target order
+            target_side = "SELL" if side == "BUY" else "BUY"
+            target_intent = OrderIntent(
+                side=target_side,
+                product_id=b["product_id"],
+                order_type=OrderType.LIMIT,
+                base_size=_fmt_base(b["base_size"]),
+                limit_price=_fmt_price(new_target),
+                time_in_force="GTC",
+                metadata={"strategy": b["strategy_id"], "type": "take_profit", "parent": bracket_id, "trailing_update": True},
+            )
+            result = self.engine.place(target_intent)
+            
+            if result.success:
+                b["target_order_id"] = result.order_id
+                b["target_price"] = new_target
+                b["trailing_tp_activated"] = True
+                log.info(f"[BRK-TRAIL-TP] {b['product_id']} trailing take-profit updated: {old_target:.4f} -> {new_target:.4f} (r={r_multiple:.1f})")
+                return True
+            else:
+                log.warning(f"[BRK-TRAIL-TP] Failed to place new trailing TP for {b['product_id']}: {result.error}")
+                return False
+        except Exception as e:  # pragma: no cover - engine.place swallows exceptions
+            log.error(f"[BRK-TRAIL-TP] Error updating trailing TP for {b['product_id']}: {e}")
+            return False

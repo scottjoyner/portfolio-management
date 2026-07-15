@@ -30,7 +30,17 @@ class TechnicalIndicators:
     def __init__(self):
         """Initialize technical indicators engine."""
         self.indicator_cache: Dict[str, float] = {}
-    
+
+    def _calculate_ema(self, prices: List[float], period: int) -> List[float]:
+        """Calculate exponential moving average series for the given period."""
+        if not prices:
+            return []
+        k = 2 / (period + 1)
+        ema = [prices[0]]
+        for price in prices[1:]:
+            ema.append(price * k + ema[-1] * (1 - k))
+        return ema
+
     def calculate_rsi(
         self, 
         symbol: str, 

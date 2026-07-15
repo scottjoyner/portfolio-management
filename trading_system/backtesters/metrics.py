@@ -181,7 +181,10 @@ class PerformanceMetrics:
         
         if not downside_returns:
             return None
-            
+
+        if len(downside_returns) < 2:
+            return 0.0
+
         downside_deviation = statistics.stdev(downside_returns)
         
         if downside_deviation == 0:
@@ -232,7 +235,7 @@ class PerformanceMetrics:
             
         annualized_return = self.annualized_return_pct / 100
         
-        return annualized_return / max(dd) if dd != 0 else 0.0
+        return annualized_return / abs(max_dd) if max_dd != 0 else 0.0
         
     @property
     def win_rate(self) -> Optional[float]:

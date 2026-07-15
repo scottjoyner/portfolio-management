@@ -103,6 +103,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - COINBASE_CLI_PATH=coinbase
+      - OPTIMIZER_HEALTH_PORT=9092
+    ports:
+      - "9092:9092"
     command: python3 -u portfolio_optimizer.py --interval 300 --db /app/state/optimizer_state.db --pending-file /app/data/pending_approvals.json --approval-base-url http://approval-server:8080
     restart: unless-stopped
     healthcheck:

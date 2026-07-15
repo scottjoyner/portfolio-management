@@ -1,5 +1,7 @@
 """Database Queries Module - SQLAlchemy ORM with Session Manager"""
 
+import sqlalchemy as sa
+
 
 class DatabaseManager:
     """Centralized PostgreSQL connection manager."""

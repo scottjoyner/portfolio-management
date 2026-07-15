@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from brokers.base import (
+from trading_system.brokers.base import (
     BrokerAccount, BrokerAdapter, BrokerFill, BrokerOrder, BrokerPosition, OrderStatus, TimeInForce,
 )
 from exchange.coinbase.rest.client import CoinbaseRestClient
@@ -15,8 +15,13 @@ class CoinbaseBrokerAdapter(BrokerAdapter):
         self._client = client or CoinbaseRestClient(
             api_key=credentials.get("api_key", "") if credentials else "",
             api_secret=credentials.get("api_secret", "") if credentials else "",
+            passphrase=credentials.get("passphrase", "") if credentials else "",
         )
         self._capability_cache: dict[str, Any] = {}
+
+    async def _get_product_info(self, product_id: str) -> dict[str, Any]:
+        info = await self._client.get_product(product_id)
+        return info or {}
 
     def broker_name(self) -> str:
         return "coinbase"
@@ -48,6 +53,8 @@ class CoinbaseBrokerAdapter(BrokerAdapter):
         base_increment = Decimal(str(product.get("base_increment", "0.00000001")))
         quote_increment = Decimal(str(product.get("quote_increment", "0.01")))
 
+        if order.size <= 0:
+            return False, "size must be positive"
         if order.size % base_increment != 0:
             return False, f"size must be multiple of {base_increment}"
         if order.price and order.price % quote_increment != 0:

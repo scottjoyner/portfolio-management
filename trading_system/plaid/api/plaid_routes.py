@@ -175,15 +175,16 @@ async def handle_plaid_webhook(
     # TODO: Implement webhook signature verification
     
     event_type = payload.get("event", {}).get("type", "")
-    
-    if "created" in event_type or "refreshed" in event_type:
+    event_type_lower = event_type.lower()
+
+    if "created" in event_type_lower or "refreshed" in event_type_lower:
         return {
             "status": "success",
             "action": "item_created_or_refreshed",
             "payload": payload,  # Store for audit trail
             "message": f"Webhook processed: {event_type}"
         }
-    elif "revoked" in event_type:
+    elif "revoked" in event_type_lower:
         return {
             "status": "success",
             "action": "item_revoked",

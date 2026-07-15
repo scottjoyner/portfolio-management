@@ -109,9 +109,9 @@ class PerformanceMetricsCalculator:
         
         # Rolling metrics
         if len(returns) >= 12:  # Minimum 12 periods for rolling stats
-            metrics['rolling_sharpe_6m'] = self._calc_rolling_sharpe(returns, window=6*12)
-            metrics['rolling_sortino_6m'] = self._calc_rolling_sortino(returns, window=6*12)
-            metrics['var_95_pct'] = self._calc_var(portfolio_values, returns)  # VaR at 95% confidence
+            metrics['rolling_sharpe_6m'] = self._calc_rolling_sharpe(returns, window_periods=6*12)
+            metrics['rolling_sortino_6m'] = self._calc_rolling_sortino(returns, window_periods=6*12)
+            metrics['var_95_pct'] = self._calc_var(portfolio_values)  # VaR at 95% confidence
         
         # Risk statistics
         metrics.update({
@@ -127,6 +127,30 @@ class PerformanceMetricsCalculator:
                         f"Sortino={metrics['sortino_ratio']:.2f}, MaxDD={metrics['max_drawdown_pct']:.2f}%")
         
         return metrics
+
+    def _empty_metrics(self) -> Dict:
+        """Return a zeroed metrics dict when insufficient data is provided."""
+        return {
+            'total_return_pct': 0.0,
+            'annualized_return_pct': 0.0,
+            'sharpe_ratio': 0.0,
+            'sortino_ratio': 0.0,
+            'calmar_ratio': 0.0,
+            'max_drawdown_pct': 0.0,
+            'cagg_return_pct': 0.0,
+            'win_rate_pct': None,
+            'profit_factor': None,
+            'recovery_periods_days': 0.0,
+            'volatility_pct': 0.0,
+            'downside_volatility_pct': 0.0,
+            'skewness': 0.0,
+            'kurtosis': 0.0,
+            'positive_periods_pct': 0.0,
+            'negative_periods_pct': 0.0,
+            'rolling_sharpe_6m': None,
+            'rolling_sortino_6m': None,
+            'var_95_pct': None,
+        }
     
     def calculate_with_trades(
         self,
@@ -164,8 +188,14 @@ class PerformanceMetricsCalculator:
                                           len([p for p in pnl_values if p < 0])) / initial_capital) * 100 if not all(p >= 0 for p in pnl_values) else 0
                 metrics['total_trades'] = len(trades)
                 
-        self.logger.info(f"Trade metrics calculated: WinRate={metrics['win_rate_pct']:.2f}%, "
-                        f"ProfitFactor={metrics['profit_factor']:.2f}, Trades={len(trades)}")
+        self.logger.info(
+            "Trade metrics calculated: WinRate=%.2f%%, ProfitFactor=%.2f, Trades=%d"
+            % (
+                metrics["win_rate_pct"] or 0.0,
+                metrics["profit_factor"] if isinstance(metrics["profit_factor"], (int, float)) else 0.0,
+                len(trades or []),
+            )
+        )
         
         return metrics
     
@@ -181,12 +211,12 @@ class PerformanceMetricsCalculator:
         Returns:
             Dict with 'timestamps', 'values', and optional 'labels' lists
         """
-        initial_capital = initial_capital or portfolio_values[0]
+        initial_capital = initial_capital or (portfolio_values[0] if portfolio_values else 1.0)
         normalized_values = [v / initial_capital * 100 for v in portfolio_values]
         
         # Generate labels based on drawdown milestones
         labels = []
-        peak = portfolio_values[0]
+        peak = portfolio_values[0] if portfolio_values else 0.0
         for i, value in enumerate(portfolio_values):
             if value > peak:
                 peak = value
@@ -316,9 +346,12 @@ class PerformanceMetricsCalculator:
         
         n_periods = (len(portfolio_values) - 1) * (365 / self.annualization_factor)
         
+        if start_value <= 0:
+            return float('inf') if end_value > 0 else 0.0
+
         if end_value <= 0:
-            return float('inf') if start_value > 0 else 0.0
-        
+            return float('inf')
+
         cagr = ((end_value / start_value) ** (1 / n_periods)) - 1
         
         return cagr * 100
@@ -492,6 +525,8 @@ class BacktestResultsExporter:
     def generate_summary_report(self, metrics: Dict, initial_capital: float = 10000) -> str:
         """Generate human-readable summary report."""
         
+        win_rate = metrics.get('win_rate_pct')
+        profit_factor = metrics.get('profit_factor')
         report_lines = [
             "=" * 80,
             "BACKTEST PERFORMANCE SUMMARY",
@@ -499,8 +534,8 @@ class BacktestResultsExporter:
             "",
             f"Initial Capital: ${initial_capital:,.2f}",
             f"Total Trades: {metrics.get('total_trades', 'N/A')}",
-            f"Win Rate: {metrics.get('win_rate_pct', 'N/A'):.1f}%",
-            f"Profit Factor: {metrics.get('profit_factor', 'N/A'):.2f}",
+            f"Win Rate: {win_rate:.1f}%" if isinstance(win_rate, (int, float)) else "Win Rate: N/A",
+            f"Profit Factor: {profit_factor:.2f}" if isinstance(profit_factor, (int, float)) else "Profit Factor: N/A",
             "",
             "-" * 60,
             "RISK-ADJUSTED RETURNS",

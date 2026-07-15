@@ -7,7 +7,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from storage.postgres.models import StrategyCertification, StrategyConfig, StrategyHypothesis
+from storage.postgres.models import StrategyConfig, StrategyHypothesis
+from backtest.models import StrategyCertification
 
 
 def compute_config_hash(config: dict[str, Any]) -> str:

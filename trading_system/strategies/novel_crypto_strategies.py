@@ -232,7 +232,8 @@ class CoinbaseMeanReversionStrategy(BaseStrategy):
     
     def setup(self, ohlcv_data: List[OHLCVBar]) -> None:
         """Initialize Bollinger Bands."""
-        prices = [b.close or 0.0 for b in ohlvc_data]
+        self.ohlcv_data = ohlcv_data
+        prices = [b.close or 0.0 for b in ohlcv_data]
         self.sma_values = compute_sma(ohlcv_data, self.bb_period)
         
         # Calculate upper and lower bands
@@ -269,7 +270,7 @@ class CoinbaseMeanReversionStrategy(BaseStrategy):
         # Squeeze detection: buy on breakout from contraction
         if len(self.band_width_history) >= 20:
             recent_bw = sum(self.band_width_history[-10:]) / 10
-            older_bw = sum(self.band_width_history[:-10]) / 10
+            older_bw = sum(self.band_width_history[:-10]) / max(1, len(self.band_width_history[:-10]))
             
             # Significant squeeze detected
             if recent_bw < older_bw * 0.7 and current_price > upper:
@@ -552,6 +553,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
     
     def setup(self, ohlcv_data: List[OHLCVBar]) -> None:
         """Initialize volatility indicators."""
+        self.ohlcv_data = ohlcv_data
         for bar in ohlcv_data:
             high = bar.high or bar.close
             low = bar.low or bar.close
@@ -574,7 +576,17 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         """
         if len(self.highs) < 50:
             return None, None
-        
+
+        # Ingest the new bar into the rolling high/low/true-range buffers.
+        high = bar.high or bar.close
+        low = bar.low or bar.close
+        self.highs.append(high)
+        self.lows.append(low)
+        prev_high = self.highs[-2] if len(self.highs) > 1 else high
+        prev_low = self.lows[-2] if len(self.lows) > 1 else low
+        tr = max(high - low, abs(high - prev_high), abs(low - prev_low))
+        self.trues_range.append(tr)
+
         # Calculate Bollinger Band width (squeeze detection)
         upper = self.highs[-1] + self.bb_std * (bar.close - min(self.highs))
         lower = self.lows[-1] - self.bb_std * (max(self.lows) - bar.close)
@@ -584,7 +596,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         
         # Squeeze detection: low volatility followed by breakout
         recent_avg_tr = sum(self.trues_range[-20:]) / 20
-        older_avg_tr = sum(self.trues_range[:-20]) / 20
+        older_avg_tr = sum(self.trues_range[:-20]) / max(1, len(self.trues_range) - 20)
         
         if len(self.highs) >= 50:
             # Significant squeeze detected with volume confirmation

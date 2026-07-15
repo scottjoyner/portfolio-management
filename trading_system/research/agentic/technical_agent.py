@@ -1,5 +1,7 @@
 """Technical analysis agent for market research."""
 
+from typing import Any, Dict
+
 
 async def analyze_technical(instrument: str) -> Dict[str, Any]:
     """Analyze technical indicators for trading signals.

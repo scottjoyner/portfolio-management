@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import os
 from neo4j import GraphDatabase
 from app.settings import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 
-SCHEMA = open("app/graph/schema.cypher","r",encoding="utf-8").read()
+_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.cypher")
+SCHEMA = open(_SCHEMA_PATH, "r", encoding="utf-8").read()
 
 INIT_CYPHER = """
 MERGE (:Strategy {name:'MA_Crossover', type:'trend'});

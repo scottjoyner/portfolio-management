@@ -1005,6 +1005,275 @@ pub fn linreg_slope(values: &[f64], period: usize) -> f64 {
 }
 
 #[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn wave(n: usize, base: f64) -> Vec<f64> {
+        (0..n).map(|i| base + (i as f64 * 0.5).sin()).collect()
+    }
+
+    #[test]
+    fn test_sma_series_and_edge() {
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!(sma_slice(&v, 3).len() == 5);
+        assert!(sma_slice(&v, 0)[0].is_nan());
+        let empty: Vec<f64> = vec![];
+        assert!(sma(&empty, 3).is_nan());
+    }
+
+    #[test]
+    fn test_ema_series_and_last_two() {
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert_eq!(ema_slice(&v, 3).len(), 5);
+        let (p, c) = ema_last_two(&v, 3);
+        assert!(p.is_finite() && c.is_finite());
+        let short = vec![1.0];
+        assert!(ema_last_two(&short, 3).0.is_nan());
+        assert!(ema_slice(&short, 3)[0].is_nan());
+    }
+
+    #[test]
+    fn test_trix_and_edges() {
+        let v = wave(30, 10.0);
+        assert_eq!(trix_series(&v, 5).len(), v.len());
+        let short = vec![1.0];
+        assert!(trix_series(&short, 5).len() == 1);
+        assert!(ema(&vec![1.0], 3).is_nan());
+    }
+
+    #[test]
+    fn test_rsi_edges() {
+        let up: Vec<f64> = (0..30).map(|i| i as f64).collect();
+        assert!((rsi(&up, 14) - 100.0).abs() < 1e-9); // avg_loss 0 -> 100
+        let short = vec![1.0, 2.0];
+        assert!((rsi(&short, 14) - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_bollinger_and_zscore() {
+        let v = wave(30, 10.0);
+        let (lo, mid, hi, bw) = bollinger(&v, 10, 2.0);
+        assert!(lo.is_finite() && hi.is_finite());
+        assert!(bw.is_finite());
+        let zeros = vec![0.0; 20];
+        let (_, m, _, _) = bollinger(&zeros, 10, 2.0);
+        assert!((m - 0.0).abs() < 1e-12); // bandwidth uses mean!=0 fallback
+        let flat = vec![5.0; 20];
+        let (z, _, _) = zscore(&flat, 10);
+        assert!(z == 0.0); // std 0 -> 0
+        assert!(bollinger(&vec![1.0], 10, 2.0).0.is_nan());
+        assert!(zscore(&vec![1.0], 10).0.is_nan());
+    }
+
+    #[test]
+    fn test_wma_funcs() {
+        let v = wave(20, 5.0);
+        assert!(wma(&v).is_finite());
+        let empty: Vec<f64> = vec![];
+        assert!(wma(&empty).is_nan());
+        assert_eq!(wma_slice(&v, 5).len(), v.len());
+        assert!(wma_slice(&vec![1.0], 5)[0].is_nan());
+    }
+
+    #[test]
+    fn test_atr_and_macd() {
+        let h = wave(40, 12.0);
+        let l = wave(40, 8.0);
+        let c = wave(40, 10.0);
+        assert!(atr(&h, &l, &c, 14).is_finite());
+        // seed path: n == period+1
+        let h2 = h[..15].to_vec();
+        let l2 = l[..15].to_vec();
+        let c2 = c[..15].to_vec();
+        assert!(atr(&h2, &l2, &c2, 14).is_finite());
+        let (ml, sl, hg) = macd(&c, 12, 26, 9);
+        assert!(ml.is_finite());
+        let (nml, nsl, nhg) = macd(&vec![1.0, 2.0], 12, 26, 9);
+        assert!(nml.is_nan() && nsl.is_nan() && nhg.is_nan());
+    }
+
+    #[test]
+    fn test_index_helpers() {
+        let v = vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
+        assert!(index_of_highest(&v, 7) <= 6);
+        assert!(index_of_lowest(&v, 7) <= 6);
+        let short = vec![1.0];
+        assert_eq!(index_of_highest(&short, 3), 0);
+        assert_eq!(index_of_lowest(&short, 3), 0);
+    }
+
+    #[test]
+    fn test_vpt_and_wilder() {
+        let c = vec![10.0, 11.0, 10.5, 12.0, 0.0, 0.0];
+        let v = vec![100.0, 200.0, 150.0, 300.0, 50.0, 50.0];
+        let vpt = vpt_series(&c, &v);
+        assert_eq!(vpt.len(), 6);
+        let short = vec![10.0];
+        assert!(vpt_series(&short, &short).len() == 1);
+        let w = wave(30, 5.0);
+        assert!(wilder_smooth(&w, 10).is_finite());
+        assert_eq!(wilder_smooth_slice(&w, 10).len(), w.len());
+        assert!(wilder_smooth(&vec![1.0], 10).is_nan());
+        assert!(wilder_smooth_slice(&vec![1.0], 10)[0].is_nan());
+    }
+
+    #[test]
+    fn test_roc_funcs() {
+        let v = vec![1.0, 2.0, 4.0, 8.0, 16.0];
+        assert!(roc(&v, 2).is_finite());
+        assert!(roc(&vec![5.0, 0.0, 2.0], 1).is_nan()); // prev == 0
+        assert!(roc(&vec![1.0], 3).is_nan());
+        let rs = roc_series(&v, 2);
+        assert_eq!(rs.len(), 5);
+        assert!(roc_series(&vec![1.0], 3)[0].is_nan());
+    }
+
+    #[test]
+    fn test_candle_helpers() {
+        assert!((candle_body(1.0, 2.0) - 1.0).abs() < 1e-12);
+        assert!((candle_upper_wick(5.0, 1.0, 2.0, 3.0) - 2.0).abs() < 1e-12);
+        assert!((candle_lower_wick(5.0, 1.0, 2.0, 3.0) - 1.0).abs() < 1e-12);
+        assert!((body_to_range_ratio(2.0, 3.0, 5.0, 1.0) - 0.25).abs() < 1e-12);
+        assert!((body_to_range_ratio(2.0, 3.0, 3.0, 3.0) - 1.0).abs() < 1e-12); // range<=0
+        assert!(is_doji(2.0, 2.05, 5.0, 1.0, 0.1));
+        assert!(!is_doji(2.0, 4.0, 5.0, 1.0, 0.1));
+    }
+
+    #[test]
+    fn test_swings() {
+        let h = vec![1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0];
+        let s = swing_highs(&h, 1);
+        assert!(!s.is_empty());
+        let short = vec![1.0, 2.0];
+        assert!(swing_highs(&short, 1).is_empty()); // n < 2*period+1
+        let l = vec![3.0, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 3.0];
+        assert!(!swing_lows(&l, 1).is_empty());
+        assert!(swing_lows(&short, 1).is_empty());
+    }
+
+    #[test]
+    fn test_volume_profile_edges() {
+        let c = vec![1.0, 2.0, 3.0, 2.5, 1.5, 2.0, 2.5, 3.0];
+        let v = vec![1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 3.0, 2.0];
+        let r = volume_profile(&c, &v, 8, 5);
+        assert!(r.is_some());
+        assert!(volume_profile(&c, &v, 8, 2).is_none()); // n_bins<3
+        assert!(volume_profile(&c, &v, 2, 5).is_none()); // window<3
+        let neg = vec![-1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        assert!(volume_profile(&neg, &v, 8, 5).is_none()); // min_price<=0
+        let flat = vec![2.0; 8];
+        assert!(volume_profile(&flat, &v, 8, 5).is_none()); // min>=max
+        let zv = vec![0.0; 8];
+        assert!(volume_profile(&c, &zv, 8, 5).is_none()); // total_volume<=0
+    }
+
+    #[test]
+    fn test_highest_lowest_slice() {
+        let v = vec![3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0];
+        assert_eq!(highest_slice(&v, 3).len(), 7);
+        assert_eq!(lowest_slice(&v, 3).len(), 7);
+        assert!(highest_slice(&vec![1.0], 3)[0].is_nan());
+        assert!(lowest_slice(&vec![1.0], 3)[0].is_nan());
+    }
+
+    #[test]
+    fn test_mfi_and_stochastic() {
+        let h = wave(30, 12.0);
+        let l = wave(30, 8.0);
+        let c = wave(30, 10.0);
+        let v = vec![100.0; 30];
+        assert!(mfi(&h, &l, &c, &v, 14).is_finite());
+        let up: Vec<f64> = (0..30).map(|i| i as f64).collect();
+        assert!((mfi(&up, &up, &up, &v, 14) - 100.0).abs() < 1e-9); // neg_flow 0
+        assert!((mfi(&vec![1.0, 2.0], &l, &c, &v, 14) - 50.0).abs() < 1e-9);
+        let (k, d) = stochastic_kd(&c, &h, &l, 14, 3);
+        assert!(k.is_finite() && d.is_finite());
+        let flat = vec![5.0; 30];
+        let (fk, fd) = stochastic_kd(&flat, &flat, &flat, 14, 3);
+        assert!((fk - 50.0).abs() < 1e-9 && (fd - 50.0).abs() < 1e-9); // range<=0
+        assert!((stochastic_kd(&vec![1.0, 2.0], &h, &l, 14, 3).0 - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_emv_ad_tr() {
+        let h = vec![10.0, 11.0, 12.0, 13.0];
+        let l = vec![9.0, 10.0, 11.0, 12.0];
+        let v = vec![100.0, 100.0, 100.0, 100.0];
+        assert!(emv(&h, &l, &v).is_finite());
+        assert!(emv(&vec![1.0], &vec![1.0], &vec![1.0]) == 0.0); // n<2
+        let flat = vec![5.0; 4];
+        assert!(emv(&flat, &flat, &v) == 0.0); // range<=0
+        let zv = vec![0.0; 4];
+        assert!(emv(&h, &l, &zv) == 0.0); // box_ratio 0
+        let c = wave(30, 10.0);
+        let hb = wave(30, 12.0);
+        let lb = wave(30, 8.0);
+        let vb = vec![100.0; 30];
+        assert_eq!(ad_line_series(&c, &hb, &lb, &vb).len(), 30);
+        assert!(ad_line_series(&vec![], &vec![], &vec![], &vec![]).is_empty());
+        assert_eq!(true_range_series(&hb, &lb, &c).len(), 30);
+        assert!(true_range_series(&vec![1.0], &vec![1.0], &vec![1.0]).len() == 1);
+    }
+
+    #[test]
+    fn test_kama_di_vortex_rvi() {
+        let h = wave(30, 12.0);
+        let l = wave(30, 8.0);
+        let c = wave(30, 10.0);
+        let v = vec![100.0; 30];
+        assert!(kama(&c, 10, 2, 30).is_finite());
+        assert!(kama(&vec![1.0, 2.0], 1, 2, 30).is_nan()); // period<2
+        assert!(kama(&vec![1.0], 5, 2, 30).is_nan());
+        assert!(plus_di(&h, &l, &c, 14).is_finite());
+        assert!(minus_di(&h, &l, &c, 14).is_finite());
+        let flat = vec![5.0; 30];
+        assert!(plus_di(&flat, &flat, &flat, 14) == 0.0); // tr_sum 0
+        assert!(minus_di(&flat, &flat, &flat, 14) == 0.0);
+        let (vp, vm) = vortex(&h, &l, &c, 14);
+        assert!(vp.is_finite());
+        assert!(vortex(&flat, &flat, &flat, 14) == (0.0, 0.0));
+        let up: Vec<f64> = (0..30).map(|i| i as f64).collect();
+        assert!((rvi(&up, 14) - 100.0).abs() < 1e-9); // down_std 0
+        assert!((rvi(&vec![1.0, 2.0], 14) - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_coppock_linreg_demarker_volratio() {
+        let v: Vec<f64> = (0..30).map(|i| 100.0 + (i as f64 * 0.5)).collect();
+        assert!(coppock(&v, 5).is_finite());
+        assert!(coppock(&vec![1.0, 2.0], 5).is_nan());
+        let (_lo, _m, _hi) = linreg_channel(&v, 10, 2.0);
+        assert!(_m.is_finite());
+        assert!(linreg_channel(&vec![1.0], 10, 2.0).0.is_nan());
+        assert!(linreg_slope(&v, 10).is_finite());
+        assert!(linreg_slope(&vec![1.0], 1).is_nan()); // period<2
+        let h = wave(30, 12.0);
+        let l = wave(30, 8.0);
+        assert!(demarker(&h, &l, 14).is_finite());
+        let flat = vec![5.0; 30];
+        assert!((demarker(&flat, &flat, 14) - 0.5).abs() < 1e-9); // total 0
+        assert!((demarker(&vec![1.0, 2.0], &l, 14) - 0.5).abs() < 1e-9);
+        assert!(volatility_ratio(&h, &l, 14).is_finite());
+        let flat_h = vec![5.0; 30];
+        let flat_l = vec![5.0; 30];
+        assert!(volatility_ratio(&flat_h, &flat_l, 14) == 0.0); // avg_range 0
+        assert!(volatility_ratio(&vec![1.0], &vec![1.0], 14).is_nan());
+    }
+
+    #[test]
+    fn test_sar_edge() {
+        // early return: highs[0] <= lows[0]
+        let h = vec![5.0, 11.0, 12.0];
+        let l = vec![9.0, 10.0, 11.0];
+        let s = sar_series(&h, &l, 0.02, 0.02, 0.20);
+        assert_eq!(s.len(), 3);
+        assert!(s[0].is_nan()); // early return produces NaN sar
+        let short = vec![1.0];
+        assert!(sar_series(&short, &short, 0.02, 0.02, 0.20).len() == 1);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

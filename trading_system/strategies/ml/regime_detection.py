@@ -59,7 +59,7 @@ Usage Example:
 from __future__ import annotations
 import math
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
 
@@ -139,8 +139,8 @@ class RegimeDetectionStrategy:
         
         # Calculate rolling statistics
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate ATR baseline
         true_ranges = []
@@ -228,9 +228,9 @@ class RegimeDetectionStrategy:
         elif volatility_ratio < self.config.volatility_low:
             return MarketRegime.LOW_VOLATILITY
         
-        # Trending vs ranging
+        # Trending vs ranging (direction from the fitted trend slope).
         if trend_strength > self.config.trend_strength:
-            if close_price > np.mean([float(bar.get("close", 0)) for bar in self.regime_history[-10:]]):
+            if self.trend_slope >= 0:
                 return MarketRegime.TRENDING_UP
             else:
                 return MarketRegime.TRENDING_DOWN
@@ -253,7 +253,7 @@ class RegimeDetectionStrategy:
         multiplier = self.config.position_multiplier.get(regime.value, 1.0)
         
         # Only generate signals in trending regimes with sufficient strength
-        if regime in [MarketRegime.TRENDING_UP, MarketReging.TRENDING_DOWN]:
+        if regime in [MarketRegime.TRENDING_UP, MarketRegime.TRENDING_DOWN]:
             signal_strength = abs(multiplier) * 0.8  # Scale by position multiplier
             
             return {

@@ -166,11 +166,9 @@ class KrakenConnector:
         for pair in pairs:
             base = pair.split("/")[0] if "/" in pair else pair
             
-            # Use mock data or derive from similar pairs  
-            if base in mid_prices:
-                prices[pair] = round(mid_prices[base], 2)
-            else:
-                prices[pair] = 0.0
+            # Use mock data or derive from similar pairs
+            price = mid_prices.get(pair, mid_prices.get(base, 0.0))
+            prices[pair] = round(price, 2)
         
         return prices
     

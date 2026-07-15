@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """News ingestion pipeline - fetches RSS feeds, classifies topics, tracks breaking news."""
 
-import sys, os, json, time, logging, hashlib, urllib.request, xml.etree.ElementTree as ET
+import sys, os, json, re, time, logging, hashlib, urllib.request, xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
@@ -148,7 +148,9 @@ class NewsIngestionPipeline:
         text = (title + " " + summary).lower()
         scores: Dict[str, int] = {}
         for topic, keywords in TOPIC_KEYWORDS.items():
-            count = sum(1 for kw in keywords if kw in text)
+            # Word-boundary matching so short tokens like "ath" don't false-match
+            # inside unrelated words (e.g. "weather").
+            count = sum(1 for kw in keywords if re.search(r'\b' + re.escape(kw) + r'\b', text))
             if count > 0:
                 scores[topic] = count
         if not scores:
@@ -183,6 +185,9 @@ class NewsIngestionPipeline:
             pub = datetime.fromisoformat(pub_date_str.replace("Z", "+00:00").replace("GMT", "").strip())
         except (ValueError, TypeError):
             return 0.5
+        # Normalize naive datetimes to UTC so tz-aware arithmetic never raises.
+        if pub.tzinfo is None:
+            pub = pub.replace(tzinfo=timezone.utc)
         age_hours = (datetime.now(timezone.utc) - pub).total_seconds() / 3600
         if age_hours < 0:
             return 1.0

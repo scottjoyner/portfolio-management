@@ -128,7 +128,7 @@ class TripleMovingAverageSystemStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price >= target_price:
+            elif close_price >= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -156,7 +156,7 @@ class TripleMovingAverageSystemStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price <= target_price:
+            elif close_price <= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -176,6 +176,10 @@ class TripleMovingAverageSystemStrategy:
         
         # No position - check for entry signals
         if ma_spread > self.config.entry_threshold and short_ma > medium_ma:
+            self.current_position = 'long'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': self.config.risk_per_trade / close_price,
@@ -184,6 +188,10 @@ class TripleMovingAverageSystemStrategy:
                 'reason': 'golden_cross'
             }
         elif ma_spread < self.config.exit_threshold and short_ma < medium_ma:
+            self.current_position = 'short'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': -self.config.risk_per_trade / close_price,

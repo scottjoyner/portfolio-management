@@ -157,6 +157,8 @@ class FearGreedIndex:
         for lo, hi, label in CLASSIFICATION_RANGES:
             if lo <= value < hi:
                 return label
+        if value >= 100:
+            return "extreme_greed"
         return "neutral"
 
 

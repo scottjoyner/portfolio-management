@@ -15,6 +15,7 @@ from trading_system.strategies.trend.momentum_breakout import SimpleMomentumBrea
 from trading_system.backtesters.metrics import PerformanceMetrics, TradeResult
 from datetime import datetime
 import time
+import random
 
 # Import backtester engine (may need to be created)
 try:
@@ -44,7 +45,11 @@ def run_backtest_on_strategy(strategy: SimpleMomentumBreakoutStrategy,
     equity_curve = [initial_capital]
     trade_history = []
     unrealized_pnl = 0.0
-    
+
+    # Ensure the strategy has been initialized with historical data
+    if hasattr(strategy, 'init'):
+        strategy.init(ohlcv_data)
+
     # Run strategy through OHLCV data
     for bar in ohlcv_data:
         close_price = bar.get("close", 0)
@@ -153,7 +158,7 @@ def generate_strategy_recommendation(results: dict) -> list:
         max_dd_abs = abs(metrics.get("max_drawdown_pct", 0) or 0) / 100
         dd_norm = (1 - max_dd_abs) * 25 if max_dd_abs <= 1 else 0
         pf_norm = min(1.0, metrics.get("profit_factor", 0)) * 20 if metrics.get("profit_factor") else 0
-        wr_norm = metrics.get("win_rate", 0) / 100 * 15
+        wr_norm = (metrics.get("win_rate") or 0) / 100 * 15
         calmar_norm = abs(metrics.get("calmar_ratio", 0) or 0) * 5
         
         composite_score = sharpe_norm + dd_norm + pf_norm + wr_norm + calmar_norm

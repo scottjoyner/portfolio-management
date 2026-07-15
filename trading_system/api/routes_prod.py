@@ -212,7 +212,7 @@ async def sync_account_transactions(account_id: str) -> Dict[str, Any]:
 # TRADES ENDPOINT - List Executed Trades from Database
 # ============================================================================
 
-async def list_trades(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+async def list_trades(db: Optional[Session] = None, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
     """List executed trades with filtering options."""
     
     if DATABASE_MODE:
@@ -269,7 +269,7 @@ def get_empty_trades_response() -> Dict[str, Any]:
 # POSITIONS ENDPOINT - Current Open Positions from Database
 # ============================================================================
 
-async def list_positions(portfolio_id: Optional[str] = None) -> Dict[str, Any]:
+async def list_positions(db: Optional[Session] = None, portfolio_id: Optional[str] = None) -> Dict[str, Any]:
     """List current open positions with P&L analysis."""
     
     if DATABASE_MODE:

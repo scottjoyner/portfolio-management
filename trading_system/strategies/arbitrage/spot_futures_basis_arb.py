@@ -298,14 +298,15 @@ class SpotFuturesBasisArbStrategy:
         
         if action == "BUY_LONG":
             entry_spot_price = signal.get("entry_spot_price", 0)
-            
+            entry_futures_price = self.basis_values[-1] if self.basis_values else entry_spot_price * 1.015
+
             # Create arbitrage position with hedged legs
             self.spot_position = SpotFuturesPosition(
                 entry_spot_price=entry_spot_price,
-                entry_futures_price=self.basis_values[-1] if hasattr(self, 'basis_values') else entry_spot_price * 1.015,
+                entry_futures_price=entry_futures_price,
                 spot_quantity=self.config.position_size_usd / entry_spot_price,
-                futures_quantity=(self.config.position_size_usd / self.spot_position.entry_futures_price),
-                basis_at_entry_pct=self.current_basis_pct if hasattr(self, 'current_basis_pct') else 0.0
+                futures_quantity=self.config.position_size_usd / entry_futures_price,
+                basis_at_entry_pct=self.current_basis_pct,
             )
             
         elif action == "CLOSE_POSITION":

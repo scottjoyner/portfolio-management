@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 log = logging.getLogger(__name__)
 

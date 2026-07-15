@@ -148,8 +148,8 @@ def analyze_opportunity(opp):
             'net_profit': 0.0,
         }
     
-    kalshi_data = opp.get('kalshi', {}) or opp[0] if isinstance(opp, (list, tuple)) else opp
-    pm_data = opp.get('polymarket_event', {}) or opp[1] if len(opp) > 1 and isinstance(opp, (list, tuple)) else opp
+    kalshi_data = opp.get('kalshi', {}) if isinstance(opp, dict) else (opp[0] if isinstance(opp, (list, tuple)) else opp)
+    pm_data = opp.get('polymarket_event', {}) if isinstance(opp, dict) else (opp[1] if len(opp) > 1 and isinstance(opp, (list, tuple)) else opp)
     
     # Extract prices from the opportunity data
     kalshi_price = float(str(kalshi_data.get('bid_pct') or '0') or '0') / 100

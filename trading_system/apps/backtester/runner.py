@@ -85,8 +85,8 @@ def main() -> None:
         "metrics": metrics,
         "queue_model": queue.__dict__,
         "maker_taker_participation": {"maker": 0.62, "taker": 0.38},
-        "fragility_score": round(sum(a.fragility_score for a in assessments) / len(assessments), 4),
-        "live_portability_score": round(sum(a.live_transfer_confidence for a in assessments) / len(assessments), 4),
+        "fragility_score": round(sum(a.fragility_score for a in assessments) / (len(assessments) or 1), 4),
+        "live_portability_score": round(sum(a.live_transfer_confidence for a in assessments) / (len(assessments) or 1), 4),
         "strategy_count": len(strategies),
     }
 

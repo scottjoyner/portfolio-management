@@ -42,6 +42,12 @@ engine = create_engine(DB_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 
 
+def _exec(query, params=None):
+    """Execute a SQLAlchemy query against a managed connection."""
+    with engine.connect() as conn:
+        return conn.execute(query, params or {})
+
+
 # ============================================================================
 
 # ============================================================================
@@ -60,7 +66,7 @@ def _parse_sqlalchemy_row(row):
         # Object with attribute access
         obj = {}
         for attr in dir(row):
-            if not attr.startswith('_') and callable(getattr(row, attr)):
+            if attr.startswith('_') or callable(getattr(row, attr)):
                 continue
             try:
                 val = getattr(row, attr)
@@ -74,24 +80,28 @@ def _parse_sqlalchemy_row(row):
 def _extract_from_row(result, key_map=None):
     """Extract values from SQLAlchemy result using column names or indices."""
     if hasattr(result, '_mapping'):
-        data = dict(result._mapping)
-        # Try to find actual column names (they're often col_N in text queries)
-        actual_columns = []
-        for k, v in data.items():
-            # Skip placeholder column names and use the key_map if provided
-            if k not in ['col_0', 'col_1', 'col_2', 'col_3', 'col_4', 
-                          'col_5', 'col_6', 'col_7', 'col_8', 'col_9']:
-                actual_columns.append(k)
-        return {actual_columns[0]: data.get(actual_columns[0], '')} if actual_columns else data
+        return dict(result._mapping)
+    elif hasattr(result, 'keys'):
+        return dict(result)
     else:
-        # Fallback to positional access
-        return {}
+        # Object with attribute access
+        obj = {}
+        for attr in dir(result):
+            if attr.startswith('_') or callable(getattr(result, attr)):
+                continue
+            try:
+                val = getattr(result, attr)
+                if val is not None:
+                    obj[attr] = val
+            except Exception:
+                pass
+        return obj
 
 
 async def health_check() -> Dict[str, Any]:
     """System health check."""
     try:
-        result = engine.execute(text("SELECT 'healthy' as status")).fetchone()
+        result = _exec(text("SELECT 'healthy' as status")).fetchone()
         return {"status": result.status or "healthy", "database": "connected"}
     except Exception:
         return {"status": "unhealthy", "database": "disconnected"}
@@ -100,7 +110,7 @@ async def health_check() -> Dict[str, Any]:
 async def get_accounts() -> List[Dict[str, Any]]:
     """List all discovered and processed accounts from PostgreSQL."""
     try:
-        rows = engine.execute(text("""
+        rows = _exec(text("""
             SELECT id, name, type, provider, currency, balance_usd 
             FROM portfolios 
             WHERE type = 'ACTIVE'
@@ -147,7 +157,7 @@ async def get_accounts() -> List[Dict[str, Any]]:
 async def get_metrics() -> Dict[str, Any]:
     """System metrics."""
     try:
-        rows = engine.execute(text("""
+        rows = _exec(text("""
             SELECT 
                 COUNT(*) FILTER (WHERE type='ACTIVE') as active_portfolios,
                 COALESCE(SUM(CAST(balance_usd AS numeric)), 0) as total_assets_usd,
@@ -180,7 +190,7 @@ async def get_metrics() -> Dict[str, Any]:
 async def list_trades(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     """List executed trades with filtering options."""
     try:
-        rows = engine.execute(text("""
+        rows = _exec(text("""
             SELECT 
                 id as order_id,
                 product_id,
@@ -236,7 +246,7 @@ async def list_trades(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
 async def list_positions() -> List[Dict[str, Any]]:
     """List current open positions with P&L analysis."""
     try:
-        rows = engine.execute(text("""
+        rows = _exec(text("""
             SELECT 
                 o.product_id,
                 o.side::text,
@@ -284,7 +294,7 @@ async def list_positions() -> List[Dict[str, Any]]:
 async def list_strategies() -> List[Dict[str, Any]]:
     """List all available strategies with their status and performance."""
     try:
-        rows = engine.execute(text("""
+        rows = _exec(text("""
             SELECT config_key as strategy_id, name, description, category, backtested
             FROM strategy_configs
             WHERE backtested = true
@@ -336,13 +346,13 @@ async def get_performance(charts: bool = True) -> Dict[str, Any]:
             WHERE p.type = 'ACTIVE'
         """)
         
-        nav_result = engine.execute(nav_query).fetchone()
+        nav_result = _exec(nav_query).fetchone()
         if hasattr(nav_result, '_mapping'):
             data = dict(nav_result._mapping)
             
             try:
                 # Capital bucket allocation percentages (optional query)
-                buckets_rows = engine.execute(text("""
+                buckets_rows = _exec(text("""
                     SELECT cb.name, current_percentage::numeric 
                     FROM capital_buckets cb
                     JOIN portfolios p ON cb.portfolio_id = p.id
@@ -396,7 +406,7 @@ async def get_price_estimations(instrument: str) -> Dict[str, Any]:
             LIMIT 1
         """)
         
-        result = engine.execute(query, {"instrument": instrument}).fetchone()
+        result = _exec(query, {"instrument": instrument}).fetchone()
         
         if hasattr(result, '_mapping'):
             data = dict(result._mapping)
@@ -441,7 +451,7 @@ async def get_approvals(status_filter: str | None = None) -> Dict[str, Any]:
             ORDER BY created_at DESC
         """)
         
-        rows = engine.execute(query).fetchall()
+        rows = _exec(query).fetchall()
         
         pending_count = 0
         completed_count = len(rows)
@@ -513,7 +523,7 @@ async def get_research_hypotheses() -> Dict[str, Any]:
             LIMIT 20
         """)
         
-        rows = engine.execute(query).fetchall()
+        rows = _exec(query).fetchall()
         
         hypotheses_list = []
         for row in rows:
@@ -553,7 +563,7 @@ async def get_research_hypotheses() -> Dict[str, Any]:
 async def get_market_regime_snapshot() -> Dict[str, Any]:
     """Get current market regime classification."""
     try:
-        result = engine.execute(text("""
+        result = _exec(text("""
             SELECT regime, bullish_pct, bearish_pct, sentiment_score, timestamp
             FROM sentiment_analysis
             ORDER BY timestamp DESC
@@ -585,7 +595,7 @@ async def list_backtests(strategy_id: str | None = None) -> Dict[str, Any]:
 async def get_capital_allocation() -> Dict[str, Any]:
     """Get current capital allocation."""
     try:
-        rows = engine.execute(text("""
+        rows = _exec(text("""
             SELECT name, amount, status
             FROM capital_buckets
             ORDER BY name

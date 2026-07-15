@@ -48,6 +48,7 @@ Usage Example:
 """
 from __future__ import annotations
 import math
+import random
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -71,11 +72,18 @@ class NeuralTrendFollower:
     """
     
     def __init__(self, config=None):
-        self.config = config or NeuralTrendConfig()
+        self.config = config or self.NeuralTrendConfig()
         self.weights: List[List[List[float]]] = []  # Weight matrices
         self.biases: List[List[float]] = []          # Bias vectors
         self.activations: List[List[float]] = []      # Activation cache
-        
+
+        # Rolling price/volume history used to compute live features.
+        self._closes: List[float] = []
+        self._highs: List[float] = []
+        self._lows: List[float] = []
+        self._volumes: List[float] = []
+        self.feature_history: List[List[float]] = []
+
         # Learning parameters
         self.learning_rate = 0.01
         self.momentum_factor = 0.9
@@ -107,30 +115,41 @@ class NeuralTrendFollower:
     
     def _forward_pass(self, features: List[float]) -> float:
         """
-        Forward pass through neural network.
-        
+        Forward pass through the multi-layer perceptron.
+
+        The last weight matrix is treated as the output layer (single neuron
+        with a sigmoid activation); all preceding matrices are ReLU hidden
+        layers.
+
         Args:
             features: Input feature vector
-            
+
         Returns:
             Output probability (upward trend continuation)
         """
-        # Initialize activations list
-        activations = [features]
-        
-        # Hidden layers
-        for layer_idx in range(len(self.weights)):
-            weighted_sum = sum(w * f for w, f in zip(self.weights[layer_idx], features))
-            bias = self.biases[layer_idx][0] if self.biases else 0
-            output = weighted_sum + bias
-            activation = self._relu(output)
-            activations.append(activation)
-        
-        # Output layer (sigmoid for probability)
-        final_output = sum(w * a for w, a in zip(self.weights[-1], activations[-1]))
-        bias = self.biases[-1][0] if self.biases else 0
-        output = final_output + bias
-        return self._sigmoid(output)
+        if not self.weights:
+            return 0.5
+
+        layer_input = list(features)
+
+        # Hidden layers (all matrices except the last) use ReLU.
+        for layer_idx in range(len(self.weights) - 1):
+            matrix = self.weights[layer_idx]
+            bias_vec = self.biases[layer_idx] if layer_idx < len(self.biases) else []
+            out: List[float] = []
+            for neuron_idx, w_row in enumerate(matrix):
+                weighted_sum = sum(w * f for w, f in zip(w_row, layer_input))
+                bias = bias_vec[neuron_idx] if neuron_idx < len(bias_vec) else 0.0
+                out.append(self._relu(weighted_sum + bias))
+            layer_input = out
+
+        # Output layer (single neuron, sigmoid activation).
+        out_matrix = self.weights[-1]
+        out_bias = self.biases[-1] if self.biases else [0.0]
+        w_row = out_matrix[0]
+        final_output = sum(w * a for w, a in zip(w_row, layer_input))
+        bias = out_bias[0] if out_bias else 0.0
+        return self._sigmoid(final_output + bias)
     
     def init(self, data: List[dict]) -> None:
         """Initialize weights and compute features from historical data."""
@@ -143,8 +162,8 @@ class NeuralTrendFollower:
             raise ValueError(f"Need at least {min_bars} bars for neural trend follower.")
         
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         volumes = [float(bar.get("volume", 0)) for bar in data]
         
         # Calculate features
@@ -172,13 +191,22 @@ class NeuralTrendFollower:
         scale_input = math.sqrt(2.0 / (n_features + n_hidden))
         scale_hidden = math.sqrt(2.0 / (n_hidden + 1))
         
+        # One hidden layer (n_hidden x n_features) followed by an output
+        # layer (1 x n_hidden).
         self.weights = [
-            [[math.gauss(0, scale_input) for _ in range(n_features)] for _ in range(n_hidden)],
-            [[math.gauss(0, scale_hidden) for _ in range(n_hidden)] for _ in range(n_hidden)],
+            [[random.gauss(0, scale_input) for _ in range(n_features)] for _ in range(n_hidden)],
+            [[random.gauss(0, scale_hidden) for _ in range(n_hidden)]],
         ]
         
-        # Initialize biases to zero
-        self.biases = [[0.0] for _ in range(len(self.weights))]
+        # Initialize biases to zero (one per neuron per layer).
+        self.biases = [[0.0] * n_hidden, [0.0]]
+
+        # Persist rolling history and computed features.
+        self._closes = closes
+        self._highs = highs
+        self._lows = lows
+        self._volumes = volumes
+        self.feature_history = feature_list
     
     def on_bar(self, bar: dict) -> Optional[Dict[str, Any]]:
         """
@@ -198,26 +226,36 @@ class NeuralTrendFollower:
         if not close_price or math.isnan(close_price) or close_price <= 0:
             return None
         
-        # Calculate features
-        momentum = (close_price - self.feature_history[-1][0] if self.feature_history else close_price * 0.01)
+        # Append current bar to rolling history and compute features
+        # consistently with init().
+        self._closes.append(close_price)
+        self._highs.append(high_price)
+        self._lows.append(low_price)
+        self._volumes.append(volume)
+
+        i = len(self._closes) - 1
+        if i < 10:
+            return None
+
+        momentum = ((self._closes[i] - self._closes[i - 10]) / self._closes[i - 10]
+                    if self._closes[i - 10] > 0 else 0.0)
         atr = max(high_price - low_price,
-                  abs(high_price - self.feature_history[-1][2] if self.feature_history else close_price),
-                  abs(low_price - self.feature_history[-1][3] if self.feature_history else close_price))
-        volatility = atr / close_price if close_price > 0 else 0
-        avg_volume = sum(v for v in [bar.get("volume", 0)] + (self.feature_history[-1][4:] if len(self.feature_history) > 1 else [])) / min(len([bar.get("volume", 0)]) + 1, 51)
+                  abs(high_price - self._closes[i - 1]),
+                  abs(low_price - self._closes[i - 1]))
+        volatility = atr / close_price if close_price > 0 else 0.0
+        avg_volume = sum(self._volumes[max(0, i - 50):i + 1]) / min(i + 1, 51)
         volume_ratio = volume / avg_volume if avg_volume > 0 else 1.0
-        recent_high = max(high_price, self.feature_history[-1][2] if self.feature_history else high_price)
-        recent_low = min(low_price, self.feature_history[-1][3] if self.feature_history else low_price)
+        recent_high = max(self._highs[max(0, i - 20):i + 1])
+        recent_low = min(self._lows[max(0, i - 20):i + 1])
         price_position = (close_price - recent_low) / (recent_high - recent_low + 1e-8)
-        
-        # Calculate weighted feature vector
-        weights = self.config.feature_weights
+
         feature_vector = [
-            momentum * weights['momentum'],
-            volatility * weights['volatility'],
-            volume_ratio * weights['volume'],
-            price_position * weights['price_position'] - 0.5,
+            momentum,
+            volatility,
+            volume_ratio,
+            price_position - 0.5,
         ]
+        self.feature_history.append(feature_vector)
         
         # Forward pass through network
         trend_probability = self._forward_pass(feature_vector)
@@ -281,3 +319,6 @@ class NeuralTrendFollower:
 
 
 __all__ = ['NeuralTrendConfig', 'NeuralTrendFollower']
+
+# Module-level alias for the nested configuration dataclass.
+NeuralTrendConfig = NeuralTrendFollower.NeuralTrendConfig

@@ -1,0 +1,10 @@
+rust_core/src/backtest.rs
+rust_core/src/confidence.rs
+rust_core/src/fee.rs
+rust_core/src/indicators.rs
+rust_core/src/lib.rs
+rust_core/src/rebalance.rs
+rust_core/src/regime.rs
+rust_core/src/strategies.rs
+rust_core/src/streaming.rs
+rust_core/src/tcost.rs

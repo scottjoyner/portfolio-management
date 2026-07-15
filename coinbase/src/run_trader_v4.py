@@ -50,6 +50,13 @@ from coinbase.src.pair_discovery import get_all_coinbase_pairs, top_coinbase_pai
 from trading_system.core.timing import LatencyProfiler, measure_coinbase_latency
 from trading_system.core.streaming import StreamingEngine
 from coinbase.src.rest_feed import fetch_candles_batch, fetch_candles_batch_sync, candle_arrays
+from coinbase.src.feed import Ticker, FeedSource
+try:
+    from coinbase.src.smart_feed import SmartFeedRefreshManager
+    _HAS_SMART_FEED = True
+except Exception:
+    SmartFeedRefreshManager = None
+    _HAS_SMART_FEED = False
 from coinbase.src.sentiment import CryptoNewsSentiment, OrderFlowEngine, MacroRiskEngine
 from coinbase.src.config_manager import get_config, get_config_manager, is_feature_enabled
 from coinbase.src.strategy_registry import get_registry, StrategyPerf
@@ -166,6 +173,9 @@ class CoreHolding:
     trades: int = 0
     last_buy_ts: float = 0.0
     created_ts: float = 0.0
+    target_value: float = 0.0   # computed target USD value within the core bucket
+    drift_pct: float = 0.0       # (value - target) / target * 100
+    rebalance_action: str = "hold"  # hold | buy | trim
 
     @property
     def avg_price(self) -> float:
@@ -184,6 +194,22 @@ class CoreHolding:
         self.qty = self.total_qty
         self.trades += 1
         self.last_buy_ts = time.time()
+
+    def trim_sell(self, qty: float, price: float, fee: float = 0.0) -> float:
+        """Reduce the core position by qty at price (realizing proportional cost).
+
+        Keeps the average cost basis unchanged (cost reduced proportionally).
+        Returns the realized notional (qty * price - fee) credited.
+        """
+        if qty <= 0 or self.total_qty <= 0:
+            return 0.0
+        qty = min(qty, self.total_qty)
+        proportion = qty / self.total_qty if self.total_qty > 0 else 1.0
+        self.total_cost *= (1.0 - proportion)
+        self.total_qty -= qty
+        self.qty = self.total_qty
+        self.trades += 1
+        return qty * price - fee
 
 
 @dataclass
@@ -256,15 +282,16 @@ class EventTraderV4:
     # ── Runtime-tunable knob schema ──
     # key: (type, min, max, default, description)
     TUNABLE_KNOBS: dict = {
-        "paper_min_confidence":    (float, 0.01, 0.99, 0.50,  "Min confidence for entry"),
-        "paper_min_win_rate":      (float, 0.01, 1.00, 0.45,  "Min strategy backtest win rate"),
-        "paper_min_sharpe":        (float, 0.01, 5.00, 0.50,  "Min strategy backtest Sharpe"),
-        "paper_min_edge_bps":      (float, 0.00, 200.0, 10.0, "Min expected edge in bps"),
-        "paper_min_trade_usd":     (float, 1.00, 1e6,  25.0,  "Min trade notional USD"),
+        "paper_min_confidence":    (float, 0.01, 0.99, 0.55,  "Min confidence for entry"),
+        "paper_min_win_rate":      (float, 0.01, 1.00, 0.60,  "Min strategy backtest win rate"),
+        "paper_min_sharpe":        (float, 0.01, 5.00, 0.80,  "Min strategy backtest Sharpe"),
+        "paper_min_edge_bps":      (float, 0.00, 200.0, 15.0, "Min expected edge in bps"),
+        "paper_min_trade_usd":     (float, 1.00, 1e6,  100.0, "Min trade notional USD"),
         "paper_max_position_pct":  (float, 0.01, 0.50, 0.15,  "Max position % of cash"),
-        "paper_max_new_positions": (int,   1,    500,  50,    "Max concurrent positions"),
-        "paper_maker_pct":         (float, 0.00, 1.00, 0.80,  "Fraction of orders as maker"),
-        "paper_product_cooldown_s":(int,   0,    86400,300,   "Per-product cooldown after exit"),
+        "paper_max_new_positions": (int,   1,    500,  12,    "Max concurrent positions"),
+        "paper_maker_pct":         (float, 0.00, 1.00, 0.50,  "Fraction of orders as maker"),
+        "paper_product_cooldown_s":(int,   0,    86400,1800,  "Per-product cooldown after exit"),
+        "paper_min_hold_s":        (int,   0,    86400,180,   "Min hold before signal-based (noise) exits allowed"),
         "max_hold_s":              (int,   300,  604800,86400,"Max position hold time (seconds)"),
         "max_leverage":            (float, 1.00, 10.0, 2.00,  "Max leverage multiplier"),
         "min_change_pct":          (float, 0.01, 5.00, 0.05,  "Min price change % to trigger eval"),
@@ -375,6 +402,10 @@ class EventTraderV4:
         self.enable_leverage = enable_leverage
         self.max_leverage = max_leverage
         self.max_hold_s = max_hold_s
+        # Minimum time (s) a position must be held before signal-based (noise) exits
+        # — multi-signal consensus & reverse-signal — are allowed. Stops, take-profit,
+        # and max-hold timeouts always fire. Prevents sub-second flip-flop churn.
+        self.paper_min_hold_s = 180
         self._shutdown = False
         self._start_ts = time.time()
 
@@ -390,19 +421,59 @@ class EventTraderV4:
         }
         self._max_cluster_exposure_pct = 0.30
 
-        # ── Core long-term holdings (BTC/ETH/SOL — never auto-sold) ──
+        # ── Core long-term holdings (multi-bucket: stable + volatile) ──
         self._core_holdings: Dict[str, CoreHolding] = {}
         self._core_holdings_enabled: bool = True
         self._core_dca_amount: float = 25.0   # USD per DCA buy
         self._core_dca_cooldown_s: int = 3600  # min between buys per asset
         self._core_dca_dip_pct: float = 3.0   # min % dip from 50-period high to trigger
+
+        # Core bucket definitions (each rebalances independently)
+        self._core_buckets_config: Dict[str, Dict] = {
+            "stable": {
+                "enabled": os.getenv("CORE_STABLE_ENABLED", "1") not in ("0", "false", "False"),
+                "assets": ["BTC-USD", "ETH-USD", "SOL-USD"],
+                "target_weights": {"BTC-USD": 0.50, "ETH-USD": 0.30, "SOL-USD": 0.20},
+                "rebalance_threshold_pct": float(os.getenv("CORE_STABLE_THRESHOLD_PCT", "15.0")),
+                "rebalance_interval_s": 3600,
+                "dca_amount": 25.0,
+                "dca_cooldown_s": 3600,
+                "dca_dip_pct": 3.0,
+            },
+            "volatile": {
+                "enabled": os.getenv("CORE_VOLATILE_ENABLED", "1") not in ("0", "false", "False"),
+                "assets": ["DOGE-USD", "SHIB-USD", "PEPE-USD", "BONK-USD", "FLOKI-USD", "MON-USD"],
+                "target_weights": {
+                    "DOGE-USD": 0.35, "SHIB-USD": 0.20, "PEPE-USD": 0.15,
+                    "BONK-USD": 0.10, "FLOKI-USD": 0.10, "MON-USD": 0.10,
+                },
+                "rebalance_threshold_pct": float(os.getenv("CORE_VOLATILE_THRESHOLD_PCT", "25.0")),
+                "rebalance_interval_s": 1800,  # 30 min (faster for volatile)
+                "dca_amount": 15.0,
+                "dca_cooldown_s": 1800,
+                "dca_dip_pct": 5.0,  # deeper dip for volatile
+            },
+        }
+        self._core_rebalance_last_ts: Dict[str, float] = {"stable": 0.0, "volatile": 0.0}
         self._capital_buckets: Dict[str, Any] = {}
+        # Effective per-product target weight across all core buckets.
+        self._core_target_weights: Dict[str, float] = {}
+        for _bkt in self._core_buckets_config.values():
+            for _pid, _w in _bkt.get("target_weights", {}).items():
+                self._core_target_weights[_pid] = _w
 
         self._tick_count = 0
         self._bt_cache: Dict[str, Any] = {}
         self._bt_cache_lock = threading.Lock()
         self._bt_cache_path = Path("data/bt_cache_v4.json")
         self._bt_cache_dirty = False
+
+        # Per-tick caches to avoid recomputing the same slice/state across the
+        # many consumers (scalping, btc snapshot, adaptive interval, _evaluate)
+        # that run for a single product within one drain tick.
+        self._slice_cache: Dict[str, Tuple[List[float], List[float], List[float]]] = {}
+        self._car_state_cache: Tuple[float, Optional[Dict[str, Any]]] = (0.0, None)
+        self._dd_cache: Optional[float] = None
 
         self._hot_scores: Dict[str, float] = defaultdict(float)
         self._hot_lock = threading.Lock()
@@ -548,13 +619,13 @@ class EventTraderV4:
         self.paper_monthly_volume: float = 0.0
         self.paper_month_ts: float = time.time()
         self.paper_maker_pct: float = paper_maker_pct
-        self.paper_min_confidence: float = 0.50
-        self.paper_min_win_rate: float = 0.45
-        self.paper_min_sharpe: float = 0.5
+        self.paper_min_confidence: float = 0.55
+        self.paper_min_win_rate: float = 0.60
+        self.paper_min_sharpe: float = 0.8
         self.paper_max_position_pct: float = 0.15
-        self.paper_max_new_positions: int = 50
-        self.paper_min_trade_usd: float = 25.0
-        self.paper_min_edge_bps: float = 10.0
+        self.paper_max_new_positions: int = 12
+        self.paper_min_trade_usd: float = 100.0
+        self.paper_min_edge_bps: float = 15.0
         self._paper_state_path = Path("data/paper_trader_v4_state.json")
 
         # ── Per-strategy analytics ──────────────────────────────
@@ -574,6 +645,21 @@ class EventTraderV4:
         self._candle_fetch_lock = threading.Lock()
         self._scan_fetch_lock = threading.Lock()
         self._scan_lock = threading.Lock()
+
+        # Smart feed refresh manager — shared tiered cache for all consumers
+        self._feed_mgr: Optional[SmartFeedRefreshManager] = None
+        if _HAS_SMART_FEED:
+            try:
+                self._feed_mgr = SmartFeedRefreshManager(
+                    batch_fn=fetch_candles_batch_sync,
+                    interval=15.0,
+                )
+                self._feed_mgr.set_critical([
+                    pid for pid in (products or self.products or [])
+                    if pid.split("-")[0] in self.CORE_ASSETS
+                ] or ["BTC-USD", "ETH-USD", "SOL-USD"])
+            except Exception as e:
+                log.warning("SmartFeed init failed: %s", e)
 
         # WebSocket feed
         self._ws_feed = None
@@ -861,6 +947,12 @@ class EventTraderV4:
         except Exception as e:
             log.warning("Historical data seeding failed: %s — continuing with partial data", e)
 
+        # Register all products with the feed manager for tiered refresh
+        if self._feed_mgr:
+            for pid in self.products:
+                self._feed_mgr.set_volume(pid, self._last_volume_24h.get(pid, 0))
+            self._feed_mgr.start()
+
         if self._ws_feed:
             try:
                 self._ws_feed.start()
@@ -1021,10 +1113,15 @@ class EventTraderV4:
             if self._shutdown:
                 break
             with self.profiler.measure("candle_refresh_rest"):
-                with self._candle_fetch_lock:
-                    candles = fetch_candles_batch_sync(
-                        self.products, granularity=3600, limit=5, max_workers=12
+                if self._feed_mgr:
+                    candles = self._feed_mgr.get_candles_batch(
+                        self.products, granularity=3600, limit=5
                     )
+                else:
+                    with self._candle_fetch_lock:
+                        candles = fetch_candles_batch_sync(
+                            self.products, granularity=3600, limit=5, max_workers=12
+                        )
             for pid, clist in candles.items():
                 if not clist:
                     continue
@@ -1033,10 +1130,34 @@ class EventTraderV4:
                     self._candle_data[pid] = arrs
 
     def _polling_loop(self):
+        """REST polling fallback when WebSocket is unavailable."""
         self.health_status["status"] = "polling"
-        log.info("Polling mode: checking ticker every 5s")
+        log.info("Polling mode: fetching tickers via REST every 5s")
+        from coinbase.src.rest_feed import fetch_candles_batch_sync
         while not self._shutdown:
-            self._drain_ticker_cache()
+            try:
+                # Fetch latest tickers via REST (1m candles, use last price as ticker)
+                candles = fetch_candles_batch_sync(
+                    self.products, granularity=60, limit=1, max_workers=20
+                )
+                now = time.time()
+                for pid, clist in candles.items():
+                    if clist:
+                        # Latest candle close as current price
+                        last_candle = clist[-1]
+                        price = float(last_candle[4])  # close price
+                        if price > 0:
+                            self._ticker_cache.update_ticker(Ticker(
+                                product_id=pid,
+                                price=price,
+                                bid=price,
+                                ask=price,
+                                volume_24h=0.0,
+                                timestamp=now,
+                                source=FeedSource.COINBASE_PUBLIC,
+                            ))
+            except Exception as e:
+                log.debug(f"Polling fetch failed: {e}")
             time.sleep(5)
 
     # ── Ticker Processing ────────────────────────────────────────────
@@ -1044,6 +1165,9 @@ class EventTraderV4:
     def _drain_ticker_cache(self):
         if not self._ticker_cache:
             return
+        self._slice_cache = {}
+        self._car_state_cache = (0.0, None)
+        self._dd_cache = None
         for pid in self.products:
             ticker = self._ticker_cache.get_ticker(pid)
             if not ticker or ticker.price <= 0:
@@ -1061,17 +1185,20 @@ class EventTraderV4:
 
             try:
                 self._last_price[pid] = ticker.price
-                self._last_volume_24h[pid] = getattr(ticker, "volume_24h", 0.0) or 0.0
+                vol_24h = getattr(ticker, "volume_24h", 0.0) or 0.0
+                self._last_volume_24h[pid] = vol_24h
                 self._last_ticker_ts = now
+                if self._feed_mgr:
+                    self._feed_mgr.set_volume(pid, vol_24h)
                 if self.streaming:
                     self.streaming.update(pid, ticker.price, ticker.volume_24h)
                 if pid == "BTC-USD":
-                    btc_streaming = self.streaming.try_get(pid)
                     try:
+                        btc_slices = self._get_slices(pid)
                         self._cross_asset_regime.update_btc_snapshot(
                             ticker.price,
-                            btc_streaming.closes.to_list() if btc_streaming else None,
-                            btc_streaming.volumes.to_list() if btc_streaming else None,
+                            btc_slices[0] if btc_slices else None,
+                            btc_slices[1] if btc_slices else None,
                         )
                     except Exception:
                         pass
@@ -1093,12 +1220,12 @@ class EventTraderV4:
             except Exception:
                 log.debug("Order flow eval failed for %s", pid, exc_info=True)
             try:
-                streaming = self.streaming.try_get(pid)
-                if streaming and len(streaming.closes) >= 20:
+                sp_slices = self._get_slices(pid)
+                if sp_slices and len(sp_slices[0]) >= 20:
                     scalping_sig = self._scalping.get_signals(
                         pid, ticker.price,
-                        streaming.closes.to_list(),
-                        streaming.volumes.to_list(),
+                        sp_slices[0],
+                        sp_slices[1],
                         ticker.volume_24h,
                         ticker.bid, ticker.ask,
                     )
@@ -1113,9 +1240,9 @@ class EventTraderV4:
                 eval_interval = self._position_eval_interval
             else:
                 eval_interval = self._adaptive_eval_interval_for_pid(pid)
-            if now - last_eval >= eval_interval:
+            if now - self._last_eval.get(pid, 0) >= eval_interval:
                 self._last_eval[pid] = now
-                self._evaluate(pid)
+                self._evaluate(pid, self._get_slices(pid))
             if self._tick_count % 500 == 0:
                 self._prune_pulses()
             if self._bt_cache_dirty and self._tick_count % 100 == 0:
@@ -1223,7 +1350,53 @@ class EventTraderV4:
             return min(1.3, 1.0 + (live_chg - 0.02) * 6.0)
         return 1.0
 
-    def _evaluate(self, product_id: str):
+    def _get_slices(self, product_id: str) -> Optional[Tuple[List[float], List[float], List[float]]]:
+        """Return cached (closes, volumes, opens) lists for a product this tick.
+
+        Materializes the streaming buffers via ``to_list()`` at most once per
+        product per drain tick; every other consumer (scalping, BTC snapshot,
+        adaptive eval interval, ``_evaluate_impl``) reuses the cached lists
+        instead of copying the full ring buffers again.
+        """
+        cached = self._slice_cache.get(product_id)
+        if cached is not None:
+            return cached
+        streaming = self.streaming.try_get(product_id) if self.streaming else None
+        if streaming is None:
+            return None
+        closes = streaming.closes.to_list()
+        volumes = streaming.volumes.to_list()
+        opens = closes[:-1] + closes[-1:]
+        self._slice_cache[product_id] = (closes, volumes, opens)
+        return self._slice_cache[product_id]
+
+    def _get_cross_asset_state(self) -> Dict[str, Any]:
+        """Return the cross-asset regime snapshot, cached for a short TTL.
+
+        ``_cross_asset_regime_snapshot()`` is global (not product-specific) yet
+        is invoked once per product per tick; cache the result for ~1s so a
+        single drain tick only computes it once.
+        """
+        now = time.time()
+        ts, state = self._car_state_cache
+        if state is not None and (now - ts) < 1.0:
+            return state
+        state = self._cross_asset_regime_snapshot()
+        self._car_state_cache = (now, state)
+        return state
+
+    def _get_paper_drawdown(self) -> float:
+        """Return current paper drawdown, computed once per drain tick.
+
+        ``_paper_drawdown()`` loops over all paper positions + core holdings on
+        every call; within a single tick that state is immutable, so cache it.
+        """
+        if self._dd_cache is not None:
+            return self._dd_cache
+        self._dd_cache = self._paper_drawdown()
+        return self._dd_cache
+
+    def _evaluate(self, product_id: str, slices: Optional[Tuple[List[float], List[float], List[float]]] = None):
         """Run all 50 Rust strategies + regime gating + backtest validation."""
         # Product-level circuit breaker — disable after 5 consecutive failures
         product_fail_key = f"eval_fail_{product_id}"
@@ -1232,23 +1405,21 @@ class EventTraderV4:
             return
 
         try:
-            self._evaluate_impl(product_id)
+            self._evaluate_impl(product_id, slices=slices)
             setattr(self, product_fail_key, 0)
         except Exception as e:
             setattr(self, product_fail_key, consecutive_fails + 1)
             log.warning("EVAL FAIL %s (%d/5): %s", product_id, consecutive_fails + 1, e)
 
-    def _evaluate_impl(self, product_id: str):
+    def _evaluate_impl(self, product_id: str, slices: Optional[Tuple[List[float], List[float], List[float]]] = None):
         with self.profiler.measure("eval") as _:
             base = product_id.split("-")[0]
 
-            streaming = self.streaming.try_get(product_id)
-            if not streaming or len(streaming.closes) < 40:
+            if slices is None:
+                slices = self._get_slices(product_id)
+            if slices is None:
                 return
-
-            closes = streaming.closes.to_list()
-            volumes = streaming.volumes.to_list()
-            current_price = closes[-1] if closes else 0
+            closes, volumes, opens = slices
 
             if len(closes) < 40:
                 return
@@ -1266,20 +1437,21 @@ class EventTraderV4:
             volumes = volumes[-n:]
             highs = highs[-n:]
             lows = lows[-n:]
+            opens = opens[-n:]
+            current_price = closes[-1] if closes else 0
 
             # ── Step 0: Regime detection ───────────────────────────
             regime_info = self._detect_regime(product_id, closes, highs, lows, volumes)
             regime_cmatrix = self._regime_to_cmatrix(regime_info["regime"])
             recommended = regime_info.get("recommended", set())
             atr_14 = regime_info.get("atr_14", 0.0)
-            cross_asset_state = self._cross_asset_regime_snapshot()
+            cross_asset_state = self._get_cross_asset_state()
 
             # ── Step 1: Run ALL 50 strategies in Rust ──────────────
             with self.profiler.measure("rust_signals"):
                 raw_signals = []
                 try:
                     import rust_core as _rc
-                    opens = closes[:-1] + closes[-1:]
                     raw_signals = _rc.evaluate_all_opens_py(closes, opens, volumes, highs, lows)
                 except Exception as e:
                     log.debug("Rust evaluate_all failed for %s: %s", product_id, e)
@@ -1290,7 +1462,7 @@ class EventTraderV4:
             # Track signal counts + fingerprint dedup + pulse tracking
             # Apply regime gating: only keep strategies recommended for this regime
             signals = []
-            dd = self._paper_drawdown()
+            dd = self._get_paper_drawdown()
             for s_name, action, confidence, reason in raw_signals:
                 self._signal_counts[s_name] += 1
                 if recommended and s_name not in recommended:
@@ -1541,6 +1713,9 @@ class EventTraderV4:
                     "trades": h.trades,
                     "last_buy_ts": h.last_buy_ts,
                     "created_ts": h.created_ts,
+                    "target_value": h.target_value,
+                    "drift_pct": h.drift_pct,
+                    "rebalance_action": h.rebalance_action,
                 }
                 for h in self._core_holdings.values()
             ]
@@ -1785,10 +1960,16 @@ class EventTraderV4:
     def _adaptive_eval_interval_for_pid(self, product_id: str) -> float:
         if not self._adaptive_eval_enabled:
             return self._min_eval_interval
-        streaming = self.streaming.try_get(product_id)
-        if not streaming or len(streaming.closes) < 30:
+        slices = self._get_slices(product_id)
+        if slices is None:
+            streaming = self.streaming.try_get(product_id)
+            if not streaming or len(streaming.closes) < 30:
+                return self._min_eval_interval
+            closes = streaming.closes.to_list()
+        else:
+            closes = slices[0]
+        if len(closes) < 30:
             return self._min_eval_interval
-        closes = streaming.closes.to_list()
         n = min(20, len(closes))
         recent = closes[-n:]
         if len(recent) < 2:
@@ -1966,7 +2147,8 @@ class EventTraderV4:
             raw_pnl = -raw_pnl
         pnl = raw_pnl - pos.fees_paid - fee - pos.cum_funding
         self.paper_realized_pnl += pnl
-        self._perf_tracker.record_trade(pos.strategy, pos.product_id, pnl, pos.entry_notional, fee, pos.side)
+        self._perf_tracker.record_trade(pos.strategy, pos.product_id, pnl, pos.entry_notional, fee, pos.side,
+                                        backtest_win_rate=float(getattr(pos, "win_rate", 0.0) or 0.0))
         win = pnl >= 0
         if win:
             self.paper_wins += 1
@@ -2028,8 +2210,8 @@ class EventTraderV4:
             except Exception as e:
                 log.debug("DCA eval failed for %s: %s", pid, e)
 
-    def _dca_execute_buy(self, pid: str, price: float, notional: float, dip_pct: float) -> bool:
-        """Execute a DCA buy — paper simulation or live order depending on mode."""
+    def _dca_execute_buy(self, pid: str, price: float, notional: float, dip_pct: float, reason: str = "dip") -> bool:
+        """Execute a DCA/rebalance buy — paper simulation or live order depending on mode."""
         now = time.time()
         fee = notional * (self._effective_fee_bps() / 10_000.0)
         qty = notional / price
@@ -2100,13 +2282,13 @@ class EventTraderV4:
                 created_ts=now,
             )
 
-        log.info("DCA BUY %s: qty=%.6f price=%.2f notional=$%.2f dip=%.1f%% hold_qty=%.6f cost_basis=%.2f",
-                 pid, qty, price, notional, dip_pct,
-                 self._core_holdings[pid].total_qty,
-                 self._core_holdings[pid].cost_basis)
-        self._push_notification("core_buy", f"DCA {pid}",
-                                f"Bought ${notional:.0f} at ${price:.2f} (dip {dip_pct:.1f}%)",
-                                {"product_id": pid, "price": price, "notional": notional, "dip_pct": dip_pct})
+        log.info("CORE BUY %s [%s]: qty=%.6f price=%.2f notional=$%.2f dip=%.1f%% hold_qty=%.6f cost_basis=%.2f",
+                  pid, reason, qty, price, notional, dip_pct,
+                  self._core_holdings[pid].total_qty,
+                  self._core_holdings[pid].cost_basis)
+        self._push_notification("core_buy", f"Core {pid}",
+                                f"Bought ${notional:.0f} at ${price:.2f} ({reason}, dip {dip_pct:.1f}%)",
+                                {"product_id": pid, "price": price, "notional": notional, "dip_pct": dip_pct, "reason": reason})
         return True
 
     def _dca_eval_asset(self, pid: str) -> None:
@@ -2164,6 +2346,154 @@ class EventTraderV4:
             log.debug("DCA available cash fetch failed: %s", e)
         return 0.0
 
+    def _rebalance_core_holdings(self) -> None:
+        """Rebalance core long-term holdings toward target weights per bucket.
+
+        Each bucket (stable/volatile) rebalances independently with its own
+        assets, weights, threshold, and cadence.
+        """
+        for bucket_name, cfg in self._core_buckets_config.items():
+            if not cfg.get("enabled", True):
+                continue
+            if self.mode in ("live", "approval") and self._cb_breached:
+                return
+
+            now = time.time()
+            last_ts = self._core_rebalance_last_ts.get(bucket_name, 0.0)
+            interval = cfg.get("rebalance_interval_s", 3600)
+            if (now - last_ts) < interval:
+                continue
+            self._core_rebalance_last_ts[bucket_name] = now
+
+            assets = cfg.get("assets", [])
+            target_weights = cfg.get("target_weights", {})
+            thr = cfg.get("rebalance_threshold_pct", 15.0) / 100.0
+
+            # Current values per asset in this bucket
+            values: Dict[str, float] = {}
+            for pid in assets:
+                h = self._core_holdings.get(pid)
+                px = self._last_price.get(pid, 0.0)
+                if h and px > 0:
+                    values[pid] = h.current_value(px)
+                elif h:
+                    values[pid] = h.current_value(h.cost_basis)
+                else:
+                    values[pid] = 0.0
+
+            total = sum(values.values())
+
+            for pid in assets:
+                h = self._core_holdings.get(pid)
+                weight = target_weights.get(pid, 0.0)
+                target = total * weight if total > 0 else 0.0
+                cur = values.get(pid, 0.0)
+                if h:
+                    h.target_value = target
+                    h.drift_pct = ((cur - target) / target * 100.0) if target > 0 else 0.0
+                    h.rebalance_action = "hold"
+
+                if target <= 0:
+                    continue
+                # Under target -> buy
+                if cur < target * (1.0 - thr):
+                    gap = target - cur
+                    if h:
+                        h.rebalance_action = "buy"
+                    self._rebalance_buy(pid, gap, cfg)
+                # Over target -> trim
+                elif cur > target * (1.0 + thr):
+                    gap = cur - target
+                    if h:
+                        h.rebalance_action = "trim"
+                    self._rebalance_trim(pid, gap, cfg)
+
+    def _rebalance_buy(self, pid: str, gap_value: float, cfg: Optional[Dict[str, Any]] = None) -> None:
+        """Buy toward target on an under-weighted core asset.
+
+        Sized to close at most half the gap, capped by the DCA amount and
+        available cash, and gated by the per-asset buy cooldown.
+        """
+        price = self._last_price.get(pid, 0.0)
+        if price <= 0:
+            return
+        holding = self._core_holdings.get(pid)
+        now = time.time()
+        if holding and holding.last_buy_ts > 0 and (now - holding.last_buy_ts) < self._core_dca_cooldown_s:
+            return
+        if self.mode == "paper":
+            avail = self._paper_equity()
+        else:
+            avail = self._dca_available_cash()
+        notional = min(self._core_dca_amount, gap_value * 0.5, avail * 0.5)
+        if notional < self.paper_min_trade_usd:
+            notional = self.paper_min_trade_usd
+        if notional > avail or notional < 1.0:
+            return
+        self._dca_execute_buy(pid, price, notional, 0.0, reason="rebalance")
+
+    def _rebalance_trim(self, pid: str, gap_value: float, cfg: Optional[Dict[str, Any]] = None) -> None:
+        """Trim an over-weighted core asset back toward its target.
+
+        Sells at most half the gap, capped at 25% of the position value, and
+        credits cash (paper) or places a live market sell. Core positions are
+        still long-term holds — trimming only corrects allocation drift.
+        """
+        price = self._last_price.get(pid, 0.0)
+        if price <= 0:
+            return
+        holding = self._core_holdings.get(pid)
+        if not holding or holding.qty <= 0:
+            return
+        now = time.time()
+        if holding.last_buy_ts > 0 and (now - holding.last_buy_ts) < self._core_dca_cooldown_s:
+            return
+        sell_notional = min(gap_value * 0.5, holding.current_value(price) * 0.25)
+        if sell_notional < 1.0:
+            return
+        qty = sell_notional / price
+
+        if self.mode == "paper":
+            fee = sell_notional * (self._effective_fee_bps() / 10_000.0)
+            if self._paper_equity() <= 0:
+                return
+            realized = holding.trim_sell(qty, price, fee)
+            self.paper_cash += realized
+            self.paper_fees_paid += fee
+            self._update_trailing_volume(sell_notional)
+        else:
+            if not hasattr(self, "_exec_engine") or self._exec_engine is None:
+                return
+            if self._cb_breached:
+                return
+            try:
+                if not hasattr(self, "_cb_client") or self._cb_client is None:
+                    return
+                preview = self._cb_client.preview_order(
+                    product_id=pid, side="SELL", order_type="MARKET",
+                    base_size=str(round(qty, 8)),
+                )
+                preview_id = preview.get("order_id", preview.get("preview_id", "")) if preview else ""
+                result = self._cb_client.market_order(
+                    product_id=pid, side="SELL", base_size=str(round(qty, 8)),
+                    preview_id=preview_id, client_order_id=f"trim_{pid}_{int(now)}",
+                )
+                if not result or result.get("status") == "FAILED":
+                    return
+                fill_qty = float(result.get("filled_size", qty))
+                fill_price = float(result.get("avg_price", price))
+                fee = float(result.get("fees", 0.0))
+                holding.trim_sell(fill_qty, fill_price, fee)
+            except Exception as e:
+                log.error("Core trim %s live execution error: %s", pid, e)
+                return
+
+        holding.last_buy_ts = now  # reuse cooldown clock to avoid immediate re-buy
+        log.info("CORE TRIM %s: qty=%.6f price=%.2f notional=$%.2f drift corrected", pid, qty, price, sell_notional)
+        self._push_notification("core_trim", f"Trim {pid}",
+                                f"Sold ${sell_notional:.0f} at ${price:.2f} (rebalance)",
+                                {"product_id": pid, "price": price, "notional": sell_notional})
+
     def _core_holdings_value(self, prices: Optional[Dict[str, float]] = None) -> float:
         total = 0.0
         prices = prices or {}
@@ -2181,18 +2511,25 @@ class EventTraderV4:
             price = self._last_price.get(pid, h.cost_basis)
             value = h.current_value(price)
             cost = h.total_cost
+            # P&L consistent on a fees-included basis (value vs total_cost)
             pnl = value - cost
-            pnl_pct = ((price - h.cost_basis) / h.cost_basis * 100) if h.cost_basis > 0 else 0.0
+            pnl_pct = (pnl / cost * 100.0) if cost > 0 else 0.0
             holding_age = now - h.created_ts if h.created_ts > 0 else 0
+            weight = self._core_target_weights.get(pid, 0.0)
             result.append({
                 "product_id": pid,
                 "qty": round(h.total_qty, 6),
                 "cost_basis": round(h.cost_basis, 2),
                 "total_cost": round(cost, 2),
+                "total_invested": round(cost, 2),
                 "current_price": round(price, 2),
                 "current_value": round(value, 2),
                 "unrealized_pnl": round(pnl, 2),
                 "unrealized_pnl_pct": round(pnl_pct, 2),
+                "target_weight": round(weight, 4),
+                "target_value": round(h.target_value, 2),
+                "drift_pct": round(h.drift_pct, 2),
+                "rebalance_action": h.rebalance_action,
                 "trades": h.trades,
                 "last_buy_ago_s": round(now - h.last_buy_ts) if h.last_buy_ts > 0 else 0,
                 "holding_age_s": round(holding_age),
@@ -2245,6 +2582,8 @@ class EventTraderV4:
                     closed.append(pid)
             for pid in closed:
                 self.paper_positions.pop(pid, None)
+                if self._feed_mgr:
+                    self._feed_mgr.remove_position(pid)
                 self.paper_last_trade_ts[pid] = time.time()
 
     def _paper_open_position(self, product_id: str, price: float, opp: Dict[str, Any]) -> None:
@@ -2278,6 +2617,17 @@ class EventTraderV4:
         confidence = float(opp.get("confidence", 0.0) or 0.0)
         win_rate = float(opp.get("win_rate", 0.0) or 0.0)
         sharpe = float(opp.get("sharpe", 0.0) or 0.0)
+
+        # Confidence recalibration: shrink self-reported confidence toward the OBSERVED
+        # live win rate. Many strategies report ~1.0 confidence yet lose consistently;
+        # blending with realized outcomes penalizes them in sizing and pushes them below
+        # the min-confidence gate. Per-product evidence preferred; fall back to aggregate.
+        if perf_rec and perf_rec.trades >= 5:
+            confidence = confidence * 0.5 + perf_rec.win_rate * 0.5
+        else:
+            _agg = self._perf_tracker.strategy_aggregate(strategy_name)
+            if _agg["trades"] >= 20:
+                confidence = confidence * 0.6 + _agg["win_rate"] * 0.4
 
         # Kelly-optimal position sizing
         kelly = self._perf_tracker.kelly(strategy_name, product_id, min_trades=5)
@@ -2442,6 +2792,8 @@ class EventTraderV4:
         )
         self.paper_positions[product_id] = pos
         self.paper_last_trade_ts[product_id] = time.time()
+        if self._feed_mgr:
+            self._feed_mgr.add_position(product_id)
         with self._analytics_lock:
             st = self._signal_type_counts.setdefault(strategy_name, {"BUY": 0, "SELL": 0})
             signal_side = "BUY" if side_label == "LONG" else "SELL"
@@ -2647,7 +2999,7 @@ class EventTraderV4:
 
                 # 2. Reverse signal from best strategy for this product
                 pid_signals = signal_by_pid.get(pid, [])
-                if pid_signals:
+                if pid_signals and age_s >= self.paper_min_hold_s:
                     best = max(pid_signals, key=lambda o: abs(float(o.get("confidence", 0.0) or 0.0)))
                     best_action = best.get("action", "BUY")
                     best_strat = best.get("strategy", "unknown")
@@ -2852,11 +3204,16 @@ class EventTraderV4:
             # r is signed: positive for LONG profit, negative for SHORT profit
             r = raw_r if pos.is_long else -raw_r
 
+            # Noise-exit gate: multi-signal consensus and reverse-signal exits are prone
+            # to whipsaw on mean-reversion strategies (sub-second flip-flops). Only allow
+            # them after a minimum hold. Stops/take-profit/timeout below are unaffected.
+            min_hold_ok = pos.age_s >= self.paper_min_hold_s
+
             # 1. Multi-signal consensus exit
             sell_signals = sum(1 for o in opportunities if o.get("action") == "SELL")
             buy_signals = sum(1 for o in opportunities if o.get("action") == "BUY")
             total_signals = len(opportunities)
-            if total_signals > 0:
+            if min_hold_ok and total_signals > 0:
                 if pos.is_long:
                     exit_pct = sell_signals / total_signals
                     exit_label = "sell"
@@ -2868,7 +3225,7 @@ class EventTraderV4:
                     exit_reason = f"multi_signal:{exit_label}={exit_pct:.0%}"
 
             # 2. Reverse signal from best strategy
-            if not should_exit:
+            if not should_exit and min_hold_ok:
                 best_action = best.get("action", "")
                 if (pos.is_long and best_action == "SELL") or (pos.is_short and best_action == "BUY"):
                     should_exit = True
@@ -2972,6 +3329,8 @@ class EventTraderV4:
         if should_exit:
             self._paper_close_position(pos, price, reason=exit_reason)
             self.paper_positions.pop(product_id, None)
+            if self._feed_mgr:
+                self._feed_mgr.remove_position(product_id)
             self.paper_last_trade_ts[product_id] = time.time()
             # Skip re-entry on same tick — prevents lock-in-loss-then-rebuy
             return
@@ -3006,6 +3365,13 @@ class EventTraderV4:
                 rec = self._perf_tracker.get(best_strat, product_id)
                 log.info("PAPER SKIP %s: strategy %s disabled (%s)",
                          product_id, best_strat, rec.disable_reason if rec else "unknown")
+                return
+
+            # Global strategy disable: skip strategies that are broadly unprofitable
+            # across all products (aggregate live win rate too low).
+            if self._perf_tracker.is_strategy_disabled(best_strat):
+                log.info("PAPER SKIP %s: strategy %s globally disabled (poor aggregate win rate)",
+                         product_id, best_strat)
                 return
 
             # Multi-signal confluence: require ≥2 strategies agreeing on direction
@@ -3049,14 +3415,17 @@ class EventTraderV4:
                     log.info("PAPER SOFTEN %s: macro TF bias=%s discounts new shorts", product_id, macro.bias)
                     best["confidence"] *= 0.85
 
-            # Pulse-aware confidence penalty for repeat signals
+            # Pulse-aware confidence penalty for repeat signals.
+            # Rapid repeat signals (3+ within 30 min) indicate a noisy/flip-flopping or
+            # stale signal, not conviction — discount confidence so we trade them smaller
+            # or skip them. (Previously this BOOSTED confidence and, worse, boosted more
+            # during drawdowns — a martingale that sized up while losing.)
             pulse_key = f"{product_id}:{best_strat}:{best_action}"
             pulse = self._signal_pulses.get(pulse_key)
             if pulse and pulse.pulse_count >= 3 and pulse.age_s < 1800:
-                dd = self._paper_drawdown()
-                boost = min(0.25, 0.05 * (pulse.pulse_count - 2) + dd)
-                best["confidence"] = min(0.99, best["confidence"] + boost)
-                log.debug("PULSE BOOST %s: conf +%.3f (pulse_count=%d, dd=%.2f)", pulse_key, boost, pulse.pulse_count, dd)
+                penalty = min(0.25, 0.05 * (pulse.pulse_count - 2))
+                best["confidence"] = max(0.01, best["confidence"] - penalty)
+                log.debug("PULSE PENALTY %s: conf -%.3f (pulse_count=%d)", pulse_key, penalty, pulse.pulse_count)
             best["regime_cmatrix"] = regime_cmatrix
             if self.enable_leverage:
                 best["leverage"] = self._vol_scaled_leverage(product_id, price, float(best.get("atr_14", 0.0)))
@@ -3223,6 +3592,8 @@ class EventTraderV4:
                 price = self._last_price.get(pid, pos.entry_price)
                 self._paper_close_position(pos, price, reason="flatten:llm_overseer")
                 self.paper_positions.pop(pid, None)
+                if self._feed_mgr:
+                    self._feed_mgr.remove_position(pid)
                 self.paper_last_trade_ts[pid] = time.time()
                 closed += 1
             if closed:
@@ -3604,6 +3975,8 @@ class EventTraderV4:
 
                 # ── DCA core holdings dip-buy ──
                 self._dca_core_holdings()
+                # ── Core long-term hold rebalancing (target weights) ──
+                self._rebalance_core_holdings()
 
                 top_n = self._adaptive_minute_top_n()
                 products = self._minute_scan_products(top_n)
@@ -3685,12 +4058,17 @@ class EventTraderV4:
             log.info("%s: %d pairs to evaluate (granularity=%ss)", label, len(pairs), granularity)
 
             with self.profiler.measure("scan_fetch"):
-                from coinbase.src.rest_feed import fetch_candles_batch_sync
                 pids = [p[0] for p in pairs]
-                with self._scan_fetch_lock:
-                    candles = fetch_candles_batch_sync(
-                        pids, granularity=granularity, limit=100, max_workers=32 if full else 16,
+                if self._feed_mgr:
+                    candles = self._feed_mgr.get_candles_batch(
+                        pids, granularity=granularity, limit=100,
                     )
+                else:
+                    from coinbase.src.rest_feed import fetch_candles_batch_sync
+                    with self._scan_fetch_lock:
+                        candles = fetch_candles_batch_sync(
+                            pids, granularity=granularity, limit=100, max_workers=8 if full else 4,
+                        )
 
             if not candles:
                 log.warning("SCAN: no candle data returned")
@@ -4107,6 +4485,17 @@ class EventTraderV4:
                 disabled = self._perf_tracker.auto_disable(min_trades=10, max_loss_streak=5, min_win_rate=0.35)
                 if disabled:
                     log.info("Auto-disabled %d underperforming strategy/product pairs", disabled)
+                strat_disabled = self._perf_tracker.auto_disable_strategies(min_trades=20, min_win_rate=0.30)
+                if strat_disabled:
+                    log.info("Globally disabled %d underperforming strategies (aggregate)", strat_disabled)
+                strat_enabled = self._perf_tracker.auto_enable_strategies(min_trades=10, min_win_rate=0.45)
+                if strat_enabled:
+                    log.info("Re-enabled %d recovered strategies (aggregate)", strat_enabled)
+                divergences = self._perf_tracker.divergence_report(min_trades=10, min_gap=0.20)
+                for d in divergences:
+                    log.warning("BACKTEST-LIVE DIVERGENCE: %s bt_wr=%.0f%% live_wr=%.0f%% gap=%.0f%% over %d trades pnl=%.2f",
+                                d["strategy"], d["backtest_win_rate"]*100, d["live_win_rate"]*100,
+                                d["gap"]*100, d["trades"], d["total_pnl"])
                 self._perf_tracker.save()
             except Exception as e:
                 log.debug("Perf save error: %s", e)
@@ -4116,6 +4505,8 @@ class EventTraderV4:
     def _cleanup(self):
         log.info("Shutting down...")
         self._shutdown = True
+        if self._feed_mgr:
+            self._feed_mgr.stop()
         if self._ws_feed:
             self._ws_feed.stop()
         total_sigs = sum(self._signal_counts.values())
@@ -4493,9 +4884,13 @@ class HealthServer:
                         except Exception:
                             pass
                         disabled_list = []
+                        expectancy = []
+                        divergences = []
                         try:
                             perf_summary = trader._perf_tracker.summary(top_n=20)
                             disabled_list = perf_summary.get("disabled_list", [])
+                            expectancy = perf_summary.get("expectancy", [])
+                            divergences = perf_summary.get("divergences", [])
                         except Exception:
                             pass
                         body = json.dumps({
@@ -4509,6 +4904,8 @@ class HealthServer:
                             },
                             "strategies": strats,
                             "disabled_strategies": disabled_list,
+                            "expectancy": expectancy,
+                            "divergences": divergences,
                         }, indent=2).encode()
                     else:
                         body = json.dumps({"error": "no trader"}, indent=2).encode()

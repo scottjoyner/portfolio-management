@@ -280,7 +280,7 @@ class VWAPMomentumStrategy:
                 }
                 
         # Sell when price drops significantly below VWAP (momentum exhausted)
-        elif low_price < current_vwap * (1 - 3):  # Price far below VWAP
+        if low_price < current_vwap * (1 - 0.03):  # Price ~3% below VWAP
             return {
                 "action": "SELL",
                 "signal_type": "VWAP_MOMENTUM_EXHAUSTION_SELL"

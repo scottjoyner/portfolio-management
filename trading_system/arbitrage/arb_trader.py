@@ -179,7 +179,7 @@ class ConnectionHealthMonitor:
                 market_id=kalshi_market['market_id'],
                 side=OrderSide.SELL,
                 quantity=kalshi_units,
-                unit_price=float(kalhi_sell_price),
+                unit_price=float(kalshi_sell_price),
             )
             print(f"\n[+] Kalshi Order Executed: {kalshi_result}")
         

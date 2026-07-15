@@ -47,6 +47,11 @@ from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
 from strategy_engine import batch_backtest_rust as _batch_backtest_rust
+from strategy_engine import FundingRateContrarian as _FundingRateContrarian
+from strategy_engine import OrderFlowCVD as _OrderFlowCVD
+from strategy_engine import WickPressureFlow as _WickPressureFlow
+from strategy_engine import ExchangeNetflowSignal as _ExchangeNetflowSignal
+from strategy_engine import StablecoinFlowSignal as _StablecoinFlowSignal
 
 # State store
 from state_store import StateStore
@@ -127,6 +132,173 @@ try:
 except ImportError:
     def _detect_regime(data): return "neutral"
 
+# Cross-asset macro regime engine (DXY, yields, VIX, gold → risk gate)
+try:
+    from coinbase.src.cross_asset_regime import CrossAssetRegimeEngine as _CrossAssetRegimeEngine
+    _HAS_CROSS_ASSET_REGIME = True
+except ImportError:
+    _CrossAssetRegimeEngine = None  # type: ignore
+    _HAS_CROSS_ASSET_REGIME = False
+
+# Macro risk engine (composite macro risk score)
+try:
+    from coinbase.src.sentiment import MacroRiskEngine as _MacroRiskEngine
+    _HAS_MACRO_RISK = True
+except ImportError:
+    _MacroRiskEngine = None  # type: ignore
+    _HAS_MACRO_RISK = False
+
+# Bayesian signal ensemble / meta learning
+try:
+    from coinbase.src.ensemble import BayesianSignalBlender as _BayesianSignalBlender
+    _HAS_BAYESIAN_ENSEMBLE = True
+except ImportError:
+    _BayesianSignalBlender = None  # type: ignore
+    _HAS_BAYESIAN_ENSEMBLE = False
+
+# Order flow / microstructure engine
+try:
+    from coinbase.src.sentiment.order_flow import OrderFlowEngine as _OrderFlowEngine
+    _HAS_ORDER_FLOW = True
+except ImportError:
+    _OrderFlowEngine = None  # type: ignore
+    _HAS_ORDER_FLOW = False
+
+# Smart money flow / CVD microstructure strategy
+try:
+    from coinbase.src.strat_orderflow import SmartMoneyFlowStrategy as _SmartMoneyFlowStrategy
+    _HAS_SMART_MONEY_FLOW = True
+except ImportError:
+    _SmartMoneyFlowStrategy = None  # type: ignore
+    _HAS_SMART_MONEY_FLOW = False
+
+# Walk-forward parameter optimization
+try:
+    from archive.coinbase_src.walk_forward import WalkForwardOptimizer as _WalkForwardOptimizer
+    from archive.coinbase_src.walk_forward import ParamRange as _ParamRange
+    _HAS_WALK_FORWARD = True
+except ImportError:
+    _WalkForwardOptimizer = None  # type: ignore
+    _ParamRange = None  # type: ignore
+    _HAS_WALK_FORWARD = False
+
+# Execution engine — bracket orders with stop-loss / take-profit
+try:
+    from coinbase.src.execution_v2 import (
+        NativeExecutionEngine as _NativeExecutionEngine,
+        BracketManager as _BracketManager,
+        OrderIntent as _OrderIntent,
+        OrderType as _OrderType,
+        OrderResult as _OrderResult,
+        OrderStatus as _OrderStatus,
+    )
+    from coinbase.src.cb_client import CBClient as _CBClient
+    _HAS_EXECUTION_ENGINE = True
+except Exception:
+    _NativeExecutionEngine = None  # type: ignore
+    _BracketManager = None  # type: ignore
+    _OrderIntent = None  # type: ignore
+    _OrderType = None  # type: ignore
+    _OrderResult = None  # type: ignore
+    _OrderStatus = None  # type: ignore
+    _CBClient = None  # type: ignore
+    _HAS_EXECUTION_ENGINE = False
+
+
+def _compute_adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
+    """Compute ADX (Average Directional Index) for regime detection.
+    Returns ADX value (0-100). >25 = trending, <20 = ranging."""
+    if len(highs) < period + 1 or len(lows) < period + 1 or len(closes) < period + 1:
+        return 20.0  # default to neutral
+    
+    try:
+        plus_dm = []
+        minus_dm = []
+        tr_list = []
+        
+        for i in range(1, len(highs)):
+            high_diff = highs[i] - highs[i-1]
+            low_diff = lows[i-1] - lows[i]
+            
+            plus_dm.append(high_diff if high_diff > low_diff and high_diff > 0 else 0.0)
+            minus_dm.append(low_diff if low_diff > high_diff and low_diff > 0 else 0.0)
+            
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i-1]),
+                abs(lows[i] - closes[i-1])
+            )
+            tr_list.append(tr)
+        
+        # Wilder's smoothing
+        def wilder_smooth(values, period):
+            if len(values) < period:
+                return sum(values) / len(values) if values else 0.0
+            result = sum(values[:period]) / period
+            for v in values[period:]:
+                result = result + (v - result) / period
+            return result
+        
+        plus_di = 100 * wilder_smooth(plus_dm, period) / wilder_smooth(tr_list, period) if wilder_smooth(tr_list, period) > 0 else 0
+        minus_di = 100 * wilder_smooth(minus_dm, period) / wilder_smooth(tr_list, period) if wilder_smooth(tr_list, period) > 0 else 0
+        
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di) if (plus_di + minus_di) > 0 else 0
+        
+        # ADX is smoothed DX - simplified here
+        return dx
+    except Exception:
+        return 20.0
+
+
+def _detect_market_regime(highs: List[float], lows: List[float], closes: List[float]) -> str:
+    """Detect market regime using ADX and volatility.
+    Returns: 'trending', 'ranging', 'volatile', or 'quiet'"""
+    if len(closes) < 30:
+        return "neutral"
+    
+    # Compute ADX
+    adx = _compute_adx(highs, lows, closes, 14)
+    
+    # Compute recent volatility (20-period)
+    recent_closes = closes[-20:]
+    returns = [(recent_closes[i] - recent_closes[i-1]) / recent_closes[i-1] for i in range(1, len(recent_closes))]
+    volatility = (sum(r*r for r in returns) / len(returns)) ** 0.5 if returns else 0
+    
+    # Classify regime
+    if adx > 25:
+        return "trending"
+    elif adx < 20:
+        if volatility > 0.03:  # 3% daily vol
+            return "volatile"
+        return "ranging"
+    else:
+        return "neutral"
+
+
+# Strategy groups by regime suitability
+TREND_STRATEGIES = {
+    "ema_cross", "macd", "adx", "trix", "psar", "hma", "aroon", 
+    "ichimoku", "dmi_cross", "supertrend", "vortex", "coppock",
+    "kama", "dmi_cross", "supertrend", "fisher"
+}
+
+MEAN_REVERSION_STRATEGIES = {
+    "rsi_revert", "boll_break", "zscore_revert", "vwap_revert", 
+    "williams_r", "cmo", "stoch", "rsi_fail", "mean_reversion",
+    "gap_revert", "de_marker", "ultimate_osc", "fisher"
+}
+
+VOLATILITY_STRATEGIES = {
+    "keltner", "donchian", "bb_squeeze", "atr_channel", "std_channel",
+    "vol_prof", "liq_vac", "vcp", "choppiness", "mass_idx", "range_exp_idx"
+}
+
+EXTERNAL_STRATEGIES = {
+    "kalman_mr", "hp_trend", "funding_contrarian", "exchange_flow", "btc_dxy_corr",
+    "kalshi", "polymarket"
+}
+
+
 try:
     from market_universe import DEFAULT_STOCK_WATCHLIST as _DEFAULT_STOCK_WATCHLIST
 except Exception:
@@ -154,6 +326,16 @@ try:
 except Exception:
     SignalAggregator = None
     UnifiedSignal = None
+
+# Smart feed refresh manager (tiered data freshness)
+_HAS_SMART_FEED = False
+try:
+    from coinbase.src.smart_feed import SmartFeedRefreshManager
+    from coinbase.src.rest_feed import fetch_candles_batch_sync
+    _HAS_SMART_FEED = True
+except Exception:
+    SmartFeedRefreshManager = None
+    fetch_candles_batch_sync = None
 
 # ---------------------------------------------------------------------------
 # Config
@@ -208,11 +390,127 @@ COINBASE_FEE_TIERS = [
 ]
 
 # Minimum time between executions of the same type (seconds)
-OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300}
+OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "rebalance_bot": 3600, "stairstep": 60, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300, "funding_onchain": 600, "order_flow": 600}
 
 # Fee tier volume cycling
 CYCLE_MIN_PROFIT_PCT = 0.0   # we'll break even or small loss for volume
 CYCLE_MAX_HOLD_HOURS = 168   # force-close after 7 days
+
+# ---------------------------------------------------------------------------
+# Support / Resistance detection
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _SwingPoint:
+    index: int
+    price: float
+    kind: str  # "high" or "low"
+
+@dataclass
+class _SRLevel:
+    price: float
+    kind: str  # "support" or "resistance"
+    strength: float = 1.0
+
+
+def _detect_swing_points(highs: List[float], lows: List[float],
+                          lookback: int = 10) -> List[_SwingPoint]:
+    """Identify swing highs and lows in price series."""
+    swings = []
+    for i in range(lookback, min(len(highs), len(lows)) - lookback):
+        if all(highs[i] > highs[j] for j in range(i - lookback, i)) and \
+           all(highs[i] > highs[j] for j in range(i + 1, i + lookback + 1)):
+            swings.append(_SwingPoint(i, highs[i], "high"))
+        if all(lows[i] < lows[j] for j in range(i - lookback, i)) and \
+           all(lows[i] < lows[j] for j in range(i + 1, i + lookback + 1)):
+            swings.append(_SwingPoint(i, lows[i], "low"))
+    return swings
+
+
+def _oldest_first_candles(candles: List[Any]) -> List[Any]:
+    """Normalize a raw candle list to oldest-first order regardless of source."""
+    if not candles:
+        return candles
+
+    def _ts(c):
+        if isinstance(c, dict):
+            return to_float(c.get("start", 0))
+        if isinstance(c, (list, tuple)) and len(c) >= 1:
+            return to_float(c[0])
+        return 0.0
+
+    try:
+        if _ts(candles[0]) > _ts(candles[-1]):
+            return list(reversed(candles))
+    except Exception:
+        pass
+    return list(candles)
+
+
+def _rsi_14(closes: List[float]) -> float:
+    """Standard 14-period RSI from a close series (50.0 when undefined)."""
+    if len(closes) < 15:
+        return 50.0
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    window = deltas[-14:]
+    gains = [d for d in window if d > 0]
+    losses = [-d for d in window if d < 0]
+    avg_g = sum(gains) / 14.0
+    avg_l = sum(losses) / 14.0
+    if avg_l == 0:
+        return 100.0 if avg_g > 0 else 50.0
+    rs = avg_g / avg_l
+    return 100.0 - 100.0 / (1.0 + rs)
+
+
+def _build_sr_levels(highs: List[float], lows: List[float],
+                      closes: List[float],
+                      min_touches: int = 2) -> List[_SRLevel]:
+    """Cluster swing points into support/resistance levels."""
+    swings = _detect_swing_points(highs, lows)
+    if not swings or len(closes) < 20:
+        return []
+    price_range = max(closes[-20:]) - min(closes[-20:])
+    tolerance = price_range / max(max(closes[-20:]), 1e-9) * 0.02 if price_range > 0 else 0.01
+
+    grouped: List[tuple] = []
+    for sw in swings:
+        merged = False
+        for i, (price, kind, group) in enumerate(grouped):
+            if kind == sw.kind and abs(price - sw.price) / max(price, 1e-9) < tolerance:
+                group.append(sw)
+                new_price = sum(s.price for s in group) / len(group)
+                grouped[i] = (new_price, kind, group)
+                merged = True
+                break
+        if not merged:
+            grouped.append((sw.price, sw.kind, [sw]))
+
+    levels = []
+    for price, kind, group in grouped:
+        touches = len(group)
+        if touches >= min_touches:
+            levels.append(_SRLevel(
+                price=price,
+                kind="support" if kind == "low" else "resistance",
+                strength=touches,
+            ))
+    return levels
+
+
+def _estimate_atr(closes: List[float], highs: List[float],
+                   lows: List[float], period: int = 14) -> float:
+    """Simple ATR estimate from OHLC data."""
+    if len(closes) < period + 1:
+        return 0.0
+    tr_vals = []
+    for i in range(1, min(period + 1, len(closes))):
+        tr = max(highs[-i] - lows[-i],
+                 abs(highs[-i] - closes[-i - 1]),
+                 abs(lows[-i] - closes[-i - 1]))
+        tr_vals.append(tr)
+    return sum(tr_vals) / len(tr_vals) if tr_vals else 0.0
+
 
 # ---------------------------------------------------------------------------
 # Types
@@ -222,6 +520,8 @@ class OpportunityType(Enum):
     TLH = "tlh"
     FEE_TIER_VOLUME = "fee_tier"
     REBALANCE = "rebalance"
+    REBALANCE_BOT = "rebalance_bot"
+    STAIRSTEP = "stairstep"
     STRATEGY_SIGNAL = "strategy"
     STOCK_SIGNAL = "stock_signal"
     NEW_LISTING_MOMENTUM = "new_listing_momentum"
@@ -449,6 +749,12 @@ class CoinbaseCLI:
 # State helpers
 # ---------------------------------------------------------------------------
 
+def _fmt_base(v: float) -> str:
+    return f"{float(v):.8f}".rstrip("0").rstrip(".") or "0"
+
+def _fmt_quote(v: float) -> str:
+    return f"{float(v):.2f}".rstrip("0").rstrip(".") or "0"
+
 def to_float(v) -> float:
     if isinstance(v, (int, float)):
         return float(v)
@@ -520,6 +826,16 @@ class PortfolioOptimizer:
         kalshi_email: str = "",
         kalshi_password: str = "",
     ):
+        # Process exclusion lock — prevent duplicate optimizer instances
+        os.makedirs("data", exist_ok=True)
+        self._lock_fd = None
+        try:
+            self._lock_fd = os.open("data/optimizer.lock", os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (IOError, BlockingIOError):
+            logger.error("Another optimizer instance is running (data/optimizer.lock is held)")
+            sys.exit(1)
+
         self.cli = CoinbaseCLI(environment)
         self.interval = interval
         self.min_value = min_value
@@ -607,6 +923,23 @@ class PortfolioOptimizer:
         except Exception as e:
             logger.warning("Unified PM client setup failed: %s", e)
 
+        # Smart feed refresh manager — shared tiered cache across optimizer + trader
+        self._feed_mgr: Optional[SmartFeedRefreshManager] = None
+        if _HAS_SMART_FEED:
+            try:
+                self._feed_mgr = SmartFeedRefreshManager(
+                    fetch_fn=fetch_candles_batch_sync,
+                    interval=5.0,
+                )
+                self._feed_mgr.set_critical([
+                    f"{a}-USD" for a in CORE_LONG_TERM_ASSETS
+                ])
+                self._feed_mgr.start()
+                logger.info("SmartFeed refresh manager started")
+            except Exception as e:
+                logger.warning("SmartFeed initialization failed: %s", e)
+                self._feed_mgr = None
+
         self._arb_scanner: Optional[Any] = None
         if self._pm_client:
             try:
@@ -653,6 +986,106 @@ class PortfolioOptimizer:
             except Exception as e:
                 logger.warning("Knowledge gap analyzer setup failed: %s", e)
 
+        # Funding rate contrarian — global Binance funding signal
+        self._funding_contrarian = _FundingRateContrarian(min_abs_funding_bps=0.1)
+
+        # Candle-based order-flow strategies (deterministic, no external data)
+        self._order_flow_cvd = _OrderFlowCVD(lookback=30, divergence_bars=6, min_conf=0.35)
+        self._wick_pressure = _WickPressureFlow(lookback=20, threshold=0.12, min_conf=0.35)
+
+        # On-chain exchange-netflow signal (CoinGecko, injectable fetch)
+        self._exchange_netflow = _ExchangeNetflowSignal(cache_ttl=600.0, trend_window=24)
+
+        # On-chain stablecoin supply-flow macro gauge (BTC risk appetite)
+        self._stablecoin_flow = _StablecoinFlowSignal(cache_ttl=900.0, trend_window=30)
+
+        # Rust rebalancer / stair-step bots — "set an allocation and let it run"
+        self.rebalance_preset = os.getenv("REBALANCE_PRESET", "core_balanced")
+        self.rebalance_drift_threshold = float(os.getenv("REBALANCE_DRIFT", "0.05"))
+        self.rebalance_profit_take_pct = float(os.getenv("REBALANCE_PROFIT_TAKE", "0.25"))
+        self.rebalance_min_notional = float(os.getenv("REBALANCE_MIN_NOTIONAL", "10.0"))
+        self.stairstep_enabled = str(os.getenv("STAIRSTEP_ENABLED", "true")).lower() in (
+            "1", "true", "yes", "y", "on")
+        raw_syms = os.getenv("STAIRSTEP_SYMBOLS", "XRP-USD,XLM-USD,MON-USD")
+        self._stairstep_symbols = [s.strip() for s in raw_syms.split(",") if s.strip()]
+        self._rebalance_bot: Optional[Any] = None
+        self._stairstep_engine: Optional[Any] = None
+
+        # On-chain flow analysis — CoinGecko exchange flow per-product signals
+        self._onchain_flow: Optional[Any] = None
+        try:
+            from coinbase.src.strategies.onchain_flows import OnChainFlowStrategy
+            self._onchain_flow = OnChainFlowStrategy(
+                cache_ttl=300,
+                volume_spike_threshold=3.0,
+                min_confidence=0.30,
+            )
+            logger.info("OnChainFlowStrategy enabled")
+        except Exception as e:
+            logger.debug("OnChainFlowStrategy init failed: %s", e)
+
+        # Cross-asset macro regime engine — gates risk based on DXY, yields, VIX, gold
+        self._cross_asset_regime: Optional[_CrossAssetRegimeEngine] = None
+        if _HAS_CROSS_ASSET_REGIME:
+            try:
+                self._cross_asset_regime = _CrossAssetRegimeEngine(cache_ttl_s=300, lookback=90)
+                logger.info("CrossAssetRegimeEngine enabled")
+            except Exception as e:
+                logger.debug("CrossAssetRegimeEngine init failed: %s", e)
+
+        # Macro risk engine — composite macro risk score
+        self._macro_risk: Optional[_MacroRiskEngine] = None
+        if _HAS_MACRO_RISK:
+            try:
+                self._macro_risk = _MacroRiskEngine(cache_ttl=600)
+                logger.info("MacroRiskEngine enabled")
+            except Exception as e:
+                logger.debug("MacroRiskEngine init failed: %s", e)
+
+        # Bayesian signal ensemble — tracks strategy win rates, blends signals
+        self._ensemble_blender: Optional[_BayesianSignalBlender] = None
+        if _HAS_BAYESIAN_ENSEMBLE:
+            try:
+                self._ensemble_blender = _BayesianSignalBlender(
+                    prior_alpha=1.0, prior_beta=1.0, decay_half_life=50,
+                )
+                logger.info("BayesianSignalBlender enabled")
+            except Exception as e:
+                logger.debug("BayesianSignalBlender init failed: %s", e)
+
+        # Meta-learning signal source performance tracker
+        self._meta_signal_performance: Dict[str, Dict[str, float]] = {}
+        self._meta_source_weights: Dict[str, float] = {}
+
+        # Order flow / microstructure engine
+        self._order_flow_engine: Optional[_OrderFlowEngine] = None
+        if _HAS_ORDER_FLOW:
+            try:
+                self._order_flow_engine = _OrderFlowEngine(window=100, eval_interval=10.0)
+                logger.info("OrderFlowEngine enabled")
+            except Exception as e:
+                logger.debug("OrderFlowEngine init failed: %s", e)
+
+        # Smart money flow / CVD microstructure strategy
+        self._smart_money_flow: Optional[_SmartMoneyFlowStrategy] = None
+        if _HAS_SMART_MONEY_FLOW:
+            try:
+                self._smart_money_flow = _SmartMoneyFlowStrategy(
+                    cvd_lookback=14, absorption_vol_mult=2.0,
+                )
+                logger.info("SmartMoneyFlowStrategy enabled")
+            except Exception as e:
+                logger.debug("SmartMoneyFlowStrategy init failed: %s", e)
+
+        # Wash-sale tracking — 30-day cooldown per sold currency
+        self._wash_sale_cooldown: Dict[str, float] = {}
+
+        # Parameter optimization state
+        self._param_opt_ranges: Dict[str, List[_ParamRange]] = {}
+        self._param_opt_results: Dict[str, Dict[str, Any]] = {}
+        self._last_param_opt_ts: float = 0.0
+        self._param_opt_interval: float = 86400.0 * 7  # weekly
+
         # Optionally instantiate the ConfidenceEngine (signal modifiers)
         self.confidence_engine = None
         if _HAS_CONFIDENCE_ENGINE:
@@ -669,6 +1102,51 @@ class PortfolioOptimizer:
         self._load_from_store()
         self._load_graph_universe()
         self._refresh_capital_policy()
+
+        # Health server state (exposed via /health)
+        self._tick_count = 0
+        self._last_tick_ts = 0.0
+        self._health_alerts: List[str] = []
+        self._start_ts = time.time()
+        self._health_server: Optional[Any] = None
+        health_port = int(os.getenv("OPTIMIZER_HEALTH_PORT", "0") or 0)
+        if health_port:
+            try:
+                from coinbase.src.health_server import HealthServer, build_optimizer_status
+                self._health_server = HealthServer(
+                    health_port, lambda: build_optimizer_status(self), name="optimizer"
+                )
+                self._health_server.start()
+            except Exception as e:
+                logger.warning("Optimizer health server failed: %s", e)
+
+        # Correlation clusters for portfolio risk management
+        self._correlation_clusters = {
+            "btc_eth": {"BTC", "ETH"},
+            "l1_solana": {"SOL", "NEAR", "APT", "SUI", "SEI"},
+            "l1_eth_competitors": {"AVAX", "DOT", "POL", "ADA", "ATOM"},
+            "defi": {"UNI", "LINK", "AAVE", "CRV", "MKR"},
+            "meme": {"DOGE", "SHIB", "PEPE", "BONK", "TRUMP", "FLOKI"},
+            "layer2": {"ARB", "OP", "BASE"},
+            "oracles": {"LINK", "PYTH", "TRB"},
+            "storage": {"FIL", "STORJ", "AR"},
+        }
+        self._max_cluster_exposure_pct = 0.30  # Max 30% per correlation cluster
+        
+        # Signal pulse tracking (for signal quality filtering)
+        self._signal_pulses: Dict[str, Dict] = {}
+        self._pulse_window_s = 300.0  # 5 minutes
+        self._min_pulse_count = 2  # Minimum pulses before considering signal valid
+        self._max_flip_count = 2  # Max direction flips before signal is noise
+        # Last detected opportunities (used as route-planning context).
+        # Initialised here so routing helpers are safe before the first tick.
+        self._last_detected_opportunities: List["Opportunity"] = []
+
+        # Execution engine — bracket order placement with stop-loss / take-profit
+        self._exec_engine: Optional[Any] = None
+        self._bracket_mgr: Optional[Any] = None
+        self._bracket_state_path: str = "data/optimizer_brackets.json"
+        self._init_execution_engine()
 
     def _load_from_store(self):
         """Restore state from Neo4j (if available) or SQLite."""
@@ -707,6 +1185,92 @@ class PortfolioOptimizer:
                 self.neo4j_store.prune_bt_cache()
             except Exception as e:
                 logger.warning("Neo4j save failed: %s", e)
+
+    def _init_execution_engine(self):
+        if not _HAS_EXECUTION_ENGINE:
+            logger.warning("Execution engine not available – falling back to direct CLI orders")
+            return
+        try:
+            env = self.cli.environment
+            cb = _CBClient(environment=env)
+            self._exec_engine = _NativeExecutionEngine(cb, dry_run=self.dry_run)
+            self._bracket_mgr = _BracketManager(self._exec_engine)
+            self._restore_brackets()
+            logger.info("Execution engine initialised (dry_run=%s)", self.dry_run)
+        except Exception as e:
+            logger.warning("Execution engine init failed: %s", e)
+            self._exec_engine = None
+            self._bracket_mgr = None
+
+    def _restore_brackets(self):
+        if not self._bracket_mgr:
+            return
+        try:
+            if os.path.exists(self._bracket_state_path):
+                with open(self._bracket_state_path) as f:
+                    saved = json.load(f)
+                for bid, b in saved.items():
+                    self._bracket_mgr._brackets[bid] = b
+                logger.info("Restored %d bracket(s) from %s", len(saved), self._bracket_state_path)
+        except Exception as e:
+            logger.debug("Bracket state restore failed: %s", e)
+
+    def _save_brackets(self):
+        if not self._bracket_mgr:
+            return
+        try:
+            os.makedirs("data", exist_ok=True)
+            with open(self._bracket_state_path, "w") as f:
+                json.dump(self._bracket_mgr._brackets, f, indent=2, default=str)
+        except Exception as e:
+            logger.debug("Bracket state save failed: %s", e)
+
+    def _poll_brackets(self):
+        if not self._bracket_mgr:
+            return
+        if self.dry_run:
+            return
+        try:
+            brackets = self._bracket_mgr.active_brackets()
+            if not brackets:
+                return
+            for bid, b in list(brackets.items()):
+                if b.get("status") != "OPEN":
+                    continue
+                pid = b.get("product_id", "")
+                if not pid:
+                    continue
+                try:
+                    resp = self.cli.best_bid_ask(pid)
+                    if isinstance(resp, dict) and "bids" in resp and "asks" in resp:
+                        mid = (float(resp["bids"][0][0]) + float(resp["asks"][0][0])) / 2.0
+                    elif isinstance(resp, list) and len(resp) > 0:
+                        ticker = resp[0] if isinstance(resp[0], dict) else resp
+                        mid = float(ticker.get("price", 0))
+                    else:
+                        continue
+                    if mid <= 0:
+                        continue
+                    initial_stop_dist = b.get("initial_stop_dist", 0)
+                    side = b.get("side", "BUY")
+                    r_multiple = (mid - float(b.get("entry_price", mid))) / max(initial_stop_dist, 0.001)
+                    if side.upper() == "SELL":
+                        r_multiple = -r_multiple
+                    age_s = time.time() - float(b.get("created_at", time.time()))
+                    max_hold_s = 86400  # 24h default for optimizer brackets
+                    self._bracket_mgr.update_trailing_stop(
+                        bid, mid, mid, mid,
+                        initial_stop_dist, r_multiple, max_hold_s, age_s,
+                    )
+                    self._bracket_mgr.update_trailing_take_profit(
+                        bid, mid, mid, mid,
+                        initial_stop_dist, r_multiple, max_hold_s, age_s,
+                    )
+                except Exception as e:
+                    logger.debug("Bracket %s poll error: %s", bid, e)
+            self._save_brackets()
+        except Exception as e:
+            logger.debug("Bracket poll failed: %s", e)
 
     def _load_graph_universe(self, *, limit: int = 5000, only_coinbase: bool = True) -> None:
         if not _HAS_COINBASE_GRAPH:
@@ -753,6 +1317,45 @@ class PortfolioOptimizer:
     def _graph_multiplier_for_product(self, product_id: str, *, max_boost: float = 0.25) -> float:
         score = self._graph_score_for_product(product_id)
         return max(1.0 - max_boost, min(1.0 + max_boost, 1.0 + (score - 0.5) * (2.0 * max_boost)))
+
+    # ── Pulse tracking for signal quality filtering ──────────────────
+    #  (The live implementations of _pulse_key / _record_pulse /
+    #   _prune_pulses / _is_pulse_quality_sufficient are defined further
+    #   below; _find_best_route_decision / _route_decision_from_payload
+    #   are also class methods defined later.)
+
+    def _get_cluster_for_currency(self, currency: str) -> Optional[str]:
+        """Get correlation cluster for a currency."""
+        c = currency.upper().replace("-USD", "")
+        for cluster_name, assets in self._correlation_clusters.items():
+            if c in assets:
+                return cluster_name
+        return None
+
+    def _cluster_exposure_pct(self, cluster: str) -> float:
+        """Calculate current portfolio exposure to a correlation cluster."""
+        if not self.state:
+            return 0.0
+        cluster_assets = self._correlation_clusters.get(cluster, set())
+        total_value = self.state.total_value
+        if total_value <= 0:
+            return 0.0
+        cluster_value = sum(
+            h.get("value", 0) for h in self.state.holdings.values()
+            if h.get("currency", "").upper().replace("-USD", "") in cluster_assets
+        )
+        return cluster_value / total_value
+
+    def _check_cluster_limit(self, currency: str, additional_usd: float) -> bool:
+        """Check if adding a position would exceed cluster exposure limits."""
+        cluster = self._get_cluster_for_currency(currency)
+        if not cluster:
+            return True
+        if not self.state:
+            return True
+        current_pct = self._cluster_exposure_pct(cluster)
+        new_pct = current_pct + (additional_usd / max(self.state.total_value, 1))
+        return new_pct <= self._max_cluster_exposure_pct
 
     def _normalize_capital_policy(self, policy: Optional[dict] = None) -> dict:
         raw = dict(DEFAULT_CAPITAL_POLICY)
@@ -881,6 +1484,187 @@ class PortfolioOptimizer:
             self.store.set_meta(self._seen_products_meta_prefix + product_id, now.isoformat())
             return 0.0
 
+    def _kelly_size(
+        self,
+        win_rate: float,
+        avg_win_pct: float,
+        avg_loss_pct: float,
+        confidence: float,
+        *,
+        kelly_fraction: float = 0.25,
+        max_notional: float = 5000.0,
+        min_notional: float = 50.0,
+        capital_limit: Optional[float] = None,
+    ) -> float:
+        """Kelly Criterion position sizing based on backtest statistics.
+        
+        Kelly % = (win_rate * avg_win - (1-win_rate) * avg_loss) / avg_win
+        Then scaled by confidence and capped at kelly_fraction of bankroll.
+        """
+        if not self.state:
+            return min_notional
+        
+        if win_rate <= 0 or win_rate >= 1:
+            win_rate = 0.5
+        if avg_win_pct <= 0:
+            avg_win_pct = 2.0
+        if avg_loss_pct <= 0:
+            avg_loss_pct = 1.5
+            
+        win_rate = _clamp(win_rate, 0.01, 0.99)
+        
+        kelly_pct = (win_rate * avg_win_pct - (1 - win_rate) * avg_loss_pct) / avg_win_pct
+        kelly_pct = max(kelly_pct, 0.0)
+        
+        effective_kelly = kelly_pct * kelly_fraction * _clamp(confidence, 0.0, 1.0)
+        effective_kelly = _clamp(effective_kelly, 0.0, 0.10)
+        
+        base = self._deployable_capital() * effective_kelly
+        lo = min_notional
+        hi = max_notional
+        if capital_limit is not None:
+            base = min(base, max(0.0, capital_limit))
+            # Never exceed an explicitly-provided capital limit, even if it is
+            # smaller than the minimum-notional floor (prevents over-deployment).
+            lo = min(min_notional, capital_limit)
+            hi = min(max_notional, capital_limit)
+        return _clamp(base, lo, hi)
+
+    def _regime_strategy_weight(self, strategy: str, regime: str) -> float:
+        """Return weight multiplier for a strategy given current market regime.
+        
+        Boosts strategies suited for the regime, penalizes unsuitable ones.
+        """
+        if regime == "trending":
+            trend_boost = {"ema_cross": 1.5, "macd": 1.4, "trix": 1.3, "adx": 1.5, 
+                          "psar": 1.3, "hma": 1.3, "aroon": 1.2, "ichimoku": 1.3,
+                          "dmi_cross": 1.4, "supertrend": 1.5, "vortex": 1.3, "coppock": 1.2,
+                          "kama": 1.2, "dpo": 1.1, "elder_ray": 1.2}
+            mr_penalty = {"rsi_revert": 0.5, "zscore_revert": 0.5, "vwap_revert": 0.5,
+                         "cmo": 0.6, "williams_r": 0.6, "stoch": 0.6, "rsi_fail": 0.5,
+                         "mean_reversion": 0.5, "gap_revert": 0.5, "de_marker": 0.6,
+                         "ultimate_osc": 0.6, "fisher": 0.6}
+            return trend_boost.get(strategy, mr_penalty.get(strategy, 1.0))
+        
+        elif regime == "ranging":
+            mr_boost = {"rsi_revert": 1.5, "zscore_revert": 1.4, "vwap_revert": 1.4,
+                       "cmo": 1.3, "williams_r": 1.3, "stoch": 1.2, "rsi_fail": 1.3,
+                       "mean_reversion": 1.4, "gap_revert": 1.3, "de_marker": 1.2,
+                       "ultimate_osc": 1.2, "fisher": 1.2}
+            trend_penalty = {"ema_cross": 0.5, "macd": 0.5, "trix": 0.5, "adx": 0.5,
+                            "psar": 0.5, "hma": 0.6, "aroon": 0.6, "ichimoku": 0.6,
+                            "dmi_cross": 0.5, "supertrend": 0.5, "vortex": 0.6, "coppock": 0.6,
+                            "kama": 0.6, "dpo": 0.7, "elder_ray": 0.6}
+            return mr_boost.get(strategy, trend_penalty.get(strategy, 1.0))
+        
+        elif regime == "volatile":
+            vol_boost = {"boll_break": 1.4, "keltner": 1.3, "donchian": 1.3,
+                        "bb_squeeze": 1.5, "atr_channel": 1.3, "std_channel": 1.3,
+                        "vol_prof": 1.2, "liq_vac": 1.3, "vcp": 1.2, "choppiness": 1.2,
+                        "mass_idx": 1.1, "range_exp_idx": 1.2}
+            return vol_boost.get(strategy, 1.0)
+        
+        elif regime == "quiet":
+            return 0.7
+        
+        return 1.0
+
+    def _pulse_key(self, product_id: str, strategy: str, direction: str) -> str:
+        return f"{product_id}:{strategy}:{direction}"
+
+    def _record_pulse(
+        self,
+        product_id: str,
+        strategy: str,
+        direction: str,
+        confidence: float,
+        price: float,
+    ) -> Dict[str, Any]:
+        """Record a signal pulse for quality tracking."""
+        now = time.time()
+        key = self._pulse_key(product_id, strategy, direction)
+        
+        # Simple in-memory pulse tracking
+        if not hasattr(self, '_signal_pulses'):
+            self._signal_pulses = {}
+        
+        existing = self._signal_pulses.get(key)
+        pulse_window_s = 300.0  # 5 minutes
+        
+        if existing:
+            if now - existing["last_ts"] > pulse_window_s:
+                # Reset pulse count if window expired
+                existing["pulse_count"] = 1
+                existing["first_ts"] = now
+                existing["last_ts"] = now
+                existing["avg_confidence"] = confidence
+                existing["min_price"] = price
+                existing["max_price"] = price
+                existing["flip_count"] = 0
+            else:
+                existing["pulse_count"] += 1
+                existing["last_ts"] = now
+                n = existing["pulse_count"]
+                existing["avg_confidence"] = ((existing["avg_confidence"] * (n - 1)) + confidence) / n
+                existing["min_price"] = min(existing["min_price"], price)
+                existing["max_price"] = max(existing["max_price"], price)
+        else:
+            self._signal_pulses[key] = {
+                "strategy": strategy,
+                "direction": direction,
+                "product_id": product_id,
+                "pulse_count": 1,
+                "first_ts": now,
+                "last_ts": now,
+                "avg_confidence": confidence,
+                "min_price": price,
+                "max_price": price,
+                "flip_count": 0,
+            }
+            existing = self._signal_pulses[key]
+        
+        # Track flips (direction changes for same product/strategy)
+        opp_key = self._pulse_key(product_id, strategy, "BUY" if direction == "SELL" else "SELL")
+        opp = self._signal_pulses.get(opp_key)
+        if opp and now - opp["last_ts"] < pulse_window_s:
+            existing["flip_count"] += 1
+        
+        return existing
+
+    def _prune_pulses(self) -> None:
+        """Remove stale pulse records."""
+        if not hasattr(self, '_signal_pulses'):
+            return
+        now = time.time()
+        pulse_window_s = 300.0
+        stale = [k for k, v in self._signal_pulses.items() if now - v["last_ts"] > pulse_window_s * 4]
+        for k in stale:
+            del self._signal_pulses[k]
+
+    def _is_pulse_valid(self, pulse: Dict) -> bool:
+        """Check if a pulse has enough quality to be actionable."""
+        if pulse["pulse_count"] < self._min_pulse_count:
+            return False
+        if pulse["flip_count"] > self._max_flip_count:
+            return False
+        if pulse["avg_confidence"] < 0.3:
+            return False
+        return True
+
+    def _is_pulse_quality_sufficient(self, product_id: str, strategy: str, direction: str, min_pulses: int = 2, max_flips: int = 1) -> bool:
+        """Check if pulse quality meets minimum threshold."""
+        if not hasattr(self, '_signal_pulses'):
+            return True  # No tracking = allow
+        key = self._pulse_key(product_id, strategy, direction)
+        pulse = self._signal_pulses.get(key)
+        if not pulse:
+            return False
+        if pulse["pulse_count"] < min_pulses:
+            return False
+        if pulse["flip_count"] > max_flips:
+            return False
+        return True
+
     def _risk_reward_size(
         self,
         expected_return_pct: float,
@@ -905,7 +1689,14 @@ class PortfolioOptimizer:
         size = base * rr * quality * liq
         if capital_limit is not None:
             size = min(size, max(0.0, capital_limit))
-        return _clamp(size, min_notional, max_notional)
+        lo = min_notional
+        hi = max_notional
+        if capital_limit is not None:
+            # Never exceed an explicitly-provided capital limit, even if it is
+            # smaller than the minimum-notional floor (prevents over-deployment).
+            lo = min(min_notional, capital_limit)
+            hi = min(max_notional, capital_limit)
+        return _clamp(size, lo, hi)
 
     def _estimate_trade_volatility_pct(
         self,
@@ -1180,6 +1971,115 @@ class PortfolioOptimizer:
         opp.order_id = executed_steps[-1]["order_id"] if executed_steps else "route"
         return True
 
+    def _detect_sr_levels_for_product(
+        self, closes: List[float], highs: List[float], lows: List[float]
+    ) -> Tuple[List[_SRLevel], float]:
+        """Detect support/resistance levels and ATR for a product.
+
+        Returns (levels, atr_value).
+        """
+        if len(closes) < 30 or len(highs) < 30 or len(lows) < 30:
+            return [], 0.0
+        atr = _estimate_atr(closes, highs, lows, 14)
+        levels = _build_sr_levels(highs, lows, closes, min_touches=2)
+        # Filter to levels within reasonable distance (5 ATR max)
+        current = closes[-1] if closes else 0.0
+        if current > 0 and atr > 0:
+            levels = [L for L in levels if abs(L.price - current) / max(atr, 1e-9) < 5.0]
+        return levels, atr
+
+    def _compute_dynamic_stop(
+        self,
+        entry_price: float,
+        side: str,
+        atr: float,
+        regime: str,
+        levels: List[_SRLevel],
+        base_stop_pct: float,
+    ) -> Tuple[float, float, str]:
+        """Compute a volatility-regime-adjusted, S/R-aware stop loss.
+
+        Returns (stop_loss_pct, new_atr_distance, reason_detail).
+        """
+        if entry_price <= 0 or atr <= 0:
+            return base_stop_pct, 0.0, "default"
+
+        # Volatility regime multiplier
+        vol_mult = {"volatile": 1.4, "trending": 1.1, "ranging": 0.8, "quiet": 0.7,
+                     "neutral": 1.0}.get(regime, 1.0)
+
+        atr_distance = max(base_stop_pct / 100.0, atr / entry_price * vol_mult)
+        stop_price = entry_price * (1.0 - atr_distance) if side == "BUY" else entry_price * (1.0 + atr_distance)
+
+        # Snap to nearest S/R level
+        sr_adjust = ""
+        if levels:
+            relevant = [L for L in levels
+                        if (L.kind == "support" and side == "BUY" and L.price < entry_price) or
+                           (L.kind == "resistance" and side == "SELL" and L.price > entry_price)]
+            if relevant:
+                nearest = min(relevant, key=lambda L: abs(L.price - stop_price))
+                snap_dist = abs(nearest.price - stop_price) / max(entry_price, 1e-9)
+                # Only snap if within 0.5 ATR of the level
+                if snap_dist < atr / entry_price * 0.5:
+                    stop_price = nearest.price * 0.995 if side == "BUY" else nearest.price * 1.005
+                    sr_adjust = f"sr_snap({nearest.kind}@{nearest.price:.2f})"
+
+        new_stop_pct = abs(stop_price - entry_price) / max(entry_price, 1e-9) * 100.0
+        new_stop_pct = max(new_stop_pct, 0.5)  # minimum 0.5% stop
+        new_atr = abs(stop_price - entry_price) / max(atr, 1e-9)
+
+        reason_parts = [f"atr={atr_distance*entry_price:.2f}"]
+        if vol_mult != 1.0:
+            reason_parts.append(f"vol_regime={regime}(x{vol_mult})")
+        if sr_adjust:
+            reason_parts.append(sr_adjust)
+        reason_detail = " ".join(reason_parts)
+
+        return round(new_stop_pct, 2), round(new_atr, 1), reason_detail
+
+    def _compute_sr_aware_exit_plan(
+        self,
+        currency: str,
+        confidence: float,
+        expected_return_pct: float = 0.0,
+        *,
+        trade_style: str = "momentum",
+        volatility_pct: float = 60.0,
+        spread_pct: float = 0.0,
+        hold_hint_hours: Optional[float] = None,
+        side: str = "BUY",
+        closes: Optional[List[float]] = None,
+        highs: Optional[List[float]] = None,
+        lows: Optional[List[float]] = None,
+    ) -> Dict[str, float]:
+        """Compute exit plan with automatic S/R detection and volatility-regime adjustment."""
+        sr_levels: List[_SRLevel] = []
+        atr_value = 0.0
+        regime = _detect_market_regime(
+            highs or [], lows or [], closes or []
+        ) if closes and highs and lows else "neutral"
+
+        if closes and highs and lows and len(closes) >= 30:
+            sr_levels, atr_value = self._detect_sr_levels_for_product(closes, highs, lows)
+
+        entry_price = closes[-1] if closes else 0.0
+
+        return self._compute_exit_plan(
+            currency=currency,
+            confidence=confidence,
+            expected_return_pct=expected_return_pct,
+            trade_style=trade_style,
+            volatility_pct=volatility_pct,
+            spread_pct=spread_pct,
+            hold_hint_hours=hold_hint_hours,
+            side=side,
+            sr_levels=sr_levels if sr_levels else None,
+            regime=regime,
+            atr_value=atr_value,
+            entry_price=entry_price,
+        )
+
     def _compute_exit_plan(
         self,
         currency: str,
@@ -1190,8 +2090,18 @@ class PortfolioOptimizer:
         volatility_pct: float = 60.0,
         spread_pct: float = 0.0,
         hold_hint_hours: Optional[float] = None,
+        side: str = "BUY",
+        sr_levels: Optional[List[_SRLevel]] = None,
+        regime: str = "neutral",
+        atr_value: float = 0.0,
+        entry_price: float = 0.0,
     ) -> Dict[str, float]:
-        """Compute a conservative execution plan for a candidate trade."""
+        """Compute a conservative execution plan for a candidate trade.
+
+        When sr_levels, regime, and atr_value are supplied, the stop loss
+        is dynamically adjusted for the volatility regime and snapped to
+        nearby support/resistance levels for tighter, more intelligent placement.
+        """
         profiles = {
             "momentum": {"stop_mult": 1.00, "rr_min": 1.8, "hold": 36.0, "hold_cap": 120.0, "target_floor": 6.0, "stop_floor": 2.0, "target_cap": 45.0, "spread_mult": 0.35},
             "new_listing": {"stop_mult": 1.20, "rr_min": 2.2, "hold": 18.0, "hold_cap": 72.0, "target_floor": 8.0, "stop_floor": 2.5, "target_cap": 50.0, "spread_mult": 0.45},
@@ -1210,8 +2120,23 @@ class PortfolioOptimizer:
         conf = _clamp(confidence, 0.05, 0.99)
         spread = max(spread_pct, 0.0)
 
-        stop_pct = profile["stop_floor"] + (vol * profile["stop_mult"] * (1.18 - (conf * 0.45))) + (spread * profile["spread_mult"])
-        stop_pct = _clamp(stop_pct, profile["stop_floor"], profile["target_cap"])
+        # Dynamic S/R-aware stop when sufficient data is available
+        dynamic_stop_detail = ""
+        if sr_levels and atr_value > 0 and entry_price > 0 and regime:
+            dynamic_stop_pct, atr_dist, detail = self._compute_dynamic_stop(
+                entry_price=entry_price,
+                side=side,
+                atr=atr_value,
+                regime=regime,
+                levels=sr_levels,
+                base_stop_pct=20.0,  # generous default, overridden below
+            )
+            # Use the dynamic stop as stop-loss (capped by profile bounds)
+            stop_pct = _clamp(dynamic_stop_pct, max(profile["stop_floor"], 0.5), profile["target_cap"])
+            dynamic_stop_detail = f" dyn_stop({detail})"
+        else:
+            stop_pct = profile["stop_floor"] + (vol * profile["stop_mult"] * (1.18 - (conf * 0.45))) + (spread * profile["spread_mult"])
+            stop_pct = _clamp(stop_pct, profile["stop_floor"], profile["target_cap"])
 
         target_pct = max(expected_return_pct, stop_pct * profile["rr_min"], profile["target_floor"])
         target_pct = _clamp(target_pct, profile["target_floor"], profile["target_cap"])
@@ -1231,6 +2156,7 @@ class PortfolioOptimizer:
             "holding_period_hours": round(hold_hours, 1),
             "risk_pct": round(stop_pct, 1),
             "expected_return_pct": round(expected_return_pct, 1),
+            "_dynamic_stop_detail": dynamic_stop_detail,
         }
 
     def _latency_adjusted_priority(
@@ -1501,6 +2427,46 @@ class PortfolioOptimizer:
                 logger.warning("  → Approved route failed; aborting without direct fallback")
                 return
 
+        # If this was a bracket trade, place the bracket directly with approved prices
+        if entry.get("bracket") and self._bracket_mgr:
+            stop_price = float(entry.get("stop_price", 0))
+            target_price = float(entry.get("target_price", 0))
+            entry_price = float(entry.get("entry_price_est", 0))
+            approved_base_qty = float(entry.get("base_qty", 0))
+            bracket_base_size = max(approved_base_qty, base_qty, 0.0001)
+            use_entry_price = entry_price or (stop_price * 1.2 if side.upper() == "BUY" else stop_price * 0.8)
+            bracket = self._bracket_mgr.place_bracket(
+                product_id=product_id,
+                side=side.upper(),
+                base_size=bracket_base_size,
+                entry_price=use_entry_price,
+                stop_price=stop_price,
+                target_price=target_price,
+                strategy_id="opt_approved",
+            )
+            if bracket.get("status") == "OPEN":
+                bid = bracket.get("bracket_id", bracket.get("entry_result", {}).get("client_order_id", "unknown"))
+                logger.info("  → APPROVED BRACKET PLACED id=%s entry=$%.2f stop=$%.2f target=$%.2f",
+                             bid, use_entry_price, stop_price, target_price)
+                self._record_trade(Opportunity(
+                    opp_type=OpportunityType.STRATEGY_SIGNAL,
+                    currency=currency, side=side, size_usd=size_usd,
+                    reason=f"[APPROVED] {reason}", product_id=product_id,
+                    entry_price_est=use_entry_price,
+                ), total_fee=0.0)
+            else:
+                err = bracket.get("entry_result", {}).get("error", "unknown")
+                logger.warning("  → Approved bracket placement failed: %s", err)
+                entry_result = bracket.get("entry_result", {})
+                if entry_result.get("success") and entry_result.get("order_id"):
+                    try:
+                        self._bracket_mgr.force_flatten_bracket(
+                            bracket.get("bracket_id", ""), reason="approved_bracket_failed"
+                        )
+                    except Exception as flatten_err:
+                        logger.error("  → Flat close after approved bracket failure also failed: %s", flatten_err)
+            return
+
         if is_quote:
             preview = self.cli.preview_order(product_id, side, size_usd, is_quote=True)
         else:
@@ -1567,11 +2533,44 @@ class PortfolioOptimizer:
                 break
             except Exception as e:
                 logger.error("Tick failed: %s", e, exc_info=True)
+            self._tick_count += 1
+            self._last_tick_ts = time.time()
+            # Poll active brackets between ticks (updates trailing stops / take-profits)
+            self._poll_brackets()
+            # Alert if ticks stall
+            self._health_alerts = [
+                a for a in self._health_alerts
+                if "stale" not in a
+            ]
             logger.info("Sleeping %ds...", self.interval)
             time.sleep(self.interval)
 
     def stop(self):
         self.running = False
+        if self._bracket_mgr:
+            self._bracket_mgr.stop_polling()
+            self._save_brackets()
+        if self._lock_fd is not None:
+            try:
+                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+                os.close(self._lock_fd)
+            except Exception:
+                pass
+            self._lock_fd = None
+            try:
+                os.remove("data/optimizer.lock")
+            except Exception:
+                pass
+        if self._health_server:
+            try:
+                self._health_server.stop()
+            except Exception:
+                pass
+        if self._feed_mgr:
+            try:
+                self._feed_mgr.stop()
+            except Exception:
+                pass
         if self.graph_store:
             try:
                 self.graph_store.close()
@@ -1587,11 +2586,28 @@ class PortfolioOptimizer:
         self._check_pending_approvals()
         self._fetch_state()
         self._apply_bear_market_policy()
+
+        # Promote held positions to critical tier so their feeds stay fresh
+        if self._feed_mgr and self.state:
+            for currency, h in self.state.holdings.items():
+                if h.get("value", 0) >= self.min_value and currency not in ("USDC", "USDT", "DAI"):
+                    pid = h.get("product_id", f"{currency}-USD")
+                    self._feed_mgr.add_position(pid)
+
+        # Instant-refresh all critical feeds (core pairs + positions) before detection
+        if self._feed_mgr:
+            try:
+                self._feed_mgr.refresh_critical_now()
+            except Exception as e:
+                logger.debug("SmartFeed instant refresh: %s", e)
+
         opportunities = self._detect_opportunities()
+        opportunities = self._apply_cross_asset_risk_filter(opportunities)
         self._last_detected_opportunities = list(opportunities)
         opportunities.sort(key=lambda o: o.priority, reverse=True)
         self._write_trade_plans(opportunities)
         self._write_signal_cache(opportunities)
+        self._write_enhanced_state()
         logger.info("Found %d opportunities", len(opportunities))
         for opp in opportunities[:5]:  # max 5 per tick
             self._process_opportunity(opp)
@@ -1651,6 +2667,7 @@ class PortfolioOptimizer:
             if currency in ("USDC", "USDT", "DAI"):
                 price = 1.0
                 product_id = ""
+                price_info = {"price_percentage_change_24h": 0.0, "volume_24h": 0.0}
             else:
                 product_id = self.cli.best_product(currency, "SELL") or f"{currency}-USD"
                 price_info = self.cli.get_price(product_id)
@@ -1721,20 +2738,764 @@ class PortfolioOptimizer:
                 buys[currency] = (tc - min(tc, size * avg), max(0.0, ts - size))
         return {cur: tc / ts for cur, (tc, ts) in buys.items() if ts > 0}
 
+    # ── Signal Ensemble / Meta Learning ─────────────────────────────
+
+    def _signal_ensemble_blend(self, opportunities: List[Opportunity]) -> List[Opportunity]:
+        """Apply Bayesian signal ensemble to blend opportunity priorities.
+
+        Uses per-strategy win-rate posteriors to weight signals, then
+        ranks by ensemble score (score × direction agreement boost).
+        Also performs meta-learning: tracks per-source performance and
+        adjusts source weights online.
+        """
+        if not opportunities or not self._ensemble_blender:
+            return opportunities
+
+        try:
+            regime = "unknown"
+            if self.state:
+                for opp in opportunities[:1]:
+                    if opp.product_id and self.state:
+                        pass
+            # Wrap opportunities into ensemble format
+            from coinbase.src.protocols import (
+                Direction,
+                InstrumentType,
+                Opportunity as EnsembleOpp,
+            )
+
+            ensemble_opps = []
+            for opp in opportunities:
+                stop = round(opp.entry_price_est * (1 - opp.stop_loss_pct / 100.0), 6) if opp.stop_loss_pct else 0.0
+                target = round(opp.entry_price_est * (1 + opp.take_profit_pct / 100.0), 6) if opp.take_profit_pct else 0.0
+                rr = (opp.take_profit_pct / opp.stop_loss_pct) if opp.stop_loss_pct else 0.0
+                conf = float(opp.meta.get("confidence", max(0.0, min(1.0, opp.priority))))
+                eo = EnsembleOpp(
+                    product_id=opp.product_id or f"{opp.currency}-USD",
+                    direction=Direction.LONG if opp.side == "BUY" else Direction.SHORT,
+                    instrument_type=InstrumentType.SPOT,
+                    entry_price=opp.entry_price_est,
+                    stop_price=stop,
+                    target_price=target,
+                    risk_reward=rr,
+                    confidence=conf,
+                    reason=opp.reason,
+                    strategy_name=opp.meta.get("strategy", opp.meta.get("source", "unknown")),
+                    score=opp.priority,
+                    meta=dict(opp.meta),
+                )
+                ensemble_opps.append(eo)
+
+            blended = self._ensemble_blender.blend_signals(ensemble_opps, regime)
+
+            # Map blended scores back to original opportunities
+            blended_by_reason = {b.reason: b for b in blended}
+            for opp in opportunities:
+                eb = blended_by_reason.get(opp.reason)
+                if eb:
+                    opp.meta["ensemble_weight"] = eb.meta.get("bayesian_weight", 1.0)
+                    opp.meta["ensemble_win_rate"] = eb.meta.get("bayesian_win_rate", 0.0)
+                    opp.priority = min(eb.score, 0.99)
+
+            # Meta-learning: update source weight tracking
+            self._update_meta_source_weights(opportunities)
+
+        except Exception as e:
+            logger.debug("Signal ensemble blend failed: %s", e)
+
+        return opportunities
+
+    def _update_meta_source_weights(self, opportunities: List[Opportunity]) -> None:
+        """Track signal source performance and update meta-weights.
+
+        Each signal source (strategy_engine, funding, onchain, orderflow, etc.)
+        gets a weight based on the average priority of its opportunities.
+        Sources with consistently low-priority signals are down-weighted.
+        """
+        source_priorities: Dict[str, List[float]] = {}
+        for opp in opportunities:
+            source = opp.meta.get("source", opp.meta.get("strategy", "unknown"))
+            if source not in source_priorities:
+                source_priorities[source] = []
+            source_priorities[source].append(opp.priority)
+
+        decay = 0.95
+        for source, priorities in source_priorities.items():
+            avg_p = sum(priorities) / max(len(priorities), 1)
+            prev = self._meta_source_weights.get(source, 1.0)
+            smoothed = prev * decay + avg_p * (1.0 - decay)
+            self._meta_source_weights[source] = round(smoothed, 3)
+
+    def _apply_meta_source_weights(self, opportunities: List[Opportunity]) -> List[Opportunity]:
+        """Apply learned meta source weights to scale opportunity priorities."""
+        if not self._meta_source_weights:
+            return opportunities
+        for opp in opportunities:
+            source = opp.meta.get("source", opp.meta.get("strategy", "unknown"))
+            meta_w = self._meta_source_weights.get(source, 1.0)
+            if meta_w < 0.5:
+                opp.meta["meta_source_penalty"] = meta_w
+                opp.priority *= meta_w
+        return opportunities
+
+    # ── Order Flow / Microstructure Detection ────────────────────────
+
+    def _detect_order_flow_signals(self) -> List[Opportunity]:
+        """Detect order flow and microstructure edge signals.
+
+        Uses OrderFlowEngine (spread z-score) and SmartMoneyFlowStrategy
+        (CVD divergence, volume absorption) to generate microstructure-aware
+        opportunities.
+        """
+        if time.time() - self.last_execution.get("order_flow", 0) < OP_COOLDOWN.get("order_flow", 600):
+            return []
+        if not self.state:
+            return []
+
+        ops: List[Opportunity] = []
+        remaining_buy_capacity = self._buy_capacity()
+        sell_candidates = {
+            h["currency"]: h for h in self.state.holdings.values()
+            if h["value"] >= self.min_value
+        } if self.state else {}
+
+        tracked_products = []
+        for cur, h in self.state.holdings.items():
+            if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
+                continue
+            pid = h.get("product_id", f"{cur}-USD")
+            tracked_products.append((cur, pid, h))
+
+        # ── OrderFlowEngine: spread-based signals ────────────────
+        if self._order_flow_engine:
+            try:
+                for cur, pid, h in tracked_products:
+                    price = to_float(h.get("price", 0))
+                    volume = to_float(h.get("volume_24h", 0))
+                    if price <= 0:
+                        continue
+                    # Estimate bid/ask from spread estimate
+                    spread_est = to_float(h.get("spread", 0.005))
+                    bid = price * (1.0 - spread_est / 2.0)
+                    ask = price * (1.0 + spread_est / 2.0)
+
+                    sig = self._order_flow_engine.evaluate(pid, bid, ask, price, volume)
+                    if not sig or sig.confidence < 0.30:
+                        continue
+
+                    conf = min(sig.confidence, 0.60)
+                    side = sig.action
+                    if side == "BUY" and remaining_buy_capacity < self.min_value:
+                        continue
+                    sell_h = sell_candidates.get(cur)
+                    if side == "SELL" and (not sell_h or sell_h.get("value", 0) < self.min_value):
+                        continue
+
+                    size = self._risk_reward_size(
+                        expected_return_pct=conf * 8.0,
+                        risk_pct=max((1.0 - conf) * 6.0 + 1.5, 1.0),
+                        confidence=conf,
+                        liquidity=0.65,
+                        cap_pct=0.006,
+                        max_notional=1200.0,
+                        min_notional=self.min_value,
+                        capital_limit=remaining_buy_capacity if side == "BUY" else None,
+                    )
+                    if side == "SELL" and sell_h:
+                        size = min(size, sell_h.get("value", 0))
+                    if size < self.min_value:
+                        continue
+                    if side == "BUY":
+                        remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+
+                    exit_plan = self._compute_exit_plan(
+                        cur, conf,
+                        expected_return_pct=conf * 8.0,
+                        trade_style="momentum" if side == "BUY" else "mean_reversion",
+                        side=side,
+                        volatility_pct=50.0,
+                    )
+                    ops.append(Opportunity(
+                        opp_type=OpportunityType.STRATEGY_SIGNAL,
+                        currency=pid,
+                        side=side,
+                        size_usd=size,
+                        reason=f"orderflow:spread_z={sig.spread_z:.1f} tight={sig.spread_tight} vol={sig.volume_24h:.0f}",
+                        priority=self._latency_adjusted_priority(
+                            conf * 0.6, trade_style="momentum",
+                        ),
+                        product_id=pid,
+                        entry_price_est=price,
+                        stop_loss_pct=exit_plan["stop_loss_pct"],
+                        take_profit_pct=exit_plan["take_profit_pct"],
+                        holding_period_hours=exit_plan["holding_period_hours"],
+                        expected_return_pct=exit_plan["expected_return_pct"],
+                        risk_pct=exit_plan["risk_pct"],
+                        meta={
+                            "source": "order_flow",
+                            "strategy": "order_flow",
+                            "confidence": conf,
+                            "spread_bps": sig.spread_bps,
+                            "spread_z": sig.spread_z,
+                            "signal_type": "microstructure",
+                            "trade_style": "momentum",
+                            "exit_plan": exit_plan,
+                        },
+                    ))
+            except Exception as e:
+                logger.debug("OrderFlowEngine detection failed: %s", e)
+
+        # ── SmartMoneyFlowStrategy: CVD / volume absorption ─────
+        if self._smart_money_flow:
+            try:
+                from coinbase.src.protocols import Bar, InstrumentType
+                for cur, pid, h in tracked_products:
+                    if self._feed_mgr:
+                        candles = self._feed_mgr.get_candles_batch([pid], granularity=3600, limit=60)
+                        clist = candles.get(pid, [])
+                        if not clist or len(clist) < 30:
+                            continue
+                        bars = []
+                        for c in reversed(clist):
+                            if isinstance(c, dict):
+                                bars.append(Bar(
+                                    open=to_float(c.get("open", 0)),
+                                    high=to_float(c.get("high", 0)),
+                                    low=to_float(c.get("low", 0)),
+                                    close=to_float(c.get("close", 0)),
+                                    volume=to_float(c.get("volume", 0)),
+                                    timestamp=c.get("time", c.get("timestamp", 0)),
+                                    instrument_type=InstrumentType.SPOT,
+                                ))
+                        if len(bars) < 30:
+                            continue
+                        setup = self._smart_money_flow.on_bar(bars[-1], bars[:-1])
+                        if not setup:
+                            continue
+                        conf = min(setup.confidence, 0.55)
+                        side = "BUY" if setup.direction.value == "long" else "SELL"
+                        if side == "BUY" and remaining_buy_capacity < self.min_value:
+                            continue
+                        sell_h = sell_candidates.get(cur)
+                        if side == "SELL" and (not sell_h or sell_h.get("value", 0) < self.min_value):
+                            continue
+                        size = self._risk_reward_size(
+                            expected_return_pct=conf * 10.0,
+                            risk_pct=max((1.0 - conf) * 8.0 + 2.0, 1.5),
+                            confidence=conf,
+                            liquidity=0.6,
+                            cap_pct=0.007,
+                            max_notional=1500.0,
+                            min_notional=self.min_value,
+                            capital_limit=remaining_buy_capacity if side == "BUY" else None,
+                        )
+                        if side == "SELL" and sell_h:
+                            size = min(size, sell_h.get("value", 0))
+                        if size < self.min_value:
+                            continue
+                        if side == "BUY":
+                            remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                        exit_plan = self._compute_exit_plan(
+                            cur, conf,
+                            expected_return_pct=conf * 10.0,
+                            trade_style=setup.reason[:20],
+                            side=side,
+                            volatility_pct=55.0,
+                        )
+                        ops.append(Opportunity(
+                            opp_type=OpportunityType.STRATEGY_SIGNAL,
+                            currency=pid,
+                            side=side,
+                            size_usd=size,
+                            reason=f"smartflow:{setup.reason}",
+                            priority=self._latency_adjusted_priority(
+                                conf * 0.55, trade_style="mean_reversion",
+                            ),
+                            product_id=pid,
+                            entry_price_est=setup.entry_price,
+                            stop_loss_pct=exit_plan["stop_loss_pct"],
+                            take_profit_pct=exit_plan["take_profit_pct"],
+                            holding_period_hours=exit_plan["holding_period_hours"],
+                            expected_return_pct=exit_plan["expected_return_pct"],
+                            risk_pct=exit_plan["risk_pct"],
+                            meta={
+                                "source": "smart_money_flow",
+                                "strategy": "smart_money_flow",
+                                "confidence": conf,
+                                "cvd_divergence": True,
+                                "signal_type": "microstructure",
+                                "trade_style": "mean_reversion",
+                                "exit_plan": exit_plan,
+                            },
+                        ))
+            except Exception as e:
+                logger.debug("SmartMoneyFlowStrategy detection failed: %s", e)
+
+        # ── Candle-based order-flow (CVD divergence + wick pressure) ──
+        if self._feed_mgr:
+            try:
+                for cur, pid, h in tracked_products:
+                    price = to_float(h.get("price", 0)) or self._current_price_for_symbol(pid, fallback=0.0)
+                    if price <= 0:
+                        continue
+                    candles = self._feed_mgr.get_candles_batch([pid], granularity=3600, limit=60).get(pid)
+                    if not candles or len(candles) < 40:
+                        continue
+                    candles = _oldest_first_candles(candles)
+                    closes, vols, highs, lows = [], [], [], []
+                    for c in candles:
+                        if isinstance(c, dict):
+                            closes.append(to_float(c.get("close", 0)))
+                            vols.append(to_float(c.get("volume", 0)))
+                            highs.append(to_float(c.get("high", 0)))
+                            lows.append(to_float(c.get("low", 0)))
+                        elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                            closes.append(to_float(c[4]))
+                            vols.append(to_float(c[5]))
+                            highs.append(to_float(c[2]))
+                            lows.append(to_float(c[1]))
+                    if len(closes) < 40:
+                        continue
+                    for strat, tag in ((self._order_flow_cvd, "order_flow_cvd"),
+                                       (self._wick_pressure, "wick_pressure")):
+                        of_sig = strat.on_bar(price, closes, volumes=vols, highs=highs, lows=lows, currency=cur)
+                        if not of_sig or of_sig.action not in ("BUY", "SELL"):
+                            continue
+                        side = of_sig.action
+                        conf = min(of_sig.confidence, 0.65)
+                        if conf < 0.30:
+                            continue
+                        if side == "BUY" and remaining_buy_capacity < self.min_value:
+                            continue
+                        sell_h = sell_candidates.get(cur)
+                        if side == "SELL" and (not sell_h or sell_h.get("value", 0) < self.min_value):
+                            continue
+                        size = self._risk_reward_size(
+                            expected_return_pct=conf * 9.0,
+                            risk_pct=max((1.0 - conf) * 7.0 + 2.0, 1.5),
+                            confidence=conf,
+                            liquidity=0.6,
+                            cap_pct=0.007,
+                            max_notional=1500.0,
+                            min_notional=self.min_value,
+                            capital_limit=remaining_buy_capacity if side == "BUY" else None,
+                        )
+                        if side == "SELL" and sell_h:
+                            size = min(size, sell_h.get("value", 0))
+                        if size < self.min_value:
+                            continue
+                        if side == "BUY":
+                            remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                        exit_plan = self._compute_exit_plan(
+                            cur, conf,
+                            expected_return_pct=conf * 9.0,
+                            trade_style="mean_reversion" if side == "BUY" else "momentum",
+                            volatility_pct=50.0,
+                        )
+                        ops.append(Opportunity(
+                            opp_type=OpportunityType.STRATEGY_SIGNAL,
+                            currency=pid,
+                            side=side,
+                            size_usd=size,
+                            reason=of_sig.reason,
+                            priority=self._latency_adjusted_priority(conf * 0.6, trade_style="mean_reversion"),
+                            product_id=pid,
+                            entry_price_est=price,
+                            stop_loss_pct=exit_plan["stop_loss_pct"],
+                            take_profit_pct=exit_plan["take_profit_pct"],
+                            holding_period_hours=exit_plan["holding_period_hours"],
+                            expected_return_pct=exit_plan["expected_return_pct"],
+                            risk_pct=exit_plan["risk_pct"],
+                            meta={
+                                "source": "order_flow_candle",
+                                "strategy": tag,
+                                "confidence": conf,
+                                "signal_type": "microstructure",
+                                "trade_style": "mean_reversion",
+                                "exit_plan": exit_plan,
+                            },
+                        ))
+            except Exception as e:
+                logger.debug("Candle order-flow detection failed: %s", e)
+
+        self.last_execution["order_flow"] = time.time()
+        if ops:
+            logger.info("Order flow signals: %d opportunities", len(ops))
+        return ops
+
+    # ── Tax Loss Harvesting Automation ───────────────────────────────
+
+    def _check_wash_sale(self, currency: str) -> bool:
+        """Check if currency is in wash-sale cooldown (30 days since last TLH sell)."""
+        now = time.time()
+        last_sold = self._wash_sale_cooldown.get(currency, 0.0)
+        if last_sold > 0 and (now - last_sold) < 86400.0 * 30:
+            return True
+        return False
+
+    def _get_tlh_replacement(self, currency: str) -> Optional[str]:
+        """Suggest a correlated-but-not-substantially-identical replacement.
+
+        Maps sold currencies to correlated alternatives for tax-loss swap:
+          BTC → ETH (different chain, correlated macro)
+          ETH → SOL
+          SOL → ADA
+          etc.
+        """
+        tlh_pairs = {
+            "BTC": "ETH", "ETH": "SOL", "SOL": "ADA",
+            "ADA": "DOT", "DOT": "AVAX", "AVAX": "LINK",
+            "LINK": "UNI", "UNI": "ATOM", "ATOM": "NEAR",
+            "NEAR": "APT", "APT": "SUI", "SUI": "ARB",
+            "ARB": "OP", "OP": "MATIC", "DOGE": "SHIB",
+            "SHIB": "PEPE", "PEPE": "BONK",
+        }
+        replacement = tlh_pairs.get(currency)
+        if replacement and not self._check_wash_sale(replacement):
+            return f"{replacement}-USD"
+        return None
+
+    def _detect_enhanced_tlh(self) -> List[Opportunity]:
+        """Enhanced tax-loss harvesting with wash-sale avoidance and replacement suggestions.
+
+        Scans holdings for >5% unrealized loss, checks wash-sale cooldown,
+        suggests correlated replacements, and prioritizes by tax savings.
+        """
+        if time.time() - self.last_execution.get("tlh", 0) < OP_COOLDOWN["tlh"]:
+            return []
+        if not self.state:
+            return []
+
+        candidates = []
+        for cur, h in self.state.holdings.items():
+            if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
+                continue
+            if self._is_static_currency(cur):
+                continue
+            if self._check_wash_sale(cur):
+                logger.debug("  Wash-sale cooldown active for %s, skipping TLH", cur)
+                continue
+            pnl = h.get("unrealized_pnl_pct")
+            if pnl is None or pnl >= -5:
+                continue
+            loss_usd = abs(h["value"] * pnl / 100)
+            tax_savings = loss_usd * 0.20
+            priority = min(abs(pnl) / 25.0, 1.0) * (1.0 + min(tax_savings / 100.0, 0.5))
+            replacement = self._get_tlh_replacement(cur)
+            candidates.append({
+                "currency": cur,
+                "value": h["value"],
+                "pnl": pnl,
+                "loss_usd": loss_usd,
+                "tax_savings": tax_savings,
+                "priority": priority,
+                "replacement": replacement,
+                "price": h.get("price", 0),
+            })
+
+        if not candidates:
+            return []
+
+        # Sort by priority (highest tax savings + deepest loss first)
+        candidates.sort(key=lambda c: c["priority"], reverse=True)
+
+        ops = []
+        remaining_buy_capacity = self._buy_capacity()
+        for c in candidates[:5]:
+            pid = self.cli.best_product(c["currency"], "SELL")
+            if not pid:
+                continue
+            ops.append(Opportunity(
+                opp_type=OpportunityType.TLH,
+                currency=c["currency"],
+                side="SELL",
+                size_usd=c["value"],
+                reason=(
+                    f"TLH: {c['pnl']:.1f}% loss, est. savings ${c['tax_savings']:.0f}"
+                    + (f" → replace with {c['replacement']}" if c["replacement"] else "")
+                ),
+                priority=c["priority"],
+                product_id=pid,
+                entry_price_est=c["price"],
+                stop_loss_pct=0,
+                take_profit_pct=0,
+                holding_period_hours=0,
+                expected_return_pct=c["tax_savings"] / max(c["value"], 1) * 100,
+                risk_pct=0,
+                meta={
+                    "tax_savings": round(c["tax_savings"], 2),
+                    "loss_pct": round(c["pnl"], 1),
+                    "replacement": c["replacement"] or "",
+                    "wash_sale_free": True,
+                },
+            ))
+
+        if ops:
+            logger.info("Enhanced TLH: %d candidates (savings up to $%.0f)",
+                         len(ops), max(c["tax_savings"] for c in candidates[:5]))
+
+        # Record wash-sale cooldowns for TLH targets
+        now = time.time()
+        for opp in ops:
+            self._wash_sale_cooldown[opp.currency] = now
+
+        return ops
+
+    # ── Backtest-Driven Parameter Optimization ───────────────────────
+
+    def _run_periodic_param_optimization(self) -> Dict[str, Any]:
+        """Run walk-forward parameter optimization on key strategy parameters.
+
+        Runs weekly (configurable via _param_opt_interval). Optimizes:
+          - ATR period
+          - RSI overbought/oversold thresholds
+          - Moving average periods
+          - Stop-loss multipliers
+        Results are stored in _param_opt_results and applied via _apply_optimized_params.
+        """
+        now = time.time()
+        if now - self._last_param_opt_ts < self._param_opt_interval:
+            return self._param_opt_results
+        if not _HAS_WALK_FORWARD:
+            return {}
+
+        # Define parameter ranges to optimize
+        param_defs = {
+            "atr": [_ParamRange("atr_period", 7, 28, 3, is_int=True)],
+            "rsi": [
+                _ParamRange("rsi_oversold", 20, 40, 5, is_int=True),
+                _ParamRange("rsi_overbought", 60, 80, 5, is_int=True),
+            ],
+            "ma": [
+                _ParamRange("ma_fast", 5, 25, 5, is_int=True),
+                _ParamRange("ma_slow", 20, 80, 10, is_int=True),
+            ],
+            "stop": [_ParamRange("stop_atr_mult", 1.0, 3.0, 0.5)],
+        }
+        self._param_opt_ranges = param_defs
+
+        # For each parameter group, run walk-forward on BTC-USD as a proxy
+        results = {}
+        try:
+            btc_closes = []
+            if self._feed_mgr:
+                batched = self._feed_mgr.get_candles_batch(["BTC-USD"], granularity=86400, limit=500)
+                candles = batched.get("BTC-USD", [])
+                if len(candles) >= 200:
+                    btc_closes = [to_float(c[4]) for c in candles]
+
+            if len(btc_closes) < 200:
+                logger.debug("Insufficient data for param optimization (need 200+ closes, got %d)", len(btc_closes))
+                self._last_param_opt_ts = now
+                return {}
+
+            optimizer = _WalkForwardOptimizer(
+                n_windows=5, train_pct=0.7, random_search_iters=100,
+            )
+
+            for group_name, ranges in param_defs.items():
+                def _make_objective_fn(closes=btc_closes):
+                    def _objective(params: Dict[str, float], train_start: int, train_end: int) -> Any:
+                        from archive.coinbase_src.walk_forward import TrialResult
+                        train_closes = closes[train_start:train_end]
+                        if len(train_closes) < 50:
+                            return TrialResult(params=params, metric=-999.0)
+                        # Simple metric: Sharpe on training period trades
+                        atr_p = int(params.get("atr_period", 14))
+                        rsi_os = int(params.get("rsi_oversold", 30))
+                        rsi_ob = int(params.get("rsi_overbought", 70))
+                        ma_f = int(params.get("ma_fast", 10))
+                        ma_s = int(params.get("ma_slow", 40))
+                        stop_m = params.get("stop_atr_mult", 2.0)
+
+                        train_returns = []
+                        prev_close = train_closes[0]
+                        position = 0
+                        entry_price = 0.0
+                        for i in range(1, len(train_closes)):
+                            c = train_closes[i]
+                            ret = (c - prev_close) / max(prev_close, 1e-9) * 100.0
+                            if position == 0:
+                                # Check entry signal
+                                if i > ma_s:
+                                    ma_f_v = sum(train_closes[i-ma_f:i]) / ma_f
+                                    ma_s_v = sum(train_closes[i-ma_s:i]) / ma_s
+                                    if ma_f_v > ma_s_v:
+                                        position = 1
+                                        entry_price = c
+                            else:
+                                stop_price = entry_price * (1.0 - stop_m * 0.01)
+                                if c < stop_price:
+                                    train_returns.append((c - entry_price) / max(entry_price, 1e-9) * 100.0)
+                                    position = 0
+                                    entry_price = 0.0
+                        if train_returns:
+                            sharpe = (sum(train_returns) / max(len(train_returns), 1)) / max(
+                                (sum(r*r for r in train_returns) / len(train_returns)) ** 0.5, 1e-9
+                            ) * (252 ** 0.5)
+                            return TrialResult(params=params, metric=max(-5.0, min(5.0, sharpe)))
+                        return TrialResult(params=params, metric=0.0)
+
+                    return _objective
+
+                opt_result = optimizer.optimize(
+                    data_length=len(btc_closes),
+                    param_ranges=ranges,
+                    objective_fn=_make_objective_fn(),
+                )
+                best = opt_result.get("best_overall", {})
+                results[group_name] = {
+                    "best_params": best,
+                    "windows": [
+                        {"train_score": w.train_score, "test_score": w.test_score}
+                        for w in opt_result.get("windows", [])
+                    ],
+                    "timestamp": now,
+                }
+                if best:
+                    logger.info("Param opt %s: best=%s", group_name, best)
+
+            self._param_opt_results = results
+        except Exception as e:
+            logger.warning("Parameter optimization failed: %s", e)
+
+        self._last_param_opt_ts = now
+        return results
+
+    def _apply_optimized_params(self) -> None:
+        """Apply parameter optimization results to strategy configuration.
+
+        Adjusts internal parameters based on walk-forward optimization:
+          - stop_atr_mult from 'stop' group
+          - atr_period for exit planning
+          - ma_fast/ma_slow for trend detection
+        These modify strategy behavior in the optimizer.
+        """
+        if not self._param_opt_results:
+            return
+        for group, result in list(self._param_opt_results.items()):
+            params = result.get("best_params", {})
+            if not params:
+                continue
+            # Store optimized params as meta for strategy use
+            if "stop_atr_mult" in params:
+                self._param_opt_results["_active_stop_mult"] = params["stop_atr_mult"]
+            if "atr_period" in params:
+                self._param_opt_results["_active_atr_period"] = params["atr_period"]
+            if "ma_fast" in params and "ma_slow" in params:
+                pass  # Available for trend strategy integration
+
     # ── Opportunity detection ─────────────────────────────────────
+
+    def _apply_cross_asset_risk_filter(self, opportunities: List[Opportunity]) -> List[Opportunity]:
+        """Gate and scale opportunities based on cross-asset macro regime.
+
+        Uses CrossAssetRegimeEngine (DXY, VIX, yields, SPY, QQQ) to:
+          - Suppress BUY opportunities when regime disallows new longs
+          - Scale position sizes by risk_multiplier
+          - Reduce confidence in risk-off environments
+
+        Uses MacroRiskEngine as an additional confidence penalty when
+        macro composite score is extreme.
+        """
+        if not opportunities:
+            return opportunities
+
+        # Get cross-asset regime state
+        regime_state = None
+        if self._cross_asset_regime:
+            try:
+                regime_state = self._cross_asset_regime.get_state(refresh=False)
+            except Exception as e:
+                logger.debug("Cross-asset regime refresh failed: %s", e)
+
+        # Get macro risk signal
+        macro_sig = None
+        if self._macro_risk:
+            try:
+                macro_sig = self._macro_risk.get_signal()
+            except Exception as e:
+                logger.debug("Macro risk signal failed: %s", e)
+
+        if not regime_state and not macro_sig:
+            return opportunities
+
+        filtered: List[Opportunity] = []
+        for opp in opportunities:
+            # ── Cross-asset regime gate ──────────────────────────
+            if regime_state:
+                # Suppress BUY when regime forbids new longs
+                if opp.side == "BUY" and not regime_state.allows_new_longs:
+                    logger.debug("  Suppressing %s BUY (regime=%s forbids new longs)",
+                                 opp.currency, regime_state.regime)
+                    continue
+
+                # Scale size by risk multiplier
+                risk_mult = regime_state.risk_multiplier
+                if risk_mult < 1.0:
+                    opp.size_usd = max(opp.size_usd * risk_mult, 0.0)
+                    if opp.size_usd < self.min_value:
+                        logger.debug("  Dropping %s %s (size=%.0f below min after risk_mult=%.2f)",
+                                     opp.currency, opp.side, opp.size_usd, risk_mult)
+                        continue
+
+                # Reduce priority in risk-off
+                if regime_state.regime in ("crash", "risk_off"):
+                    opp.priority *= 0.6
+                elif regime_state.regime == "rebound":
+                    opp.priority *= 1.15
+
+                # Tag metadata
+                opp.meta["cross_asset_regime"] = regime_state.regime
+                opp.meta["cross_asset_risk_mult"] = round(regime_state.risk_multiplier, 3)
+                opp.meta["cross_asset_trend_bias"] = regime_state.trend_bias
+
+            # ── Macro risk penalty ──────────────────────────────
+            if macro_sig:
+                macro_score = macro_sig.macro_score
+                # Extreme macro risk-off: confidence penalty
+                if macro_score >= 1.5 and opp.side == "BUY":
+                    opp.priority *= 0.7
+                    opp.meta["macro_penalty"] = f"risk_off_score={macro_score:.2f}"
+                elif macro_score <= -1.5 and opp.side == "SELL":
+                    opp.priority *= 0.7
+                    opp.meta["macro_penalty"] = f"risk_on_score={macro_score:.2f}"
+
+                opp.meta["macro_risk_score"] = round(macro_score, 3)
+
+            filtered.append(opp)
+
+        return filtered
 
     def _detect_opportunities(self) -> List[Opportunity]:
         ops = []
-        ops.extend(self._detect_tlh())
+
+        # Run parameter optimization periodically (weekly)
+        self._run_periodic_param_optimization()
+        self._apply_optimized_params()
+
+        # Enhanced TLH with wash-sale avoidance
+        ops.extend(self._detect_enhanced_tlh())
         ops.extend(self._detect_coinbase_universe_signals())
         ops.extend(self._detect_stock_opportunities())
         ops.extend(self._detect_fee_tier_volume())
         ops.extend(self._detect_rebalance())
+        ops.extend(self._detect_rebalance_bot())
+        ops.extend(self._detect_stairstep())
         ops.extend(self._detect_strategy_signals())
+        ops.extend(self._detect_funding_and_onchain_signals())
         ops.extend(self._detect_volume_cycles())
         ops.extend(self._detect_accumulator_signals())
         ops.extend(self._detect_aggregator_signals())
         ops.extend(self._detect_event_markets())
+
+        # Order flow / microstructure signals
+        ops.extend(self._detect_order_flow_signals())
+
+        # Signal ensemble blending (Bayesian weight × meta source weights)
+        ops = self._signal_ensemble_blend(ops)
+        ops = self._apply_meta_source_weights(ops)
+
         return ops
 
     def _detect_coinbase_universe_signals(self) -> List[Opportunity]:
@@ -1778,32 +3539,57 @@ class PortfolioOptimizer:
         remaining_core_capacity = self._bucket_gap("core")
         remaining_opportunity_capacity = self._bucket_gap("opportunity")
 
-        # Fetch candles for top 25 products in parallel
-        candle_futs = {}
-        for pid, p in rows[:25]:
-            fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
-            candle_futs[fut] = (pid, p)
-
-        # Process each product as candle data arrives
+        # Fetch candles via smart feed manager (shared cache) or fallback to CLI
         candle_results: List[Tuple[str, dict, List[float], List[float], List[float], List[float]]] = []
-        for fut in as_completed(candle_futs):
-            pid, p = candle_futs[fut]
-            try:
-                candles = fut.result()
-            except Exception as e:
-                logger.debug("Candle fetch failed for %s: %s", pid, e)
-                continue
-            if not candles or len(candles) < 40:
-                continue
-            closes, vols, highs, lows = [], [], [], []
-            for c in reversed(candles):
-                closes.append(to_float(c.get("close", 0)))
-                vols.append(to_float(c.get("volume", 0)))
-                highs.append(to_float(c.get("high", 0)))
-                lows.append(to_float(c.get("low", 0)))
-            if len(closes) < 40:
-                continue
-            candle_results.append((pid, p, closes, vols, highs, lows))
+        top_rows = rows[:25]
+        top_pids = [r[0] for r in top_rows]
+
+        if self._feed_mgr:
+            batched = self._feed_mgr.get_candles_batch(top_pids, granularity=3600, limit=100)
+            for pid, p in top_rows:
+                candles = batched.get(pid)
+                if not candles or len(candles) < 40:
+                    continue
+                candles = _oldest_first_candles(candles)
+                closes, vols, highs, lows = [], [], [], []
+                for c in candles:
+                    if isinstance(c, dict):
+                        closes.append(to_float(c.get("close", 0)))
+                        vols.append(to_float(c.get("volume", 0)))
+                        highs.append(to_float(c.get("high", 0)))
+                        lows.append(to_float(c.get("low", 0)))
+                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                        closes.append(to_float(c[4]))
+                        vols.append(to_float(c[5]))
+                        highs.append(to_float(c[2]))
+                        lows.append(to_float(c[1]))
+                if len(closes) < 40:
+                    continue
+                candle_results.append((pid, p, closes, vols, highs, lows))
+        else:
+            candle_futs = {}
+            for pid, p in top_rows:
+                fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
+                candle_futs[fut] = (pid, p)
+            for fut in as_completed(candle_futs):
+                pid, p = candle_futs[fut]
+                try:
+                    candles = fut.result()
+                except Exception as e:
+                    logger.debug("Candle fetch failed for %s: %s", pid, e)
+                    continue
+                if not candles or len(candles) < 40:
+                    continue
+                candles = _oldest_first_candles(candles)
+                closes, vols, highs, lows = [], [], [], []
+                for c in candles:
+                    closes.append(to_float(c.get("close", 0)))
+                    vols.append(to_float(c.get("volume", 0)))
+                    highs.append(to_float(c.get("high", 0)))
+                    lows.append(to_float(c.get("low", 0)))
+                if len(closes) < 40:
+                    continue
+                candle_results.append((pid, p, closes, vols, highs, lows))
 
         # Batch-compute trend/volume metrics via compute backend
         try:
@@ -1857,6 +3643,18 @@ class PortfolioOptimizer:
                 if abs(momentum) < 0.22 or liquidity < 0.2:
                     continue
                 side = "BUY" if momentum > 0 else "SELL"
+                # ── Quality tuning: skip exhaustion + directionless chop ──
+                rsi = _rsi_14(closes)
+                atr = _estimate_atr(closes, highs, lows, 14)
+                vol_pct = (atr / closes[-1]) if closes[-1] > 0 else 0.0
+                if side == "BUY" and rsi > 76:
+                    continue  # chasing overbought
+                if side == "SELL" and rsi < 24:
+                    continue  # fading oversold
+                if vol_pct > 0.06 and abs(trend_30) < 0.02:
+                    continue  # high vol, no trend -> noise
+                if (side == "BUY" and rsi > 68) or (side == "SELL" and rsi < 32):
+                    momentum *= 0.7  # dampen stretched entries
                 score = min(abs(momentum) * quality_score * 0.9 + min(volume_ratio, 2.0) * 0.1 + listing_bonus * 0.15, 0.95)
                 is_new_listing = age_days <= 21
                 holding_value = float(self.state.holdings.get(base, {}).get("value", 0) or 0)
@@ -2071,7 +3869,7 @@ class PortfolioOptimizer:
                 continue
             ops.append(Opportunity(
                 opp_type=OpportunityType.TLH,
-                currency=cur,
+                currency=pid,
                 side="SELL",
                 size_usd=h["value"],
                 reason=f"TLH: {pnl:.1f}% loss, est. tax savings ${tax_savings:.0f}",
@@ -2257,6 +4055,138 @@ class PortfolioOptimizer:
             logger.info("Rebalance: %d actions", len(ops))
         return ops
 
+    def _holding_for_product(self, product_id: str) -> Optional[Dict]:
+        """Find a holding dict by product_id (or base+USD)."""
+        if not self.state:
+            return None
+        for h in self.state.holdings.values():
+            if h.get("product_id") == product_id or f"{h.get('currency', '')}-USD" == product_id:
+                return h
+        return None
+
+    def _detect_rebalance_bot(self) -> List[Opportunity]:
+        """Drift-threshold portfolio rebalancer driven by the Rust RebalanceBot.
+
+        Uses the configured allocation preset (REBALANCE_PRESET, default
+        core_balanced) and only emits trades when max drift exceeds the threshold,
+        selling only a slim slice (REBALANCE_PROFIT_TAKE) of overweight excess.
+        """
+        if time.time() - self.last_execution.get("rebalance_bot", 0) < OP_COOLDOWN.get("rebalance_bot", 3600):
+            return []
+        if not self.state or self.state.total_value <= 0:
+            return []
+        if self._rebalance_bot is None:
+            try:
+                from coinbase.src.rebalance_engine import RebalanceBot, RebalanceEngine
+            except Exception as e:
+                logger.warning("Rebalance bot unavailable: %s", e)
+                return []
+            self._rebalance_bot = RebalanceBot(
+                engine=RebalanceEngine.from_preset(
+                    self.rebalance_preset,
+                    drift_threshold=self.rebalance_drift_threshold,
+                    profit_take_pct=self.rebalance_profit_take_pct,
+                    min_trade_notional=self.rebalance_min_notional,
+                )
+            )
+        targets = self._rebalance_bot.engine.targets
+        current_values = {}
+        for pid in targets:
+            h = self._holding_for_product(pid)
+            current_values[pid] = float(h["value"]) if h else 0.0
+        rec = self._rebalance_bot.engine.compute(current_values, self.state.total_value)
+        if rec.max_drift < self.rebalance_drift_threshold:
+            return []
+        ops = []
+        for o in rec.orders:
+            base = o.asset.split("-")[0]
+            pid = self.cli.best_product(base, o.side)
+            if not pid:
+                continue
+            h = self._holding_for_product(o.asset)
+            priority = min(1.0, 0.4 + abs(o.drift))
+            reason = (f"Rebalance bot [{self.rebalance_preset}]: {o.side} {base} "
+                      f"drift {o.drift:+.2%}")
+            ops.append(Opportunity(
+                opp_type=OpportunityType.REBALANCE_BOT,
+                currency=base,
+                side=o.side,
+                size_usd=o.notional,
+                reason=reason,
+                priority=priority,
+                product_id=pid,
+                entry_price_est=float(h["price"]) if h else 0.0,
+                meta={
+                    "rebalance_preset": self.rebalance_preset,
+                    "target_weight": o.target_weight,
+                    "current_weight": o.current_weight,
+                    "drift": o.drift,
+                    "turnover": rec.turnover,
+                },
+            ))
+        if ops:
+            logger.info("Rebalance bot: %d actions (max_drift=%.3f)", len(ops), rec.max_drift)
+            self.last_execution["rebalance_bot"] = time.time()
+        return ops
+
+    def _detect_stairstep(self) -> List[Opportunity]:
+        """Range-bound stair-step profit taker driven by the Rust StairStepEngine.
+
+        For each configured volatile symbol it auto-calibrates a grid around the
+        live price on first sighting, then emits BUY as price falls to a grid
+        level and SELL when price recovers enough to bank the spread.
+        """
+        if not self.stairstep_enabled or not self.state:
+            return []
+        if self._stairstep_engine is None:
+            try:
+                from coinbase.src.rebalance_engine import StairStepEngine
+            except Exception as e:
+                logger.warning("Stair-step engine unavailable: %s", e)
+                return []
+            self._stairstep_engine = StairStepEngine()
+        ops = []
+        for sym in self._stairstep_symbols:
+            h = self._holding_for_product(sym)
+            if not h or not h.get("price"):
+                continue
+            price = float(h["price"])
+            if sym not in self._stairstep_engine._symbols:
+                self._stairstep_engine.add_symbol(
+                    sym, low=price * 0.85, high=price * 1.15, steps=5,
+                    budget=max(self.min_value * 5, 50.0),
+                    take_profit_pct=0.02, base_size_pct=0.2,
+                )
+            order = self._stairstep_engine.on_price(sym, price)
+            if order is None:
+                continue
+            base = sym.split("-")[0]
+            pid = self.cli.best_product(base, order.side)
+            if not pid:
+                continue
+            state = self._stairstep_engine.state(sym)
+            reason = f"Stair-step {order.side} {base} @ {price:.4f}"
+            ops.append(Opportunity(
+                opp_type=OpportunityType.STAIRSTEP,
+                currency=base,
+                side=order.side,
+                size_usd=order.notional,
+                reason=reason,
+                priority=0.4,
+                product_id=pid,
+                entry_price_est=price,
+                meta={
+                    "symbol": sym,
+                    "price": price,
+                    "filled_buys": state[1],
+                    "filled_sells": state[2],
+                    "realized_pnl": state[4],
+                    "next_buy_index": state[0],
+                },
+            ))
+        return ops
+
+
     def _detect_volume_cycles(self) -> List[Opportunity]:
         if time.time() - self.last_execution.get("cycle", 0) < OP_COOLDOWN["cycle"]:
             return []
@@ -2276,7 +4206,7 @@ class PortfolioOptimizer:
                     continue
                 ops.append(Opportunity(
                     opp_type=OpportunityType.VOLUME_CYCLE,
-                    currency=cur,
+                    currency=pid,
                     side="SELL",
                     size_usd=h["value"],
                     reason=f"Volume cycle: close after {age_hours:.1f}h",
@@ -2383,40 +4313,61 @@ class PortfolioOptimizer:
         remaining_core_capacity = self._bucket_gap("core")
         remaining_opportunity_capacity = self._bucket_gap("opportunity")
 
-        # Fetch candles for all candidates in parallel
-        candle_futs = {}
-        for h in candidates:
-            currency = h["currency"]
-            pid = h.get("product_id", f"{currency}-USD")
-            fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
-            candle_futs[fut] = (h, pid)
-
-        # Parse candle data as it arrives
+        # Fetch candles via smart feed manager (shared cache) or fallback to CLI
         parsed_data: List[Tuple[dict, str, List[float], List[float], List[float], List[float]]] = []
-        for fut in as_completed(candle_futs):
-            h, pid = candle_futs[fut]
-            try:
-                candles = fut.result()
-            except Exception as e:
-                logger.debug("Candle fetch failed for %s: %s", pid, e)
-                continue
-            if not candles or len(candles) < 30:
-                continue
-            closes, volumes, highs, lows = [], [], [], []
-            for c in reversed(candles):
-                if isinstance(c, dict):
-                    closes.append(to_float(c.get("close", 0)))
-                    volumes.append(to_float(c.get("volume", 0)))
-                    highs.append(to_float(c.get("high", 0)))
-                    lows.append(to_float(c.get("low", 0)))
-                elif isinstance(c, (list, tuple)) and len(c) >= 6:
-                    closes.append(to_float(c[4]))
-                    volumes.append(to_float(c[5]))
-                    highs.append(to_float(c[2]))
-                    lows.append(to_float(c[1]))
-            if len(closes) < 30:
-                continue
-            parsed_data.append((h, pid, closes, volumes, highs, lows))
+        candidate_pids = [(h, h.get("product_id", f"{h['currency']}-USD")) for h in candidates]
+
+        if self._feed_mgr:
+            all_pids = [pid for _, pid in candidate_pids]
+            batched = self._feed_mgr.get_candles_batch(all_pids, granularity=3600, limit=100)
+            for h, pid in candidate_pids:
+                candles = batched.get(pid)
+                if not candles or len(candles) < 30:
+                    continue
+                closes, volumes, highs, lows = [], [], [], []
+                for c in reversed(candles):
+                    if isinstance(c, dict):
+                        closes.append(to_float(c.get("close", 0)))
+                        volumes.append(to_float(c.get("volume", 0)))
+                        highs.append(to_float(c.get("high", 0)))
+                        lows.append(to_float(c.get("low", 0)))
+                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                        closes.append(to_float(c[4]))
+                        volumes.append(to_float(c[5]))
+                        highs.append(to_float(c[2]))
+                        lows.append(to_float(c[1]))
+                if len(closes) < 30:
+                    continue
+                parsed_data.append((h, pid, closes, volumes, highs, lows))
+        else:
+            candle_futs = {}
+            for h, pid in candidate_pids:
+                fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
+                candle_futs[fut] = (h, pid)
+            for fut in as_completed(candle_futs):
+                h, pid = candle_futs[fut]
+                try:
+                    candles = fut.result()
+                except Exception as e:
+                    logger.debug("Candle fetch failed for %s: %s", pid, e)
+                    continue
+                if not candles or len(candles) < 30:
+                    continue
+                closes, volumes, highs, lows = [], [], [], []
+                for c in reversed(candles):
+                    if isinstance(c, dict):
+                        closes.append(to_float(c.get("close", 0)))
+                        volumes.append(to_float(c.get("volume", 0)))
+                        highs.append(to_float(c.get("high", 0)))
+                        lows.append(to_float(c.get("low", 0)))
+                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                        closes.append(to_float(c[4]))
+                        volumes.append(to_float(c[5]))
+                        highs.append(to_float(c[2]))
+                        lows.append(to_float(c[1]))
+                if len(closes) < 30:
+                    continue
+                parsed_data.append((h, pid, closes, volumes, highs, lows))
 
         # Batch-compute all signals via vectorized compute backend (GPU/NumPy)
         try:
@@ -2441,7 +4392,7 @@ class PortfolioOptimizer:
                     if action != "HOLD":
                         signals.append(StrategySignal(
                             strategy=s_name, action=action, confidence=0.5,
-                            reason=f"batch:{s_name}", symbol=currency,
+                            reason=f"batch:{s_name}",
                         ))
             else:
                 signals = _run_strategies(
@@ -2449,6 +4400,28 @@ class PortfolioOptimizer:
                     closes=closes, volumes=volumes, current_price=h["price"],
                     highs=highs if highs else None, lows=lows if lows else None,
                 )
+            
+            # ── Regime filtering: skip strategies unsuited for current market regime ──
+            if signals and highs and lows and len(closes) >= 30:
+                regime = _detect_market_regime(highs, lows, closes)
+                filtered_signals = []
+                for sig in signals:
+                    strat = sig.strategy
+                    # Skip trend strategies in ranging markets
+                    if regime == "ranging" and strat in TREND_STRATEGIES:
+                        logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
+                        continue
+                    # Skip mean-reversion in trending markets
+                    if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
+                        logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
+                        continue
+                    # Skip volatility strategies in quiet markets
+                    if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
+                        logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
+                        continue
+                    filtered_signals.append(sig)
+                signals = filtered_signals
+            
             if signals:
                 candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
 
@@ -2484,6 +4457,39 @@ class PortfolioOptimizer:
             if not passed_signals:
                 continue
 
+            # Record pulses for signal quality tracking
+            current_price = h.get("price", 0)
+            for sig in passed_signals:
+                self._record_pulse(
+                    product_id=pid,
+                    strategy=sig.strategy,
+                    direction=sig.action,
+                    confidence=sig.confidence,
+                    price=current_price
+                )
+
+            # Prune stale pulses periodically
+            if self._tick_count % 10 == 0:
+                self._prune_pulses()
+
+            # Detect regime for regime-aware strategy weighting
+            regime = "neutral"
+            if highs and lows and len(closes) >= 30:
+                regime = _detect_market_regime(highs, lows, closes)
+            
+            # Apply regime weights to signals before aggregation
+            regime_weighted_signals = []
+            for sig in passed_signals:
+                weight = self._regime_strategy_weight(sig.strategy, regime)
+                # Create modified signal with adjusted confidence
+                mod_sig = StrategySignal(
+                    strategy=sig.strategy,
+                    action=sig.action,
+                    confidence=min(sig.confidence * weight, 1.0),
+                    reason=sig.reason,
+                )
+                regime_weighted_signals.append(mod_sig)
+
             # Aggregate through confidence matrix
             bt_cache_dict = {
                 k: {
@@ -2495,7 +4501,7 @@ class PortfolioOptimizer:
             }
             matrix = ConfidenceMatrix(bt_cache=bt_cache_dict)
             aggregated = matrix.aggregate(
-                passed_signals,
+                regime_weighted_signals,
                 asset_class=h["classification"],
                 currency=currency,
             )
@@ -2503,16 +4509,37 @@ class PortfolioOptimizer:
             for agg in aggregated[:2]:
                 side = agg.direction
                 bucket = "core" if currency.upper().replace("-USD", "") in CORE_LONG_TERM_ASSETS else "opportunity"
-                size = self._risk_reward_size(
-                    expected_return_pct=max(agg.confidence * 10.0, 0.5),
-                    risk_pct=max((1.0 - agg.confidence) * 8.0 + 2.0, 1.0),
-                    confidence=agg.confidence,
-                    liquidity=min(to_float(h.get("liquidity_score", 0.7) or 0.7), 1.0),
-                    cap_pct=0.01,
-                    max_notional=4000.0,
-                    min_notional=self.min_value,
-                    capital_limit=(remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity),
-                )
+                
+                # Use Kelly sizing based on backtest stats from aggregated strategies
+                best_verdict = None
+                for s in agg.strategies:
+                    ck = f"{s}/{currency}"
+                    v = self._bt_cache.get(ck)
+                    if v and v.passed and (best_verdict is None or v.win_rate > best_verdict.win_rate):
+                        best_verdict = v
+                
+                if best_verdict:
+                    size = self._kelly_size(
+                        win_rate=best_verdict.win_rate,
+                        avg_win_pct=best_verdict.total_return_pct / max(best_verdict.total_trades, 1) * 100 if best_verdict.total_trades > 0 else 2.0,
+                        avg_loss_pct=best_verdict.max_drawdown_pct if best_verdict.max_drawdown_pct > 0 else 1.5,
+                        confidence=agg.confidence,
+                        kelly_fraction=0.25,
+                        max_notional=5000.0,
+                        min_notional=self.min_value,
+                        capital_limit=(remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity),
+                    )
+                else:
+                    size = self._risk_reward_size(
+                        expected_return_pct=max(agg.confidence * 10.0, 0.5),
+                        risk_pct=max((1.0 - agg.confidence) * 8.0 + 2.0, 1.0),
+                        confidence=agg.confidence,
+                        liquidity=min(to_float(h.get("liquidity_score", 0.7) or 0.7), 1.0),
+                        cap_pct=0.01,
+                        max_notional=4000.0,
+                        min_notional=self.min_value,
+                        capital_limit=(remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity),
+                    )
                 if side == "SELL":
                     size = min(size, h["value"])
                 else:
@@ -2523,6 +4550,23 @@ class PortfolioOptimizer:
                         remaining_core_capacity = max(remaining_core_capacity - size, 0.0)
                     else:
                         remaining_opportunity_capacity = max(remaining_opportunity_capacity - size, 0.0)
+
+                # Pulse quality filter: check if aggregated strategies have valid pulses
+                pulse_valid = False
+                for s in agg.strategies:
+                    pulse = self._signal_pulses.get(self._pulse_key(pid, s, side))
+                    if pulse and self._is_pulse_valid(pulse):
+                        pulse_valid = True
+                        break
+                
+                # Also check cluster exposure limit
+                if side == "BUY" and not self._check_cluster_limit(currency, size):
+                    logger.debug("  Skipping %s: cluster exposure limit reached", currency)
+                    continue
+                
+                if not pulse_valid:
+                    logger.debug("  Skipping %s: pulse quality insufficient", currency)
+                    continue
 
                 # Apply ConfidenceEngine modifiers if available
                 final_confidence = agg.confidence
@@ -2562,11 +4606,12 @@ class PortfolioOptimizer:
                 if size < self.min_value:
                     continue
 
+                daily_chg = abs(to_float(h.get("change_24h", 0)))
                 exit_plan = self._compute_exit_plan(
                     currency, final_confidence,
                     expected_return_pct=max(final_confidence * 10.0, 0.5),
                     trade_style="momentum" if side == "BUY" else "mean_reversion",
-                    daily_chg=abs(to_float(h.get("change_24h", 0))),
+                    side=side,
                     volatility_pct=max(daily_chg * 1.5, 5.0),
                 )
                 ops.append(Opportunity(
@@ -2602,6 +4647,331 @@ class PortfolioOptimizer:
 
         if ops:
             logger.info("Strategy signals: %d opportunities", len(ops))
+        return ops
+
+    def _detect_funding_and_onchain_signals(self) -> List[Opportunity]:
+        """Detect funding rate contrarian + on-chain flow alpha signals.
+
+        FundingRateContrarian — global Binance perp funding signal applied
+        as a meta-signal on BTC-USD (most liquid proxy).
+
+        OnChainFlowStrategy — per-product CoinGecko exchange flow volume
+        anomaly signals for all tracked positions.
+        """
+        cooldown = OP_COOLDOWN.get("funding_onchain", 600)
+        if time.time() - self.last_execution.get("funding_onchain", 0) < cooldown:
+            return []
+        if not self.state:
+            return []
+
+        ops: List[Opportunity] = []
+        remaining_buy_capacity = self._buy_capacity()
+        sell_candidates = {
+            h["currency"]: h for h in self.state.holdings.values()
+            if h["value"] >= self.min_value
+        } if self.state else {}
+
+        # ── Step 1: FundingRateContrarian ────────────────────────────
+        if self._funding_contrarian:
+            try:
+                btc_price = self._current_price_for_symbol("BTC-USD")
+                if btc_price > 0:
+                    funding_sig = self._funding_contrarian.on_bar(
+                        close=btc_price,
+                        closes=[btc_price],
+                        volumes=None,
+                        highs=None,
+                        lows=None,
+                        currency="BTC",
+                    )
+                    if funding_sig and funding_sig.action in ("BUY", "SELL"):
+                        side = funding_sig.action
+                        conf = min(funding_sig.confidence, 0.70)
+                        if side == "BUY":
+                            size = self._risk_reward_size(
+                                expected_return_pct=conf * 10.0,
+                                risk_pct=max((1.0 - conf) * 8.0 + 2.0, 1.0),
+                                confidence=conf,
+                                liquidity=0.6,
+                                cap_pct=0.01,
+                                max_notional=2000.0,
+                                min_notional=self.min_value,
+                                capital_limit=remaining_buy_capacity,
+                            )
+                            if size >= self.min_value:
+                                remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                        else:
+                            sell_holding = sell_candidates.get("BTC")
+                            if sell_holding:
+                                size = min(
+                                    self._risk_reward_size(
+                                        expected_return_pct=conf * 8.0,
+                                        risk_pct=max((1.0 - conf) * 8.0 + 2.0, 1.0),
+                                        confidence=conf,
+                                        liquidity=0.6,
+                                        cap_pct=0.015,
+                                        max_notional=3000.0,
+                                        min_notional=self.min_value,
+                                    ),
+                                    sell_holding.get("value", 0),
+                                )
+                            else:
+                                size = 0
+                        if size >= self.min_value:
+                            exit_plan = self._compute_exit_plan(
+                                "BTC", conf,
+                                expected_return_pct=conf * 10.0,
+                                trade_style="mean_reversion" if side == "BUY" else "momentum",
+                                volatility_pct=45.0,
+                            )
+                            ops.append(Opportunity(
+                                opp_type=OpportunityType.STRATEGY_SIGNAL,
+                                currency="BTC",
+                                side=side,
+                                size_usd=size,
+                                reason=funding_sig.reason,
+                                priority=self._latency_adjusted_priority(
+                                    conf * 0.7, trade_style="mean_reversion",
+                                ),
+                                product_id="BTC-USD",
+                                entry_price_est=btc_price,
+                                stop_loss_pct=exit_plan["stop_loss_pct"],
+                                take_profit_pct=exit_plan["take_profit_pct"],
+                                holding_period_hours=exit_plan["holding_period_hours"],
+                                expected_return_pct=exit_plan["expected_return_pct"],
+                                risk_pct=exit_plan["risk_pct"],
+                                meta={
+                                    "source": "funding_rate",
+                                    "strategy": "funding_contrarian",
+                                    "confidence": conf,
+                                    "trade_style": "mean_reversion",
+                                    "signal_type": "funding_global",
+                                    "exit_plan": exit_plan,
+                                },
+                            ))
+            except Exception as e:
+                logger.debug("Funding rate contrarian detection failed: %s", e)
+
+        # ── Step 2: OnChainFlowStrategy ─────────────────────────────
+        if self._onchain_flow:
+            try:
+                tracked_pids = []
+                for h in self.state.holdings.values():
+                    if h["currency"] not in ("USDC", "USDT", "DAI") and h["value"] >= self.min_value:
+                        pid = h.get("product_id", f"{h['currency']}-USD")
+                        tracked_pids.append(pid)
+                if tracked_pids:
+                    onchain_results = self._onchain_flow.get_signals(tracked_pids)
+                    for sig in onchain_results:
+                        if sig.get("action") not in ("BUY", "SELL"):
+                            continue
+                        side = sig["action"]
+                        pid = sig.get("product_id", "")
+                        currency = sig.get("currency", "")
+                        conf = min(sig.get("confidence", 0.0), 0.70)
+                        price = sig.get("price", 0.0)
+                        if price <= 0:
+                            price = self._current_price_for_symbol(pid, fallback=0.0)
+                        if price <= 0 or conf < 0.25:
+                            continue
+                        if side == "BUY" and remaining_buy_capacity < self.min_value:
+                            continue
+                        sell_holding = sell_candidates.get(currency)
+                        if side == "SELL" and (not sell_holding or sell_holding.get("value", 0) < self.min_value):
+                            continue
+                        size = self._risk_reward_size(
+                            expected_return_pct=conf * 8.0,
+                            risk_pct=max((1.0 - conf) * 8.0 + 3.0, 1.5),
+                            confidence=conf,
+                            liquidity=0.55,
+                            cap_pct=0.008,
+                            max_notional=1500.0,
+                            min_notional=self.min_value,
+                            capital_limit=remaining_buy_capacity if side == "BUY" else None,
+                        )
+                        if side == "SELL":
+                            size = min(size, sell_holding.get("value", 0)) if sell_holding else 0
+                        if size < self.min_value:
+                            continue
+                        if side == "BUY":
+                            remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                        vol_anomaly = sig.get("volume_anomaly", 0.0)
+                        price_trend = sig.get("price_trend", 0.0)
+                        exit_plan = self._compute_exit_plan(
+                            currency, conf,
+                            expected_return_pct=conf * 8.0,
+                            trade_style="mean_reversion" if side == "BUY" else "momentum",
+                            volatility_pct=max(abs(price_trend) * 50.0 + 20.0, 20.0),
+                        )
+                        ops.append(Opportunity(
+                            opp_type=OpportunityType.STRATEGY_SIGNAL,
+                            currency=currency,
+                            side=side,
+                            size_usd=size,
+                            reason=sig.get("reason", f"onchain:{side}_{pid}_vol={vol_anomaly:.1f}x"),
+                            priority=self._latency_adjusted_priority(
+                                conf * 0.65, trade_style="mean_reversion",
+                            ),
+                            product_id=pid,
+                            entry_price_est=price,
+                            stop_loss_pct=exit_plan["stop_loss_pct"],
+                            take_profit_pct=exit_plan["take_profit_pct"],
+                            holding_period_hours=exit_plan["holding_period_hours"],
+                            expected_return_pct=exit_plan["expected_return_pct"],
+                            risk_pct=exit_plan["risk_pct"],
+                            meta={
+                                "source": "onchain_flow",
+                                "strategy": "onchain_flow",
+                                "confidence": conf,
+                                "volume_anomaly": vol_anomaly,
+                                "price_trend": price_trend,
+                                "signal_type": "exchange_flow",
+                                "trade_style": "mean_reversion",
+                                "exit_plan": exit_plan,
+                            },
+                        ))
+            except Exception as e:
+                logger.debug("OnChain flow detection failed: %s", e)
+
+        # ── Step 3: ExchangeNetflowSignal (on-chain chain analytics) ──
+        if self._exchange_netflow:
+            try:
+                for cur, h in self.state.holdings.items():
+                    if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
+                        continue
+                    pid = h.get("product_id", f"{cur}-USD")
+                    price = to_float(h.get("price", 0)) or self._current_price_for_symbol(pid, fallback=0.0)
+                    if price <= 0:
+                        continue
+                    nf_sig = self._exchange_netflow.on_bar(
+                        close=price, closes=[price], volumes=None, currency=pid,
+                    )
+                    if not nf_sig or nf_sig.action not in ("BUY", "SELL"):
+                        continue
+                    side = nf_sig.action
+                    conf = min(nf_sig.confidence, 0.70)
+                    if conf < 0.25:
+                        continue
+                    if side == "BUY" and remaining_buy_capacity < self.min_value:
+                        continue
+                    sell_h = sell_candidates.get(cur)
+                    if side == "SELL" and (not sell_h or sell_h.get("value", 0) < self.min_value):
+                        continue
+                    size = self._risk_reward_size(
+                        expected_return_pct=conf * 8.0,
+                        risk_pct=max((1.0 - conf) * 8.0 + 3.0, 1.5),
+                        confidence=conf,
+                        liquidity=0.55,
+                        cap_pct=0.008,
+                        max_notional=1500.0,
+                        min_notional=self.min_value,
+                        capital_limit=remaining_buy_capacity if side == "BUY" else None,
+                    )
+                    if side == "SELL":
+                        size = min(size, sell_h.get("value", 0)) if sell_h else 0
+                    if size < self.min_value:
+                        continue
+                    if side == "BUY":
+                        remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                    exit_plan = self._compute_exit_plan(
+                        cur, conf,
+                        expected_return_pct=conf * 8.0,
+                        trade_style="mean_reversion" if side == "BUY" else "momentum",
+                        volatility_pct=40.0,
+                    )
+                    ops.append(Opportunity(
+                        opp_type=OpportunityType.STRATEGY_SIGNAL,
+                        currency=pid,
+                        side=side,
+                        size_usd=size,
+                        reason=nf_sig.reason,
+                        priority=self._latency_adjusted_priority(conf * 0.65, trade_style="mean_reversion"),
+                        product_id=pid,
+                        entry_price_est=price,
+                        stop_loss_pct=exit_plan["stop_loss_pct"],
+                        take_profit_pct=exit_plan["take_profit_pct"],
+                        holding_period_hours=exit_plan["holding_period_hours"],
+                        expected_return_pct=exit_plan["expected_return_pct"],
+                        risk_pct=exit_plan["risk_pct"],
+                        meta={
+                            "source": "onchain_netflow",
+                            "strategy": "exchange_netflow",
+                            "confidence": conf,
+                            "trade_style": "mean_reversion",
+                            "exit_plan": exit_plan,
+                        },
+                    ))
+            except Exception as e:
+                logger.debug("Exchange netflow detection failed: %s", e)
+
+        # ── Step 4: StablecoinFlowSignal (chain liquidity / risk gauge) ──
+        if self._stablecoin_flow:
+            try:
+                price = self._current_price_for_symbol("BTC-USD", fallback=0.0)
+                if price > 0:
+                    sf_sig = self._stablecoin_flow.on_bar(
+                        close=price, closes=[price], volumes=None, currency="BTC-USD",
+                    )
+                    if sf_sig and sf_sig.action in ("BUY", "SELL"):
+                        side = sf_sig.action
+                        conf = min(sf_sig.confidence, 0.70)
+                        if conf >= 0.25:
+                            if side == "BUY" and remaining_buy_capacity < self.min_value:
+                                pass
+                            else:
+                                sell_h = sell_candidates.get("BTC")
+                                if side == "SELL" and (not sell_h or sell_h.get("value", 0) < self.min_value):
+                                    pass
+                                else:
+                                    size = self._risk_reward_size(
+                                        expected_return_pct=conf * 8.0,
+                                        risk_pct=max((1.0 - conf) * 8.0 + 3.0, 1.5),
+                                        confidence=conf,
+                                        liquidity=0.7,
+                                        cap_pct=0.01,
+                                        max_notional=2500.0,
+                                        min_notional=self.min_value,
+                                        capital_limit=remaining_buy_capacity if side == "BUY" else None,
+                                    )
+                                    if side == "SELL" and sell_h:
+                                        size = min(size, sell_h.get("value", 0))
+                                    if size >= self.min_value:
+                                        if side == "BUY":
+                                            remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+                                        exit_plan = self._compute_exit_plan(
+                                            "BTC", conf,
+                                            expected_return_pct=conf * 8.0,
+                                            trade_style="mean_reversion" if side == "BUY" else "momentum",
+                                            volatility_pct=45.0,
+                                        )
+                                        ops.append(Opportunity(
+                                            opp_type=OpportunityType.STRATEGY_SIGNAL,
+                                            currency="BTC",
+                                            side=side,
+                                            size_usd=size,
+                                            reason=sf_sig.reason,
+                                            priority=self._latency_adjusted_priority(conf * 0.7, trade_style="mean_reversion"),
+                                            product_id="BTC-USD",
+                                            entry_price_est=price,
+                                            stop_loss_pct=exit_plan["stop_loss_pct"],
+                                            take_profit_pct=exit_plan["take_profit_pct"],
+                                            holding_period_hours=exit_plan["holding_period_hours"],
+                                            expected_return_pct=exit_plan["expected_return_pct"],
+                                            risk_pct=exit_plan["risk_pct"],
+                                            meta={
+                                                "source": "stablecoin_flow",
+                                                "strategy": "stablecoin_flow",
+                                                "confidence": conf,
+                                                "trade_style": "mean_reversion",
+                                                "exit_plan": exit_plan,
+                                            },
+                                        ))
+            except Exception as e:
+                logger.debug("Stablecoin flow detection failed: %s", e)
+
+        self.last_execution["funding_onchain"] = time.time()
+        if ops:
+            logger.info("Funding/OnChain signals: %d opportunities", len(ops))
         return ops
 
     def _detect_accumulator_signals(self) -> List[Opportunity]:
@@ -2734,7 +5104,6 @@ class PortfolioOptimizer:
 
         try:
             from coinbase.src.pair_discovery import top_coinbase_pairs
-            from coinbase.src.rest_feed import fetch_candles_batch
             import urllib3, json
 
             pairs = top_coinbase_pairs(n=50, min_volume_usd=500_000)
@@ -2742,8 +5111,12 @@ class PortfolioOptimizer:
                 return []
             pids = [p[0] for p in pairs]
 
-            # Fetch candles in bulk
-            candles = fetch_candles_batch(pids, granularity=3600, limit=100, max_workers=12)
+            # Fetch candles via smart feed manager (shared cache) or fallback
+            if self._feed_mgr:
+                candles = self._feed_mgr.get_candles_batch(pids, granularity=3600, limit=100)
+            else:
+                from coinbase.src.rest_feed import fetch_candles_batch
+                candles = fetch_candles_batch(pids, granularity=3600, limit=100, max_workers=12)
 
             # Retry empty pairs individually (rate-limit recovery)
             http = urllib3.PoolManager()
@@ -3203,6 +5576,134 @@ class PortfolioOptimizer:
         except Exception as e:
             logger.debug("Failed to write trade_plans.json: %s", e)
 
+    def _write_enhanced_state(self):
+        """Persist enhanced optimizer state for the dashboard."""
+        try:
+            # Meta-learning source weights
+            if self._meta_source_weights:
+                with open("data/meta_source_weights.json.tmp", "w") as f:
+                    json.dump({
+                        "weights": dict(self._meta_source_weights),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }, f, indent=2)
+                os.replace("data/meta_source_weights.json.tmp", "data/meta_source_weights.json")
+
+            # Cross-asset regime
+            if self._cross_asset_regime:
+                try:
+                    regime_state = self._cross_asset_regime.get_state(refresh=False)
+                    with open("data/cross_asset_regime.json.tmp", "w") as f:
+                        json.dump({
+                            "regime": regime_state.to_dict(),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }, f, indent=2, default=str)
+                    os.replace("data/cross_asset_regime.json.tmp", "data/cross_asset_regime.json")
+                except Exception:
+                    pass
+
+            # Signal ensemble state
+            if self._ensemble_blender:
+                try:
+                    with open("data/signal_ensemble.json.tmp", "w") as f:
+                        json.dump({
+                            "posteriors": self._ensemble_blender.to_dict(),
+                            "top_strategies": self._ensemble_blender.top_strategies(n=10),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }, f, indent=2, default=str)
+                    os.replace("data/signal_ensemble.json.tmp", "data/signal_ensemble.json")
+                except Exception:
+                    pass
+
+            # Parameter optimization results
+            if self._param_opt_results:
+                with open("data/param_opt_results.json.tmp", "w") as f:
+                    json.dump({
+                        "results": dict(self._param_opt_results),
+                        "last_run": self._last_param_opt_ts,
+                        "interval_days": self._param_opt_interval / 86400.0,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }, f, indent=2, default=str)
+                os.replace("data/param_opt_results.json.tmp", "data/param_opt_results.json")
+
+            # Wash-sale cooldown state
+            if self._wash_sale_cooldown:
+                with open("data/wash_sale_state.json.tmp", "w") as f:
+                    json.dump({
+                        "cooldowns": {k: v for k, v in self._wash_sale_cooldown.items()},
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }, f, indent=2, default=str)
+                os.replace("data/wash_sale_state.json.tmp", "data/wash_sale_state.json")
+
+            # Order flow signals
+            if self._order_flow_engine:
+                try:
+                    of_signals = {}
+                    if self.state:
+                        for cur, h in self.state.holdings.items():
+                            if cur in ("USDC", "USDT", "DAI"):
+                                continue
+                            pid = h.get("product_id", f"{cur}-USD")
+                            sig = self._order_flow_engine.get_signal(pid)
+                            if sig:
+                                of_signals[pid] = {
+                                    "action": sig.action,
+                                    "confidence": sig.confidence,
+                                    "spread_bps": sig.spread_bps,
+                                    "spread_z": sig.spread_z,
+                                    "spread_tight": sig.spread_tight,
+                                }
+                    if of_signals:
+                        with open("data/order_flow_signals.json.tmp", "w") as f:
+                            json.dump({
+                                "signals": of_signals,
+                                "updated_at": datetime.now(timezone.utc).isoformat(),
+                            }, f, indent=2)
+                        os.replace("data/order_flow_signals.json.tmp", "data/order_flow_signals.json")
+                except Exception:
+                    pass
+
+            # S/R levels for top tracked products (periodic, not every tick)
+            if self._tick_count % 20 == 0 and self.state and self._feed_mgr:
+                try:
+                    top_currencies = sorted(
+                        [h for h in self.state.holdings.values()
+                         if h["currency"] not in ("USDC", "USDT", "DAI") and h["value"] >= self.min_value],
+                        key=lambda x: x["value"], reverse=True,
+                    )[:5]
+                    top_pids = [h.get("product_id", f"{h['currency']}-USD") for h in top_currencies]
+                    batched = self._feed_mgr.get_candles_batch(top_pids, granularity=3600, limit=100)
+                    sr_data = {}
+                    for pid, candles in batched.items():
+                        if not candles or len(candles) < 40:
+                            continue
+                        closes = [to_float(c[4]) for c in candles]
+                        highs = [to_float(c[2]) for c in candles]
+                        lows = [to_float(c[3]) for c in candles]
+                        levels, atr = self._detect_sr_levels_for_product(closes, highs, lows)
+                        if levels:
+                            regime = _detect_market_regime(highs, lows, closes)
+                            sr_data[pid] = {
+                                "levels": [
+                                    {"price": round(L.price, 4), "kind": L.kind, "strength": L.strength}
+                                    for L in levels
+                                ],
+                                "atr": round(atr, 4),
+                                "regime": regime,
+                                "current_price": closes[-1] if closes else 0,
+                            }
+                    if sr_data:
+                        with open("data/sr_levels.json.tmp", "w") as f:
+                            json.dump({
+                                "products": sr_data,
+                                "updated_at": datetime.now(timezone.utc).isoformat(),
+                            }, f, indent=2, default=str)
+                        os.replace("data/sr_levels.json.tmp", "data/sr_levels.json")
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.debug("Enhanced state write failed: %s", e)
+
     def _write_signal_cache(self, opportunities: List[Opportunity]):
         """Persist a lightweight signal cache for the dashboard signal feed."""
         style_map = {
@@ -3224,7 +5725,12 @@ class PortfolioOptimizer:
                 "action": opp.side,
                 "symbol": f"{opp.currency}-USD" if opp.currency and not str(opp.currency).endswith("-USD") else opp.currency,
                 "instrument": opp.product_id or opp.currency,
-                "strategy_name": opp.meta.get("strategy_name") or opp.opp_type.name,
+                "strategy_name": (
+                    opp.meta.get("strategy_name")
+                    or opp.meta.get("strategy")
+                    or opp.meta.get("source")
+                    or opp.opp_type.name
+                ),
                 "trade_style": opp.meta.get("trade_style", "") or style_map.get(opp.opp_type.name, ""),
                 "signal_reason": opp.reason,
                 "confidence": float(opp.meta.get("final_confidence", opp.priority) or opp.priority or 0),
@@ -3347,6 +5853,198 @@ class PortfolioOptimizer:
 
     # ── Execution ──────────────────────────────────────────────────
 
+    def _record_trade(self, opp: Opportunity, total_fee: float = 0.0):
+        self.last_execution[opp.opp_type.value] = time.time()
+        if opp.opp_type == OpportunityType.VOLUME_CYCLE:
+            self.position_ages[opp.currency] = time.time()
+        elif opp.opp_type == OpportunityType.TLH:
+            self.cost_bases.pop(opp.currency, None)  # reset cost basis after sale
+
+        # Immediately update in-memory state to prevent over-allocation in the same tick
+        if self.state:
+            pid = self._normalize_product_id(opp.currency, opp.side, opp.product_id)
+            if opp.side == "BUY":
+                self.state.usdc_balance = max(0.0, self.state.usdc_balance - opp.size_usd)
+                existing = self.state.holdings.get(opp.currency, {})
+                existing["value"] = existing.get("value", 0) + opp.size_usd
+                existing["balance"] = existing.get("balance", 0) + opp.size_usd / max(opp.entry_price_est, 0.01)
+                existing["currency"] = opp.currency
+                existing["product_id"] = pid
+                self.state.holdings[opp.currency] = existing
+            elif opp.side == "SELL":
+                added_usd = opp.size_usd * 0.97  # estimate ~3% slippage + fee
+                self.state.usdc_balance += added_usd
+                existing = self.state.holdings.get(opp.currency, {})
+                existing["value"] = max(0.0, existing.get("value", 0) - opp.size_usd)
+                if existing["value"] <= 0:
+                    self.state.holdings.pop(opp.currency, None)
+                else:
+                    self.state.holdings[opp.currency] = existing
+            self.state.total_value = max(self.state.total_value, sum(
+                h.get("value", 0) for h in self.state.holdings.values()
+            ) + self.state.usdc_balance)
+
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": opp.opp_type.value,
+            "side": opp.side,
+            "currency": opp.currency,
+            "size_usd": round(opp.size_usd, 2),
+            "fee": round(total_fee, 2),
+            "reason": opp.reason,
+            "order_id": opp.order_id,
+            "dry_run": self.dry_run,
+        }
+        self.trade_log.append(entry)
+        self.store.save_trade(entry)
+        if self.neo4j_store:
+            try:
+                self.neo4j_store.save_trade(entry)
+            except Exception as e:
+                logger.warning("Neo4j trade save failed: %s", e)
+        logger.info("  → Logged trade #%d (saved)", len(self.trade_log))
+
+    def _normalize_product_id(self, currency: str, side: str, hint: str = "") -> str:
+        """Return the correct product_id: prefer USDC pairs for clean settlement tracking."""
+        try:
+            best = self.cli.best_product(currency, "BUY")
+            if best:
+                return best
+        except Exception:
+            pass
+        if hint and (hint.endswith("-USDC") or hint.endswith("-USD")):
+            return hint
+        return f"{currency}-USDC"
+
+    def _execute_with_bracket(self, opp: Opportunity, base_qty: float, is_quote: bool):
+        entry_price = opp.entry_price_est
+        side = opp.side
+        product_id = self._normalize_product_id(opp.currency, side, opp.product_id)
+        opp.product_id = product_id
+        base_size = base_qty if not is_quote else opp.size_usd / max(entry_price, 0.01)
+        if base_size <= 0:
+            logger.warning("  → Bracket invalid base_size=%.8f, skipping", base_size)
+            return
+
+        stop_pct = opp.stop_loss_pct / 100.0
+        target_pct = opp.take_profit_pct / 100.0
+        if side.upper() == "BUY":
+            stop_price = entry_price * (1.0 - stop_pct)
+            target_price = entry_price * (1.0 + target_pct)
+        else:
+            stop_price = entry_price * (1.0 + stop_pct)
+            target_price = entry_price * (1.0 - target_pct)
+
+        # Preview via execution engine
+        if self._exec_engine:
+            intent = _OrderIntent(
+                side=side,
+                product_id=product_id,
+                order_type=_OrderType.MARKET,
+                base_size=_fmt_base(base_size) if not is_quote else "",
+                quote_size=_fmt_quote(opp.size_usd) if is_quote else "",
+            )
+            preview_result = self._exec_engine._preview(intent)
+            if not preview_result.success:
+                logger.warning("  → Bracket preview failed: %s", preview_result.error)
+                return
+            fee_est = float(preview_result.raw.get("preview", {}).get("total_fee", 0))
+            if fee_est > opp.size_usd * 0.02:
+                logger.warning("  → Bracket fee too high (%.2f%%), skipping", fee_est / opp.size_usd * 100)
+                return
+            opp.expected_fee = fee_est
+        else:
+            fee_est = 0.0
+
+        # Approval gate
+        if self.require_approval and not self.dry_run:
+            token = str(uuid.uuid4())
+            bucket = self._capital_bucket_for(opp)
+            pending_entry = {
+                "type": opp.opp_type.value,
+                "side": opp.side,
+                "currency": opp.currency,
+                "size_usd": round(opp.size_usd, 2),
+                "expected_fee": round(fee_est, 2),
+                "product_id": opp.product_id,
+                "reason": opp.reason,
+                "priority": opp.priority,
+                "capital_bucket": bucket,
+                "status": "pending",
+                "bracket": True,
+                "stop_price": round(stop_price, 2),
+                "target_price": round(target_price, 2),
+                "entry_price_est": round(entry_price, 2) if entry_price > 0 else 0,
+                "base_qty": round(base_size, 8) if base_size > 0 else 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            os.makedirs(os.path.dirname(self.pending_file) or ".", exist_ok=True)
+            try:
+                with open(self.pending_file, "r") as f:
+                    fcntl.flock(f, fcntl.LOCK_SH)
+                    pending = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                pending = {}
+            pending[token] = pending_entry
+            with open(self.pending_file, "w") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                json.dump(pending, f, indent=2, default=str)
+            if self.notifier:
+                self.notifier.send_trade_alert(opp=pending_entry,
+                    state={"total_value": round(self.state.total_value, 2) if self.state else 0,
+                           "usdc_balance": round(self.state.usdc_balance, 2) if self.state else 0},
+                    token=token)
+            logger.info("  → PENDING APPROVAL (bracket): %s", token)
+            return
+
+        # Dry-run
+        if self.dry_run:
+            logger.info("  → DRY-RUN bracket: %s %s size=%.6f entry=$%.2f stop=$%.2f target=$%.2f",
+                         side, product_id, base_size, entry_price, stop_price, target_price)
+            opp.executed = True
+            opp.order_id = "dry-run-bracket"
+            self._record_trade(opp, fee_est)
+            return
+
+        # Live bracket placement
+        bracket = self._bracket_mgr.place_bracket(
+            product_id=product_id,
+            side=side.upper(),
+            base_size=base_size,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            strategy_id=f"opt_{opp.opp_type.value}",
+        )
+        if bracket.get("status") == "OPEN":
+            bid = bracket.get("bracket_id", bracket.get("entry_result", {}).get("client_order_id", "unknown"))
+            logger.info("  → BRACKET PLACED id=%s entry=$%.2f stop=$%.2f target=$%.2f",
+                         bid, entry_price, stop_price, target_price)
+            opp.executed = True
+            opp.order_id = bid
+            opp.expected_fee = fee_est
+            opp.meta["bracket"] = {
+                "bracket_id": bid,
+                "stop_price": stop_price,
+                "target_price": target_price,
+                "entry_result": bracket.get("entry_result", {}),
+            }
+            self._save_brackets()
+            self._record_trade(opp, fee_est)
+        else:
+            err = bracket.get("entry_result", {}).get("error", "unknown")
+            logger.warning("  → Bracket placement failed: %s", err)
+            # If the entry order partially filled but stop/target failed, try to flatten
+            entry_result = bracket.get("entry_result", {})
+            if entry_result.get("success") and entry_result.get("order_id"):
+                logger.warning("  → Entry filled but bracket incomplete – attempting flat close")
+                try:
+                    self._bracket_mgr.force_flatten_bracket(
+                        bracket.get("bracket_id", ""), reason="bracket_setup_failed"
+                    )
+                except Exception as flatten_err:
+                    logger.error("  → Flat close also failed: %s", flatten_err)
+
     def _process_opportunity(self, opp: Opportunity):
         logger.info("Processing [%.2f] %s %s $%.0f: %s",
                      opp.priority, opp.side, opp.currency, opp.size_usd, opp.reason)
@@ -3427,8 +6125,9 @@ class PortfolioOptimizer:
                     pass
             return
 
-        # 1. For sells, convert USD amount to base quantity
+        # 1. Compute base quantity from USD size
         is_quote = opp.side == "BUY"
+        base_qty = 0.0
         if is_quote:
             bucket = self._capital_bucket_for(opp)
             bucket_limit = self._core_batch_cap() if bucket == "core" else self._opportunity_batch_cap()
@@ -3441,7 +6140,9 @@ class PortfolioOptimizer:
             if opp.size_usd < self.min_value:
                 logger.warning("  → Size below minimum after reserve clamp, skipping")
                 return
-        if not is_quote:
+            entry_price = opp.entry_price_est or self._current_price_for_symbol(opp.product_id)
+            base_qty = opp.size_usd / entry_price if entry_price > 0 else 0
+        else:
             holder = self.state.holdings.get(opp.currency, {})
             price = holder.get("price", 0) or 1
             base_qty = opp.size_usd / price if price > 0 else 0
@@ -3543,114 +6244,99 @@ class PortfolioOptimizer:
             logger.warning("  → Route execution failed; skipping direct fallback to avoid partial overlap")
             return
 
-        # 2. Preview (dry-run)
-        if is_quote:
-            preview = self.cli.preview_order(opp.product_id, opp.side, opp.size_usd, is_quote=True)
+        # 5. Execute — via bracket engine if available, fallback to direct CLI
+        total_fee = 0.0
+        use_bracket = (
+            self._bracket_mgr is not None
+            and opp.opp_type in (OpportunityType.STRATEGY_SIGNAL, OpportunityType.REBALANCE, OpportunityType.NEW_LISTING_MOMENTUM)
+            and opp.stop_loss_pct > 0
+            and opp.entry_price_est > 0
+        )
+
+        if use_bracket:
+            self._execute_with_bracket(opp, base_qty, is_quote)
+            return
         else:
-            preview = self.cli.preview_order(opp.product_id, opp.side, base_qty, is_quote=False)
-        if not preview:
-            logger.warning("  → Preview failed, skipping")
-            return
-
-        total_fee = to_float(preview.get("total_fee", 0))
-        total_cost = to_float(preview.get("total_cost", 0))
-        logger.info("  → Preview: fee=$%.2f, cost=$%.2f", total_fee, total_cost)
-        opp.preview_passed = True
-        opp.expected_fee = total_fee
-
-        # 3. Risk check
-        if total_fee > opp.size_usd * 0.02:
-            logger.warning("  → Fee too high (%.2f%%), skipping", total_fee / opp.size_usd * 100)
-            return
-
-        # 4. If approval is required, send email and pend (skip execution)
-        if self.require_approval and not self.dry_run:
-            token = str(uuid.uuid4())
-            bucket = self._capital_bucket_for(opp)
-            pending_entry = {
-                "type": opp.opp_type.value,
-                "side": opp.side,
-                "currency": opp.currency,
-                "size_usd": round(opp.size_usd, 2),
-                "expected_fee": round(total_fee, 2),
-                "product_id": opp.product_id,
-                "reason": opp.reason,
-                "priority": opp.priority,
-                "capital_bucket": bucket,
-                "status": "pending",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            os.makedirs(os.path.dirname(self.pending_file) or ".", exist_ok=True)
-            try:
-                with open(self.pending_file, "r") as f:
-                    fcntl.flock(f, fcntl.LOCK_SH)
-                    pending = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                pending = {}
-            pending[token] = pending_entry
-            with open(self.pending_file, "w") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                json.dump(pending, f, indent=2, default=str)
-
-            if self.notifier:
-                state_summary = {
-                    "total_value": round(self.state.total_value, 2) if self.state else 0,
-                    "usdc_balance": round(self.state.usdc_balance, 2) if self.state else 0,
-                    "holdings_count": len(self.state.holdings) if self.state else 0,
-                }
-                self.notifier.send_trade_alert(
-                    opp=pending_entry,
-                    state=state_summary,
-                    token=token,
-                )
-            logger.info("  → PENDING APPROVAL: %s", token)
-            return
-
-        # 5. Execute or dry-run
-        if self.dry_run:
-            logger.info("  → DRY-RUN: would execute %s %s $%.0f (fee=$%.2f)",
-                         opp.side, opp.product_id, opp.size_usd, total_fee)
-            opp.executed = True
-            opp.order_id = "dry-run"
-        else:
+            # Preview (dry-run / fee check for non-bracket types)
             if is_quote:
-                order = self.cli.create_order(opp.product_id, opp.side, opp.size_usd, is_quote=True)
+                preview = self.cli.preview_order(opp.product_id, opp.side, opp.size_usd, is_quote=True)
             else:
-                order = self.cli.create_order(opp.product_id, opp.side, base_qty, is_quote=False)
-            if not order:
-                logger.error("  → Execution returned no order")
+                preview = self.cli.preview_order(opp.product_id, opp.side, base_qty, is_quote=False)
+            if not preview:
+                logger.warning("  → Preview failed, skipping")
                 return
-            oid = order.get("id", "unknown")
-            logger.info("  → EXECUTED: %s order_id=%s", opp.side, oid)
-            opp.executed = True
-            opp.order_id = oid
 
-        # 4. Record
-        self.last_execution[opp.opp_type.value] = time.time()
-        if opp.opp_type == OpportunityType.VOLUME_CYCLE:
-            self.position_ages[opp.currency] = time.time()
-        elif opp.opp_type == OpportunityType.TLH:
-            self.cost_bases.pop(opp.currency, None)  # reset cost basis after sale
+            total_fee = to_float(preview.get("total_fee", 0))
+            total_cost = to_float(preview.get("total_cost", 0))
+            logger.info("  → Preview: fee=$%.2f, cost=$%.2f", total_fee, total_cost)
+            opp.preview_passed = True
+            opp.expected_fee = total_fee
 
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "type": opp.opp_type.value,
-            "side": opp.side,
-            "currency": opp.currency,
-            "size_usd": round(opp.size_usd, 2),
-            "fee": round(total_fee, 2),
-            "reason": opp.reason,
-            "order_id": opp.order_id,
-            "dry_run": self.dry_run,
-        }
-        self.trade_log.append(entry)
-        self.store.save_trade(entry)
-        if self.neo4j_store:
-            try:
-                self.neo4j_store.save_trade(entry)
-            except Exception as e:
-                logger.warning("Neo4j trade save failed: %s", e)
-        logger.info("  → Logged trade #%d (saved)", len(self.trade_log))
+            if total_fee > opp.size_usd * 0.02:
+                logger.warning("  → Fee too high (%.2f%%), skipping", total_fee / opp.size_usd * 100)
+                return
+
+            if self.require_approval and not self.dry_run:
+                token = str(uuid.uuid4())
+                bucket = self._capital_bucket_for(opp)
+                pending_entry = {
+                    "type": opp.opp_type.value,
+                    "side": opp.side,
+                    "currency": opp.currency,
+                    "size_usd": round(opp.size_usd, 2),
+                    "expected_fee": round(total_fee, 2),
+                    "product_id": opp.product_id,
+                    "reason": opp.reason,
+                    "priority": opp.priority,
+                    "capital_bucket": bucket,
+                    "status": "pending",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                os.makedirs(os.path.dirname(self.pending_file) or ".", exist_ok=True)
+                try:
+                    with open(self.pending_file, "r") as f:
+                        fcntl.flock(f, fcntl.LOCK_SH)
+                        pending = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pending = {}
+                pending[token] = pending_entry
+                with open(self.pending_file, "w") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    json.dump(pending, f, indent=2, default=str)
+
+                if self.notifier:
+                    state_summary = {
+                        "total_value": round(self.state.total_value, 2) if self.state else 0,
+                        "usdc_balance": round(self.state.usdc_balance, 2) if self.state else 0,
+                        "holdings_count": len(self.state.holdings) if self.state else 0,
+                    }
+                    self.notifier.send_trade_alert(
+                        opp=pending_entry,
+                        state=state_summary,
+                        token=token,
+                    )
+                logger.info("  → PENDING APPROVAL: %s", token)
+                return
+
+            if self.dry_run:
+                logger.info("  → DRY-RUN: would execute %s %s $%.0f (fee=$%.2f)",
+                             opp.side, opp.product_id, opp.size_usd, total_fee)
+                opp.executed = True
+                opp.order_id = "dry-run"
+            else:
+                if is_quote:
+                    order = self.cli.create_order(opp.product_id, opp.side, opp.size_usd, is_quote=True)
+                else:
+                    order = self.cli.create_order(opp.product_id, opp.side, base_qty, is_quote=False)
+                if not order:
+                    logger.error("  → Execution returned no order")
+                    return
+                oid = order.get("id", "unknown")
+                logger.info("  → EXECUTED: %s order_id=%s", opp.side, oid)
+                opp.executed = True
+                opp.order_id = oid
+
+        self._record_trade(opp, total_fee)
 
     def summary(self) -> dict:
         by_type = defaultdict(list)

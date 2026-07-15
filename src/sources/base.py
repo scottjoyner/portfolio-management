@@ -22,7 +22,7 @@ class DataSourceError(Exception):
     pass
 
 
-class DataSource:
+class DataSource(abc.ABC):
     """
     Abstract base class for all data sources.
     

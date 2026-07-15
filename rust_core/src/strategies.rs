@@ -3318,3 +3318,237 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn to_ohlcv(closes: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = closes.len();
+        let mut opens = Vec::with_capacity(n);
+        let mut highs = Vec::with_capacity(n);
+        let mut lows = Vec::with_capacity(n);
+        let mut vols = Vec::with_capacity(n);
+        for i in 0..n {
+            let o = if i == 0 { closes[0] } else { closes[i - 1] };
+            let c = closes[i];
+            let eps = (c.abs() * 0.01).max(0.01);
+            opens.push(o);
+            highs.push(c + eps);
+            lows.push(c - eps);
+            vols.push(1000.0 + 500.0 * ((i % 7) as f64));
+        }
+        (opens, highs, lows, vols)
+    }
+
+    fn uptrend(n: usize) -> Vec<f64> {
+        (0..n).map(|i| 100.0 + i as f64 * 0.5 + 0.1 * ((i % 5) as f64)).collect()
+    }
+    fn downtrend(n: usize) -> Vec<f64> {
+        (0..n).map(|i| 200.0 - i as f64 * 0.5 - 0.1 * ((i % 5) as f64)).collect()
+    }
+    fn ranging(n: usize) -> Vec<f64> {
+        (0..n).map(|i| 100.0 + 5.0 * (i as f64 / 5.0).sin()).collect()
+    }
+    fn volatile(n: usize) -> Vec<f64> {
+        (0..n).map(|i| 100.0 + 20.0 * (i as f64 / 3.0).sin() + 2.0 * ((i % 4) as f64)).collect()
+    }
+
+    const NAMES: &[&str] = &[
+        "ema_cross","rsi_revert","boll_break","zscore_revert","vol_mom","macd",
+        "vwap_revert","obv_div","cmo","trix","adx","keltner","chaikin_mf",
+        "williams_r","psar","hma","force_idx","vpt","donchian","aroon",
+        "price_eff","scci","range_exp_idx","ema_dev","snr_idx","candle_pat",
+        "sup_res","liq_vac","cvd_flow","vcp","impulse_exh","mom_accel",
+        "rsi_fail","avwap","donch_pull","vol_prof","bb_squeeze","multi_rsi",
+        "linreg_slope","hurst","elder_ray","klinger","pivot_points","ichimoku",
+        "choppiness","true_cci","dpo","kst","mass_idx","ulcer","mfi","stoch",
+        "emv","ad_div","envelope","atr_channel","kama","dmi_cross","vma",
+        "vortex","rvi","coppock","std_channel","vol_ratio","vwap_macd","nvi",
+        "de_marker","gap_revert","supertrend","fisher","ultimate_osc","vw_rsi",
+        "kalman_mr","hp_trend",
+    ];
+
+    #[test]
+    fn test_all_strategies_various_regimes() {
+        let datasets: Vec<Vec<f64>> = vec![uptrend(120), downtrend(120), ranging(120), volatile(120)];
+        for closes in &datasets {
+            let (opens, highs, lows, vols) = to_ohlcv(closes);
+            for name in NAMES {
+                let sig = evaluate_opens(name, closes, &opens, &vols, &highs, &lows);
+                if let Some(s) = sig {
+                    assert!(s.action == "BUY" || s.action == "SELL" || s.action == "HOLD",
+                            "{} invalid action {}", name, s.action);
+                    assert!(s.confidence >= 0.0 && s.confidence <= 1.0,
+                            "{} invalid confidence {}", name, s.confidence);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_strategies_insufficient_data() {
+        let closes: Vec<f64> = vec![100.0, 101.0, 99.0, 102.0, 98.0];
+        let (opens, highs, lows, vols) = to_ohlcv(&closes);
+        for name in NAMES {
+            let _ = evaluate_opens(name, &closes, &opens, &vols, &highs, &lows);
+        }
+    }
+
+    #[test]
+    fn test_evaluate_dispatch_unknown() {
+        let closes = uptrend(120);
+        let (opens, highs, lows, vols) = to_ohlcv(&closes);
+        assert!(evaluate("nonexistent", &closes, &vols, &highs, &lows).is_none());
+        assert!(evaluate_opens("nonexistent", &closes, &opens, &vols, &highs, &lows).is_none());
+    }
+
+    #[test]
+    fn test_evaluate_all_opens_no_panic() {
+        let closes = volatile(150);
+        let (opens, highs, lows, vols) = to_ohlcv(&closes);
+        let results = evaluate_all_opens(&closes, &opens, &vols, &highs, &lows);
+        for (_, s) in &results {
+            assert!(s.confidence >= 0.0 && s.confidence <= 1.0);
+        }
+    }
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0
+        }
+        fn frac(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+        fn chance(&mut self, p: f64) -> bool { self.frac() < p }
+    }
+
+    fn gen_dataset(rng: &mut Lcg, kind: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = 120;
+        let mut closes = Vec::with_capacity(n);
+        let mut base = 100.0;
+        for i in 0..n {
+            let t = i as f64;
+            let v = match kind {
+                0 => base + t * 0.5,                                       // steady up
+                1 => base - t * 0.5,                                       // steady down
+                2 => base + 10.0 * (t / 6.0).sin(),                        // sine
+                3 => base + 30.0 * (t / 4.0).sin() + t * 0.1,              // big sine + drift
+                4 => {                                                     // spike then revert
+                    if i < 60 { base + t * 0.2 } else if i == 60 { 300.0 } else { 200.0 - (i as f64 - 60.0) * 0.5 }
+                }
+                5 => {                                                     // alternating bars
+                    if i % 2 == 0 { base + (i as f64) * 0.3 } else { base + (i as f64) * 0.3 - 5.0 }
+                }
+                6 => base + rng.frac() * 40.0 - 20.0,                      // random
+                7 => base,                                                 // constant
+                8 => {                                                     // sharp reversal up->down
+                    if i < 50 { base + t * 0.5 } else { base + 50.0 - (i as f64 - 50.0) * 1.0 }
+                }
+                9 => {                                                     // accelerating
+                    base + t * t * 0.01
+                }
+                // 10: bullish engulfing tail (down bar then big up bar)
+                10 => {
+                    if i < n - 2 { base + t * 0.2 }
+                    else if i == n - 2 { base + (n as f64) * 0.2 - 5.0 }
+                    else { base + (n as f64) * 0.2 + 8.0 }
+                }
+                // 11: swing high then breakdown
+                11 => {
+                    if i < 80 { base + i as f64 * 0.5 } else { base + 80.0 * 0.5 - (i as f64 - 80.0) * 1.0 }
+                }
+                // 12: swing low then bounce
+                12 => {
+                    if i < 80 { base - i as f64 * 0.5 } else { base - 80.0 * 0.5 + (i as f64 - 80.0) * 1.0 }
+                }
+                // 13: volume spike bar
+                13 => base + (i as f64 * 0.1).sin(),
+                // 14: compression then breakout
+                14 => {
+                    if i < 90 { base + 2.0 * (i as f64 / 3.0).sin() } else { base + (i as f64 - 90.0) * 1.5 }
+                }
+                // 15: double top
+                15 => {
+                    let a = (i as f64 / 10.0).sin();
+                    if i == 40 || i == 80 { base + 20.0 } else { base + 5.0 * a }
+                }
+                // 16: double bottom
+                16 => {
+                    if i == 40 || i == 80 { base - 20.0 } else { base + 5.0 * (i as f64 / 10.0).sin() }
+                }
+                // 17: doji tail (flat with tiny last body)
+                17 => {
+                    if i < n - 1 { base + (i as f64 * 0.05).sin() } else { base + 0.02 }
+                }
+                // 18: hammer tail (long lower wick at end)
+                18 => {
+                    if i < n - 1 { base + i as f64 * 0.1 } else { base + 0.5 }
+                }
+                // 19: divergence (price up, volume down)
+                19 => base + t * 0.3,
+                // 20: gap up bar
+                20 => {
+                    if i == 60 { base + 60.0 * 0.2 + 15.0 } else { base + i as f64 * 0.2 }
+                }
+                // 21: staircase up with pullbacks
+                21 => base + i as f64 * 0.3 + 3.0 * (i as f64 / 7.0).sin(),
+                // 22: staircase down
+                22 => base - i as f64 * 0.3 + 3.0 * (i as f64 / 7.0).sin(),
+                // 23: wide-range choppy
+                23 => base + 40.0 * ((i as f64 * 1.7).sin()) * ((i % 2) as f64 - 0.5) * 2.0,
+                _ => base + 5.0 * (t / 5.0).sin(),
+            };
+            closes.push(v);
+        }
+        let (mut opens, mut highs, mut lows, mut vols) = to_ohlcv(&closes);
+        if kind == 13 {
+            for i in 0..n { vols[i] = if i == n - 1 { 100000.0 } else { 1000.0 }; }
+        }
+        if kind == 19 {
+            for i in 0..n { vols[i] = (n - i) as f64 * 10.0; }
+        }
+        if kind == 18 {
+            // hammer: last bar long lower wick
+            let last = n - 1;
+            lows[last] = closes[last] - 8.0;
+            highs[last] = closes[last] + 0.5;
+            opens[last] = closes[last] - 0.3;
+        }
+        if kind == 17 {
+            let last = n - 1;
+            opens[last] = closes[last] - 0.01;
+            highs[last] = closes[last] + 0.5;
+            lows[last] = closes[last] - 0.5;
+        }
+        if kind == 6 && rng.chance(0.3) {
+            vols = vec![0.0; n];
+        }
+        if kind == 6 && rng.chance(0.2) {
+            for i in 0..n { highs[i] = closes[i]; lows[i] = closes[i]; }
+        }
+        (closes, opens, highs, lows, vols)
+    }
+
+    #[test]
+    fn test_fuzz_all_strategies() {
+        let mut rng = Lcg(0x5EEDF00D);
+        let kinds: Vec<usize> = (0..24).collect();
+        for _ in 0..250u64 {
+            let k0 = (rng.next() as usize) % kinds.len();
+            for offset in 0..kinds.len() {
+                let k = kinds[(k0 + offset) % kinds.len()];
+                let (closes, opens, highs, lows, vols) = gen_dataset(&mut rng, k);
+                for name in NAMES {
+                    let sig = evaluate_opens(name, &closes, &opens, &vols, &highs, &lows);
+                    if let Some(s) = sig {
+                        assert!(s.confidence >= 0.0 && s.confidence <= 1.0,
+                                "{} conf {}", name, s.confidence);
+                    }
+                }
+            }
+        }
+    }
+}

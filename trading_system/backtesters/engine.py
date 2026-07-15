@@ -139,7 +139,7 @@ class BacktestEngine:
                     order_result = self.execute_signal(
                         symbol=symbol,
                         signal=signal,
-                        price=event.price,
+                        market_price=event.price,
                         event_timestamp=event.timestamp
                     )
                     
@@ -202,7 +202,7 @@ class BacktestEngine:
         )
         
         # Track position state
-        current_position = self.held_positions.get(symbol, {'quantity': 0})
+        current_position = self.held_positions.get(symbol, {'quantity': 0, 'entry_weighted_avg_price': 0.0})
         self.held_positions[symbol] = {
             'quantity': current_position['quantity'] + desired_quantity,
             'entry_weighted_avg_price': (current_position['quantity'] * current_position['entry_weighted_avg_price'] + 

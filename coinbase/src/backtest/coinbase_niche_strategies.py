@@ -472,12 +472,15 @@ class VolatilityCompressionBreakoutStrategy(BaseStrategy):
             return None
         recent = closes[-self.compression_window:]
         prior = closes[-(self.compression_window * 2):-self.compression_window] if len(closes) >= self.compression_window * 2 else recent
-        breakout_basis = closes[-self.breakout_window:] if len(closes) >= self.breakout_window else recent
-        hi = max(recent)
-        lo = min(recent)
+        # The compression window must exclude the current bar so that a real
+        # breakout (close beyond the prior window extremes) is detectable.
+        hist = recent[:-1] if len(recent) > 1 else recent
+        breakout_basis = closes[-(self.breakout_window + 1):-1] if len(closes) >= self.breakout_window + 1 else hist
+        hi = max(hist) if hist else max(recent)
+        lo = min(hist) if hist else min(recent)
         prior_hi = max(prior)
         prior_lo = min(prior)
-        width = (hi - lo) / max(sum(recent) / len(recent), 0.01)
+        width = (hi - lo) / max(sum(hist) / len(hist), 0.01)
         prior_width = (prior_hi - prior_lo) / max(sum(prior) / len(prior), 0.01)
         prev = closes[-2]
         compressed = width < 0.25 and width < prior_width * 1.05

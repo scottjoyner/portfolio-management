@@ -69,7 +69,7 @@ def base_to_product(base: str) -> str:
     return f"{base}-USD"
 
 def product_to_base(product_id: str) -> str:
-    return product_id.upper().replace("-USD", "").replace("-USDC", "")
+    return product_id.upper().replace("-USDC", "").replace("-USD", "")
 
 # Coinbase WebSocket / feed products (subset of SPOT_PAIRS for live feed)
 # Typically the most actively traded — balance coverage vs bandwidth

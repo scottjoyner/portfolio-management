@@ -140,14 +140,17 @@ class SettlementTracker:
                     "buy_yes_resolved": buy_yes_res,
                     "hedge_yes_resolved": hedge_yes_res,
                     "payout_units": round(payout_units, 4),
-                    "hedge_held": buy_yes_res == hedge_yes_res,
+                    "hedge_held": buy_yes_res != hedge_yes_res,
                     "live": is_live,
                 }
                 t["realized_pnl"] = round(realized, 2)
                 realized_total += realized
                 settled += 1
                 changed = True
-                if buy_yes_res != hedge_yes_res:
+                # A genuine same-event hedge resolves oppositely (YES on one leg,
+                # NO on the other). They resolving IDENTICALLY means the semantic
+                # matcher paired two different events — a real mismatch.
+                if buy_yes_res == hedge_yes_res:
                     logger.warning(
                         "Arb legs DIVERGED for %s (buy_yes=%d hedge_yes=%d) — mismatched pair, realized %.2f",
                         t.get("event_key", "?"), buy_yes_res, hedge_yes_res, realized,

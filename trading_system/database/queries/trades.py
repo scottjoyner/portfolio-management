@@ -169,8 +169,9 @@ class TradesRepository:
     
     def update_order_status(self, order_id: str, status: str) -> dict[str, Any] | None:
         """Update order status (e.g., from pending to open)."""
-        
-        order = self.get_order(order_id)
+        from storage.postgres.models import Order
+
+        order = self.db.query(Order).filter(Order.order_id == order_id).first()
         
         if not order:
             return None
@@ -191,8 +192,9 @@ class TradesRepository:
     
     def cancel_order(self, order_id: str) -> dict[str, Any] | None:
         """Cancel an open/partial order."""
-        
-        order = self.get_order(order_id)
+        from storage.postgres.models import Order
+
+        order = self.db.query(Order).filter(Order.order_id == order_id).first()
         
         if not order or order.status != "open":
             return {
@@ -217,8 +219,9 @@ class TradesRepository:
     
     def partially_fill_order(self, order_id: str, fill_size: float, fill_price: float) -> dict[str, Any]:
         """Partially fill an order (for limit orders)."""
-        
-        order = self.get_order(order_id)
+        from storage.postgres.models import Order
+
+        order = self.db.query(Order).filter(Order.order_id == order_id).first()
         
         if not order:
             return {"error": "Order not found"}

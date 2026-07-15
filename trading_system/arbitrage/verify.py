@@ -49,7 +49,7 @@ try:
     })
     
     opps = detector.detect_opportunities()
-    print(f"[✓] Detector found {len(oppos)} opportunities")
+    print(f"[✓] Detector found {len(opps)} opportunities")
 except Exception as e:
     print(f"[!] Detection failed: {str(e)[:100]}")
 

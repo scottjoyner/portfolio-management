@@ -204,10 +204,7 @@ def get_market_order_book(market_slug: str) -> Optional[Dict[str, Any]]:
     outcomes = _parse_outcomes(market.get('outcomes', []))
 
     # Clean up for API calls (remove trailing .0 from floats, keep quotes on strings)
-    outcome_prices_clean = [
-        f'"{p["outcome"]}": {int(float(p["price"]) * 100)}'
-        for p in outcome_prices
-    ]
+    outcome_prices_clean = outcome_prices
     outcomes_clean = ' '.join(outcomes)
 
     return {

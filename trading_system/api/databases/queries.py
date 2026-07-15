@@ -8,6 +8,8 @@ Query Pattern:
 - Errors are caught gracefully and return empty arrays for backward compatibility
 """
 
+import sqlalchemy as sa
+
 
 def get_accounts():
     """Get active portfolios from PostgreSQL."""
@@ -19,7 +21,7 @@ def get_accounts():
         try:
             portfolios = session.query("SELECT id, name, type, provider, currency, balance_usd FROM portfolios").filter(
                 "type" == "ACTIVE"
-            ).order_by("created_at".desc()).all()
+            ).order_by("created_at").all()
             
             accounts = []
             for i, row in enumerate(portfolios):
@@ -54,7 +56,7 @@ def get_trades(limit=50, offset=0):
         try:
             orders = session.query("SELECT * FROM orders").filter(
                 "status" == "CLOSED"
-            ).order_by("created_at".desc()).offset(offset).limit(limit).all()
+            ).order_by("created_at").offset(offset).limit(limit).all()
             
             trades = []
             for o in orders:
@@ -87,7 +89,7 @@ def get_positions():
         try:
             # Query unfilled orders
             open_orders = session.query("SELECT * FROM orders").filter(
-                "status".in_("PENDING", "OPEN", "PARTIALLY_FILLED")
+                "status"
             ).all()
             
             positions = []
@@ -119,7 +121,7 @@ def get_strategies():
         try:
             strategies = session.query("SELECT * FROM strategy_configs").filter(
                 "backtested" == True
-            ).order_by("created_at".desc()).all()
+            ).order_by("created_at").all()
             
             strategies_list = []
             for i, s in enumerate(strategies):

@@ -63,85 +63,78 @@ class ConfidenceEngine:
         """
         Applies all confidence modifiers to a signal.
 
-        Args:
-            signal: The raw signal object (must have symbol, action, strength, strategy)
-            market_data: Dictionary of market data (price, volume_24h, spread, etc.)
-            regime: Current market regime (e.g., 'volatile', 'trending')
-            market_leaders: List of symbols for cross-correlation check (e.g., ['BTC-USD'])
-            sentiment_score: Sentiment score from news analysis (-1.0 to +1.0)
-            global_consensus: Percentage of all pairs signaling the same direction (0.0 to 1.0)
-
-        Returns:
-            ConfidenceModifierResult
+        All modifiers are applied as MULTIPLIERS on the base confidence.
+        A single final clamp at 1.0 prevents cumulative overflow.
         """
-        confidence = float(getattr(signal, "strength", 0.5))
-        original_confidence = confidence
+        base_confidence = float(getattr(signal, "strength", 0.5))
+        multipliers: List[float] = [1.0]  # start with identity
         modifiers_applied: List[str] = []
         notes: List[str] = []
 
-        # 1. Liquidity Tiering & Robustness
+        # 1. Liquidity Tiering & Robustness (penalty multiplier)
         tier = self.liquidity_tiers.get(signal.symbol, 3)
         if tier >= 4:
-            confidence *= 1 - (tier - 3) * 0.2
+            mult = 1.0 - (tier - 3) * 0.15  # 0.85, 0.70, 0.55...
+            multipliers.append(mult)
             modifiers_applied.append("liquidity_tier")
             notes.append(f"Low liquidity tier {tier} penalty applied.")
 
-        # 2. Spread Adjustment
+        # 2. Spread Adjustment (subtractive, then normalize)
         spread = float(market_data.get("spread", 0.0))
         if spread > 0:
-            confidence -= spread
-            modifiers_applied.append("spread_adjustment")
+            spread_penalty = spread * 100  # convert to bps equivalent
+            # convert to multiplier: 1 - spread_penalty (cap at 0.95)
+            mult = max(0.7, 1.0 - spread_penalty)
+            multipliers.append(mult)
+            modifiers_applied.append("spread_adj")
             notes.append(f"Spread adjustment ({spread * 10000:.1f}bps) applied.")
 
-        # 3. Consecutive Signal Confirmation
+        # 3. Consecutive Signal Confirmation (small boost)
         key = (signal.symbol, signal.strategy)
         last_action = self.consecutive_signals.get(key)
         if last_action == signal.action:
-            confidence = min(1.0, confidence + 0.1)
-            modifiers_applied.append("consecutive_confirmation")
+            multipliers.append(1.05)  # 5% boost instead of +0.1
+            modifiers_applied.append("consecutive")
             notes.append("Consecutive signal boost applied.")
         else:
             self.consecutive_signals[key] = signal.action
 
-        # 4. Win-Rate Tracking (only if explicitly configured)
+        # 4. Win-Rate Tracking
         win_rate = self.win_rates.get((signal.strategy, signal.symbol))
-        if win_rate is not None:
-            confidence *= win_rate
-            modifiers_applied.append("win_rate_tracking")
+        if win_rate is not None and win_rate > 0:
+            multipliers.append(max(0.3, win_rate))  # floor at 0.3
+            modifiers_applied.append("win_rate")
             notes.append(f"Win-rate weighting ({win_rate:.2f}) applied.")
 
-        # 5. Sentiment Integration
+        # 5. Sentiment Integration (multiplier)
         if sentiment_score != 0:
-            # Boost confidence if sentiment aligns with signal direction
-            # Assume signal.action is 'BUY' (1) or 'SELL' (-1)
             action_val = 1 if signal.action == "BUY" else -1
             if (sentiment_score > 0 and action_val == 1) or (
                 sentiment_score < 0 and action_val == -1
             ):
-                confidence = min(1.0, confidence + (abs(sentiment_score) * 0.4))
-                modifiers_applied.append("sentiment_integration")
+                # Aligned: up to 20% boost (was 40%)
+                mult = 1.0 + min(abs(sentiment_score) * 0.2, 0.2)
+                multipliers.append(mult)
+                modifiers_applied.append("sentiment")
                 notes.append(f"Sentiment boost ({sentiment_score:.2f}) applied.")
             else:
-                confidence *= 0.8
-                modifiers_applied.append("sentiment_penalty")
+                # Misaligned: penalty
+                multipliers.append(0.85)
+                modifiers_applied.append("sentiment_p")
                 notes.append(f"Sentiment penalty ({sentiment_score:.2f}) applied.")
 
-        # 6. Global Consensus
+        # 6. Global Consensus (multiplier)
         if global_consensus > 0.6:
-            confidence = min(1.0, confidence + 0.3)
-            modifiers_applied.append("global_consensus")
+            multipliers.append(1.15)  # 15% boost (was +0.3 additive)
+            modifiers_applied.append("consensus")
             notes.append(f"Global consensus boost ({global_consensus:.1%}) applied.")
         elif global_consensus < 0.4 and global_consensus > 0:
-            confidence *= 0.8
-            modifiers_applied.append("global_consensus_penalty")
+            multipliers.append(0.85)
+            modifiers_applied.append("consensus_p")
             notes.append(f"Global consensus penalty ({global_consensus:.1%}) applied.")
 
-        # 7. Regime Confidence Gating
+        # 7. Regime Confidence Gating (hard cap applied at end)
         cap = self.regime_caps.get(regime, 1.0)
-        if confidence > cap:
-            confidence = cap
-            modifiers_applied.append("regime_gate")
-            notes.append(f"Regime cap ({cap}) applied for {regime} regime.")
 
         # 8. Cross-Correlation Penalty
         if market_leaders:
@@ -159,21 +152,24 @@ class ConfidenceEngine:
                 leader_change /= 100.0
 
             if signal.action == "BUY" and leader_change < -0.01:
-                confidence *= 0.8
-                modifiers_applied.append("cross_correlation")
-                notes.append(
-                    "Cross-correlation penalty applied (market leaders dumping)."
-                )
+                multipliers.append(0.85)
+                modifiers_applied.append("correlation")
+                notes.append("Cross-correlation penalty applied (leaders dumping).")
             elif signal.action == "SELL" and leader_change > 0.01:
-                confidence *= 0.8
-                modifiers_applied.append("cross_correlation")
-                notes.append(
-                    "Cross-correlation penalty applied (market leaders pumping)."
-                )
+                multipliers.append(0.85)
+                modifiers_applied.append("correlation")
+                notes.append("Cross-correlation penalty applied (leaders pumping).")
+
+        # Apply all multipliers then single final clamp
+        final_conf = base_confidence
+        for m in multipliers:
+            final_conf *= m
+        final_conf = min(final_conf, cap)  # regime cap
+        final_conf = max(0.0, min(1.0, final_conf))  # hard clamp 0-1
 
         return ConfidenceModifierResult(
-            original_confidence=original_confidence,
-            modified_confidence=confidence,
+            original_confidence=base_confidence,
+            modified_confidence=final_conf,
             modifiers_applied=modifiers_applied,
             notes=notes,
         )

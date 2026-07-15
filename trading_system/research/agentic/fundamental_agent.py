@@ -1,5 +1,7 @@
 """Fundamental analysis agent for market research."""
 
+from typing import Any, Dict
+
 
 async def analyze_fundamental(instrument: str) -> Dict[str, Any]:
     """Analyze fundamental metrics for valuation signals.

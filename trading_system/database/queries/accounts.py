@@ -60,10 +60,12 @@ class AccountsRepository:
     
     def get_portfolio(self, portfolio_id: str) -> Portfolio | None:
         """Retrieve a portfolio by ID."""
+        from storage.postgres.models import Portfolio
         return self.db.query(Portfolio).filter(Portfolio.id == portfolio_id).first()
     
     def list_portfolios(self, objective: str | None = None) -> list[Portfolio]:
         """List all portfolios, optionally filtered by objective."""
+        from storage.postgres.models import Portfolio
         query = self.db.query(Portfolio)
         if objective:
             query = query.filter(Portfolio.objective == objective)
@@ -93,6 +95,7 @@ class AccountsRepository:
     
     def seed_default_portfolios(self) -> list[Portfolio]:
         """Seed database with default portfolios for testing."""
+        from storage.postgres.models import Portfolio
         if self.db.query(Portfolio).count() > 0:
             return []
         

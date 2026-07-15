@@ -269,7 +269,7 @@ class SlippageModel:
 # Global instances
 _BOOK_CACHE: Optional[OrderBookCache] = None
 _SLIPPAGE_MODEL: Optional[SlippageModel] = None
-_CACHE_LOCK = threading.Lock()
+_CACHE_LOCK = threading.RLock()
 
 
 def get_book_cache() -> OrderBookCache:

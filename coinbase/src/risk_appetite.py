@@ -258,7 +258,8 @@ class DynamicRiskController:
         return ConsecutiveLossState.STOPPED.value
 
     def _drawdown_multiplier(self, dd_pct: float) -> float:
-        for threshold, mult in self._drawdown_tiers:
+        # Apply the most severe tier whose threshold is met (descending order).
+        for threshold, mult in reversed(self._drawdown_tiers):
             if dd_pct >= threshold:
                 return mult
         return 1.0

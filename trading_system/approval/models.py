@@ -1,10 +1,11 @@
 """Database models for approval workflow engine."""
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Text, Boolean
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
+from enum import Enum
 
-# SQLAlchemy Base class would be defined in app/models.py or similar
+Base = declarative_base()
 
 
 class ApprovalRequest(Base):

@@ -238,8 +238,8 @@ class RSIMeanReversionStrategy:
                 prev_avg_loss = sum(losses[i-period:i]) / period if i >= period else sum(losses[:period]) / period
                 
                 # Apply smoothing factors for EMA
-                avg_gain_smooth = (2 * gain) / (period + 1) if gain > 0 else avg_gain_smooth
-                avg_loss_smooth = (2 * loss) / (period + 1) if loss > 0 else avg_loss_smooth
+                avg_gain_smooth = (prev_avg_gain * (period - 1) + gain) / period
+                avg_loss_smooth = (prev_avg_loss * (period - 1) + loss) / period
                 
                 rsi_val = 100 - (100 / (1 + avg_gain_smooth / avg_loss_smooth)) if avg_loss_smooth > 0 else 100.0
             else:
@@ -317,7 +317,7 @@ class RSIMeanReversionStrategy:
             # Create new position with trailing stop tracking  
             self.position = RSIPosition(
                 entry_price=entry_price,
-                rsi_at_entry=current_rsi,
+                rsi_at_entry=self.config.rsi_oversold_threshold,
                 quantity=self.config.position_size_usd / entry_price
             )
             

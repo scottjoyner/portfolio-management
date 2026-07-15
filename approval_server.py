@@ -66,7 +66,18 @@ class ApprovalHandler(BaseHTTPRequestHandler):
     def _parse_token(self, path: str, prefix: str) -> str:
         return path[len(prefix):] if path.startswith(prefix) else ""
 
-    def _render_page(self, title: str, message: str, color: str = "#28a745"):
+    def _bracket_detail_html(self, opp: Dict) -> str:
+        if opp.get("bracket"):
+            return (
+                f"<p style='font-size:13px;color:#555;margin-top:-16px;'>"
+                f"Stop: <strong>${float(opp.get('stop_price',0)):.2f}</strong> &middot; "
+                f"Target: <strong>${float(opp.get('target_price',0)):.2f}</strong>"
+                f"</p>"
+            )
+        return ""
+
+    def _render_page(self, title: str, message: str, color: str = "#28a745", opp: Dict = None):
+        bracket_html = self._bracket_detail_html(opp) if opp else ""
         return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -76,10 +87,11 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
        display:flex;justify-content:center;align-items:center;min-height:100vh;
        margin:0;background:#f4f4f4; }}
 .card {{ background:#fff;border-radius:12px;padding:40px;text-align:center;
-        box-shadow:0 4px 24px rgba(0,0,0,0.1);max-width:400px; }}
+        box-shadow:0 4px 24px rgba(0,0,0,0.1);max-width:440px; }}
 .icon {{ font-size:64px;margin-bottom:16px; }}
 h1 {{ margin:0 0 8px;font-size:24px;color:#1a1a2e; }}
 p {{ margin:0 0 24px;color:#666; }}
+.detail {{ font-size:13px;color:#555;margin:-16px 0 24px; }}
 a {{ display:inline-block;padding:10px 24px;background:#1a1a2e;color:#fff;
     text-decoration:none;border-radius:6px;font-size:14px; }}
 </style>
@@ -89,6 +101,7 @@ a {{ display:inline-block;padding:10px 24px;background:#1a1a2e;color:#fff;
     <div class="icon">{'✅' if color == '#28a745' else '❌' if color == '#dc3545' else 'ℹ️'}</div>
     <h1 style="color:{color}">{title}</h1>
     <p>{message}</p>
+    {bracket_html}
     <a href="/status">View All Pending</a>
 </div>
 </body>
@@ -99,11 +112,17 @@ a {{ display:inline-block;padding:10px 24px;background:#1a1a2e;color:#fff;
         for token, entry in sorted(data.items(), key=lambda x: x[1].get("created_at", ""), reverse=True):
             status = entry.get("status", "pending")
             color = "#28a745" if status == "approved" else "#dc3545" if status == "denied" else "#ffc107"
+            bracket_tag = '<span style="display:inline-block;padding:1px 6px;border-radius:6px;font-size:10px;font-weight:600;color:#fff;background:#6f42c1;">BRACKET</span>' if entry.get("bracket") else ""
+            stop_txt = f"${float(entry.get('stop_price',0)):.2f}" if entry.get("stop_price") else "—"
+            target_txt = f"${float(entry.get('target_price',0)):.2f}" if entry.get("target_price") else "—"
             rows += f"""<tr>
-                <td style="padding:8px;border-bottom:1px solid #eee;">{entry.get('type','')}</td>
+                <td style="padding:8px;border-bottom:1px solid #eee;">{entry.get('type','')} {bracket_tag}</td>
                 <td style="padding:8px;border-bottom:1px solid #eee;">{entry.get('side','')}</td>
                 <td style="padding:8px;border-bottom:1px solid #eee;">{entry.get('currency','')}</td>
                 <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">${float(entry.get('size_usd',0)):.0f}</td>
+                <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">{stop_txt}</td>
+                <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">{target_txt}</td>
+                <td style="padding:8px;border-bottom:1px solid #eee;max-width:180px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:#666;">{entry.get('reason','')[:60]}</td>
                 <td style="padding:8px;border-bottom:1px solid #eee;"><span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;color:#fff;background:{color}">{status.upper()}</span></td>
             </tr>"""
         return f"""<!DOCTYPE html>
@@ -114,15 +133,15 @@ a {{ display:inline-block;padding:10px 24px;background:#1a1a2e;color:#fff;
 body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:20px;background:#f4f4f4; }}
 h1 {{ color:#1a1a2e; }}
 table {{ width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1); }}
-th {{ background:#1a1a2e;color:#fff;padding:10px 8px;text-align:left; }}
-td {{ padding:8px; }}
+th {{ background:#1a1a2e;color:#fff;padding:10px 8px;text-align:left;font-size:13px; }}
+td {{ padding:8px;font-size:13px; }}
 a {{ color:#1a1a2e; }}
 </style>
 </head>
 <body>
 <h1>📊 Trade Approvals</h1>
 <table>
-<thead><tr><th>Type</th><th>Side</th><th>Currency</th><th>Size</th><th>Status</th></tr></thead>
+<thead><tr><th>Type</th><th>Side</th><th>Currency</th><th>Size</th><th>Stop</th><th>Target</th><th>Reason</th><th>Status</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 <p style="color:#999;margin-top:12px;"><a href="/">↩ Back</a></p>
@@ -152,7 +171,8 @@ a {{ color:#1a1a2e; }}
                 logger.info("APPROVED: %s %s $%.0f", opp.get("side", ""), opp.get("currency", ""), float(opp.get("size_usd", 0)))
                 self._send_response(200, self._render_page(
                     "Trade Approved ✅",
-                    f"The {opp.get('side', '')} {opp.get('currency', '')} ${float(opp.get('size_usd', 0)):.0f} trade has been approved and will execute on the next optimizer tick."
+                    f"The {opp.get('side', '')} {opp.get('currency', '')} ${float(opp.get('size_usd', 0)):.0f} trade has been approved and will execute on the next optimizer tick.",
+                    opp=opp,
                 ))
             else:
                 self._send_response(404, self._render_page("Invalid Token", "This approval link is invalid or expired.", "#dc3545"))
@@ -172,7 +192,8 @@ a {{ color:#1a1a2e; }}
                 self._send_response(200, self._render_page(
                     "Trade Denied ❌",
                     f"The {opp.get('side', '')} {opp.get('currency', '')} ${float(opp.get('size_usd', 0)):.0f} trade has been denied.",
-                    "#dc3545"
+                    "#dc3545",
+                    opp=opp,
                 ))
             else:
                 self._send_response(404, self._render_page("Invalid Token", "This denial link is invalid or expired.", "#dc3545"))

@@ -56,7 +56,7 @@ class OrderFlowEngine:
             return None
 
         spread_bps = ((ask - bid) / bid) * 10000.0
-        if spread_bps <= 0:
+        if spread_bps <= 0:  # pragma: no cover - bid < ask enforced above
             return None
 
         with self._lock:

@@ -74,7 +74,7 @@ class StatisticalArbitrageStrategy:
     """
     
     def __init__(self, config=None):
-        self.config = config or StatisticalArbitrageConfig()
+        self.config = config or self.StatisticalArbitrageConfig()
         self.moving_average_history: List[float] = []
         self.std_deviation_history: List[float] = []
         self.z_score_history: List[float] = []
@@ -211,3 +211,6 @@ class StatisticalArbitrageStrategy:
 
 
 __all__ = ['StatisticalArbitrageConfig', 'StatisticalArbitrageStrategy']
+
+# Module-level alias for the nested configuration dataclass.
+StatisticalArbitrageConfig = StatisticalArbitrageStrategy.StatisticalArbitrageConfig

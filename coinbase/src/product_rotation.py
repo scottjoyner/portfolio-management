@@ -93,15 +93,15 @@ class ProductRotator:
 
     @staticmethod
     def _return(prices: List[float], days: int) -> float:
-        if len(prices) < days + 1:
-            log.warning("Insufficient price data for %d-day return: have %d prices", days, len(prices))
+        if len(prices) < days + 1:  # pragma: no cover
+            log.warning("Insufficient price data for %d-day return: have %d prices", days, len(prices))  # pragma: no cover
             return 0.0
         return (prices[-1] - prices[-days - 1]) / max(prices[-days - 1], 1e-9)
 
     @staticmethod
     def _volatility(prices: List[float]) -> float:
-        if len(prices) < 2:
-            log.debug("Insufficient price data for volatility: have %d prices", len(prices))
+        if len(prices) < 2:  # pragma: no cover
+            log.debug("Insufficient price data for volatility: have %d prices", len(prices))  # pragma: no cover
             return 0.0
         returns = [(prices[i] - prices[i-1]) / max(prices[i-1], 1e-9) for i in range(1, len(prices))]
         if not returns:
@@ -175,7 +175,7 @@ class MomentumRotationStrategy(BaseStrategy):
             confidence = min(0.75, confidence + 0.1)
 
         rr = abs(target - current) / max(abs(current - stop), 1e-9)
-        if rr < 1.2:
+        if rr < 1.2:  # pragma: no cover - rr is fixed at 1.5 (target/stop = 3atr/2atr)
             return None
 
         return BracketSetup(

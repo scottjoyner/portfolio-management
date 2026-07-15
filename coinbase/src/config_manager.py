@@ -98,17 +98,17 @@ class RiskConfig:
     min_trade_usd: float = 25.0
     
     # Cooldowns
-    product_cooldown_seconds: int = 300
-    max_new_positions: int = 50
+    product_cooldown_seconds: int = 1800
+    max_new_positions: int = 12
 
 
 @dataclass
 class ThresholdConfig:
     """Entry/exit thresholds."""
-    paper_min_confidence: float = 0.30
-    paper_min_win_rate: float = 0.35
-    paper_min_sharpe: float = 0.3
-    paper_min_edge_bps: float = 0.5
+    paper_min_confidence: float = 0.55
+    paper_min_win_rate: float = 0.60
+    paper_min_sharpe: float = 0.8
+    paper_min_edge_bps: float = 15.0
     paper_maker_pct: float = 0.50
     min_change_pct: float = 0.05
 

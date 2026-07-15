@@ -7,7 +7,7 @@ from eth_account import Account
 from eth_account.signers.local import LocalAccount
 
 from onchain.wallets.signing.base import (
-    SignTransaction, Signer, SignerCapability, SignerType,
+    SignedTransaction, Signer, SignerCapability, SignerType,
 )
 
 
@@ -30,9 +30,9 @@ class LocalKeySigner(Signer):
             requires_manual_approval=False,
         )
 
-    def sign_transaction(self, tx: dict[str, Any]) -> SignTransaction:
+    def sign_transaction(self, tx: dict[str, Any]) -> SignedTransaction:
         signed = self._account.sign_transaction(tx)
-        return SignTransaction(
+        return SignedTransaction(
             raw_tx=signed.raw_transaction,  # type: ignore[arg-type]
             tx_hash=signed.hash.hex(),  # type: ignore[arg-type]
             signer_address=self._account.address,

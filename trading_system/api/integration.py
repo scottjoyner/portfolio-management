@@ -45,7 +45,7 @@ def setup_database_routes():
         # Mock implementations for dev mode
         print("[API] No database/queries/ found, using mock implementations", file=sys.stderr)
     
-    return None  # Actual route functions
+    return {}
 
 
 def setup_backtest_routes():

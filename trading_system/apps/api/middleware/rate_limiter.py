@@ -7,7 +7,11 @@ from collections import defaultdict
 from typing import Any, Callable
 
 
+from fastapi import APIRouter
+
 log = logging.getLogger(__name__)
+
+router = APIRouter()
 
 
 class TokenBucketRateLimiter:
@@ -35,32 +39,29 @@ class TokenBucketRateLimiter:
     async def check_rate_limit(self, endpoint: str, key: str = "default") -> bool:
         """Check if request is within rate limit. Returns True if allowed."""
         now = time.time()
-        
+
         # Clean up old entries (> 1 second for 10 RPS)
         cutoff = now - (1.0 / self.default_rps)
         times = [t for t in self._request_times[endpoint] if t > cutoff]
-        
-        # Remove oldest if at burst limit
-        while len(times) >= self.burst_size:
-            times.pop(0)
-        
-        # Allow or wait (simplified: return immediately, caller can decide)
-        self._request_times[endpoint].extend(times)
-        
-        # Check if under limit
+
+        # Enforce the burst limit: deny once the recent window is saturated.
         under_limit = len(times) < self.burst_size
-        
+
+        # Persist the pruned window (trim far beyond the burst to bound memory).
+        cap = max(self.burst_size * 2, 1)
+        self._request_times[endpoint] = times[-cap:]
+
         return under_limit
 
     async def record_request(self, endpoint: str) -> None:
         """Record request timestamp."""
-        await self._locks[endpoint].acquire()
-        now = time.time()
-        self._request_times[endpoint].append(now)
-        
-        # Clean old entries
-        cutoff = now - (1.0 / self.default_rps)
-        self._request_times[endpoint] = [t for t in self._request_times[endpoint] if t > cutoff]
+        async with self._locks[endpoint]:
+            now = time.time()
+            self._request_times[endpoint].append(now)
+
+            # Clean old entries
+            cutoff = now - (1.0 / self.default_rps)
+            self._request_times[endpoint] = [t for t in self._request_times[endpoint] if t > cutoff]
 
 
 class RateLimitMiddleware:

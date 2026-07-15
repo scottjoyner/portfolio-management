@@ -8,6 +8,8 @@ This module provides cache manager factories for different deployment scenarios:
 
 from typing import Any, Optional
 
+from trading_system.cache.redis import RedisCacheManager
+
 
 def create_cache_manager(redis_url: Optional[str] = None, 
                          use_mock: bool = False) -> Any:  # type: ignore[no-any-return]

@@ -27,6 +27,14 @@ class FillEstimate:
     partial_fill_pct: float = 1.0
 
 
+@dataclass
+class FillResult:
+    size: float = 0.0
+    price: float = 0.0
+    fees: float = 0.0
+    slippage: float = 0.0
+
+
 class FillModel:
     """Realistic fill simulation for paper trading.
 
@@ -122,8 +130,67 @@ class FillModel:
         """Randomly determine if this fill was a maker (limit) or taker (market)."""
         return self._rng.random() < maker_pct
 
+    def fill(self, direction, price: float, size: float, bid: float, ask: float,
+             volume_24h: float, product_id: str = "") -> FillResult:
+        """Single-slice fill used by the execution algorithms (TWAP/VWAP/Iceberg).
+
+        Bridges the richer :meth:`estimate` slippage model to the lightweight
+        ``FillResult`` shape ``exec_algo`` expects (size/price/fees/slippage).
+        """
+        side = "BUY" if str(getattr(direction, "value", direction)).upper() in ("BUY", "LONG") else "SELL"
+        est = self.estimate(product_id, side, size, price, volume_24h)
+        exec_price = est.entry_price
+        fees = exec_price * size * 0.001  # 10 bps taker proxy
+        return FillResult(
+            size=size,
+            price=exec_price,
+            fees=round(fees, 6),
+            slippage=est.entry_slippage_bps,
+        )
+
     def _volume_tier(self, volume_24h: float) -> tuple[float, float]:
         for threshold, min_s, max_s in SLIPPAGE_TABLE:
             if volume_24h >= threshold:
                 return min_s, max_s
         return SLIPPAGE_TABLE[-1][1], SLIPPAGE_TABLE[-1][2]
+
+
+class AdaptiveFillModel(FillModel):
+    """Fill model that tunes its slippage assumptions from real observed fills.
+
+    Initially behaves like :class:`FillModel`; `observe_fill` ingests realized
+    slippage for a product so subsequent estimates track live execution quality.
+    """
+
+    def __init__(self, seed: Optional[int] = None):
+        super().__init__(seed=seed)
+        # Per-product realized slippage bps, used to nudge the estimate.
+        self._observed: Dict[str, float] = {}
+
+    def observe_fill(self, product_id: str, realized_slippage_bps: float) -> None:
+        if not product_id:
+            return
+        prev = self._observed.get(product_id)
+        # Exponential moving average of observed slippage.
+        self._observed[product_id] = (
+            realized_slippage_bps if prev is None
+            else 0.7 * prev + 0.3 * realized_slippage_bps
+        )
+
+    def estimate(
+        self,
+        product_id: str,
+        side: str,
+        qty: float,
+        price: float,
+        volume_24h: float,
+    ) -> FillEstimate:
+        est = super().estimate(product_id, side, qty, price, volume_24h)
+        obs = self._observed.get(product_id)
+        if obs is not None:
+            # Blend the model's slippage with the observed slippage.
+            blended = (est.entry_slippage_bps + obs) / 2.0
+            direction = 1.0 if side and side.upper() == "BUY" else -1.0
+            est.entry_price = round(price * (1.0 + direction * blended / 10_000.0), 6)
+            est.entry_slippage_bps = round(blended, 2)
+        return est

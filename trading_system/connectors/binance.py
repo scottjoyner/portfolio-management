@@ -102,8 +102,8 @@ class BinanceConnector:
         """
         if self.api_key or self.api_secret:
             try:
-                # Validate API key format  
-                if not self.api_key.startswith("binance"):
+                # Validate API key format
+                if not (self.api_key and self.api_key.startswith("binance")):
                     raise AuthenticationError(
                         "Invalid Binance API key format. "
                         "Ensure you're using keys from binance.com"

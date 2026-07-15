@@ -4,8 +4,8 @@ import asyncio
 import signal as signal_module
 from decimal import Decimal
 
-from apps.paper_exchange.engine import PaperExchangeEngine
-from apps.worker.engine import WorkerEngine
+from trading_system.apps.paper_exchange.engine import PaperExchangeEngine
+from trading_system.apps.worker.engine import WorkerEngine
 from core.config.settings import Settings
 from core.events.ws_hub import hub
 from core.logging.structured import get_logger

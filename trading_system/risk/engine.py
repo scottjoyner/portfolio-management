@@ -52,6 +52,23 @@ import math
 from typing import Dict, List, Optional, Any, Tuple
 
 
+class RiskPolicy:
+    """Configuration object describing the risk policy thresholds.
+
+    Constructed and passed to :class:`RiskEngine`. It is iterable so it can be
+    used interchangeably with a plain tuple of confidence levels.
+    """
+
+    def __init__(self, confidence_levels: Tuple[float, ...] = (0.95, 0.99)):
+        self.confidence_levels = tuple(confidence_levels)
+
+    def __iter__(self):
+        return iter(self.confidence_levels)
+
+    def __repr__(self) -> str:
+        return f"RiskPolicy(confidence_levels={self.confidence_levels})"
+
+
 class RiskMetrics:
     """Container for calculated risk metrics."""
     
@@ -92,7 +109,7 @@ class RiskMetrics:
         self.var_95 = var_95
         self.var_99 = var_99
         self.expected_shortfall_95 = expected_shortfall_95
-        self.expected_shortfall_99 = expected_shift_fall_99
+        self.expected_shortfall_99 = expected_shortfall_99
         self.max_drawdown = max_drawdown
         self.current_drawdown = current_drawdown
         self.days_in_drawdown = days_in_drawdown
@@ -292,3 +309,23 @@ class RiskEngine:
         index = int((1 - confidence_level) * len(sorted_returns))
         
         return -sorted_returns[index]  # Return as negative (loss)
+
+    def evaluate(self, intent: Any, mark_price: float = 0.0) -> Tuple[bool, str]:
+        """Evaluate an order intent for risk acceptance.
+
+        Args:
+            intent: An order intent-like object exposing ``size`` and other
+                fields produced by the strategy/signal pipeline.
+            mark_price: Current mark price used for sanity checks.
+
+        Returns:
+            ``(approved, reason)`` tuple.
+        """
+        if intent is None:
+            return False, "no intent provided"
+        size = getattr(intent, "size", 0) or 0
+        if size <= 0:
+            return False, "invalid order size"
+        if mark_price is None or mark_price <= 0:
+            return False, "invalid mark price"
+        return True, "approved"

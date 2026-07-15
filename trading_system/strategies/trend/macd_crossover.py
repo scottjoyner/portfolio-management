@@ -66,15 +66,24 @@ class MACDCrossoverStrategy(StrategyBase):
         self.slow_period = self.config.slow_ema_period
         self.signal_period = self.config.signal_ema_period
         self.exit_threshold_pct = self.config.threshold_pct
-        
-        # State variables for MACD calculation
-        self.macd_values: List[float] = field(default_factory=list)
-        self.signal_line_values: List[float] = field(default_factory=list)
-        self.histogram_values: List[float] = field(default_factory=list)
-        
-        # EMA calculations need buffers
-        self.fast_ema_buffer: List[float] = field(default_factory=lambda: [0.0] * 150)
-        self.slow_ema_buffer: List[float] = field(default_factory=lambda: [0.0] * 150)
+
+        # State variables for MACD calculation.
+        # BUGFIX: these were previously initialised with ``field(...)`` which is
+        # a dataclass helper and returns a Field descriptor, not a list, when
+        # used inside ``__init__``.  Subsequent ``.append`` calls crashed.
+        self.prices: List[float] = []
+        self.macd_values: List[float] = []
+        self.signal_line_values: List[float] = []
+        self.prev_macd: Optional[float] = None
+        self.prev_signal: Optional[float] = None
+
+    def _log_error(self, message: str) -> None:
+        """Best-effort error logging hook used by the on_bar exception path."""
+        try:
+            if getattr(self.config, "enable_logging", True):
+                print(f"[MACDCrossover] {message}")
+        except Exception:
+            pass
         
     def init(self, data: dict) -> None:
         """
@@ -97,8 +106,8 @@ class MACDCrossoverStrategy(StrategyBase):
             if len(prices) < 2:
                 return None
                 
-            # Calculate multiplier for EMA
-            mult = 100 / (period + 100)
+            # Calculate multiplier for EMA.  Standard EMA smoothing factor.
+            mult = 2.0 / (period + 1)
             
             # Initialize with simple moving average of first 'period' bars
             sma_sum = sum(prices[:period]) if len(prices) >= period else sum(prices)
@@ -132,68 +141,56 @@ class MACDCrossoverStrategy(StrategyBase):
         """
         try:
             # Extract price data
-            close = float(bar.get('close', 0))
-            if close <= 0:
-                return Signal(action='HOLD')
-            
+            try:
+                close = float(bar.get('close', 0))
             except (TypeError, ValueError):
                 return Signal(action='HOLD')
-            
-            # Append new price to buffers and trim old values
-            self.fast_ema_buffer[-1] = close
-            if len(self.fast_ema_buffer) < 20:
-                self.fast_ema_buffer.append(close)
-            else:
-                self.fast_ema_buffer.pop(0)
-                
-            self.slow_ema_buffer[-1] = close
-            if len(self.slow_ema_buffer) < 40:
-                self.slow_ema_buffer.append(close)
-            else:
-                self.slow_ema_buffer.pop(0)
-            
-            # Calculate fast and slow EMAs (using buffered prices)
-            fast_ema = self._calculate_ema(self.fast_ema_buffer, self.fast_period, [])
-            slow_ema = self._calculate_ema(self.slow_ema_buffer, self.slow_period, [])
-            
+            if close <= 0:
+                return Signal(action='HOLD')
+
+            # Maintain a rolling price buffer sized for the slow EMA + signal.
+            self.prices.append(close)
+            max_len = self.slow_period + self.signal_period + 5
+            if len(self.prices) > max_len:
+                self.prices.pop(0)
+
+            # Need enough history for the slow EMA before we can compute MACD.
+            if len(self.prices) < self.slow_period:
+                return Signal(action='HOLD')
+
+            # Calculate fast and slow EMAs from the price history.
+            fast_ema = self._calculate_ema(self.prices, self.fast_period, [])
+            slow_ema = self._calculate_ema(self.prices, self.slow_period, [])
+
             if fast_ema is None or slow_ema is None:
                 return Signal(action='HOLD')
-            
-            # Calculate MACD line and histogram
+
+            # MACD line and signal line (SMA of recent MACD values).
             macd_line = fast_ema - slow_ema
-            
-            # Calculate MACD histogram (if we have history)
-            if len(self.histogram_values) > 0:
-                prev_macd = self.histogram_values[-1]
-            else:
-                prev_macd = 0.0
-                
-            histogram = macd_line - prev_macd
-            
-            # Update values to lists
             self.macd_values.append(macd_line)
-            if len(self.macd_values) < self.signal_period + 1:
-                self.signal_line_values.append(0.0)
-            else:
-                self.signal_line_values[-1] = macd_line
-            
-            if len(self.signal_line_values) < self.signal_period:
+            if len(self.macd_values) > self.signal_period + 5:
+                self.macd_values.pop(0)
+
+            if len(self.macd_values) < self.signal_period:
                 return Signal(action='HOLD')  # Need full signal line history
-            
-            # Calculate signal line (EMA of histogram)
-            hist_sum = sum(self.macd_values[0:self.signal_period]) / self.signal_period
-            signal_line = hist_sum
-            
-            if len(self.signal_values) < self.signal_period:
-                return Signal(action='HOLD')
-                
+
+            signal_line = sum(self.macd_values[-self.signal_period:]) / self.signal_period
+
             current_macd = macd_line
             current_signal = signal_line
-            
+            prev_macd = self.prev_macd
+            prev_signal = self.prev_signal
+            # Persist state for the next bar's crossover comparison.
+            self.prev_macd = current_macd
+            self.prev_signal = current_signal
+
+            if prev_macd is None or prev_signal is None:
+                return Signal(action='HOLD')  # No previous bar to compare yet
+
             # Check for crossover signals
-            signal_action, new_position = None, None
+            signal_action = None
             confidence = 0.0
-            
+
             if not self.position:
                 # Long entry: MACD crosses above signal line (bullish)
                 if current_macd > current_signal and prev_macd <= prev_signal:
@@ -214,7 +211,7 @@ class MACDCrossoverStrategy(StrategyBase):
                     elif self._check_trailing_exit(close, macd_line):
                         signal_action = 'SELL'
                         confidence = 0.7
-                
+
                 else:  # position.action == 'SELL'
                     if current_macd > current_signal and prev_macd <= prev_signal:
                         signal_action = 'BUY'
@@ -222,7 +219,7 @@ class MACDCrossoverStrategy(StrategyBase):
                     elif self._check_trailing_exit(close, macd_line):
                         signal_action = 'BUY'
                         confidence = 0.7
-            
+
             if signal_action is not None:
                 return Signal(
                     action=signal_action,
@@ -233,10 +230,10 @@ class MACDCrossoverStrategy(StrategyBase):
                     confidence=confidence,
                     signal_type='MACD_CROSSOVER'
                 )
-            
+
             # No crossover - hold position if exists
             return Signal(action='HOLD')
-        
+
         except Exception as e:
             self._log_error(f"MACD calculation failed: {str(e)}")
             return Signal(action='HOLD')

@@ -68,8 +68,8 @@ class WilliamsRMeanReversionStrategy:
             raise ValueError(f"Need at least {min_bars} bars for Williams %R calculation.")
         
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]  
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate Williams %R sequence
         self.williams_r_values = []

@@ -88,8 +88,8 @@ class BollingerBandSqueezeStrategy(StrategyBase):
         self.squeeze_threshold_pct = self.config.squeeze_threshold_pct
         
         # State variables
-        self.price_buffer: List[float] = field(default_factory=list)
-        self.ma_buffer: List[float] = field(default_factory=lambda: [0.0] * max(self.bb_period + 1, 30))
+        self.price_buffer: List[float] = []
+        self.ma_buffer: List[float] = [0.0] * max(self.bb_period + 1, 30)
         self.bb_lower: Optional[float] = None
         self.bb_upper: Optional[float] = None
         self.bb_width: Optional[float] = None
@@ -167,8 +167,9 @@ class BollingerBandSqueezeStrategy(StrategyBase):
             
             # Detect squeeze (band width reduction by threshold % compared to previous period)
             is_squeeze = False
-            if self.prev_bb_width and self.bb_width > 0:
-                width_reduction_pct = (self.prev_bb_width - self.bb_width) / self.prev_bb_width * 100
+            prev_width = self.prev_bb_width
+            if prev_width and self.bb_width > 0:
+                width_reduction_pct = (prev_width - self.bb_width) / prev_width * 100
                 is_squeeze = width_reduction_pct >= self.squeeze_threshold_pct
             
             self.prev_bb_width = self.bb_width
@@ -179,7 +180,7 @@ class BollingerBandSqueezeStrategy(StrategyBase):
             confidence = 0.0
             
             if not self.position:
-                if squeeze_triggered or self.prev_bb_width <= 15:  # Low vol regime
+                if squeeze_triggered or (prev_width is not None and prev_width <= 15):  # Low vol regime
                 
                     # BUY at lower band (oversold during compression)
                     if close <= bb_lower * 0.995:  # Touch or break below lower band
@@ -217,7 +218,23 @@ class BollingerBandSqueezeStrategy(StrategyBase):
                     take_profit=None,
                     confidence=confidence,
                     signal_type='BB_SQUEEZE_MEAN_REVERSION',
-                    squeeze=squeeze_triggered or self.prev_bb_width <= 15
+                    squeeze=squeeze_triggered or (prev_width is not None and prev_width <= 15)
+                )
+            
+            elif signal_action is not None and self.position is not None:
+                # Execute exit on close position
+                quantity = -self.position.quantity if signal_action == 'SELL' else self.position.quantity
+                
+                return Signal(
+                    action='CLOSE' if signal_action == 'SELL' else signal_action,
+                    price=close,
+                    quantity=abs(quantity),
+                    stop_loss=None,
+                    take_profit=None,
+                    confidence=confidence,
+                    signal_type='BB_SQUEEZE_MEAN_REVERSION_EXIT',
+                    entry_price=self.position.price or close,
+                    pnl_pct=(close - (self.position.price or close)) / (self.position.price or close)
                 )
             
             return Signal(action='HOLD')

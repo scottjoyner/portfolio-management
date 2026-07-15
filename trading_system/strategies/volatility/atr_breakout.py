@@ -109,8 +109,8 @@ class ATBBreakoutStrategy:
         
         # Calculate True Range (TR) sequence  
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate True Range: max(high - low, |high - prev_close|, |low - prev_close|)
         true_ranges = []
@@ -140,22 +140,58 @@ class ATBBreakoutStrategy:
         self.position = None
     
     def on_bar(self, bar: dict) -> Optional[dict]:
-        """Process new bar and generate breakout signal with volatility filter."""
-        close_price = bar.get("close", bar.get("price", 0))
-        
+        """Process new bar and generate breakout signal with volatility filter.
+
+        BUGFIX: the previous implementation computed a couple of throw-away
+        values and then fell off the end of the function, so it *never*
+        returned a signal (and referenced ``close_price in self.atr_values``
+        which is meaningless).  This now mirrors the sibling ``atrbreakout``
+        module and emits proper BUY/SELL breakout signals.
+        """
+        close_price = float(bar.get("close", bar.get("price", 0)))
+        high_price = float(bar.get("high", close_price))
+        low_price = float(bar.get("low", close_price))
+
         if not close_price or math.isnan(close_price) or close_price <= 0:
             return None
-        
-        # Append current ATR to sequence  
-        closes = [close_price] + self.atr_values[:-1]
-        new_atr_value = closes[-1]  # This is wrong - need actual ATR calculation
-        
-        # Proper ATR update (Wilder's smoothing)
-        current_atr_sum = sum(self.atr_values[-self.config.atr_period:]) * math.sqrt(self.config.atr_period)
-        if close_price in self.atr_values:  # Wrong logic
-            new_atr = (current_atr_sum + close_price) / self.config.atr_period
-        else:
-            new_atr = closes[-1]  # Simplified for prototype
+
+        # Update ATR with the current bar's true range (Wilder's smoothing).
+        prev_ref = self.atr_values[-1] if self.atr_values else close_price
+        true_range = max(
+            high_price - low_price,
+            abs(high_price - prev_ref),
+            abs(low_price - prev_ref),
+        )
+        current_atr_sum = sum(self.atr_values) * math.sqrt(self.config.atr_period)
+        new_atr = (current_atr_sum + true_range) / self.config.atr_period
+        self.atr_values.append(new_atr)
+
+        # Volatility-adjusted breakout levels.
+        current_resistance = high_price + (self.atr_values[-1] * self.config.breakout_multiplier)
+        current_support = low_price - (self.atr_values[-1] * self.config.breakout_multiplier)
+
+        if close_price > current_resistance:
+            return {
+                "action": "BUY",
+                "entry_price": float(close_price),
+                "stop_loss": float(close_price - self.atr_values[-1] * 2.0),
+                "take_profit_1": float(close_price + self.atr_values[-1] * 3.0),
+                "take_profit_2": float(close_price + self.atr_values[-1] * 5.0),
+                "reason": "atr_breakout_above_resistance",
+                "volatility_at_entry": float(self.atr_values[-1]),
+            }
+        elif close_price < current_support:
+            return {
+                "action": "SELL",
+                "entry_price": float(close_price),
+                "stop_loss": float(close_price + self.atr_values[-1] * 2.0),
+                "take_profit_1": float(close_price - self.atr_values[-1] * 3.0),
+                "take_profit_2": float(close_price - self.atr_values[-1] * 5.0),
+                "reason": "atr_breakout_below_support",
+                "volatility_at_entry": float(self.atr_values[-1]),
+            }
+
+        return None
     
     def handle_signal(self, signal):
         """Handle execution of ATR breakout signal."""

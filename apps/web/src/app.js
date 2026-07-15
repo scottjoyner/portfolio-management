@@ -432,6 +432,12 @@ async function renderCurrentTab() {
     case 'audit': html = await loadAuditTab(); break;
     default: html = `<div class="tab-panel"><p class="label">Unknown tab: ${activeTab}</p></div>`;
   }
+  
+  // Integrate P1 panels (Accounts, Templates, Paper, Adapters) for trading/BOT related tabs
+  if (activeTab === 'trader' || activeTab === 'bots' || activeTab === 'trader' || activeTab === 'strategies') {
+    html += p1Html;
+  }
+  
   target.innerHTML = html;
   wireTabActions();
 }

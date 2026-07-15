@@ -57,6 +57,18 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple
 
 
+def _median(values: List[float]) -> float:
+    """Return the median of a list of floats (0.0 for empty)."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2 == 1:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
 class VolatilityTargetingStrategy:
     """
     Volatility Targeting Strategy with Adaptive Position Sizing
@@ -76,11 +88,12 @@ class VolatilityTargetingStrategy:
     """
     
     def __init__(self, config=None):
-        self.config = config or VolatilityTargetingConfig()
+        self.config = config or self.VolatilityTargetingConfig()
         self.volatility_history: List[float] = []
         self.baseline_volatility = 0.0
         self.current_atr = 0.0
         self.volatility_percentile_rank = 0.0
+        self.last_close = 0.0
         
         # Performance tracking
         self.num_successful_trades = 0
@@ -107,8 +120,8 @@ class VolatilityTargetingStrategy:
         
         # Calculate ATR values
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate True Range
         true_ranges = []
@@ -124,7 +137,7 @@ class VolatilityTargetingStrategy:
             true_ranges.append(tr)
         
         # Baseline volatility (median of recent ATR values, normalized to price)
-        baseline_atr = np.median(true_ranges[-self.config.atr_period:])
+        baseline_atr = _median(true_ranges[-self.config.atr_period:])
         self.baseline_volatility = baseline_atr / closes[-1] if closes else 0
     
     def on_bar(self, bar: dict) -> Optional[Dict[str, Any]]:
@@ -147,6 +160,7 @@ class VolatilityTargetingStrategy:
         # Calculate current ATR and volatility ratio
         current_atr = high_price - low_price
         self.current_atr = current_atr
+        self.last_close = close_price
         
         # Volatility ratio relative to baseline
         if self.baseline_volatility > 0:
@@ -230,8 +244,11 @@ class VolatilityTargetingStrategy:
             "win_rate": win_rate,
             "successful_trades": self.num_successful_trades,
             "failed_trades": self.num_failed_trades,
-            "current_volatility_ratio": float(self.current_atr / (self.baseline_volatility * close_price)) if self.baseline_volatility > 0 else None,
+            "current_volatility_ratio": float(self.current_atr / (self.baseline_volatility * self.last_close)) if self.baseline_volatility > 0 and self.last_close > 0 else None,
         }
 
 
 __all__ = ['VolatilityTargetingConfig', 'VolatilityTargetingStrategy']
+
+# Module-level alias for the nested configuration dataclass.
+VolatilityTargetingConfig = VolatilityTargetingStrategy.VolatilityTargetingConfig

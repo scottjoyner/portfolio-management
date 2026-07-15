@@ -175,7 +175,7 @@ class UnifiedPredictionMarketClient:
                 liquidity_score=ls,
                 category=category,
                 keywords=keywords,
-                raw_data={"event_ticker": m.event_ticker},
+                raw_data={"event_ticker": m.event_ticker, "open_interest": m.open_interest},
             ))
         results.sort(key=lambda p: p.volume, reverse=True)
         return results[:limit]

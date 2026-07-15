@@ -169,9 +169,15 @@ class VolumeBreakoutStrategy:
         highs = [float(bar.get("high", bar.get('close', 0))) for bar in data]
         volumes = [float(bar.get("volume", 1)) for bar in data]
         
-        # Calculate rolling resistance (recent high) and average volume  
-        self.resistance_levels, self.rolling_high_values, self.average_volume = \
+        # Calculate rolling resistance (recent high) and average volume
+        # BUGFIX: the tuple was previously unpacked into
+        # (resistance_levels, rolling_high_values, average_volume) but the
+        # method returns (rolling_high list, last_high float, avg_volume),
+        # so ``rolling_high_values`` ended up being a float and on_bar's
+        # ``rolling_high_values[-period:]`` raised a TypeError.
+        self.rolling_high_values, _last_high, self.average_volume = \
             self._calculate_breakout_metrics(closes, highs, volumes)
+        self.resistance_levels = self.rolling_high_values
         
         # Position initialization after first valid signal opportunity
         self.position = None
@@ -240,22 +246,32 @@ class VolumeBreakoutStrategy:
         if not close_price or math.isnan(close_price) or close_price <= 0:
             return None
             
-        # Append new price to rolling resistance calculation  
-        closes = [high_price] + self.rolling_high_values[:-1]
-        volumes = [float(bar.get("volume", 1))] + [v for v in self.rolling_high_values[:2]] if hasattr(self, 'rolling_high_values') else [1.0]
-        
-        # Recalculate resistance (simplified - use stored with new high approximation)  
-        rolling_highs, current_resistance, avg_volume = \
-            self._calculate_breakout_metrics(closes, [high_price], volumes)
-        
-        current_avg_volume = sum(volumes[-2:]) / 2 if len(volumes) >= 2 else avg_volume
-        
-        # Check for volume-confirmed breakout above resistance  
-        is_above_resistance = close_price > current_resistance * (1 + self.config.breakout_threshold_pct/100)
-        
-        # Volume confirmation required  
-        volume_confirmed = current_avg_volume > self.average_volume * self.config.volume_confirmation_multiplier
-        
+        # Resistance is the highest high over the prior rolling window (before
+        # incorporating the current bar).
+        #
+        # BUGFIX: the previous implementation constructed mismatched-length
+        # ``closes``/``highs`` lists and called ``_calculate_breakout_metrics``,
+        # which executed ``max(highs[start_idx:i+1])`` over an empty slice and
+        # raised ``ValueError: max() arg is an empty sequence``.
+        volume = float(bar.get("volume", 1))
+        period = self.config.resistance_period
+
+        if self.rolling_high_values:
+            current_resistance = max(self.rolling_high_values[-period:])
+        else:
+            current_resistance = high_price
+
+        # Update the rolling resistance window with the current bar's high.
+        self.rolling_high_values.append(high_price)
+        if len(self.rolling_high_values) > period:
+            self.rolling_high_values = self.rolling_high_values[-period:]
+
+        # Check for volume-confirmed breakout above resistance
+        is_above_resistance = close_price > current_resistance * (1 + self.config.breakout_threshold_pct / 100)
+
+        # Volume confirmation required
+        volume_confirmed = volume > self.average_volume * self.config.volume_confirmation_multiplier
+
         if is_above_resistance and volume_confirmed and not self.position:
             return {
                 "action": "BUY",
@@ -263,12 +279,12 @@ class VolumeBreakoutStrategy:
                 "signal_type": "VOLUME_CONFIRMED_BREAKOUT_ABOVE_RESISTANCE",
                 "resistance_level": current_resistance,
                 "close_to_resistance_pct": (close_price - current_resistance) / current_resistance * 100,
-                "current_volume": current_avg_volume,
+                "current_volume": volume,
                 "average_volume": self.average_volume,
-                "volume_multiple": current_avg_volume / max(self.average_volume, 0.0001),
+                "volume_multiple": volume / max(self.average_volume, 0.0001),
                 "stop_loss": self.config.stop_loss_pct * -0.01 * close_price if close_price > 0 else None,
             }
-            
+
         return None
     
     def handle_signal(self, signal: dict) -> Optional[VolumeBreakoutPosition]:

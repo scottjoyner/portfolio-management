@@ -98,15 +98,17 @@ class PMResearchAgent:
         Returns paper trading signal (no live execution without API keys).
         """
         # Example signal generation logic
-        if 'yes_price' in opportunity_data:
-            price = opportunity_data['yes_price']
-            
-            # Simple mean reversion heuristic
-            fair_value = self._calculate_fair_probability(opportunity_data)
-            signal_action = "LONG_YES" if fair_value > price else "HOLD"
-            
-            if signal_action == "HOLD":
-                return None
+        if 'yes_price' not in opportunity_data:
+            return None
+
+        price = opportunity_data['yes_price']
+
+        # Simple mean reversion heuristic
+        fair_value = self._calculate_fair_probability(opportunity_data)
+        signal_action = "LONG_YES" if fair_value > price else "HOLD"
+
+        if signal_action == "HOLD":
+            return None
                 
         confidence = 0.6  # Placeholder confidence score
         

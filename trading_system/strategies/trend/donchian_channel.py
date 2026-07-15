@@ -121,6 +121,7 @@ class DonchianChannelTrendStrategy:
         # State tracking  
         self.high_values = []  # Highest price over N period (upper channel boundary)
         self.low_values = []   # Lowest price over N period (lower channel boundary)
+        self.volume_values = []  # Rolling volume history for breakout confirmation
         self.position = None   # DonchianPosition or None
         
         # Performance tracking
@@ -229,31 +230,50 @@ class DonchianChannelTrendStrategy:
         
         """
         close_price = bar.get("close", bar.get("price", 0))
-        high_price = bar.get("high", close_price) if bar else close_price
-        
+        high_price = bar.get("high", close_price)
+        low_price = bar.get("low", close_price)
+
         if not close_price or math.isnan(close_price) or close_price <= 0:
             return None
-            
-        # Append new prices to window for N-period calculation  
-        closes = [close_price] + self.high_values[:-1]
-        highs = [high_price] + [bar.get("high", bar.get("close", high_price)) for _ in range(1)] if hasattr(bar, 'get') else [high_price] + []
-        
-        # Actually we need to recalculate with proper window logic
-        new_highs = [high_price] + self.high_values[:-1] if len(self.high_values) > 0 else [high_price]
-        current_high_window = max(new_highs[-self.config.donchian_period:]) if len(new_highs) >= self.config.donchian_period else new_highs
-        
-        upper_band = current_high_window[0] if len(current_high_window) > 0 else high_price * 1.05
-        
-        # BUY signal: price crosses above upper Donchian band (new resistance broken)
+
+        # Maintain rolling high/low windows for the Donchian channel.  The
+        # upper band is the highest high of the *previous* N bars (the level
+        # that must be broken); we therefore compute it before appending the
+        # current bar.
+        #
+        # BUGFIX: the previous implementation did ``max(new_highs[-period:])``
+        # (a float) and then indexed it with ``[0]``, raising
+        # ``TypeError: 'float' object is not subscriptable``.
+        period = self.config.donchian_period
+        if self.high_values:
+            upper_band = max(self.high_values[-period:])
+        else:
+            upper_band = high_price
+
+        # Append current bar to the rolling windows (bounded length).
+        self.high_values.append(high_price)
+        self.low_values.append(low_price)
+        if len(self.high_values) > period:
+            self.high_values = self.high_values[-period:]
+            self.low_values = self.low_values[-period:]
+
+        # BUY signal: price crosses above upper Donchian band (resistance broken)
         breakout_threshold = self.config.breakout_threshold_pct / 100.0
-        
+
         if close_price >= upper_band + upper_band * breakout_threshold:
             volume_at_bar = bar.get("volume", 100)
-            avg_volume = sum([d.get("volume", 100) for d in closes]) / len(closes) if len(closes) > 0 else 100
-            
+            # Average of prior bars' volume (falls back to current bar volume).
+            if self.volume_values:
+                avg_volume = sum(self.volume_values) / len(self.volume_values)
+            else:
+                avg_volume = volume_at_bar
+            self.volume_values.append(volume_at_bar)
+            if len(self.volume_values) > period:
+                self.volume_values = self.volume_values[-period:]
+
             # Volume confirmation (optional but recommended)
             volume_confirmed = volume_at_bar >= avg_volume * self.config.min_volume_multiplier
-            
+
             if volume_confirmed:
                 return {
                     "action": "BUY",
@@ -263,14 +283,14 @@ class DonchianChannelTrendStrategy:
                     "price_above_band_pct": (close_price - upper_band) / upper_band * 100,
                     "stop_loss": self.config.trailing_stop_pct * -0.01 * close_price if close_price > 0 else None,
                 }
-            
+
             return {
                 "action": "BUY",
                 "entry_price": close_price,
                 "signal_type": "DONCHIAN_UPPER_BAND_BREAKOUT_VOLUME_FILTERED",
                 "upper_band": upper_band,
             }
-            
+
         return None
     
     def handle_signal(self, signal: dict) -> Optional[DonchianPosition]:

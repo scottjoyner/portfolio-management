@@ -50,7 +50,7 @@ Usage Example:
 """
 from __future__ import annotations
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 
 
@@ -73,7 +73,7 @@ class MomentumClusteringStrategy:
     """
     
     def __init__(self, config=None):
-        self.config = config or MomentumClusteringConfig()
+        self.config = config or self.MomentumClusteringConfig()
         self.cluster_centers: List[Dict[str, float]] = []
         self.feature_history: List[List[float]] = []
         self.current_cluster = -1
@@ -106,8 +106,8 @@ class MomentumClusteringStrategy:
             raise ValueError(f"Need at least {min_bars} bars for momentum clustering.")
         
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         volumes = [float(bar.get("volume", 0)) for bar in data]
         
         # Calculate features
@@ -309,3 +309,6 @@ class MomentumClusteringStrategy:
 
 
 __all__ = ['MomentumClusteringConfig', 'MomentumClusteringStrategy']
+
+# Module-level alias for the nested configuration dataclass.
+MomentumClusteringConfig = MomentumClusteringStrategy.MomentumClusteringConfig

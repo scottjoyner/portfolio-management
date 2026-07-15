@@ -126,7 +126,7 @@ class MomentumStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price >= target_price:
+            elif close_price >= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -135,7 +135,7 @@ class MomentumStrategy:
                     'reason': 'take_profit'
                 }
             # Exit on trend reversal (momentum decays below threshold)
-            elif momentum_strength < self.config.exit_threshold and momentum_trend == 1:
+            elif momentum_trend == -1:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -154,7 +154,7 @@ class MomentumStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price <= target_price:
+            elif close_price <= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -174,6 +174,10 @@ class MomentumStrategy:
         
         # No position - check for entry signals
         if momentum_strength > self.config.entry_threshold and momentum_trend == 1:
+            self.current_position = 'long'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': self.config.risk_per_trade / close_price,
@@ -182,6 +186,10 @@ class MomentumStrategy:
                 'reason': 'momentum_upward'
             }
         elif momentum_strength > self.config.entry_threshold and momentum_trend == -1:
+            self.current_position = 'short'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': -self.config.risk_per_trade / close_price,

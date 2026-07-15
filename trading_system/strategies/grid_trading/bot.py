@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 
+from trading_system.connectors.coinboard.rest.circuit_breaker import CircuitBreakerError
+
 
 @dataclass
 class GridConfig:
@@ -92,6 +94,10 @@ class GridTradingBot:
         # Initialize fee calculator for profit margin analysis
         from trading_system.connectors.coinboard.rest.fee_calculator import CoinbaseFeeCalculator
         self.fee_calculator = CoinbaseFeeCalculator()
+
+        # Runtime state
+        self.order_map: Dict[str, Any] = {}
+        self.current_price: Optional[float] = None
         
     async def initialize(self) -> Dict[str, Any]:
         """Initialize grid and place orders.
@@ -177,7 +183,7 @@ class GridTradingBot:
         # Fetch current market price
         try:
             await self.strategy_circuit_breaker.call_if_closed(
-                lambda: asyncio.create_task(self._fetch_market_price())
+                self._fetch_market_price()
             )
         except CircuitBreakerError:
             print("Circuit breaker open for market data. Using last known price.")
@@ -238,7 +244,7 @@ class GridTradingBot:
         """
         try:
             await self.strategy_circuit_breaker.call_if_closed(
-                lambda: asyncio.create_task(self._execute_single_trade(side, amount_usd))
+                self._execute_single_trade(side, amount_usd)
             )
             
         except CircuitBreakerError as e:
@@ -389,12 +395,17 @@ class GridTradingBot:
             }
         }
 
+    async def _health_check_coro(self) -> Dict[str, Any]:
+        """Async wrapper so health check can run behind the circuit breaker."""
+        return self.get_health_check()
+
     async def health_check(self) -> Tuple[Dict[str, Any], bool]:
         """Health check endpoint for monitoring systems."""
         try:
-            await self.strategy_circuit_breaker.call_if_closed(
-                lambda: asyncio.create_task(asyncio.shield(asyncio.coroutine(self.get_health_check)))()
+            result, error = await self.strategy_circuit_breaker.call_if_closed(
+                self._health_check_coro()
             )
+            return result, error
         except CircuitBreakerError as e:
             raise
         except Exception as e:

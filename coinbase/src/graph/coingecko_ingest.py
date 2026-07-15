@@ -9,6 +9,8 @@ from .neo4j_graph import CryptoGraphStore
 
 
 def assets_from_market_rows(rows: Iterable[dict[str, Any]], *, coinbase_symbols: set[str] | None = None) -> list[GraphAsset]:
+    if isinstance(rows, dict):
+        rows = rows.get("data", rows)
     coinbase_symbols = {s.upper() for s in (coinbase_symbols or set())}
     assets: list[GraphAsset] = []
     for row in rows:

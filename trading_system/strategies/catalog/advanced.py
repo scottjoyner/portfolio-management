@@ -269,6 +269,15 @@ CATALOG_100: list[str] = [
     "Crash-response opportunistic accumulator",
 ]
 
+EXCHANGE_BOT_NAMES: list[str] = [
+    "Stair-step take-profit bot",
+    "Spot grid bot",
+    "Dollar-cost averaging bot",
+    "Spot martingale bot",
+    "Smart rebalance bot",
+    "TWAP execution bot",
+]
+
 
 def _family(index: int) -> str:
     bounds = [15, 30, 45, 60, 70, 80, 90, 100]
@@ -304,6 +313,12 @@ IMPLEMENTATION_MAP: dict[str, str] = {
     "Dynamic reserve deployment allocator": "LongHorizonDcaStrategy",
     "Liquidity vacuum snapback": "LiquidityVacuumSnapbackStrategy",
     "Basis arbitrage": "BasisCarryDerivativesStrategy",
+    "Stair-step take-profit bot": "StairStepTakeProfitStrategy",
+    "Spot grid bot": "SpotGridStrategy",
+    "Dollar-cost averaging bot": "DcaStrategy",
+    "Spot martingale bot": "SpotMartingaleStrategy",
+    "Smart rebalance bot": "SmartRebalanceStrategy",
+    "TWAP execution bot": "TwapStrategy",
 }
 
 PARTIAL_MAP: set[str] = {
@@ -341,69 +356,73 @@ def _risk_tier(family: str, status: str) -> str:
 def advanced_specs() -> list[StrategySpec]:
     specs: list[StrategySpec] = []
     for i, name in enumerate(CATALOG_100, start=1):
-        family = _family(i)
-        status, unit, backtest, replay, paper, live = _status(name)
-        tier = _risk_tier(family, status)
-        strategy_id = f"S{i:03d}_{name.lower().replace(' ', '_').replace('-', '_').replace('/', '_')}"
-        specs.append(
-            StrategySpec(
-                strategy_id=strategy_id,
-                mapped_implementation=IMPLEMENTATION_MAP.get(name),
-                canonical_name=name,
-                family=family,
-                purpose=f"{family} alpha or execution objective for {name.lower()}",
-                regime_suitability="regime-aware with disable-on-stress controls",
-                supported_products=["BTC-USD", "BTC-ETH", "BTC-SOL", "BTC-DOGE", "BTC-XRP"],
-                risk_tier=tier,
-                required_data=["candles", "trades", "orderbook"],
-                required_indicators=["atr", "rsi", "realized_vol"],
-                warmup_bars=200,
-                required_latency_budget_ms=100.0,
-                sizing_model="volatility_targeting",
-                risk_ceilings="per-strategy VaR + drawdown + stress limits",
-                min_size=0.001,
-                max_size=2.0,
-                max_capital_fraction=0.1,
-                max_exposure_by_asset=0.2,
-                max_exposure_by_correlated_group=0.3,
-                max_turnover=5.0,
-                expected_holding_horizon="intraday to swing",
-                execution_style="maker_taker_adaptive",
-                take_profit_model="laddered_partial_plus_trailing",
-                trailing_exit=True,
-                compound_profits=False,
-                min_net_edge_bps=5.0,
-                approvals_required=tier in {"TIER_3_HIGH_RISK", "TIER_4_EXPERT_HIGH_RISK"},
-                failure_modes=["stale data", "slippage shock", "regime shift"],
-                disable_criteria=["drawdown breach", "latency breach", "risk engine halt"],
-                cooldown_logic="exponential cooldown after consecutive losses",
-                explainability_output="signal drivers, regime, sizing and risk gate verdict",
-                required_data_quality="fresh order book/trade data with outlier filters and gap checks",
-                live_prerequisites=["risk engine online", "approvals pipeline healthy", "capital buckets reconciled"],
-                downgrade_conditions=["latency above budget", "data staleness", "drawdown threshold breach"],
-                default_sizing_method="volatility_targeting",
-                max_exposure_by_regime=0.25,
-                take_profit_enabled=True,
-                trailing_take_profit_enabled=True,
-                profit_compounding_mode="sweep_partial",
-                profit_treasury_mode="daily_realized_gain_sweep",
-                profit_taking_disable_conditions=["spread blowout", "slippage shock", "fee spike"],
-                emergency_profit_preservation="high-water-mark lock + flatten on volatility spike",
-                backtest_smoke_scenario="baseline_daily_candles",
-                replay_smoke_scenario="single_session_replay",
-                realism_caveats="requires latency/slippage/partial-fill realism; portability varies by venue",
-                live_portability_score=0.55 if status == "implemented" else 0.20,
-                fragility_score=0.35 if status == "implemented" else 0.75,
-                operational_complexity_score=0.40 if family in {"execution", "portfolio_treasury"} else 0.65,
-                attribution_tags=["strategy", "sleeve", "portfolio", "regime", "product", "take_profit", "treasury_sweep"],
-                backtest_caveats="fill realism depends on latency, partial fills, and queue assumptions",
-                live_deployment_prerequisites=["unit tests", "replay smoke", "paper canary", "approvals"],
-                implementation_status=status,
-                unit_tested=unit,
-                backtest_ready=backtest,
-                replay_ready=replay,
-                paper_ready=paper,
-                live_safe=live,
-            )
-        )
+        specs.append(_make_spec(i, name))
+    for j, name in enumerate(EXCHANGE_BOT_NAMES, start=101):
+        specs.append(_make_spec(j, name))
     return specs
+
+
+def _make_spec(index: int, name: str) -> StrategySpec:
+    family = _family(index)
+    status, unit, backtest, replay, paper, live = _status(name)
+    tier = _risk_tier(family, status)
+    strategy_id = f"S{index:03d}_{name.lower().replace(' ', '_').replace('-', '_').replace('/', '_')}"
+    return StrategySpec(
+        strategy_id=strategy_id,
+        mapped_implementation=IMPLEMENTATION_MAP.get(name),
+        canonical_name=name,
+        family=family,
+        purpose=f"{family} alpha or execution objective for {name.lower()}",
+        regime_suitability="regime-aware with disable-on-stress controls",
+        supported_products=["BTC-USD", "BTC-ETH", "BTC-SOL", "BTC-DOGE", "BTC-XRP"],
+        risk_tier=tier,
+        required_data=["candles", "trades", "orderbook"],
+        required_indicators=["atr", "rsi", "realized_vol"],
+        warmup_bars=200,
+        required_latency_budget_ms=100.0,
+        sizing_model="volatility_targeting",
+        risk_ceilings="per-strategy VaR + drawdown + stress limits",
+        min_size=0.001,
+        max_size=2.0,
+        max_capital_fraction=0.1,
+        max_exposure_by_asset=0.2,
+        max_exposure_by_correlated_group=0.3,
+        max_turnover=5.0,
+        expected_holding_horizon="intraday to swing",
+        execution_style="maker_taker_adaptive",
+        take_profit_model="laddered_partial_plus_trailing",
+        trailing_exit=True,
+        compound_profits=False,
+        min_net_edge_bps=5.0,
+        approvals_required=tier in {"TIER_3_HIGH_RISK", "TIER_4_EXPERT_HIGH_RISK"},
+        failure_modes=["stale data", "slippage shock", "regime shift"],
+        disable_criteria=["drawdown breach", "latency breach", "risk engine halt"],
+        cooldown_logic="exponential cooldown after consecutive losses",
+        explainability_output="signal drivers, regime, sizing and risk gate verdict",
+        required_data_quality="fresh order book/trade data with outlier filters and gap checks",
+        live_prerequisites=["risk engine online", "approvals pipeline healthy", "capital buckets reconciled"],
+        downgrade_conditions=["latency above budget", "data staleness", "drawdown threshold breach"],
+        default_sizing_method="volatility_targeting",
+        max_exposure_by_regime=0.25,
+        take_profit_enabled=True,
+        trailing_take_profit_enabled=True,
+        profit_compounding_mode="sweep_partial",
+        profit_treasury_mode="daily_realized_gain_sweep",
+        profit_taking_disable_conditions=["spread blowout", "slippage shock", "fee spike"],
+        emergency_profit_preservation="high-water-mark lock + flatten on volatility spike",
+        backtest_smoke_scenario="baseline_daily_candles",
+        replay_smoke_scenario="single_session_replay",
+        realism_caveats="requires latency/slippage/partial-fill realism; portability varies by venue",
+        live_portability_score=0.55 if status == "implemented" else 0.20,
+        fragility_score=0.35 if status == "implemented" else 0.75,
+        operational_complexity_score=0.40 if family in {"execution", "portfolio_treasury"} else 0.65,
+        attribution_tags=["strategy", "sleeve", "portfolio", "regime", "product", "take_profit", "treasury_sweep"],
+        backtest_caveats="fill realism depends on latency, partial fills, and queue assumptions",
+        live_deployment_prerequisites=["unit tests", "replay smoke", "paper canary", "approvals"],
+        implementation_status=status,
+        unit_tested=unit,
+        backtest_ready=backtest,
+        replay_ready=replay,
+        paper_ready=paper,
+        live_safe=live,
+    )

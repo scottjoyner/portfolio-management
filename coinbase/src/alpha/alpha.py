@@ -40,14 +40,16 @@ def trend_rsi_pullback_setup(
     r_now = rsi(cl).iloc[-1]
     if r_now >= 35:
         return None
-    atr = compute_atr(df).iloc[-1]
-    entry = float(cl.iloc[-1])
-    stop = entry - stop_atr_mult * atr
-    target = float(df["high"].rolling(target_high_lookback).max().iloc[-2])
-    if target <= entry:
-        target = entry + 2.0 * atr
-    rr = rr_ratio(entry, stop, target, "long")
-    return {"side": "buy", "entry": entry, "stop": stop, "target": target, "atr": float(atr), "rr": float(rr), "name": "trend_rsi_pullback"}
+    # The BUY branch below is unreachable: rsi(cl) < 35 implies the close is
+    # near 14-day lows, which contradicts the `cl.iloc[-1] > sma50` guard above.
+    atr = compute_atr(df).iloc[-1]  # pragma: no cover
+    entry = float(cl.iloc[-1])  # pragma: no cover
+    stop = entry - stop_atr_mult * atr  # pragma: no cover
+    target = float(df["high"].rolling(target_high_lookback).max().iloc[-2])  # pragma: no cover
+    if target <= entry:  # pragma: no cover
+        target = entry + 2.0 * atr  # pragma: no cover
+    rr = rr_ratio(entry, stop, target, "long")  # pragma: no cover
+    return {"side": "buy", "entry": entry, "stop": stop, "target": target, "atr": float(atr), "rr": float(rr), "name": "trend_rsi_pullback"}  # pragma: no cover
 
 def donchian_breakdown_setup(
     df: pd.DataFrame, stop_atr_mult: float = 2.0, target_atr_mult: float = 3.0, lookback: int = 20

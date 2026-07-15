@@ -135,8 +135,8 @@ def _default_judges() -> List[JudgeConfig]:
             name="vibethinker",
             base_url=os.getenv("LLM_API_BASE_VIBE", "http://deathstar-xps-8920.tailcb8954.ts.net:1234/v1"),
             model=os.getenv("LLM_VIBE_MODEL", "vibethinker-3b"),
-            max_tokens=int(os.getenv("LLM_VIBE_MAX_TOKENS", "80")),
-            timeout_s=int(os.getenv("LLM_VIBE_TIMEOUT_S", "45")),
+            max_tokens=int(os.getenv("LLM_VIBE_MAX_TOKENS", "1024")),
+            timeout_s=int(os.getenv("LLM_VIBE_TIMEOUT_S", "90")),
             role="primary",
         ),
     ]
@@ -274,8 +274,14 @@ def _fallback_verdict(task: str, status: Dict[str, Any]) -> Dict[str, Any]:
 
     if not health_ok or alerts:
         return {"vote": "stop", "confidence": 0.95, "reason": "health_alert", "risks": alerts, "action_items": []}
+    # Severe drawdown = real circuit breaker (one-time flatten, debounced by caller).
+    if drawdown >= 0.20:
+        return {"vote": "flatten_only", "confidence": 0.9, "reason": "severe_drawdown", "risks": [f"drawdown={drawdown:.4f}"], "action_items": []}
+    # Moderate drawdown: warn only. Do NOT flatten repeatedly — flattening every cycle
+    # deadlocks the account (can never hold a position long enough to recover) and the
+    # churn/fees only deepen the drawdown. Caution instead of forced exit.
     if drawdown >= 0.05:
-        return {"vote": "flatten_only", "confidence": 0.9, "reason": "drawdown", "risks": [f"drawdown={drawdown:.4f}"], "action_items": []}
+        return {"vote": "warn", "confidence": 0.75, "reason": "drawdown", "risks": [f"drawdown={drawdown:.4f}"], "action_items": []}
     if last_ticker_age >= 120 or last_scan_age >= 600:
         return {"vote": "warn", "confidence": 0.85, "reason": "stale_data", "risks": [f"ticker_age_s={last_ticker_age:.0f}", f"scan_age_s={last_scan_age:.0f}"], "action_items": []}
     if "position" in task.lower() and positions >= 10:
@@ -301,7 +307,9 @@ def _call_judge(cfg: JudgeConfig, task: str, status: Dict[str, Any], primary: Di
     if not text:
         raise RuntimeError("empty judge response")
     parsed = _parse_verdict_text(text)
-    if not re.search(r"(?m)^\s*vote=", text):
+    # Accept a verdict if the model emitted `vote=` anywhere (reasoning models often
+    # conclude inline, not at line-start). Only fall back when no verdict is present.
+    if not re.search(r"vote\s*=\s*(continue|warn|stop|flatten_only)", text, re.IGNORECASE):
         parsed = _fallback_verdict(task, status)
     return {
         "judge": cfg.name,

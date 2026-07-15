@@ -21,24 +21,35 @@ try:
 except ImportError:
     from coinbase_universe import COINBASE_SPOT_PAIRS
 
-# Import our enhanced backtesting strategies from the backtesting framework
-sys.path.insert(0, '/home/scott/git/portfolio-management')
-from backtester import (
-    BTCVolatilityStacking,
-    BTCVolatilityBreakout,
-    BTCVolatilityMeanReversion,
-    BTCVolatilityMomentum,
-    CoinbaseMomentumStrategy,
-    CoinbaseMeanReversionStrategy,
-    VolatilityBreakoutStrategy,
-    RegimeAwareAdaptiveStrategy,
-    VolumeProfileStrategy,
-    MultiTimeframeConfluenceStrategy,
-    OrderFlowPressureStrategy,
-    VolatilityContractionExpansionStrategy,
-    StatisticalArbitrageZScorePairStrategy,
-    LiquidationHeatmapStrategy,
+# Import our enhanced backtesting strategies from the ROOT backtester module.
+# NOTE: `trading_system` is installed as an editable package whose finder
+# exposes its own `backtester` submodule at top-level, which would shadow the
+# intended root `backtester.py`. Load the root module explicitly by file path
+# to avoid importing the wrong module.
+import importlib.util as _ilu
+import os as _os
+
+_ROOT_BACKTESTER = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))),
+    "backtester.py",
 )
+_spec = _ilu.spec_from_file_location("root_backtester", _ROOT_BACKTESTER)
+_root_bt = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_root_bt)
+BTCVolatilityStacking = _root_bt.BTCVolatilityStacking
+BTCVolatilityBreakout = _root_bt.BTCVolatilityBreakout
+BTCVolatilityMeanReversion = _root_bt.BTCVolatilityMeanReversion
+BTCVolatilityMomentum = _root_bt.BTCVolatilityMomentum
+CoinbaseMomentumStrategy = _root_bt.CoinbaseMomentumStrategy
+CoinbaseMeanReversionStrategy = _root_bt.CoinbaseMeanReversionStrategy
+VolatilityBreakoutStrategy = _root_bt.VolatilityBreakoutStrategy
+RegimeAwareAdaptiveStrategy = _root_bt.RegimeAwareAdaptiveStrategy
+VolumeProfileStrategy = _root_bt.VolumeProfileStrategy
+MultiTimeframeConfluenceStrategy = _root_bt.MultiTimeframeConfluenceStrategy
+OrderFlowPressureStrategy = _root_bt.OrderFlowPressureStrategy
+VolatilityContractionExpansionStrategy = _root_bt.VolatilityContractionExpansionStrategy
+StatisticalArbitrageZScorePairStrategy = _root_bt.StatisticalArbitrageZScorePairStrategy
+LiquidationHeatmapStrategy = _root_bt.LiquidationHeatmapStrategy
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

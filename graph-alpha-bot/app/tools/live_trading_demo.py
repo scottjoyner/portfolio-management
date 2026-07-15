@@ -4,7 +4,7 @@ Live Paper Trading Demo - Shows what trades are actually being executed.
 This script generates signals and executes paper trades in one run.
 """
 
-import sys, os, json, logging
+import sys, os, json, logging, time
 from datetime import datetime, timezone
 from pathlib import Path
 

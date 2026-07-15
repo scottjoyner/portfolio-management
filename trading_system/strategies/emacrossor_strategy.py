@@ -98,7 +98,7 @@ class EMACrossoverStrategy:
     def on_bar(self, close_price: float) -> tuple[Optional[bool], Optional[float]]:
         """Generate buy/sell signal based on latest bar."""
         
-        if len(self.ema_fast) < 30:
+        if not self.ema_fast or not self.ema_slow:
             return None, None
         
         current_crossed_above = self.ema_fast[-1] > self.ema_slow[-1]

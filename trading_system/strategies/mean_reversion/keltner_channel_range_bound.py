@@ -91,7 +91,7 @@ class KeltnerChannelRangeBoundStrategy(StrategyBase):
         self.range_threshold = self.config.range_bound_threshold
         
         # State variables for Keltner Channel calculation
-        self.price_buffer: List[float] = field(default_factory=list)
+        self.price_buffer: List[float] = []
         self.ma_donchian: Optional[float] = None
         self.atr_value: Optional[float] = None
         self.lower_channel: Optional[float] = None
@@ -112,7 +112,7 @@ class KeltnerChannelRangeBoundStrategy(StrategyBase):
                     
                     # Calculate initial ATR
                     atr_prices = non_zero[-self.atr_period:]
-                    high_low_diffs = [atry[i] - aty[i-1] for i in range(1, len(atr_prices)) for atry in [atr_prices]]
+                    high_low_diffs = [atry[i] - atry[i - 1] for i in range(1, len(atr_prices)) for atry in [atr_prices]]
                     
                     if len(high_low_diffs) > 0:
                         atr_value = sum(high_low_diffs) / len(high_low_diffs) * 1.5 + (max(atr_prices) - min(atr_prices)) / self.atr_period
@@ -155,18 +155,16 @@ class KeltnerChannelRangeBoundStrategy(StrategyBase):
             atr_prices = self.price_buffer[-self.atr_period:]
             if len(atr_prices) >= 2 and sum(atr_prices) > 0:
                 
-                high_list = [float(b.get('high', p)) for b in atr_prices]
-                low_list = [float(b.get('low', p)) for b in atr_prices]
-                
-                if all(h > 0 and l > 0 for h, l in zip(high_list, low_list)):
-                    # Simplified ATR: average of (high - low) + typical range expansion factor
-                    price_ranges = [h - l for h, l in zip(high_list, low_list)]
+                if all(p > 0 for p in atr_prices):
+                    # Simplified ATR: average of consecutive close ranges + expansion factor
+                    price_ranges = [abs(atr_prices[i] - atr_prices[i - 1])
+                                    for i in range(1, len(atr_prices))]
                     if all(p > 0 for p in price_ranges):
                         avg_range = sum(price_ranges) / len(price_ranges)
                         
                         # Calculate true range component (price movement)
                         if len(atr_prices) >= 2:
-                            prev_close = atr_prices[1] if len(atr_prices) >= 2 else atr_prices[0]
+                            prev_close = atr_prices[-2]
                             price_movement = abs(close - prev_close) / self.atr_period * 1.5
                             
                             aty = max(avg_range, price_movement) * 1.4
@@ -174,6 +172,8 @@ class KeltnerChannelRangeBoundStrategy(StrategyBase):
                             aty = avg_range * 1.4
                         
                         atr_value = max(aty, (max(atr_prices) - min(atr_prices)) / self.atr_period)
+                    else:
+                        return Signal(action='HOLD')
                 else:
                     return Signal(action='HOLD')
             else:
@@ -244,6 +244,25 @@ class KeltnerChannelRangeBoundStrategy(StrategyBase):
                     channel_width_pct=self.channel_width_pct,
                     ma=self.ma_donchian,
                     atr=self.atr_value
+                )
+            
+            elif signal_action is not None and self.position is not None:
+                # Execute exit on close position
+                quantity = -self.position.quantity if signal_action == 'SELL' else self.position.quantity
+                
+                return Signal(
+                    action='CLOSE' if signal_action == 'SELL' else signal_action,
+                    price=close,
+                    quantity=abs(quantity),
+                    stop_loss=None,
+                    take_profit=None,
+                    confidence=confidence,
+                    signal_type='KELTNER_CHANNEL_MEAN_REVERSION_EXIT',
+                    channel_width_pct=self.channel_width_pct,
+                    ma=self.ma_donchian,
+                    atr=self.atr_value,
+                    entry_price=self.position.price or close,
+                    pnl_pct=(close - (self.position.price or close)) / (self.position.price or close)
                 )
             
             return Signal(action='HOLD')

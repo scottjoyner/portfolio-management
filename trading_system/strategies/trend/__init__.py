@@ -118,6 +118,10 @@ class MACDSignalCrossover(TrendStrategyBase):
             
         # Check for bullish crossover
         self.macd_line_history.append(macd_line)
+        # BUGFIX: signal_line_history was never populated, so the crossover
+        # checks below referenced signal_line_history[-1] on an empty list
+        # (IndexError) once enough bars had accumulated.
+        self.signal_line_history.append(signal_line)
         
         if len(self.macd_line_history) >= 10 and len(self.signal_line_history) >= 9:
             prev_macd = self.macd_line_history[-2]
@@ -167,7 +171,8 @@ class MACDSignalCrossover(TrendStrategyBase):
                    if self.macd_line_history[i] * self.macd_line_history[i-1] < 0)
         
         return {
-            'win_rate': min(0.6, max(0.4, wins / max(1, len(wins)))),
+            # BUGFIX: was ``wins / len(wins)`` -> TypeError (wins is an int).
+            'win_rate': min(0.6, max(0.4, wins / max(1, len(self.macd_line_history)))),
             'profit_factor': 1.5,  # Typical for trend following
             'sharpe_ratio': 1.2,   # Risk-adjusted return
             'max_drawdown': 0.15,  # Max drawdown ~15%
@@ -344,48 +349,60 @@ class DonchianChannelBreakout(TrendStrategyBase):
     def __init__(self, period_n: int = 20, breakout_threshold: float = 0.01):
         super().__init__('Donchian Channel', period_n, 0, 0)
         self.period_n = period_n
-        self.high_history: List[float] = []
-        self.low_history: List[float] = []
+        # BUGFIX: breakout_threshold was accepted but never stored, so on_bar
+        # referenced an undefined global name and raised NameError.
+        self.breakout_threshold = breakout_threshold
+        # BUGFIX: the channel must be computed from the PRIOR period_n bars so a
+        # breakout is actually possible. The old code used the current bar's own
+        # high/low in the channel, making the LONG/SHORT branches unreachable.
+        self.recent_highs: List[float] = []
+        self.recent_lows: List[float] = []
         self.in_position = False
-        
+
     def on_bar(self, data: Dict) -> Optional[str]:
         """Detect Donchian channel breakout."""
         prices = data.get('close', [])
-        highs = [p for p in data.get('high', [])]
-        lows = [p for p in data.get('low', [])]
-        
-        if len(prices) < self.period_n:
+        highs = data.get('high', [])
+        lows = data.get('low', [])
+
+        # BUGFIX: warm-up must gate on accumulated history, not the length of the
+        # single bar passed in this call (which is always < period_n for streaming
+        # input, so the old gate made the strategy permanently return None).
+        if not prices:
             return None
-            
-        # Calculate current channel bounds
-        channel_high = max(highs[-self.period_n:])
-        channel_low = min(lows[-self.period_n:])
-        channel_mid = (channel_high + channel_low) / 2
-        
-        # Store history
-        self.high_history.append(channel_high)
-        self.low_history.append(channel_low)
-        
+
+        cur_high = highs[-1] if highs else prices[-1]
+        cur_low = lows[-1] if lows else prices[-1]
+        self.recent_highs.append(cur_high)
+        self.recent_lows.append(cur_low)
+
+        if len(self.recent_highs) <= self.period_n:
+            return None
+
+        # Channel bounds from the prior period_n bars (excludes current bar).
+        channel_high = max(self.recent_highs[-(self.period_n + 1):-1])
+        channel_low = min(self.recent_lows[-(self.period_n + 1):-1])
+
         current_price = prices[-1]
-        
+
         if not self.in_position:
             # Detect breakout above channel
-            if current_price > channel_high + (channel_high * breakout_threshold):
+            if current_price > channel_high + (channel_high * self.breakout_threshold):
                 self.in_position = True
                 return 'LONG'
-                
-            # Detect breakout below channel  
-            elif current_price < channel_low - (channel_low * breakout_threshold):
+
+            # Detect breakout below channel
+            elif current_price < channel_low - (channel_low * self.breakout_threshold):
                 self.in_position = True
                 return 'SHORT'
-                
+
         else:
             # In position, check for exit
             if current_price > channel_high:  # Exit longs above resistance
                 self.in_position = False
             elif current_price < channel_low:  # Exit shorts below support
                 self.in_position = False
-                
+
         return None
     
     def get_performance_metrics(self) -> Dict:
@@ -517,6 +534,9 @@ class VWAPBreakout(TrendStrategyBase):
     
     def __init__(self, period_n: int = 20, atr_period: int = 14):
         super().__init__('VWAP Breakout', period_n, 0, atr_period)
+        self.period_n = period_n
+        # BUGFIX: period_n was passed to the base but never stored, so on_bar
+        # raised AttributeError: 'VWAPBreakout' object has no attribute 'period_n'.
         self.vwap_history: List[float] = []
         self.volume_history: List[float] = []
         
@@ -602,7 +622,7 @@ class TrendStrategiesUnitTests:
         
         # Create deterministic test data (simulated bullish trend)
         test_data = {
-            'close': [50.0] * 35 + list(range(50 + i * 0.1 for i in range(10))),  # Price uptrend
+            'close': [50.0] * 35 + [50 + i * 0.1 for i in range(10)],  # Price uptrend
             'high': [50.5] * 45,
             'low': [49.5] * 45
         }

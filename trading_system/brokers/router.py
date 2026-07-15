@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from brokers.base import BrokerAdapter, BrokerOrder
+from trading_system.brokers.base import BrokerAdapter, BrokerOrder
 
 
 @dataclass
@@ -36,11 +36,12 @@ class BrokerRouter:
             adapter = self._brokers[name]
             if mode == "paper" and "paper" in name:
                 return BrokerRoutingDecision(broker=name, product_id=product_id, confidence=1.0)
-            if mode == "live" and name != "paper":
+            if mode == "live" and "paper" not in name:
                 return BrokerRoutingDecision(broker=name, product_id=product_id, confidence=0.95)
-        if "paper" in self._brokers:
+        paper_name = next((n for n in self._brokers if "paper" in n), None)
+        if paper_name is not None:
             return BrokerRoutingDecision(
-                broker="paper", product_id=product_id, confidence=0.5,
+                broker=paper_name, product_id=product_id, confidence=0.5,
                 reason="no live broker registered, falling back to paper",
             )
         raise ValueError(f"no broker available for {product_id}")

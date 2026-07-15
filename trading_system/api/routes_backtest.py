@@ -30,6 +30,8 @@ Database Integration:
 All endpoints support pagination, filtering, and metrics aggregation.
 """
 
+import hashlib
+import random
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
@@ -101,7 +103,7 @@ async def trigger_backtest(
         "status": "success",
         "strategy_id": strategy_id,
         "backtest_id": backtest_id_hash,
-        "results": backtest_results["summary"],
+        "results": backtest_results,
     }
 
 
@@ -120,7 +122,7 @@ def simulate_backtest_execution(
     
     # Performance metrics
     realized_pnl = sum(random.uniform(-500, 3000) for _ in range(int(trade_count * 0.6)))
-    unrealized_pnl = sum(random.uniform(-100, 2000) for _ in range(trade_count * 0.4))
+    unrealized_pnl = sum(random.uniform(-100, 2000) for _ in range(int(trade_count * 0.4)))
     
     # Calculate return metrics
     initial_capital = config.get("initial_capital", 100000.0)
@@ -259,7 +261,13 @@ def store_backtest_result(results: Dict[str, Any]) -> int:
         ''')
         
         cursor.execute(
-            '''INSERT INTO backtest_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, "completed", ?)''',
+            '''INSERT INTO backtest_results (
+                strategy_id, config_hash, start_date, end_date,
+                initial_capital, total_return_pct, realized_pnl, unrealized_pnl,
+                sharpe_ratio, max_drawdown_pct, trade_count, win_rate_pct,
+                profit_factor, fees_paid_usd, slippage_costs_usd, gross_traded_usd,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 results.get("strategy_id"),
                 hashlib.md5(f"{results['backtest_id']}time".encode()).hexdigest()[:8],
@@ -402,12 +410,13 @@ async def get_backtest_results(backtest_id: str,
                 }
                 
             results = rows[0]
+            backtest_id_int = results[0]
             equity_points = generate_equity_curve(
                 initial_capital=results[5],
                 total_return_pct=results[6],
                 trade_count=results[11]
             )[:10]
-            
+
             trade_records = simulate_trade_log(backtest_id_int, results[6])[:20]
             
         # Format results for API response

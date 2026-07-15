@@ -14,6 +14,16 @@ import os
 logger = logging.getLogger(__name__)
 
 
+# Base prices for common symbols (shared by mock generation and symbol listing)
+base_prices = {
+    'AAPL': 178.50,
+    'MSFT': 378.90,
+    'GOOGL': 141.80,
+    'BTC-USD': 67500.00,
+    'ETH-USD': 3450.00,
+}
+
+
 class DefaultDataSource:
     """
     Fallback data source using cached or mock data.
@@ -79,15 +89,7 @@ class DefaultDataSource:
         """
         Generate synthetic OHLCV data for demonstration.
         """
-        # Base prices for common symbols
-        base_prices = {
-            'AAPL': 178.50,
-            'MSFT': 378.90,
-            'GOOGL': 141.80,
-            'BTC-USD': 67500.00,
-            'ETH-USD': 3450.00
-        }
-        
+        # Base prices for common symbols (module-level `base_prices`)
         base_price = base_prices.get(symbol, 100.0)
         
         # Generate 30 days of mock data

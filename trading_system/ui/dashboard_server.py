@@ -41,7 +41,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -801,6 +801,208 @@ def api_positions():
         ),
         "positions": formatted,
     }
+
+
+# ── Trading terminal endpoints (charts / watchlist / order entry) ──────────
+
+def _qs(query_string, key, default):
+    """Read a query-string param with a default (handles single-value lists)."""
+    vals = parse_qs(query_string).get(key)
+    return vals[0] if vals else default
+
+
+def _ensure_project_root_on_path():
+    """Make sure the repo root is importable for coinbase/strategy modules."""
+    try:
+        import portfolio_optimizer  # noqa: F401
+        return
+    except Exception:
+        pass
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+def api_market_candles(symbol="BTC-USD", granularity=3600, limit=200):
+    """Fetch OHLCV candles for the charting panel (Coinbase public REST)."""
+    symbol = symbol or "BTC-USD"
+    granularity = int(granularity)
+    try:
+        _ensure_project_root_on_path()
+        from coinbase.src.rest_feed import fetch_candles_rest_sync
+        candles = fetch_candles_rest_sync(symbol, granularity=granularity, limit=int(limit))
+    except Exception as e:
+        logger.warning("candle fetch failed for %s: %s", symbol, e)
+        candles = []
+    if not candles:
+        # offline fallback from the durable NAS cache
+        try:
+            from data.feed_cache import load_candles
+            candles = load_candles("coinbase_candles", symbol, granularity, limit=int(limit))
+        except Exception:
+            candles = []
+    else:
+        try:
+            from data.feed_cache import save_candles
+            save_candles("coinbase_candles", symbol, granularity, candles)
+        except Exception:
+            pass
+    out = [{"t": c[0], "o": c[1], "h": c[2], "l": c[3], "c": c[4], "v": c[5]} for c in candles]
+    return {"symbol": symbol, "granularity": granularity, "candles": out}
+
+
+def _simple_regime(closes):
+    if len(closes) < 5:
+        return "n/a"
+    slope = closes[-1] - closes[-5]
+    rng = max(closes) - min(closes)
+    vol = rng / (min(closes) or 1)
+    if slope > 0 and vol < 0.06:
+        return "bull"
+    if slope < 0 and vol < 0.06:
+        return "bear"
+    return "chop"
+
+
+_WL_CACHE = {"ts": 0.0, "data": None, "ttl": 30.0}
+
+
+def api_market_watchlist(limit_pairs=24):
+    """Top Coinbase pairs with last price, % change, sparkline, regime tag.
+
+    Cached in-process for ``_WL_CACHE['ttl']`` seconds so the first (slow,
+    network-heavy) discovery + batch fetch is not repeated on every poll.
+    """
+    now = time.time()
+    if _WL_CACHE["data"] is not None and (now - _WL_CACHE["ts"]) < _WL_CACHE["ttl"]:
+        return _WL_CACHE["data"]
+    try:
+        _ensure_project_root_on_path()
+        from coinbase.src.pair_discovery import top_coinbase_pairs
+        from coinbase.src.rest_feed import fetch_candles_batch_sync
+        pairs = top_coinbase_pairs(n=int(limit_pairs))
+    except Exception as e:
+        logger.warning("watchlist discovery failed: %s", e)
+        pairs = [(s, s.split("-")[0]) for s in [
+            "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
+            "AVAX-USD", "LINK-USD", "ATOM-USD", "LTC-USD", "NEAR-USD", "APT-USD",
+        ]]
+    pair_ids = [p[0] for p in pairs]
+    try:
+        candles_map = fetch_candles_batch_sync(pair_ids, granularity=3600, limit=30)
+    except Exception:
+        candles_map = {}
+    # durable backup of the batch for offline replay
+    try:
+        from data.feed_cache import save_candles
+        for pid, cs in candles_map.items():
+            if cs:
+                save_candles("coinbase_candles", pid, 3600, cs)
+    except Exception:
+        pass
+    rows = []
+    for pid in pair_ids:
+        cs = candles_map.get(pid) or []
+        if not cs:
+            rows.append({"symbol": pid, "base": pid.split("-")[0], "last": None,
+                         "change_pct": None, "spark": [], "regime": "n/a"})
+            continue
+        closes = [c[4] for c in cs]
+        last = closes[-1]
+        first = closes[0]
+        chg = ((last - first) / first * 100) if first else 0
+        rows.append({
+            "symbol": pid,
+            "base": pid.split("-")[0],
+            "last": last,
+            "change_pct": round(chg, 2),
+            "spark": [round(x, 6) for x in closes[-24:]],
+            "regime": _simple_regime(closes),
+        })
+    result = {"watchlist": rows}
+    _WL_CACHE["ts"] = now
+    _WL_CACHE["data"] = result
+    return result
+
+
+def _last_price(symbol):
+    try:
+        _ensure_project_root_on_path()
+        from coinbase.src.rest_feed import fetch_candles_rest_sync
+        cs = fetch_candles_rest_sync(symbol, granularity=60, limit=1)
+        if cs:
+            return float(cs[-1][4])
+    except Exception:
+        pass
+    return None
+
+
+def api_order_submit(payload):
+    """Create a pending approval the user can approve via the approval flow.
+
+    Mirrors portfolio_optimizer's pending-approval schema so the optimizer's
+    existing execution path picks it up on the next tick.
+    """
+    symbol = (payload.get("symbol") or "").strip().upper()
+    side = (payload.get("side") or "").strip().upper()
+    if not symbol or side not in ("BUY", "SELL"):
+        return {"ok": False, "error": "symbol and side(BUY|SELL) required"}
+    try:
+        size_usd = float(payload.get("size_usd") or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "size_usd must be numeric"}
+    if size_usd <= 0:
+        return {"ok": False, "error": "size_usd must be > 0"}
+
+    price = _last_price(symbol)
+    if not price:
+        return {"ok": False, "error": f"could not fetch price for {symbol}"}
+    base_qty = size_usd / price
+
+    stop_pct = float(payload.get("stop_pct") or 0.03)
+    target_pct = float(payload.get("target_pct") or 0.06)
+    if side == "BUY":
+        stop_price = round(price * (1 - stop_pct), 2)
+        target_price = round(price * (1 + target_pct), 2)
+    else:
+        stop_price = round(price * (1 + stop_pct), 2)
+        target_price = round(price * (1 - target_pct), 2)
+
+    import uuid
+    token = uuid.uuid4().hex
+    entry = {
+        "type": "manual_order",
+        "side": side,
+        "currency": symbol.split("-")[0],
+        "size_usd": round(size_usd, 2),
+        "expected_fee": round(size_usd * 0.001, 2),
+        "product_id": symbol,
+        "reason": payload.get("reason") or f"Manual {side} {symbol}",
+        "priority": float(payload.get("priority") or 1.0),
+        "capital_bucket": "growth",
+        "status": "pending",
+        "bracket": True,
+        "stop_price": stop_price,
+        "target_price": target_price,
+        "entry_price_est": round(price, 2),
+        "base_qty": round(base_qty, 8),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": "dashboard_order_entry",
+    }
+    pending_file = ROOT / "data" / "pending_approvals.json"
+    try:
+        os.makedirs(os.path.dirname(str(pending_file)) or ".", exist_ok=True)
+        if pending_file.exists():
+            with open(pending_file, "r") as f:
+                pending = json.load(f)
+        else:
+            pending = {}
+        pending[token] = entry
+        with open(pending_file, "w") as f:
+            json.dump(pending, f, indent=2, default=str)
+    except Exception as e:
+        return {"ok": False, "error": f"failed to persist approval: {e}"}
+    return {"ok": True, "token": token, "approval": entry}
 
 
 def api_strategies():
@@ -2206,6 +2408,181 @@ def api_bucket_presets():
     return {"presets": _bucket_preset_payloads()}
 
 
+# ── Rebalance + Stair-Step (lazy integration layer) ─────────────
+
+_STAIRSTEP_STATE_KEYS = (
+    "next_buy_index", "filled_buys", "filled_sells",
+    "inventory_value", "realized_pnl", "last_action",
+)
+
+
+def _get_rebalance_module():
+    """Shared lazy import of the rebalance engine integration layer.
+
+    Returns the `coinbase.src.rebalance_engine` module, or ``None`` if it is
+    not installed yet (or its Rust dependency is unavailable). The server must
+    still start when it is absent.
+    """
+    try:
+        import coinbase.src.rebalance_engine as mod
+        return mod
+    except Exception:
+        return None
+
+
+def _active_rebalance_preset(mod=None) -> str:
+    name = os.environ.get("REBALANCE_PRESET", "core_balanced")
+    presets = getattr(mod, "ALLOCATION_PRESETS", None)
+    if presets and name not in presets:
+        name = next(iter(presets), name)
+    return name
+
+
+def _rebalance_current_holdings() -> tuple[float, dict]:
+    """Read current holdings value from operator state (total, per-symbol map).
+
+    Symbol keys are normalized to ``ASSET-USD`` to match allocation targets.
+    """
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    holdings = op.get("holdings", {}) or {}
+    current: dict = {}
+    total = 0.0
+    if isinstance(holdings, dict):
+        for sym, h in holdings.items():
+            if not isinstance(h, dict):
+                continue
+            val = float(h.get("value", h.get("current_value", 0)) or 0)
+            if val <= 0:
+                continue
+            key = str(sym)
+            if "-" not in key:
+                key = f"{key}-USD"
+            current[key] = current.get(key, 0.0) + val
+            total += val
+    return total, current
+
+
+def _build_rebalance_engine(mod, active):
+    try:
+        return mod.RebalanceEngine.from_preset(active)
+    except Exception:
+        return None
+
+
+def _build_stairstep_engine(mod):
+    try:
+        return mod.StairStepEngine()
+    except Exception:
+        return None
+
+
+def _normalize_stairstep_entry(symbol, info, engine) -> dict:
+    """Turn a StairStepEngine.to_dict() entry into a stable dashboard shape."""
+    step_levels = None
+    base_size = None
+
+    taker = getattr(engine, "_symbols", {}).get(symbol)
+    if taker is not None:
+        if all(hasattr(taker, a) for a in ("low", "high", "steps")):
+            low, high, steps = taker.low, taker.high, taker.steps
+            if steps and high != low:
+                step_levels = [
+                    round(low + (high - low) * i / steps, 6)
+                    for i in range(steps + 1)
+                ]
+        if hasattr(taker, "base_size_pct") and hasattr(taker, "budget"):
+            try:
+                base_size = round(taker.budget * taker.base_size_pct / 100.0, 2)
+            except Exception:
+                base_size = None
+
+    if isinstance(info, dict):
+        state = dict(info.get("state", {}))
+        step_levels = info.get("step_levels", step_levels)
+        base_size = info.get("base_size", base_size)
+    elif isinstance(info, (list, tuple)):
+        state = dict(zip(_STAIRSTEP_STATE_KEYS, info))
+    else:
+        state = {}
+
+    return {
+        "symbol": symbol,
+        "step_levels": step_levels,
+        "base_size": base_size,
+        "state": state,
+    }
+
+
+def api_rebalance():
+    """Allocation presets + active preset + live drift/recommendation."""
+    mod = _get_rebalance_module()
+    if mod is None:
+        return {
+            "available": False,
+            "presets": [],
+            "active_preset": _active_rebalance_preset(),
+            "current_drift": None,
+            "recommendation": None,
+        }
+
+    presets = [
+        {"name": name, "weights": dict(weights)}
+        for name, weights in mod.ALLOCATION_PRESETS.items()
+    ]
+    active = _active_rebalance_preset(mod)
+    payload = {
+        "available": True,
+        "presets": presets,
+        "active_preset": active,
+        "current_drift": None,
+        "recommendation": None,
+    }
+
+    engine = _build_rebalance_engine(mod, active)
+    if engine is not None:
+        try:
+            total, current = _rebalance_current_holdings()
+            if total > 0:
+                rec = engine.compute(current, total)
+                payload["current_drift"] = rec.max_drift
+                payload["recommendation"] = rec.to_dict()
+        except Exception as e:
+            logger.debug("rebalance compute failed: %s", e)
+
+    return payload
+
+
+def api_rebalance_presets():
+    """List of allocation preset names + weights."""
+    mod = _get_rebalance_module()
+    if mod is None:
+        return {"available": False, "presets": []}
+    presets = [
+        {"name": name, "weights": dict(weights)}
+        for name, weights in mod.ALLOCATION_PRESETS.items()
+    ]
+    return {"available": True, "presets": presets}
+
+
+def api_stairstep():
+    """Per-symbol grid step_levels, base_size, and live state()."""
+    mod = _get_rebalance_module()
+    if mod is None:
+        return {"available": False, "symbols": []}
+
+    symbols = []
+    engine = _build_stairstep_engine(mod)
+    if engine is not None:
+        try:
+            data = engine.to_dict()
+            if isinstance(data, dict):
+                for sym, info in data.items():
+                    symbols.append(_normalize_stairstep_entry(sym, info, engine))
+        except Exception as e:
+            logger.debug("stairstep state failed: %s", e)
+
+    return {"available": True, "symbols": symbols}
+
 
 # ── Request Handler ─────────────────────────────────────────────
 
@@ -2242,10 +2619,21 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/signals/feed": lambda: api_signal_feed(),
             "/signals/diversification": lambda: api_diversification_signals(),
             "/strategies/performance": lambda: api_strategies_performance(),
+            "/strategies/rebalance": lambda: api_rebalance(),
+            "/strategies/rebalance/presets": lambda: api_rebalance_presets(),
+            "/strategies/stairstep": lambda: api_stairstep(),
             "/signals/meta-weights": lambda: _load_json(ROOT / "data" / "meta_source_weights.json", {}),
             "/signals/ensemble": lambda: _load_json(ROOT / "data" / "signal_ensemble.json", {}),
             "/market/cross-asset-regime": lambda: _load_json(ROOT / "data" / "cross_asset_regime.json", {}),
             "/signals/orderflow": lambda: _load_json(ROOT / "data" / "order_flow_signals.json", {}),
+            "/market/candles": lambda: api_market_candles(
+                symbol=_qs(parsed.query, "symbol", "BTC-USD"),
+                granularity=int(_qs(parsed.query, "granularity", 3600)),
+                limit=int(_qs(parsed.query, "limit", 200)),
+            ),
+            "/market/watchlist": lambda: api_market_watchlist(
+                limit_pairs=int(_qs(parsed.query, "limit", 24)),
+            ),
             "/optimizer/param-opt": lambda: _load_json(ROOT / "data" / "param_opt_results.json", {}),
             "/optimizer/wash-sale": lambda: _load_json(ROOT / "data" / "wash_sale_state.json", {}),
             "/optimizer/sr-levels": lambda: _load_json(ROOT / "data" / "sr_levels.json", {}),
@@ -2327,7 +2715,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all", "/arbitrage/execute"}:
+        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all", "/arbitrage/execute", "/orders/submit"}:
             self._json_response(json.dumps({"error": "not found"}), status=404)
             return
 
@@ -2370,6 +2758,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(json.dumps({"ok": True, "cancelled": "all"}, default=str))
             elif path == "/arbitrage/execute":
                 result = api_execute_arbitrage(payload)
+                status = 200 if result.get("ok") else 400
+                self._json_response(json.dumps(result, default=str), status=status)
+            elif path == "/orders/submit":
+                result = api_order_submit(payload)
                 status = 200 if result.get("ok") else 400
                 self._json_response(json.dumps(result, default=str), status=status)
             else:

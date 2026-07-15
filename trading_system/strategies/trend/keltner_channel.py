@@ -151,6 +151,7 @@ class KeltnerChannelBreakoutStrategy:
         self.low_prices = []
         
         k_factor = 2 / (self.config.ema_period + 1)
+        self._k_factor = k_factor
         
         for i, bar in enumerate(data):
             close_price = bar.get("close", bar.get("price", 0))
@@ -159,7 +160,12 @@ class KeltnerChannelBreakoutStrategy:
             
             if i == 0:
                 # Initial EMA equals first close price
-                initial_ema = close_price
+                # BUGFIX: the initial EMA was computed but never appended, so
+                # ``ema_values`` ended up one element shorter than the
+                # high/low price lists, which (combined with on_bar not
+                # updating ``ema_values``) caused an IndexError in
+                # ``_calculate_atr``.
+                self.ema_values.append(close_price)
             else:
                 # Standard EMA calculation
                 if self.ema_values:
@@ -245,6 +251,14 @@ class KeltnerChannelBreakoutStrategy:
         low_price = bar.get("low", close_price)
         self.high_prices.append(high_price)
         self.low_prices.append(low_price)
+        # Keep the EMA series in lock-step with the price history so that
+        # _calculate_atr can safely index ema_values by position.
+        k_factor = getattr(self, "_k_factor", 2 / (self.config.ema_period + 1))
+        if self.ema_values:
+            new_ema = (close_price - self.ema_values[-1]) * k_factor + self.ema_values[-1]
+        else:
+            new_ema = close_price
+        self.ema_values.append(new_ema)
         
         # Check for breakout above upper channel (buy signal)
         threshold_pct = self.config.entry_threshold_pct / 100

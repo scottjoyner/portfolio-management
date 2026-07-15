@@ -151,7 +151,10 @@ class StrategyRegistry:
         """
         
         if key is None:
-            key = self._generate_key(strategy)
+            key = self._generate_key({
+                "name": type(strategy).__name__,
+                "module": type(strategy).__module__,
+            })
         
         logger.info(f"Registered strategy: {key}")
         

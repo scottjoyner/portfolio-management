@@ -39,6 +39,7 @@ class RSISignal:
     strength: float  # -1 to 1 scale
     rsi_value: Optional[float] = None
     rsi_pct_change: Optional[float] = None
+    entry_price: Optional[float] = None
 
 
 class RSIOracle:
@@ -138,7 +139,7 @@ class RSIOracle:
         if len(self.rsi_values) < self.lookback_periods - 1:
             self.rsi_values.append(None)
             
-        elif len(self.rsi_values[-1]) is None:
+        elif self.rsi_values[-1] is None:
             avg_gain = sum(self.gains[-self.lookback_periods:]) / self.lookback_periods
             avg_loss = sum(self.losses[-self.lookback_periods:]) / self.lookback_periods
             
@@ -226,6 +227,8 @@ class StochasticRSIOracle:
         # State variables
         self.stoch_values: List[float] = []
         self.stoch_d_values: List[float] = []
+        self.gains: List[float] = []
+        self.losses: List[float] = []
         self.position_entry_price: Optional[float] = None
         self.unrealized_pnl: float = 0.0
         
@@ -303,8 +306,10 @@ class StochasticRSIOracle:
             return None
             
         # Calculate underlying RSI
-        gains = []
-        losses = []
+        gains = self.gains
+        losses = self.losses
+        gain = 0.0
+        loss = 0.0
         previous_close = getattr(self, 'previous_close', bar.close)
         
         change = bar.close - previous_close
@@ -314,8 +319,9 @@ class StochasticRSIOracle:
         else:
             loss = abs(change)
         
-        gains.append(gain)
-        losses.append(loss)
+        # Calculate underlying RSI
+        self.gains.append(gain)
+        self.losses.append(loss)
         self.previous_close = bar.close
         
         # Calculate RSI

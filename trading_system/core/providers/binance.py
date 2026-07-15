@@ -17,7 +17,7 @@ class BinanceProvider(BaseProvider):
     async def connect(self) -> None:
         if self.api_key or self.api_secret:
             try:
-                if not self.api_key.startswith("binance"):
+                if not (self.api_key and self.api_key.startswith("binance")):
                     raise ValueError("Invalid Binance API key format.")
                 self._connected = True
                 print("Connected to Binance Exchange")

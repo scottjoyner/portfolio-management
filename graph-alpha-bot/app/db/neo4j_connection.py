@@ -58,6 +58,8 @@ class Neo4jConnection:
             if self.driver:
                 with self.driver.session(database=self.database) as session:
                     session.run("RETURN 1")
+            else:
+                raise RuntimeError("Failed to create Neo4j driver with any SSL config")
         except Exception as e:
             raise RuntimeError(f"Neo4j connection failed: {e}")
     

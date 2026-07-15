@@ -271,7 +271,9 @@ class PolymarketConnector:
                     print(f"      Filled Amount: ${filled_amount:.2f}")
                 else:
                     print(f"   ⏳ Order placed, awaiting fill from order book...")
-                    
+                
+                return order_response
+
             else:
                 error_data = response.json() if response.status_code == 400 else {}
                 print(f"\n❌ Failed to place bet - Status: {response.status_code}")

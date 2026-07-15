@@ -36,11 +36,11 @@ class SafeLogger:
         
         # Replace API keys with masked versions
         sanitized = re.sub(r'(API[_ ]?KEY=[^\s]+)', r'\1=***', message, flags=re.IGNORECASE)
-        sanitized = re.sub(r'(SECRET[_ ]?KEY=[^\s]+)', r'\1=***', message, flags=re.IGNORECASE)
-        sanitized = re.sub(r'(TOKEN=[^\s]+)', r'\1=***', message, flags=re.IGNORECASE)
+        sanitized = re.sub(r'(SECRET[_ ]?KEY=[^\s]+)', r'\1=***', sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r'(TOKEN=[^\s]+)', r'\1=***', sanitized, flags=re.IGNORECASE)
         
         # Replace full account balances with ranges
-        sanitized = re.sub(r'(\d+\.\d+)\s*(?:BTC|ETH|USD|USDC)([^\d])?', lambda m: f"{m.group(0).split()[0]:.2f}", sanitized)
+        sanitized = re.sub(r'(\d+\.\d+)\s*(?:BTC|ETH|USD|USDC)([^\d])?', lambda m: f"{float(m.group(0).split()[0]):.2f}", sanitized)
         
         return sanitized
     
@@ -268,15 +268,15 @@ class SafeExchangeConnector:
         - Fallback to mock client on live API failure
         """
         # 1. Input validation
-        if not market_id or len(market_id) > 50:
-            self.safe_logger.error(
-                f"Invalid market_id format: '{market_id}'"
-            )
-            return None
-        
         if not isinstance(market_id, str):
             self.safe_logger.error(
                 f"market_id must be string, got {type(market_id).__name__}"
+            )
+            return None
+
+        if not market_id or len(market_id) > 50:
+            self.safe_logger.error(
+                f"Invalid market_id format: '{market_id}'"
             )
             return None
         
@@ -304,10 +304,10 @@ class SafeExchangeConnector:
         # 5. Return price
         return round(result, 6) if isinstance(result, (int, float)) else result
     
-    def _fetch_mock_price(self) -> Optional[float]:
+    def _fetch_mock_price(self, market_id: str = "") -> Optional[float]:
         """Return mock price when live API unavailable."""
         import random
-        
+
         # Simulate realistic mock price behavior
         base_prices = {
             "BTC-EUR": 68000.0,
@@ -316,7 +316,7 @@ class SafeExchangeConnector:
             "NVD-PAYOFF": 78.0,
             "AAPL-PAYOFF": 85.0,
         }
-        
+
         return base_prices.get(market_id, random.uniform(100, 1000))
     
     def _live_fetch_price(self, market_id: str) -> Optional[float]:

@@ -44,7 +44,7 @@ class RSIDivergenceConfig:
     
     # Entry/Exit thresholds
     entry_threshold: float = 0.03  # Minimum RSI divergence for entry (3%)
-    exit_threshold: float = -0.02  # Maximum RSI divergence for short (-2%)
+    exit_threshold: float = 0.30  # Maximum RSI divergence for long exit (30%)
     stop_loss_bps: float = 70.0  # Stop loss as basis points (0.7%)
     take_profit_bps: float = 200.0  # Take profit as basis points (2.0%)
     trailing_take_profit_bps: float = 100.0  # Trailing stop after profit
@@ -128,7 +128,7 @@ class RSIDivergenceStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price >= target_price:
+            elif close_price >= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -156,7 +156,7 @@ class RSIDivergenceStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price <= target_price:
+            elif close_price <= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -176,6 +176,10 @@ class RSIDivergenceStrategy:
         
         # No position - check for entry signals
         if rsi_divergence > self.config.entry_threshold and rsi_value < self.config.oversold_threshold:
+            self.current_position = 'long'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': self.config.risk_per_trade / close_price,
@@ -184,6 +188,10 @@ class RSIDivergenceStrategy:
                 'reason': 'rsi_oversold_divergence'
             }
         elif rsi_divergence > self.config.entry_threshold and rsi_value > self.config.overbought_threshold:
+            self.current_position = 'short'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': -self.config.risk_per_trade / close_price,

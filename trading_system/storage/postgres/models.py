@@ -234,6 +234,64 @@ class PerformanceModel:
         self.timestamp = timestamp or datetime.utcnow()
 
 
+class StrategyConfig:
+    """Strategy configuration/registration record."""
+
+    def __init__(
+        self,
+        strategy_id: str,
+        strategy_type: str = "unknown",
+        status: str = "implemented",
+        enabled: bool = True,
+        paper_mode: bool = True,
+        live_supported: bool = False,
+        config_json: str = "{}",
+    ):
+        self.strategy_id = strategy_id
+        self.strategy_type = strategy_type
+        self.status = status
+        self.enabled = enabled
+        self.paper_mode = paper_mode
+        self.live_supported = live_supported
+        self.config_json = config_json
+
+
+class StrategyRun:
+    """A single strategy execution run record."""
+
+    def __init__(
+        self,
+        task_id: str,
+        strategy_id: str,
+        status: str = "running",
+        mode: str = "paper",
+        started_at: Optional[datetime] = None,
+        completed_at: Optional[datetime] = None,
+    ):
+        self.task_id = task_id
+        self.strategy_id = strategy_id
+        self.status = status
+        self.mode = mode
+        self.started_at = started_at or datetime.utcnow()
+        self.completed_at = completed_at
+
+
+class Alert:
+    """System alert record (referenced by OpsRepository.list_alerts)."""
+
+    def __init__(
+        self,
+        alert_id: str = "",
+        severity: str = "info",
+        message: str = "",
+        created_at: Optional[datetime] = None,
+    ):
+        self.alert_id = alert_id
+        self.severity = severity
+        self.message = message
+        self.created_at = created_at or datetime.utcnow()
+
+
 class RedisPubSubChannelManager:
     """Manage Redis pub/sub channels for real-time messaging."""
     

@@ -127,7 +127,7 @@ class WilliamsPercentRStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price >= target_price:
+            elif close_price >= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -136,7 +136,7 @@ class WilliamsPercentRStrategy:
                     'reason': 'take_profit'
                 }
             # Exit on trend reversal (%R crosses below oversold or enters overbought)
-            elif wr_value < self.config.oversold_threshold and wr_divergence < self.config.exit_threshold:
+            elif wr_value < self.config.oversold_threshold and wr_trend == -1:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -155,7 +155,7 @@ class WilliamsPercentRStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price <= target_price:
+            elif close_price <= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -175,6 +175,10 @@ class WilliamsPercentRStrategy:
         
         # No position - check for entry signals
         if wr_divergence > self.config.entry_threshold and wr_value < self.config.oversold_threshold:
+            self.current_position = 'long'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': self.config.risk_per_trade / close_price,
@@ -183,6 +187,10 @@ class WilliamsPercentRStrategy:
                 'reason': 'wr_oversold_cross'
             }
         elif wr_divergence > self.config.entry_threshold and wr_value > self.config.overbought_threshold:
+            self.current_position = 'short'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': -self.config.risk_per_trade / close_price,

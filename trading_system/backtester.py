@@ -204,7 +204,7 @@ def main():
     )
     
     # Replay trades and calculate metrics
-    metrics = backtester.replay_trades(trades=[])  # Replace with actual trades
+    metrics = backtester.replay_trades(product_id='BTC-USD', trades=[])  # Replace with actual trades
     
     # Export results
     backtester.export_results(metrics)

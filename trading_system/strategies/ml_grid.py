@@ -67,10 +67,14 @@ class MLGridTradingStrategy:
     """
     
     def __init__(self, config=None):
-        self.config = config or MLGridConfig()
+        self.config = config or self.MLGridConfig()
         self.grid_levels: List[float] = []
         self.grid_positions: Dict[str, float] = {}
         self.optimization_history: List[Dict[str, Any]] = []
+        self.optimal_step: float = 0.0
+        self.optimal_levels: int = 0
+        self.baseline_volatility: float = 0.0
+        self._current_price: float = 0.0
         
         # Performance tracking
         self.num_successful_trades = 0
@@ -94,23 +98,28 @@ class MLGridTradingStrategy:
             raise ValueError(f"Need at least {min_bars} bars for ML grid trading.")
         
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate optimal grid parameters
         price_range = max(highs) - min(lows)
         avg_volatility = sum(highs[i] - lows[i] for i in range(-self.config.optimization_window, 0)) / self.config.optimization_window
+        self.baseline_volatility = avg_volatility
         
         # Optimize grid levels based on historical performance
-        optimal_levels = int(self.base_grid_levels * (1 + math.log(price_range) / math.log(50000)))
+        safe_range = max(price_range, 1e-8)
+        optimal_levels = max(1, int(self.config.base_grid_levels * (1 + math.log(safe_range) / math.log(50000))))
         optimal_step = price_range / optimal_levels
+        self.optimal_levels = optimal_levels
+        self.optimal_step = optimal_step
+        self._current_price = closes[-1] if closes else 50000.0
         
         # Initialize grid with optimized parameters
         self._initialize_grid(optimal_levels, optimal_step)
     
     def _initialize_grid(self, levels: int, step: float) -> None:
         """Initialize grid with optimized parameters."""
-        current_price = closes[-1] if closes else 50000
+        current_price = self._current_price if self._current_price else 50000.0
         
         # Generate grid levels
         for i in range(1, levels + 1):
@@ -230,3 +239,6 @@ class MLGridTradingStrategy:
 
 
 __all__ = ['MLGridConfig', 'MLGridTradingStrategy']
+
+# Module-level alias for the nested configuration dataclass.
+MLGridConfig = MLGridTradingStrategy.MLGridConfig

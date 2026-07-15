@@ -17,9 +17,17 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timedelta
-from math import sign  # For order flow imbalance calculation
 
 from trading_system.strategies.base import BaseStrategy, OHLCVBar, compute_sma, compute_ema
+
+
+def _sign(x: float) -> float:
+    """Return the sign of ``x`` (-1, 0, or +1)."""
+    if x > 0:
+        return 1.0
+    if x < 0:
+        return -1.0
+    return 0.0
 
 
 @dataclass
@@ -91,7 +99,7 @@ class OnChainRegimeStrategy(BaseStrategy):
         weighted_nvt = sum(
             nvt * (decay_factor ** i)
             for i, nvt in enumerate(reversed(self.nvt_history[-100:]))
-        ) / sum(decay_factor ** i for _ in range(100))
+        ) / sum(decay_factor ** i for i in range(100))
         
         # Calculate percentile
         sorted_nvt = sorted([weighted_nvt] + self.nvt_history[-99:])
@@ -346,15 +354,16 @@ class OrderFlowImbalanceStrategy(BaseStrategy):
         """
         Generate order flow imbalance signal.
         """
-        if not self.order_imbalances or len(self.order_imbalances) < 10:
-            return None, None
-        
         current_imbalance = self._calculate_order_imbalance(bar)
+        self.order_imbalances.append(current_imbalance)
+        if len(self.order_imbalances) < 10:
+            return None, None
+
         avg_imbalance = sum(self.order_imbalances[-5:]) / 5
         
         # Persistent imbalance detection
         if abs(current_imbalance) > self.imbalance_threshold and \
-           math.sign(current_imbalance) == math.sign(avg_imbalance):
+           _sign(current_imbalance) == _sign(avg_imbalance):
             # Strong persistent imbalance - potential breakout
             if current_imbalance > 0:  # Buying pressure
                 return True, bar.close

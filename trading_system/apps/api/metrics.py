@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from typing import Any
 
 class MetricsCollector:
     def __init__(self) -> None:
-        self.request_count = Counter('app_requests_total', 'Total number of requests')
-        self.error_count = Counter('app_errors_total', 'Total number of errors')
-        self.request_duration = Histogram('app_request_duration_seconds', 'Request duration in seconds')
+        # Use a dedicated registry per collector so multiple instances (or
+        # re-instantiation under test) don't collide on the global registry.
+        self._registry = CollectorRegistry()
+        self.request_count = Counter('app_requests_total', 'Total number of requests', registry=self._registry)
+        self.error_count = Counter('app_errors_total', 'Total number of errors', registry=self._registry)
+        self.request_duration = Histogram('app_request_duration_seconds', 'Request duration in seconds', registry=self._registry)
         self._counters: dict[str, Counter] = {}
         self._gauges: dict[str, Gauge] = {}
 

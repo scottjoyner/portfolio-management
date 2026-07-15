@@ -88,8 +88,8 @@ async def _get_session() -> aiohttp.ClientSession:
     if session is None or session.closed:
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
         connector = aiohttp.TCPConnector(
-            limit=50,
-            limit_per_host=20,
+            limit=10,
+            limit_per_host=5,
             keepalive_timeout=30,
             enable_cleanup_closed=True,
         )
@@ -114,6 +114,18 @@ def _cache_ttl_s(granularity: int) -> float:
 
 def _granularity_to_cb_str(granularity: int) -> str:
     return str(_GRANULARITY_MAP.get(granularity, granularity))
+
+
+def _persist_nas(product_id: str, granularity: int,
+                 candles: List[Tuple[int, float, float, float, float, float]]) -> None:
+    """Best-effort durable write of fetched candles to the NAS feed cache."""
+    if not candles:
+        return
+    try:
+        from data.feed_cache import save_candles
+        save_candles("coinbase_candles", product_id, granularity, candles)
+    except Exception as e:  # pragma: no cover - durability is best-effort
+        log.debug("NAS persist skipped for %s: %s", product_id, e)
 
 
 def _normalize_candles(data: List, product_id: str) -> List[Tuple[int, float, float, float, float, float]]:
@@ -205,10 +217,13 @@ async def fetch_candles_rest(
             
             data = await resp.json()
             result = _normalize_candles(data, product_id)
-            
+
             if cb:
                 cb.record_success()
-            
+
+            # Durable write (every fetch, full or incremental) for backtesting
+            _persist_nas(product_id, granularity, result)
+
             # Update cache (only for full fetches)
             if after_ts is None and result:
                 async with _CANDLE_CACHE_LOCK:
@@ -232,7 +247,7 @@ async def fetch_candles_batch(
     products: List[str],
     granularity: int = 3600,
     limit: int = 100,
-    max_concurrent: int = 20,
+    max_concurrent: int = 5,
     after_ts_map: Optional[Dict[str, int]] = None,
 ) -> Dict[str, List[Tuple[int, float, float, float, float, float]]]:
     """
@@ -259,10 +274,10 @@ async def fetch_candles_batch(
     
     tasks = [fetch_one(pid) for pid in products]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     output = {}
     for result in results:
-        if isinstance(result, Exception):
+        if isinstance(result, Exception):  # pragma: no cover - fetch_one never raises
             log.info(f"Batch fetch error: {result}")
             continue
         pid, candles = result
@@ -290,7 +305,7 @@ async def fetch_incremental_batch(
     
     updated_ts = dict(last_cached_ts)
     for pid, candles in new_candles.items():
-        if candles:
+        if candles:  # pragma: no cover - batch never inserts empty lists
             updated_ts[pid] = max(c[0] for c in candles)
     
     return new_candles, updated_ts

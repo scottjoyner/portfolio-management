@@ -37,6 +37,17 @@ class Signal:
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     confidence: float = 1.0  # Strategy conviction (0-1)
+    signal_type: Optional[str] = None  # Optional strategy-specific tag
+    # Optional strategy-specific metadata fields (mean-reversion strategies)
+    squeeze: Optional[bool] = None
+    channel_width_pct: Optional[float] = None
+    ma: Optional[float] = None
+    atr: Optional[float] = None
+    zscore: Optional[float] = None
+    mean: Optional[float] = None
+    std: Optional[float] = None
+    entry_price: Optional[float] = None
+    pnl_pct: Optional[float] = None
 
 
 @dataclass

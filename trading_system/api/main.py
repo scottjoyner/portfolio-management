@@ -30,6 +30,7 @@ Example:
 
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+from typing import List, Dict, Any
 
 from .routes import (
     health_check,
@@ -115,25 +116,25 @@ async def metrics_endpoint():
     return await get_metrics()
 
 
-@app.get("/accounts", response_model=dict, tags=["accounts"])
+@app.get("/accounts", response_model=List[Dict[str, Any]], tags=["accounts"])
 async def list_accounts_endpoint():
     """List all discovered and processed accounts from Plaid ingestion."""
     return await get_accounts()
 
 
-@app.get("/trades", response_model=dict, tags=["trading"])
+@app.get("/trades", response_model=List[Dict[str, Any]], tags=["trading"])
 async def list_trades_endpoint():
     """List executed trades with filtering options."""
     return await list_trades()
 
 
-@app.get("/positions", response_model=dict, tags=["trading"])
+@app.get("/positions", response_model=List[Dict[str, Any]], tags=["trading"])
 async def list_positions_endpoint():
     """List current open positions with P&L analysis."""
     return await list_positions()
 
 
-@app.get("/strategies", response_model=dict, tags=["strategies"])
+@app.get("/strategies", response_model=List[Dict[str, Any]], tags=["strategies"])
 async def list_strategies_endpoint():
     """List all available strategies with their status and performance."""
     return await list_strategies()

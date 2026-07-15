@@ -10,10 +10,17 @@ from typing import Dict, List, Optional, Tuple
 
 import urllib3
 
+from coinbase.src.api_throttle import api_slot
+
 log = logging.getLogger(__name__)
 
-_http = urllib3.PoolManager(maxsize=20)
+_http = urllib3.PoolManager(maxsize=5)
 _QUOTE_USD_CACHE: Dict[str, float] = {}
+
+# Result cache for get_all_coinbase_pairs / top_coinbase_pairs to avoid
+# hammering /products + 437 ticker fetches on every scan.
+_PAIRS_CACHE: Dict[Tuple[float, Tuple[str, ...]], Tuple[float, List[Dict]]] = {}
+_PAIRS_CACHE_TTL = 60.0
 
 
 _STABLE_QUOTES = {
@@ -41,7 +48,8 @@ def _quote_to_usd_rate(quote: str) -> Optional[float]:
     if quote in ("BTC", "ETH"):
         pid = f"{quote}-USD"
         try:
-            r = _http.request("GET", f"https://api.exchange.coinbase.com/products/{pid}/ticker", timeout=10)
+            with api_slot():
+                r = _http.request("GET", f"https://api.exchange.coinbase.com/products/{pid}/ticker", timeout=10)
             t = json.loads(r.data)
             px = float(t.get("price", 0) or 0)
             if px > 0:
@@ -65,12 +73,18 @@ def get_all_coinbase_pairs(
     Returns:
         List of product dicts: {"id", "base", "quote", "volume_24h"}
     """
+    cache_key = (min_volume_usd, tuple(quote_currencies))
+    cached = _PAIRS_CACHE.get(cache_key)
+    if cached and (time.time() - cached[0]) < _PAIRS_CACHE_TTL:
+        return cached[1]
+
     try:
-        r = _http.request(
-            "GET",
-            "https://api.exchange.coinbase.com/products",
-            timeout=15,
-        )
+        with api_slot():
+            r = _http.request(
+                "GET",
+                "https://api.exchange.coinbase.com/products",
+                timeout=15,
+            )
         all_products = json.loads(r.data)
     except Exception as e:
         log.error("Failed to fetch Coinbase products: %s", e)
@@ -95,22 +109,28 @@ def get_all_coinbase_pairs(
     if min_volume_usd > 0:
         active = _filter_by_volume(active, min_volume_usd)
 
+    _PAIRS_CACHE[cache_key] = (time.time(), active)
     return active
 
 
 def _filter_by_volume(
     products: List[Dict],
     min_volume: float,
-    max_workers: int = 20,
+    max_workers: int = 5,
 ) -> List[Dict]:
-    """Get tickers for all products and filter by 24h volume."""
+    """Get tickers for all products and filter by 24h volume.
+
+    Throttled via the global API slot so we never exceed Coinbase's
+    per-IP connection ceiling even with hundreds of products.
+    """
     def get_volume(p: Dict) -> Optional[Dict]:
         try:
-            r = _http.request(
-                "GET",
-                f"https://api.exchange.coinbase.com/products/{p['id']}/ticker",
-                timeout=10,
-            )
+            with api_slot():
+                r = _http.request(
+                    "GET",
+                    f"https://api.exchange.coinbase.com/products/{p['id']}/ticker",
+                    timeout=10,
+                )
             t = json.loads(r.data)
             quote_rate = _quote_to_usd_rate(p.get("quote", ""))
             if quote_rate is None:
@@ -129,7 +149,7 @@ def _filter_by_volume(
                 r = fut.result()
                 if r:
                     filtered.append(r)
-            except Exception:
+            except Exception:  # pragma: no cover - get_volume swallows its own errors
                 pass
 
     filtered.sort(key=lambda p: -p.get("volume_24h", 0))

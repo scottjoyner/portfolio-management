@@ -108,7 +108,7 @@ class PlaidService:
         # Generate encryption key if not provided
         if not encryption_key or len(encryption_key) < 128 // 8:
             if CRYPTOGRAPHY_AVAILABLE:
-                self.fernet = Fernet(secrets.token_urlsafe(32))
+                self.fernet = Fernet(Fernet.generate_key())
             else:
                 raise ImportError("cryptography package required for token encryption")
         
@@ -402,10 +402,10 @@ class VaultManager:
 
 def generate_encryption_key() -> bytes:
     """Generate a new Fernet encryption key."""
-    
+
     import secrets
-    
-    return secrets.token_urlsafe(32)  # 256-bit key for AES-256
+
+    return Fernet.generate_key()  # 256-bit key for AES-256
 
 
 def validate_token_expiration(token_expiry: datetime, refresh_threshold_hours: float = 23.0) -> bool:
@@ -466,7 +466,7 @@ async def initialize_plaid_service(
     # Generate encryption key if not provided
     if not credentials_encrypted:
         import secrets
-        encryption_key = secrets.token_urlsafe(32)
+        encryption_key = generate_encryption_key()
         
         vault_manager = VaultManager()
         await vault_manager.initialize(client_id, environment, encryption_key)

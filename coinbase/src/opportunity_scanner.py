@@ -8,8 +8,8 @@ from .protocols import (
     OpportunityAggregator, BaseStrategy,
 )
 try:
-    from ..data import compute_atr, rsi as _rsi
-    from ..alpha.alpha import (
+    from .data import compute_atr, rsi as _rsi
+    from .alpha.alpha import (
         donchian_breakout_setup,
         trend_rsi_pullback_setup,
         donchian_breakdown_setup,

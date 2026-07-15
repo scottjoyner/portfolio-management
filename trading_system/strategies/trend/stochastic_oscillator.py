@@ -45,7 +45,7 @@ class StochasticOscillatorConfig:
     
     # Entry/Exit thresholds
     entry_threshold: float = 0.03  # Minimum oscillator divergence for entry (3%)
-    exit_threshold: float = -0.02  # Maximum oscillator divergence for short (-2%)
+    exit_threshold: float = 0.40  # Maximum oscillator divergence for long exit (40%)
     stop_loss_bps: float = 68.0  # Stop loss as basis points (0.68%)
     take_profit_bps: float = 195.0  # Take profit as basis points (1.95%)
     trailing_take_profit_bps: float = 100.0  # Trailing stop after profit
@@ -130,7 +130,7 @@ class StochasticOscillatorStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price >= target_price:
+            elif close_price >= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -158,7 +158,7 @@ class StochasticOscillatorStrategy:
                     'take_profit': target_price,
                     'reason': 'stop_loss'
                 }
-            elif close_price <= target_price:
+            elif close_price <= self.take_profit_price:
                 return {
                     'action': 'close',
                     'quantity': -self.config.risk_per_trade / close_price,
@@ -178,6 +178,10 @@ class StochasticOscillatorStrategy:
         
         # No position - check for entry signals
         if oscillator_divergence > self.config.entry_threshold and k_value < self.config.oversold_threshold:
+            self.current_position = 'long'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': self.config.risk_per_trade / close_price,
@@ -186,6 +190,10 @@ class StochasticOscillatorStrategy:
                 'reason': 'stochastic_oversold_cross'
             }
         elif oscillator_divergence > self.config.entry_threshold and k_value > self.config.overbought_threshold:
+            self.current_position = 'short'
+            self.entry_price = close_price
+            self.stop_loss_price = close_price * (1 - self.config.stop_loss_bps / 10000)
+            self.take_profit_price = close_price * (1 + self.config.take_profit_bps / 10000)
             return {
                 'action': 'open',
                 'quantity': -self.config.risk_per_trade / close_price,

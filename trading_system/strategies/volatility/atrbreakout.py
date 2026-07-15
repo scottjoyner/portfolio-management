@@ -110,8 +110,8 @@ class ATBBreakoutStrategy:
         
         # Calculate True Range (TR) sequence  
         closes = [float(bar.get("close", 0)) for bar in data]
-        highs = [float(bar.get("high", closes[i])) for i in range(len(closes))]
-        lows = [float(bar.get("low", closes[i])) for i in range(len(closes))]
+        highs = [float(data[i].get("high", closes[i])) for i in range(len(closes))]
+        lows = [float(data[i].get("low", closes[i])) for i in range(len(closes))]
         
         # Calculate True Range: max(high - low, |high - prev_close|, |low - prev_close|)
         true_ranges = []

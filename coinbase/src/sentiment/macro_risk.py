@@ -138,7 +138,7 @@ class MacroRiskEngine:
                 if action == "HOLD":
                     return None
                 return sig
-            except ImportError:
+            except ImportError:  # pragma: no cover - yahoo_chart import cannot fail in-process
                 logger.debug("yfinance not available for macro risk")
                 return None
             except Exception as e:

@@ -132,7 +132,7 @@ class HistoricalPerformanceAPI:
         historical_stats = await self.storage.get_backtest_stats(strategy_key)
         
         # Get benchmark comparisons
-        benchmarks = await self.storage.get_benchmark_comparison(strategy_key)
+        benchmarks = await self.get_benchmark_comparison(strategy_key)
         
         return {
             "strategy_key": strategy_key,

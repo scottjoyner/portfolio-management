@@ -2,6 +2,12 @@ from strategies.accumulation.dca import LongHorizonDcaStrategy
 from strategies.catalog.advanced import GenericSpecStrategy, advanced_specs
 from strategies.ensemble.regime_allocator import RegimeSwitchingEnsembleAllocator
 from strategies.ensemble.rotation import CrossSectionalRelativeStrengthStrategy
+from strategies.exchange_bots.dca import DcaStrategy
+from strategies.exchange_bots.smart_rebalance import SmartRebalanceStrategy
+from strategies.exchange_bots.spot_grid import SpotGridStrategy
+from strategies.exchange_bots.spot_martingale import SpotMartingaleStrategy
+from strategies.exchange_bots.stair_step_tp import StairStepTakeProfitStrategy
+from strategies.exchange_bots.twap import TwapStrategy
 from strategies.execution_algos.vwap_twap import VwapTwapExecutionStrategy
 from strategies.market_making.adaptive_spread_mm import AdaptiveSpreadMMStrategy
 from strategies.market_making.stair_step_mm import StairStepMarketMakerStrategy
@@ -31,6 +37,12 @@ def load_strategies() -> list:
         LongHorizonDcaStrategy(),
         LiquidityVacuumSnapbackStrategy(),
         BasisCarryDerivativesStrategy(),
+        StairStepTakeProfitStrategy(strategy_id="stair_step_tp", strategy_type="exchange_bot"),
+        SpotGridStrategy(),
+        DcaStrategy(),
+        SpotMartingaleStrategy(),
+        SmartRebalanceStrategy(strategy_id="smart_rebalance", strategy_type="exchange_bot"),
+        TwapStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced

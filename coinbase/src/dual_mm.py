@@ -54,6 +54,7 @@ class DualMarketMaker:
         self._bar_count += 1
         bars_since = self._bars_since_quote.get(product_id, 999)
         if bars_since < self.quote_refresh_bars:
+            self._bars_since_quote[product_id] = bars_since + 1
             return self._last_quotes.get(product_id)
         self._bars_since_quote[product_id] = 0
 
@@ -96,12 +97,14 @@ class DualMarketMaker:
 
         vol_ratio = 1.0
         if len(closes) >= 20:
+            recent_win = closes[-21:] if len(closes) >= 21 else closes
+            long_win = closes[-101:] if len(closes) >= 101 else closes
             recent_vol = sum(
-                (closes[i] - closes[i-1]) ** 2 for i in range(1, min(21, len(closes)))
-            ) / min(20, len(closes) - 1)
+                (recent_win[i] - recent_win[i-1]) ** 2 for i in range(1, len(recent_win))
+            ) / max(1, len(recent_win) - 1)
             long_vol = sum(
-                (closes[i] - closes[i-1]) ** 2 for i in range(1, min(101, len(closes)))
-            ) / min(100, len(closes) - 1)
+                (long_win[i] - long_win[i-1]) ** 2 for i in range(1, len(long_win))
+            ) / max(1, len(long_win) - 1)
             vol_ratio = math.sqrt(recent_vol / max(long_vol, 1e-20)) if long_vol > 0 else 1.0
 
         if vol_ratio > 2.0:

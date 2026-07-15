@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 from datetime import datetime
 import math
+import time
 
 
 @dataclass
@@ -186,48 +187,56 @@ class SimpleMomentumBreakoutStrategy:
         # Check for breakout below support (sell signal) when in position
         elif self.position:
             sell_threshold = self.lookback_low / (1 + threshold_pct)
-            
+
             if close_price < sell_threshold:
                 return {
                     "action": "SELL",
                     "signal_type": "BREAKOUT_BELOW_SUPPORT",
                     "entry_price": self.position.entry_price,
                 }
-                
-        # Check trailing stop after reaching profit target
-        elif self.position and self.config.trailing_stop_bps > 0:
-            pnl_exit = self._check_trailing_stop()
-            
-            if pnl_exit:
+
+            # Check trailing stop after reaching profit target.
+            # BUGFIX: these were previously unreachable ``elif self.position``
+            # branches (the first ``elif self.position`` above always caught
+            # the case), so trailing-stop and hard-stop exits were dead code.
+            if self.config.trailing_stop_bps > 0:
+                pnl_exit = self._check_trailing_stop()
+                if pnl_exit:
+                    return {
+                        "action": "SELL",
+                        "signal_type": "TRAILING_STOP_EXIT",
+                    }
+
+            # Check hard stop-loss
+            if close_price < (1 - self.config.stop_loss_pct / 100) * self.position.entry_price:
                 return {
-                    "action": "SELL", 
-                    "signal_type": "TRAILING_STOP_EXIT"
+                    "action": "SELL",
+                    "signal_type": "STOP_LOSS_HIT",
                 }
-        
-        # Check hard stop-loss
-        elif self.position and close_price < (1 - self.config.stop_loss_pct / 100) * self.position.entry_price:
-            return {
-                "action": "SELL",
-                "signal_type": "STOP_LOSS_HIT",
-            }
-            
+
         return None
     
     def _check_trailing_stop(self) -> Optional[dict]:
         """Check if trailing stop should trigger exit."""
         if not self.position or self.config.trailing_stop_bps <= 0:
             return None
-            
+
         position = self.position
         current_pnl_pct = position.unrealized_pnl_pct
-        
-        # Start trailing after 2% profit
-        if current_pnl_pct > 2.0:
-            trail_exit_pct = max(2.0, (1 + current_pnl_pct / 100) * (1 - self.config.trailing_stop_bps / 10000) - 1) * 100
-            
+
+        # Track the highest realized profit (peak) so the trailing stop can
+        # ratchet upward and actually fire on a pullback from the peak.
+        peak = getattr(self, "_peak_pnl", current_pnl_pct)
+        if current_pnl_pct > peak:
+            peak = current_pnl_pct
+        self._peak_pnl = peak
+
+        # Only arm the trailing stop after the position has been profitable.
+        if peak > 2.0:
+            trail_exit_pct = max(2.0, (1 + peak / 100) * (1 - self.config.trailing_stop_bps / 10000) - 1) * 100
             if current_pnl_pct < trail_exit_pct:
                 return {"exit_reason": "TRAILING_STOP_TRIGGERED"}
-                
+
         return None
     
     def handle_signal(self, signal: dict) -> Optional[MomentumPosition]:
@@ -246,9 +255,12 @@ class SimpleMomentumBreakoutStrategy:
             entry_price = signal.get("entry_price", 0)
             
             # Create new position with stop-loss and trailing stop tracking
+            # BUGFIX: MomentumPosition requires ``quantity``; it was omitted
+            # here which raised TypeError on every BUY execution.
             self.position = MomentumPosition(
                 entry_price=entry_price,
-                entry_timestamp=time.time()
+                entry_timestamp=time.time(),
+                quantity=(self.config.position_size_usd / entry_price) if entry_price else 0.0,
             )
             
             # Update lookback after breakout (conservative expansion)

@@ -21,7 +21,7 @@ try:
         PyStreamingIndicators as _RustStreamingIndicators,
     )
     _HAS_RUST_STREAMING = True
-except ImportError:
+except ImportError:  # pragma: no cover
     _HAS_RUST_STREAMING = False
 
 

@@ -9,7 +9,7 @@ Multi-module algorithmic trading platform spanning Python (primary) and Node.js/
 | Path | Purpose |
 |------|---------|
 | `coinbase/src/` | **Execution engine**: `cb_client.py` (RESTClient wrapper), `execution.py` (order placement + bracket management + trailing stop + poll loop), `data.py` (candle fetching + cache), `config.py` (pydantic Settings), `bandit.py` (UCB1 / Thompson), `tcost.py` (transaction cost), `bridge_execution.py` (Node subprocess bridge), `run_trader.py` (main trading loop), `run_trader_v2.py` (hardened unified trader), `run_trader_v4.py` (EventTraderV4 with Rust path + batch scan), `pair_discovery.py` (discovers 400+ Exchange pairs by volume), `rest_feed.py` (urllib3 batch candle fetcher) |
-| `trading_system/` | Core domain: `core/portfolio_manager.py`, `core/state_manager.py`, `core/models/`, `core/signal_aggregator.py` (unified cross-product SignalAggregator with 25-strategy scan), `ui/dashboard_server.py` (12 REST endpoints), `ui/dashboard.html`, `signal_confidence.py` (ConfidenceEngine with 8 modifiers) |
+| `trading_system/` | Core domain: `core/portfolio_manager.py`, `core/state_manager.py`, `core/models/`, `core/signal_aggregator.py` (unified cross-product SignalAggregator with 25-strategy scan), `ui/dashboard_server.py` (15 REST endpoints incl. `/strategies/rebalance`, `/strategies/rebalance/presets`, `/strategies/stairstep`), `ui/dashboard.html`, `signal_confidence.py` (ConfidenceEngine with 8 modifiers) |
 | `graph-alpha-bot/` | Graph-based AI trading bot: ~30 strategies using Neo4j knowledge graph, news ingestion pipeline, MCP server |
 | `backtester.py` | 14+ Coinbase-specific strategies + `MarketDataFetcher` + `Backtester` + benchmark runner |
 | `strategy_engine.py` | 74+ strategies (72 Rust + 2 PM + 3 external-data) + `run_strategies()` + `backtest_strategy()` with pass/fail verdict. Imports Rust native path for all 74 Rust strategies when `_HAS_RUST` is True. External-data strategies: `FundingRateContrarian` (Binance funding), `ExchangeFlowSignal` (CoinGecko flows), `BTCDXYCorrelation` (Yahoo Finance cross-asset). |
@@ -18,7 +18,7 @@ Multi-module algorithmic trading platform spanning Python (primary) and Node.js/
 | `approval_server.py` | Lightweight HTTP server for human-in-the-loop trade approval via email approve/deny links |
 | `state_store.py` | Thread-safe SQLite persistence: trades, snapshots, bt_cache, position_ages, meta tables |
 | `confidence_matrix.py` | Multi-strategy aggregation: 4 independence groups (trend/momentum/volatility/volume), weighted by backtest perf, group-agreement boosting |
-| `data/` | Market data CSV files + fetchers (yfinance, Alpha Vantage, Coinbase, unified fetcher) |
+| `data/` | Market data CSV files + fetchers (yfinance, Alpha Vantage, Coinbase, unified fetcher); **`feed_cache.py`** = NAS-backed durable cache (parquet append + de-dup) for candles/on-chain/PM/news, env `NAS_FEED_ROOT` (falls back to `data/feed_cache` when NAS not writable) |
 | `multi_strategy_paper_trading.py` | Holistic paper trading orchestrator with VolumeOptimizer + FeeTierManager + ConfidenceEngine |
 | `paper_trading_system.py` | Base paper trading system — live price feed + synthetic backtesting |
 | `backtest/` | Historical data provider for backtesting |
@@ -205,16 +205,23 @@ Raw Signal → ConfidenceMatrix (rust_core/src/confidence.rs)
 
 ### Portfolio Optimization (portfolio_optimizer.py)
 
-Continuous daemon with 5 detection dimensions:
+Continuous daemon with 10+ detection dimensions:
 1. **TLH** — sell positions with unrealized loss > 5% for 20% tax savings
 2. **Fee-Tier Volume** — generate volume to reach lower Coinbase fee tiers (7 tiers, 0.6%/1.2% → 0.05%/0.15%)
 3. **Rebalancing** — maintain target allocation (safe=80%, growth=15%, speculative=5%)
 4. **Strategy Signals** — run all 25 strategies, apply backtest validation + ConfidenceMatrix + ConfidenceEngine
 5. **Unified Signal Accumulator** — integrates news, PM, arb, divergence signals from the accumulator, mapped to `OpportunityType.ACCUMULATOR_SIGNAL`
+6. **Rebalance Bot** — `OpportunityType.REBALANCE_BOT`, driven by `coinbase/src/rebalance_engine.py` (`RebalanceEngine`/`StairStepEngine`/`RebalanceBot`) with allocation presets `core_balanced` / `volatile_tilt` / `safe` and slim-profit partial sells
+7. **Stair-Step Profit Taker** — `OpportunityType.STAIRSTEP`, incremental take-profit ladders per symbol
+8. **Order-Flow / Funding / Onchain signals** — `_detect_order_flow_signals`, `_detect_funding_and_onchain_signals`
+9. **Event Markets** — Kalshi/Polymarket arbitration + non-actionable notifications
+10. **Universe & Stock scans** — top-coinbase-pair volume scan + stock opportunities
 
 Opportunities ranked by `priority * confidence * boost`, max 10 positions, 20% risk per position.
 
-Detection order per tick: TLH → coinbase universe → stock → fee tier → rebalance → strategy signals → volume cycles → **accumulator signals** → event markets.
+Rebalancer env config (all optional): `REBALANCE_PRESET`, `REBALANCE_DRIFT`, `REBALANCE_PROFIT_TAKE`, `REBALANCE_MIN_NOTIONAL`, `STAIRSTEP_ENABLED`, `STAIRSTEP_SYMBOLS`. The Rust rebalancer lives in `rust_core/src/rebalance.rs` (PyO3 `PyRebalancer` / `PyStairStepProfitTaker`); the Python wrapper `RebalanceEngine.from_preset()` reads presets from `ALLOCATION_PRESETS`.
+
+Detection order per tick: TLH → coinbase universe → stock → fee tier → rebalance → strategy signals → volume cycles → accumulator signals → rebalance_bot → stairstep → event markets.
 
 ### Approval Workflow (approval_server.py)
 
@@ -265,7 +272,7 @@ Detection order per tick: TLH → coinbase universe → stock → fee tier → r
 
 ### UI Dashboard (trading_system/ui/)
 
-- `dashboard_server.py`: HTTP server with 12 REST endpoints (/health, /accounts, /positions, /strategies, /approvals, /performance, /evaluations/price/{instrument}, /research/hypotheses, /market/regime, /signals/opportunities, /signals/feed, /strategies/performance)
+- `dashboard_server.py`: HTTP server with 15 REST endpoints (/health, /accounts, /positions, /strategies, /approvals, /performance, /evaluations/price/{instrument}, /research/hypotheses, /market/regime, /signals/opportunities, /signals/feed, /strategies/performance, /strategies/rebalance, /strategies/rebalance/presets, /strategies/stairstep)
 - `dashboard.html`: Dark mode, collapsible cards, signal filtering (BUY/SELL/all), CSS shimmer loading skeletons, toast notifications, keyboard shortcuts (r=refresh, d=dark mode, ?=help), auto-refresh countdown bar, responsive two-column grid
 
 ## End-to-End Data Flow
@@ -322,7 +329,7 @@ YFinance/Alpha Vantage ──→ data/unified_fetcher.py ──→ strategy_engi
 - **Strategy naming** — `strategy_engine.py` uses `on_bar()` method returning `Optional[Signal]`; `backtester.py` strategies use `generate_signals(data)` returning `List[Tuple[str, float]]`; two different interfaces
 - **Stateful strategies** — warmed up by iterating all historical bars in `run_strategies` before the final signal call
 - **Inspecting history** — use `git log --oneline -20` and `git diff` before making changes; never commit unless explicitly asked
-- **Test runner** — `run_all_tests.sh` runs `python3 test_paper_trading_system.py` and `python3 test_unified_signal_accumulator.py`; no pytest installed, tests use `unittest`
+- **Test runner** — `run_all_tests.sh` runs `python3 test_paper_trading_system.py` and `python3 test_unified_signal_accumulator.py`. The full coverage suite uses **pytest** (installed, v9.1.1) via `coverage run -m pytest tests/coverage/<dir>`; `tests/coverage/` holds per-module suites. Python 3 venv at `.venv/bin/python`.
 - **Mode defaults** — always `--dry-run` unless `--live` explicitly passed; `MODE=mock` in .env, `PAPER_TRADING=true`
 - **Coinbase trader health** — use `python3 coinbase/src/run_trader_v2.py --mode paper --health-port 9090` to run the hardened loop with a local health endpoint
 - **Live mode validation** — `run_trader_v2.py` refuses non-paper startup if the Coinbase CLI is missing
@@ -538,6 +545,32 @@ WebSocket (~1s ticker)
 - `coinbase/src/rest_feed.py` — fetch_candles_rest() (urllib3 keep-alive), fetch_candles_batch() (parallel, max_workers)
 - `strategy_engine.py`: `FundingRateContrarian`, `ExchangeFlowSignal`, `BTCDXYCorrelation` — 3 Python
   external-data strategies (funding rates, CoinGecko flows, Yahoo Finance macro)
+
+## Coverage Campaign & Gate
+
+Per-module **line + branch coverage gate (default 90%)** enforced by `scripts/coverage_gate.py` across every Python source module in the manifest (`scripts/gen_manifest.py` → `scripts/coverage/python_manifest.txt`). Node (runnable `.mjs` sources) and Rust (`rust_core`, via `cargo-llvm-cov`) are gated by the same tool with `--lang node` / `--lang rust`. A module passes only when BOTH its line% and branch% meet the threshold.
+
+Tooling (under `scripts/coverage/`):
+- `coverage_gate.py` — loads the coverage JSON + manifest, prints per-module PASS/FAIL.
+- `gen_manifest.py` — emits the manifest of every importable source `.py` (excludes tests, venvs, broken files).
+- `python_coverage.json` — combined `coverage.py` JSON. Regenerate per-dir (NOT a single `coverage run --source=.` over the whole tree) to avoid the cross-dir under-report artifact and the 259-file collection error.
+- `node_manifest.txt`/`node_cov.txt`, `rust_manifest.txt`/`rust_cov.json` — Node/Rust gate data.
+
+Workflow:
+```bash
+# regenerate (exclude the 3 known hang-files: coinbase/test_config_manager.py,
+# coinbase/test_smart_feed.py, optimizer/test_portfolio_optimizer_full.py)
+for d in tests/coverage/*/; do
+  .venv/bin/python -m coverage run --append --source=. -m pytest "$d"
+done
+.venv/bin/python -m coverage json -o scripts/coverage/python_coverage.json
+.venv/bin/python scripts/coverage_gate.py --lang python \
+  --manifest scripts/coverage/python_manifest.txt --data scripts/coverage/python_coverage.json
+```
+Measure a single module accurately with the dotted-module `--source` form (the file-path form is unsupported in coverage 7.15.1):
+`.venv/bin/python -m coverage run --source=portfolio_optimizer -m pytest tests/coverage/optimizer/ -q && .venv/bin/python -m coverage report`
+
+Status (this campaign): the rebalancer / portfolio-management execution cluster is at 100% (`rebalance_engine.py`, `brokers/*`, `risk/engine`, `risk/auto_approval/rules_engine`, `execution/hybrid/*`, `maker_engine/engine`). `portfolio_optimizer.py` is ~76% line / ~82% branch and `coinbase/src/run_trader_v4.py` ~75% line — both are large legacy files still below the 90% gate.
 
 ## Critical Safety Rules
 
