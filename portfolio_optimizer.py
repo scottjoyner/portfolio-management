@@ -2571,6 +2571,13 @@ class PortfolioOptimizer:
                 logger.error("Tick failed: %s", e, exc_info=True)
             self._tick_count += 1
             self._last_tick_ts = time.time()
+            # Periodic feed-cache compaction (bounds NAS growth) — E3 ops
+            if self._tick_count % 3600 == 0:
+                try:
+                    from data.feed_cache import compact_all
+                    compact_all()
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug("feed_cache compaction skipped: %s", e)
             # Poll active brackets between ticks (updates trailing stops / take-profits)
             self._poll_brackets()
             # Alert if ticks stall

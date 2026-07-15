@@ -72,24 +72,23 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 | # | Enhancement | Area | Effort | Status |
 |---|-------------|------|--------|--------|
 | E1 | Route on-chain / prediction-market / news feeds through `feed_cache` | Data | S | DONE |
-| E2 | Backfill job: populate N-day history for universe × granularity from live API into NAS | Data | M | OPEN |
-| E3 | Retention/compaction policy (keep 1m for 7d, 1h for 180d, 1d indefinitely) | Data | S | DONE |
+| E2 | Backfill job: `scripts/backfill_feed_cache.py` populates top-N pairs × granularities from live API into NAS (cursor-paginated) | Data | M | DONE |
+| E3 | Retention/compaction policy (keep 1m for 7d, 1h for 180d, 1d indefinitely); `compact_all()` wired into optimizer daemon loop every 3600 ticks | Data | S | DONE |
 | E4 | Route CLI candles (`data.py`) through `feed_cache` | Data | S | DONE |
 | E5 | Cache-hit + latency metrics in `feed_cache` | Obs | S | DONE |
 | E6 | Fix cross-user approval persistence (shared `approvals_inbox`) | UI | M | DONE |
-| E7 | Offline replay mode for dashboard when daemon/network down | UI | M | OPEN |
-| E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | PARTIAL (feed_cache tested) |
+| E7 | Offline replay: watchlist + candles serve from `feed_cache` when live feed is down | UI | M | DONE |
+| E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | PARTIAL (inbox + offline + feed_cache tested) |
 | E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S | OPEN |
 
 ---
 
 ## 5. Next Steps (prioritized)
 
-1. **E2 — Backfill job** — one-shot script to populate the top-50 pairs × {60,300,900,3600,86400} for the last 90 days into the NAS via `feed_cache`, so backtests have immediate history. *High value.*
-2. **E8 — Coverage lift** — targeted unit tests for `portfolio_optimizer.py` / `run_trader_v4.py` to reach the 80% branch gate.
-3. **E7 — Offline replay** — when the daemon/network is down, the dashboard serves entirely from `feed_cache` (candles already fall back; extend to signals/opportunities).
-4. **E9 — Live `/market/universe`** — verify graph-score population via the running daemon.
-5. **Production verification** — under the systemd unit (root), confirm NAS writes land on `/media/scott/NAS3/feed_cache` and the dashboard renders from cache after a daemon restart; schedule `feed_cache.compact_all()` periodically.
+1. **E8 — Coverage lift** — targeted unit tests for `portfolio_optimizer.py` / `run_trader_v4.py` to reach the 80% branch gate (new tests added for inbox scanner + offline fallback; the two legacy files still need deeper coverage).
+2. **E9 — Live `/market/universe`** — verify graph-score population via the running daemon.
+3. **Production verification** — under the systemd unit (root), confirm NAS writes land on `/media/scott/NAS3/feed_cache`; `compact_all()` now runs automatically every 3600 optimizer ticks, so schedule a one-off `backfill_feed_cache.py` run to seed history.
+4. **Backfill scheduling** — cron/launchd a periodic `scripts/backfill_feed_cache.py --top-n 50 --days 2` to keep recent history fresh between daemon ticks.
 
 ---
 
@@ -101,10 +100,12 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 - [x] `rest_feed` persists every fetch (full + incremental) to durable store.
 - [x] CLI candles (`data.py`) persist through `feed_cache` (E4).
 - [x] On-chain / prediction-market / news feeds persist through `feed_cache` (E1).
-- [x] Retention/compaction (`compact_all`) + cache-hit metrics (`get_metrics`) added (E3/E5).
-- [x] Watchlist 30s TTL cache added.
-- [x] `tests/coverage/test_feed_cache.py` (9 tests) added + wired into `run_all_tests.sh`.
-- [x] Full harness **8/8 green**.
-- [ ] E2 backfill job (next cycle).
-- [ ] E8 coverage lift on legacy files.
+- [x] Retention/compaction (`compact_all`) + cache-hit metrics (`get_metrics`) added (E3/E5); `compact_all` wired into the optimizer daemon loop (E3 ops).
+- [x] CLI candles (`data.py`) persist through `feed_cache` (E4).
+- [x] Watchlist 30s TTL cache + offline fallback to `feed_cache` (E7).
+- [x] `scripts/backfill_feed_cache.py` added + verified (E2).
+- [x] `tests/coverage/test_feed_cache.py` (9) + `test_optimizer_inbox.py` + `test_dashboard_offline.py` added + wired into `run_all_tests.sh`.
+- [x] Full harness **8/8 green** (now 10 suites).
+- [ ] E8 coverage lift on legacy files (partial: inbox + offline + feed_cache tested).
+- [ ] E9 live `/market/universe` verification under daemon.
 - [ ] Production NAS write confirmed under systemd (root).

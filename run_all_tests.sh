@@ -49,6 +49,9 @@ run_test "Optimizer New-Signal Integration" "python3 -m pytest tests/coverage/te
 # NAS feed cache: durable persistence (parquet append + dedup) for backtesting.
 run_test "NAS Feed Cache" "python3 -m pytest tests/coverage/test_feed_cache.py -q 2>&1"
 
+# Optimizer inbox scanner (cross-user manual orders) + dashboard offline fallback.
+run_test "Optimizer Inbox + Dashboard Offline" "python3 -m pytest tests/coverage/test_optimizer_inbox.py tests/coverage/test_dashboard_offline.py -q 2>&1"
+
 # Legacy Python tests archived — ported to Rust:
 #   test_paper_trading_system.py (imported paper_trading_system → archived)
 #   test_unified_signal_accumulator.py (imported backtester → archived)"

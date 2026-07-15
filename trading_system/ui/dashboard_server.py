@@ -904,6 +904,17 @@ def api_market_watchlist(limit_pairs=24):
                 save_candles("coinbase_candles", pid, 3600, cs)
     except Exception:
         pass
+    offline = not candles_map
+    if offline:
+        # serve entirely from durable cache when the live feed is down (E7)
+        try:
+            from data.feed_cache import load_candles
+            candles_map = {
+                pid: load_candles("coinbase_candles", pid, 3600, limit=30)
+                for pid in pair_ids
+            }
+        except Exception:
+            pass
     rows = []
     for pid in pair_ids:
         cs = candles_map.get(pid) or []
@@ -923,7 +934,7 @@ def api_market_watchlist(limit_pairs=24):
             "spark": [round(x, 6) for x in closes[-24:]],
             "regime": _simple_regime(closes),
         })
-    result = {"watchlist": rows}
+    result = {"watchlist": rows, "offline": offline}
     _WL_CACHE["ts"] = now
     _WL_CACHE["data"] = result
     return result
