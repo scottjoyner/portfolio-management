@@ -239,7 +239,7 @@ def test_cli_methods():
         "SOL-USD": {"product_id": "SOL-USD"},
         "SOL-USDC": {"product_id": "SOL-USDC"},
     }
-    assert cli.best_product("SOL", "BUY") == "SOL-USDC"
+    assert cli.best_product("SOL", "BUY") == "SOL-USD"
     resp3 = mock.MagicMock(returncode=0, stdout='{"price": 123.0}')
     with mock.patch("subprocess.run", return_value=resp3):
         assert cli.get_price("BTC-USD")["price"] == 123.0

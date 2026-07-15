@@ -622,14 +622,15 @@ class CoinbaseCLI:
     def best_product(self, currency: str, side: str) -> Optional[str]:
         """Return the most appropriate product_id for a trade.
 
-        BUY  → use USDC pair (we hold USDC)
-        SELL → use USD pair (standard)
+        The trading universe is defined entirely in terms of ``-USD`` pairs
+        (see ``coinbase_universe.py``), so we prefer ``-USD`` for both BUY and
+        SELL and only fall back to a ``-USDC`` pair when no ``-USD`` product
+        exists. This keeps settlement/holding tracking consistent with the
+        universe and with every detection path's ``product_id``.
         """
         products = self.get_products()
         usdc_pair = f"{currency}-USDC"
         usd_pair = f"{currency}-USD"
-        if side == "BUY" and usdc_pair in products:
-            return usdc_pair
         if usd_pair in products:
             return usd_pair
         if usdc_pair in products:

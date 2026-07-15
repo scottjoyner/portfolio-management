@@ -44,7 +44,7 @@
 - `portfolio_optimizer.py` ≈ 80% line / 80% branch (after E8 test campaign).
 - `coinbase/src/run_trader_v4.py` ≈ 75% line.
 Both are large legacy files. The user has accepted the **80% pragmatic target**; full 90% gate on these two remains open work (additional unit tests, not behavior changes).
-- **Known latent inconsistency (NOT yet fixed):** `PortfolioOptimizer.best_product(currency, "BUY")` prefers `-USDC` pairs (`SOL-USDC`) while the entire trading universe (incl. `coinbase_universe.py` and every detection path's `product_id`) uses `-USD` pairs (`SOL-USD`). Since most detection paths now set `product_id` explicitly, the USDC fallback only triggers when `product_id` is empty, so live impact is limited — but it is a real BUY→USDC vs -USD divergence worth reconciling (e.g. prefer `-USD` for BUY too) in a later cleanup.
+- **`best_product` BUY→USDC divergence (FIXED):** `PortfolioOptimizer.best_product(currency, "BUY")` previously preferred `-USDC` pairs while the entire trading universe (incl. `coinbase_universe.py` and every detection path's `product_id`) uses `-USD`. Now `best_product` prefers `-USD` for both BUY and SELL, falling back to `-USDC` only when no `-USD` product exists. Updated the three tests that encoded the old USDC-for-BUY preference.
 
 ### G2.5 — Cross-user / file-ownership robustness
 Beyond approvals: any file the optimizer writes as root (`pending_approvals.json`, `optimizer_state.db`, `.unified_signal_cache.json`) is not writable by a dev-launched dashboard. Should standardize on a shared, group-writable runtime dir.

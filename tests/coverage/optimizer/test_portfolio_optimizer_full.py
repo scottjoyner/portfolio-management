@@ -181,7 +181,7 @@ def test_cli_methods():
             "BTC-USDC": {"product_id": "BTC-USDC"},
             "BTC-USD": {"product_id": "BTC-USD"},
         }
-        assert cli.best_product("BTC", "BUY") == "BTC-USDC"
+        assert cli.best_product("BTC", "BUY") == "BTC-USD"
         assert cli.best_product("BTC", "SELL") == "BTC-USD"
         cli._products = {}
         assert cli.best_product("BTC", "BUY") is None
