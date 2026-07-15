@@ -2328,14 +2328,14 @@ class PortfolioOptimizer:
     def _check_pending_approvals(self):
         if not self.require_approval:
             return
-        if not os.path.exists(self.pending_file):
-            return
-        try:
-            with open(self.pending_file, "r") as f:
-                fcntl.flock(f, fcntl.LOCK_SH)
-                pending = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return
+        pending: dict = {}
+        if os.path.exists(self.pending_file):
+            try:
+                with open(self.pending_file, "r") as f:
+                    fcntl.flock(f, fcntl.LOCK_SH)
+                    pending = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pending = {}
 
         executed_any = False
         for token, entry in list(pending.items()):
@@ -2349,9 +2349,45 @@ class PortfolioOptimizer:
             executed_any = True
 
         if executed_any:
-            with open(self.pending_file, "w") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                json.dump(pending, f, indent=2, default=str)
+            try:
+                with open(self.pending_file, "w") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    json.dump(pending, f, indent=2, default=str)
+            except Exception:
+                pass
+
+        # Cross-user inbox (E6): manual orders written by a different process/user.
+        self._check_inbox_approvals()
+
+    def _check_inbox_approvals(self):
+        """Execute (or delete) approved/denied manual orders from the shared inbox."""
+        inbox = os.path.join(os.path.dirname(self.pending_file), "approvals_inbox")
+        if not os.path.isdir(inbox):
+            return
+        for fn in os.listdir(inbox):
+            if not fn.endswith(".json"):
+                continue
+            path = os.path.join(inbox, fn)
+            try:
+                with open(path) as f:
+                    entry = json.load(f)
+            except Exception:
+                continue
+            status = entry.get("status")
+            if status == "approved":
+                try:
+                    self._execute_approved(entry)
+                except Exception as e:
+                    logger.warning("inbox approval execution failed: %s", e)
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+            elif status in ("denied", "rejected"):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
 
     def _execute_approved(self, entry: dict):
         """Execute a previously-approved trade from pending."""

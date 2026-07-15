@@ -1711,6 +1711,11 @@ class ExchangeFlowSignal:
                 data = json.loads(resp.read().decode())
             self._cache[cg_id] = data
             self._cache_ts = now
+            try:
+                from data.feed_cache import save_records as _fc_save
+                _fc_save("onchain", f"market_chart_{cg_id}", [{"ts": int(now), "cg_id": cg_id, "data": data}])
+            except Exception:
+                pass
             return data
         except Exception as e:
             logger.debug("ExchangeFlowSignal fetch failed for %s: %s", cg_id, e)
@@ -2068,6 +2073,11 @@ class ExchangeNetflowSignal:
                 data = json.loads(resp.read().decode())
             self._cache[cg_id] = data
             self._cache_ts = now
+            try:
+                from data.feed_cache import save_records as _fc_save
+                _fc_save("onchain", f"market_chart_{cg_id}", [{"ts": int(now), "cg_id": cg_id, "data": data}])
+            except Exception:
+                pass
             return data
         except Exception as e:
             logger.debug("ExchangeNetflowSignal fetch failed for %s: %s", cg_id, e)

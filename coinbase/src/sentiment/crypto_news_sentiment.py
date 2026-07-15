@@ -263,7 +263,20 @@ class CryptoNewsSentiment:
             published = pub_el.text.strip() if pub_el is not None and pub_el.text else ""
             articles.append(NewsArticle(title=title, source=source, url=url, published=published))
 
+        self._persist_articles(source, articles)
         return articles
+
+    def _persist_articles(self, source: str, articles: List["NewsArticle"]) -> None:
+        """Best-effort durable write of fetched news articles (E1)."""
+        if not articles:
+            return
+        try:
+            from data.feed_cache import save_records as _fc_save
+            ts = int(time.time())
+            recs = [{"ts": ts, "source": a.source, "title": a.title, "url": a.url, "published": a.published} for a in articles]
+            _fc_save("news", source, recs)
+        except Exception:
+            pass
 
     def _map_article(self, article: NewsArticle) -> List[str]:
         text = (article.title + " " + article.url).upper()

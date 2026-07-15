@@ -55,6 +55,10 @@ sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
 OPERATOR_STATE_PATH = str(ROOT / 'data' / 'operator-state.json')
 SIGNAL_CACHE_PATH = str(ROOT / 'data' / '.unified_signal_cache.json')
 APPROVALS_PATH = str(ROOT / 'data' / 'pending_approvals.json')
+# Shared, permission-tolerant inbox for manual orders so the dashboard can persist
+# approvals even when it runs as a different user than the optimizer (which owns
+# the canonical pending_approvals.json as root). The optimizer scans this dir too.
+APPROVALS_INBOX = ROOT / 'data' / 'approvals_inbox'
 STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
 CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
 EQUITY_SUMMARY_PATH = str(ROOT / 'data' / 'equity_summary.json')
@@ -990,16 +994,29 @@ def api_order_submit(payload):
         "source": "dashboard_order_entry",
     }
     pending_file = ROOT / "data" / "pending_approvals.json"
+    inbox_dir = APPROVALS_INBOX
     try:
-        os.makedirs(os.path.dirname(str(pending_file)) or ".", exist_ok=True)
-        if pending_file.exists():
-            with open(pending_file, "r") as f:
-                pending = json.load(f)
-        else:
-            pending = {}
-        pending[token] = entry
-        with open(pending_file, "w") as f:
-            json.dump(pending, f, indent=2, default=str)
+        os.makedirs(str(inbox_dir), exist_ok=True)
+        try:
+            os.chmod(str(inbox_dir), 0o777)
+        except Exception:
+            pass
+        # Always write to the shared inbox (readable by any user, incl. root optimizer).
+        with open(os.path.join(str(inbox_dir), f"{token}.json"), "w") as f:
+            json.dump(entry, f, indent=2, default=str)
+        # Best-effort merge into the canonical file (works when run as root / prod).
+        try:
+            os.makedirs(os.path.dirname(str(pending_file)) or ".", exist_ok=True)
+            if pending_file.exists():
+                with open(pending_file, "r") as f:
+                    pending = json.load(f)
+            else:
+                pending = {}
+            pending[token] = entry
+            with open(pending_file, "w") as f:
+                json.dump(pending, f, indent=2, default=str)
+        except Exception as e:
+            logger.debug("canonical approval merge skipped: %s", e)
     except Exception as e:
         return {"ok": False, "error": f"failed to persist approval: {e}"}
     return {"ok": True, "token": token, "approval": entry}
@@ -1123,6 +1140,43 @@ def api_approvals():
             "auto_approved": normalized == "approved",
             "created_at": a.get("createdAt", a.get("created_at", "")),
         })
+
+    # Merge manual orders left in the shared inbox (cross-user safe).
+    try:
+        if os.path.isdir(str(APPROVALS_INBOX)):
+            for fn in os.listdir(str(APPROVALS_INBOX)):
+                if not fn.endswith(".json"):
+                    continue
+                tok = fn[:-5]
+                if tok in seen_tokens:
+                    continue
+                try:
+                    with open(os.path.join(str(APPROVALS_INBOX), fn)) as f:
+                        entry = json.load(f)
+                except Exception:
+                    continue
+                seen_tokens.add(tok)
+                status = entry.get("status", "pending")
+                if status == "pending":
+                    pending_count += 1
+                elif status == "approved":
+                    approved_count += 1
+                else:
+                    rejected_count += 1
+                approvals_list.append({
+                    "id": tok[:12],
+                    "token": tok,
+                    "strategy_id": entry.get("type", "dashboard_order_entry"),
+                    "instrument": f"{entry.get('currency', '')}-USD",
+                    "quantity_usd": float(entry.get("size_usd", 0)),
+                    "expected_fee": float(entry.get("expected_fee", 0)),
+                    "risk_score": entry.get("priority", 0.5),
+                    "status": status,
+                    "auto_approved": status == "approved",
+                    "created_at": entry.get("created_at", ""),
+                })
+    except Exception as e:
+        logger.debug("inbox approval merge skipped: %s", e)
 
     return {
         "approvals": approvals_list[:50],

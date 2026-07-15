@@ -298,6 +298,7 @@ class UnifiedPredictionMarketClient:
         except Exception as e:
             logger.warning("Polymarket search failed: %s", e)
         results.sort(key=lambda p: p.volume, reverse=True)
+        self._persist_markets("search_all", results)
         return results[:limit]
 
     def search_all_categories(
@@ -377,6 +378,25 @@ class UnifiedPredictionMarketClient:
         self._category_cache_ts = now
         return result
 
+    def _persist_markets(self, tag: str, markets: List["PredictionMarket"]) -> None:
+        """Best-effort durable write of prediction-market snapshots (E1)."""
+        if not markets:
+            return
+        try:
+            from data.feed_cache import save_records as _fc_save
+            ts = int(time.time())
+            recs = []
+            for m in markets:
+                try:
+                    d = dict(vars(m))
+                except Exception:
+                    d = {"question": getattr(m, "question", ""), "platform": getattr(m, "platform", tag)}
+                d["_cached_at"] = ts
+                recs.append(d)
+            _fc_save("prediction_markets", tag, recs)
+        except Exception:
+            pass
+
     def get_crypto_markets(self, limit: int = 50) -> List[PredictionMarket]:
         """Get crypto-relevant markets from both platforms."""
         results = []
@@ -391,6 +411,7 @@ class UnifiedPredictionMarketClient:
         except Exception as e:
             logger.warning("Kalshi crypto markets failed: %s", e)
         results.sort(key=lambda p: p.volume, reverse=True)
+        self._persist_markets("crypto", results)
         return results[:limit]
 
     def get_sports_markets(self, limit: int = 50) -> List[PredictionMarket]:

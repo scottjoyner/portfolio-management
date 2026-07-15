@@ -68,6 +68,36 @@ def test_record_alias():
     assert record("coinbase_candles", "ADA-USD", 3600, CANDLES) == 3
 
 
+def test_metrics_increment():
+    from data.feed_cache import get_metrics, reset_metrics, save_candles, load_candles
+
+    reset_metrics()
+    save_candles("coinbase_candles", "METRIC-USD", 3600, CANDLES)
+    m = get_metrics()
+    assert m["candle_saves"] == 3
+    # mem cache hit
+    load_candles("coinbase_candles", "METRIC-USD", 3600)
+    assert get_metrics()["candle_hits"] == 1
+    # different symbol -> disk miss path still counts a miss
+    load_candles("coinbase_candles", "MISS-USD", 3600)
+    assert get_metrics()["candle_misses"] >= 1
+
+
+def test_compact_retention():
+    from data.feed_cache import save_candles, compact, reset_metrics, get_metrics
+
+    reset_metrics()
+    # 1-minute candles: retention is 7 days (10080). Write 20000 to force trim.
+    many = [[1000 + i * 60, float(i), float(i), float(i), float(i), 1.0] for i in range(20000)]
+    save_candles("coinbase_candles", "COMPACT-USD", 60, many)
+    assert get_metrics()["candle_saves"] == 20000
+    summary = compact(dry_run=False)
+    # the compacted file should have been trimmed to the retention max
+    loaded = load_candles("coinbase_candles", "COMPACT-USD", 60)
+    assert len(loaded) <= 10080
+    assert any("COMPACT-USD" in k for k in summary)
+
+
 def test_non_ohlcv_records():
     recs = [
         {"ts": 1, "metric": "netflow", "value": -5.2},

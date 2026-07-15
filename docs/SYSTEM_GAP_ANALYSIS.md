@@ -27,18 +27,16 @@
 **Before**: every external feed lived only in in-process dicts (`rest_feed._CANDLE_CACHE`, `data.py._CACHE`) that vanished on restart. Historical replay for backtesting depended on re-fetching live or CSVs in `data/`.
 **Now**: `data/feed_cache.py` persists every Coinbase candle fetch (full **and** incremental) to durable storage — parquet append + de-dup by timestamp — and provides `save_records`/`load_records` for non-OHLCV feeds (on-chain, prediction markets, news). Dashboard candles/watchlist now persist + fall back to the cache when the network is down.
 **Remaining**:
-- On-chain (CoinGecko netflow/stablecoin), prediction-market (Kalshi/Polymarket), and news feeds are **not yet** routed through `feed_cache`.
-- No backfill job to populate history for symbols/granularities never fetched live.
-- No retention/compaction policy (unbounded growth).
+- **Backfill** (E2): no job yet to pre-populate history for symbols/granularities never fetched live.
 
 ### G2.2 — Data-collection efficiency
 - **REST incremental fetches were never cached** (`fetch_incremental_batch` only updated in-memory cache for full fetches). Now persisted to NAS via `feed_cache`.
 - **Watchlist cold-start** did a live 24-pair discovery + batch fetch on every request. Added a 30s in-process TTL so the expensive path runs once per poll window.
-- **CLI candles** (`coinbase/src/data.py`) still use a 300s in-memory TTL with no durability — should route through `feed_cache` too.
-- No cache-hit metrics; collection efficiency is unmeasured.
+- **CLI candles** (`coinbase/src/data.py`) now persist every fetch through `feed_cache` (E4 — CLOSED).
+- Cache-hit / efficiency metrics are now tracked in `feed_cache.get_metrics()` (E5 — CLOSED); `rest_feed` circuit-breaker stats already exist.
 
 ### G2.3 — UI end-to-end gaps
-- **Manual order submit cannot persist approvals when run by a non-root user.** `data/pending_approvals.json` is **root-owned** (optimizer runs as root via systemd). The dashboard, when launched as `scott`, returns `400 failed to persist approval: Permission denied`. In production (dashboard also root) this works; in dev it does not. *Fix options*: run the dashboard under the same user as the optimizer, or write approvals to a group-writable / shared path, or have the dashboard POST to the approval server instead of writing the file directly.
+- **Manual order submit persistence (CLOSED — E6).** The dashboard now writes every manual order to a shared, permission-tolerant `data/approvals_inbox/` (world-readable directory) in addition to the canonical `pending_approvals.json` (best-effort). The optimizer scans the inbox — approved → execute + delete, denied → delete — and the approval server's `/approve/<token>` & `/deny/<token>` links resolve inbox tokens. End-to-end flow verified regardless of which user runs each process.
 - **`/health` shows `degraded`** only because the optimizer daemon heartbeat is stale (~47h) — the daemon is not running in this dev environment. This is expected here, not a code defect.
 - **`/market/universe` returns `coinbase_total: 0`** in this environment (graph/neo4j + pair discovery not wired to live data here). Needs live daemon to populate.
 
@@ -71,39 +69,42 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 
 ## 4. Enhancements / Roadmap
 
-| # | Enhancement | Area | Effort |
-|---|-------------|------|--------|
-| E1 | Route on-chain / prediction-market / news feeds through `feed_cache` | Data | S |
-| E2 | Backfill job: populate N-day history for universe × granularity from live API into NAS | Data | M |
-| E3 | Retention/compaction policy (e.g. keep 1m for 7d, 1h/1d indefinitely) | Data | S |
-| E4 | Route CLI candles (`data.py`) through `feed_cache` | Data | S |
-| E5 | Cache-hit + latency metrics in `feed_cache` and `rest_feed` circuit breakers | Obs | S |
-| E6 | Fix cross-user approval persistence (shared runtime dir or dashboard→approval-server POST) | UI | M |
-| E7 | Offline replay mode for dashboard when daemon/network down | UI | M |
-| E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M |
-| E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S |
+| # | Enhancement | Area | Effort | Status |
+|---|-------------|------|--------|--------|
+| E1 | Route on-chain / prediction-market / news feeds through `feed_cache` | Data | S | DONE |
+| E2 | Backfill job: populate N-day history for universe × granularity from live API into NAS | Data | M | OPEN |
+| E3 | Retention/compaction policy (keep 1m for 7d, 1h for 180d, 1d indefinitely) | Data | S | DONE |
+| E4 | Route CLI candles (`data.py`) through `feed_cache` | Data | S | DONE |
+| E5 | Cache-hit + latency metrics in `feed_cache` | Obs | S | DONE |
+| E6 | Fix cross-user approval persistence (shared `approvals_inbox`) | UI | M | DONE |
+| E7 | Offline replay mode for dashboard when daemon/network down | UI | M | OPEN |
+| E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | PARTIAL (feed_cache tested) |
+| E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S | OPEN |
 
 ---
 
 ## 5. Next Steps (prioritized)
 
-1. **Close G2.1 remainder (E1)** — wrap CoinGecko on-chain, Kalshi/Polymarket, and news fetches with `feed_cache.save_records` so backtests have full history. *Low risk, high value.*
-2. **E6** — make manual order entry persist in dev (same user / shared dir / POST to approval server). Unblocks end-to-end trading from the UI.
-3. **E2** — one-shot backfill of the top-50 pairs × {60,300,900,3600,86400} for the last 90 days into the NAS.
-4. **E3/E5** — add retention + cache-hit metrics; observe for a week.
-5. **E8** — targeted unit tests for the two legacy files to hit the 80% branch gate.
-6. **Verify in production**: under the systemd unit (root), confirm NAS writes land on `/media/scott/NAS3/feed_cache` and the dashboard renders from cache after a daemon restart.
+1. **E2 — Backfill job** — one-shot script to populate the top-50 pairs × {60,300,900,3600,86400} for the last 90 days into the NAS via `feed_cache`, so backtests have immediate history. *High value.*
+2. **E8 — Coverage lift** — targeted unit tests for `portfolio_optimizer.py` / `run_trader_v4.py` to reach the 80% branch gate.
+3. **E7 — Offline replay** — when the daemon/network is down, the dashboard serves entirely from `feed_cache` (candles already fall back; extend to signals/opportunities).
+4. **E9 — Live `/market/universe`** — verify graph-score population via the running daemon.
+5. **Production verification** — under the systemd unit (root), confirm NAS writes land on `/media/scott/NAS3/feed_cache` and the dashboard renders from cache after a daemon restart; schedule `feed_cache.compact_all()` periodically.
 
 ---
 
 ## 6. Verification Checklist (this cycle)
 
 - [x] Dashboard all endpoints return 200; candles/watchlist/order-submit wired.
-- [x] Order submit validates + prices + computes fee (persist blocked only by file ownership — see G2.3).
+- [x] Order submit validates + prices + computes fee, and now **persists cross-user** via `data/approvals_inbox/` (E6 verified end-to-end).
 - [x] `data/feed_cache.py` created; parquet append + de-dup verified; NAS→local fallback verified.
 - [x] `rest_feed` persists every fetch (full + incremental) to durable store.
+- [x] CLI candles (`data.py`) persist through `feed_cache` (E4).
+- [x] On-chain / prediction-market / news feeds persist through `feed_cache` (E1).
+- [x] Retention/compaction (`compact_all`) + cache-hit metrics (`get_metrics`) added (E3/E5).
 - [x] Watchlist 30s TTL cache added.
-- [x] `tests/coverage/test_feed_cache.py` (7 tests) added + wired into `run_all_tests.sh`.
+- [x] `tests/coverage/test_feed_cache.py` (9 tests) added + wired into `run_all_tests.sh`.
 - [x] Full harness **8/8 green**.
-- [ ] E1–E9 implemented (next cycle).
+- [ ] E2 backfill job (next cycle).
+- [ ] E8 coverage lift on legacy files.
 - [ ] Production NAS write confirmed under systemd (root).

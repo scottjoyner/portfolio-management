@@ -18,7 +18,7 @@ Multi-module algorithmic trading platform spanning Python (primary) and Node.js/
 | `approval_server.py` | Lightweight HTTP server for human-in-the-loop trade approval via email approve/deny links |
 | `state_store.py` | Thread-safe SQLite persistence: trades, snapshots, bt_cache, position_ages, meta tables |
 | `confidence_matrix.py` | Multi-strategy aggregation: 4 independence groups (trend/momentum/volatility/volume), weighted by backtest perf, group-agreement boosting |
-| `data/` | Market data CSV files + fetchers (yfinance, Alpha Vantage, Coinbase, unified fetcher); **`feed_cache.py`** = NAS-backed durable cache (parquet append + de-dup) for candles/on-chain/PM/news, env `NAS_FEED_ROOT` (falls back to `data/feed_cache` when NAS not writable) |
+| `data/` | Market data CSV files + fetchers (yfinance, Alpha Vantage, Coinbase, unified fetcher); **`feed_cache.py`** = NAS-backed durable cache (parquet append + de-dup) for candles/on-chain/PM/news, env `NAS_FEED_ROOT` (falls back to `data/feed_cache` when NAS not writable); adds `compact_all()` retention + `get_metrics()` cache-hit counters; **`data/approvals_inbox/`** = permission-tolerant cross-user store for manual dashboard orders |
 | `multi_strategy_paper_trading.py` | Holistic paper trading orchestrator with VolumeOptimizer + FeeTierManager + ConfidenceEngine |
 | `paper_trading_system.py` | Base paper trading system — live price feed + synthetic backtesting |
 | `backtest/` | Historical data provider for backtesting |

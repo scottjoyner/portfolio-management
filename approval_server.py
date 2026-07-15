@@ -148,6 +148,32 @@ a {{ color:#1a1a2e; }}
 </body>
 </html>"""
 
+    def _resolve_and_update(self, token: str, status: str):
+        """Find a token in the canonical file or the shared inbox and set status.
+
+        Returns (entry, ok). Handles cross-user manual orders written to the
+        approvals inbox by the dashboard (E6)."""
+        data = self._read_pending()
+        if token in data:
+            data[token]["status"] = status
+            data[token]["resolved_at"] = datetime.now(timezone.utc).isoformat()
+            self._write_pending(data)
+            return data[token], True
+        inbox = os.path.join(os.path.dirname(self.pending_file), "approvals_inbox")
+        ip = os.path.join(inbox, f"{token}.json")
+        if os.path.exists(ip):
+            try:
+                with open(ip) as f:
+                    entry = json.load(f)
+                entry["status"] = status
+                entry["resolved_at"] = datetime.now(timezone.utc).isoformat()
+                with open(ip, "w") as f:
+                    json.dump(entry, f, indent=2, default=str)
+                return entry, True
+            except Exception:
+                return None, False
+        return None, False
+
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/")
 
@@ -162,12 +188,8 @@ a {{ color:#1a1a2e; }}
             if not token:
                 self._send_response(400, self._render_page("Error", "Missing token", "#dc3545"))
                 return
-            data = self._read_pending()
-            if token in data:
-                data[token]["status"] = "approved"
-                data[token]["resolved_at"] = datetime.now(timezone.utc).isoformat()
-                self._write_pending(data)
-                opp = data[token]
+            opp, ok = self._resolve_and_update(token, "approved")
+            if ok:
                 logger.info("APPROVED: %s %s $%.0f", opp.get("side", ""), opp.get("currency", ""), float(opp.get("size_usd", 0)))
                 self._send_response(200, self._render_page(
                     "Trade Approved ✅",
@@ -182,12 +204,8 @@ a {{ color:#1a1a2e; }}
             if not token:
                 self._send_response(400, self._render_page("Error", "Missing token", "#dc3545"))
                 return
-            data = self._read_pending()
-            if token in data:
-                data[token]["status"] = "denied"
-                data[token]["resolved_at"] = datetime.now(timezone.utc).isoformat()
-                self._write_pending(data)
-                opp = data[token]
+            opp, ok = self._resolve_and_update(token, "denied")
+            if ok:
                 logger.info("DENIED: %s %s $%.0f", opp.get("side", ""), opp.get("currency", ""), float(opp.get("size_usd", 0)))
                 self._send_response(200, self._render_page(
                     "Trade Denied ❌",

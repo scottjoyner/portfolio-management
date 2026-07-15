@@ -53,6 +53,49 @@ _MEM_TTL = 30.0  # seconds
 
 _RESOLVED_ROOT: Optional[str] = None
 
+# ── cache-hit / efficiency metrics (E5) ────────────────────────────────────
+_metrics = {
+    "candle_hits": 0,       # served from hot in-process mem cache
+    "candle_misses": 0,     # read from durable storage (or empty)
+    "record_hits": 0,
+    "record_misses": 0,
+    "candle_saves": 0,      # durable writes of candles
+    "record_saves": 0,      # durable writes of non-OHLCV records
+}
+
+
+def get_metrics() -> dict:
+    """Return a copy of the running cache-efficiency counters."""
+    with _lock:
+        return dict(_metrics)
+
+
+def reset_metrics() -> None:
+    with _lock:
+        for k in _metrics:
+            _metrics[k] = 0
+
+
+# ── retention policy (E3) ─────────────────────────────────────────────────
+# Max bars retained per candle granularity (seconds -> max rows). Keeps enough
+# history for backtests without unbounded growth.
+CANDLE_RETENTION = {
+    60: 60 * 24 * 7,        # 1m  -> 7 days
+    300: 300 * 288 * 30,    # 5m  -> 30 days
+    900: 900 * 96 * 60,     # 15m -> 60 days
+    3600: 3600 * 24 * 180,  # 1h  -> 180 days
+    21600: 21600 * 4 * 365, # 6h  -> ~1 year
+    86400: 86400 * 365 * 5, # 1d  -> 5 years
+}
+RECORD_RETENTION = 200_000  # max rows per non-OHLCV feed file
+
+
+def _retention_rows(granularity: object) -> int:
+    try:
+        return CANDLE_RETENTION.get(int(granularity), 50_000)
+    except (TypeError, ValueError):
+        return 50_000
+
 
 def _root() -> str:
     """Return a writable cache root, resolving NAS -> local fallback once."""
@@ -150,6 +193,7 @@ def save_candles(kind: str, symbol: str, granularity: object,
             merged_rows = [[r["t"], r["o"], r["h"], r["l"], r["c"], r["v"]] for r in existing]
         with _lock:
             _mem[_mem_key(kind, symbol, granularity)] = (time.time(), merged_rows)
+            _metrics["candle_saves"] += len(candles)
         return len(candles)
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("feed_cache save failed %s: %s", path, e)
@@ -164,10 +208,13 @@ def load_candles(kind: str, symbol: str, granularity: object,
         entry = _mem.get(key)
         if entry and (time.time() - entry[0]) < _MEM_TTL:
             rows = entry[1]
+            _metrics["candle_hits"] += 1
         else:
             rows = []
     if not rows:
         path = _path(kind, symbol, f"{granularity}.parquet")
+        with _lock:
+            _metrics["candle_misses"] += 1
         if not os.path.exists(path):
             return []
         try:
@@ -207,6 +254,8 @@ def save_records(kind: str, name: str, records: Sequence[dict]) -> int:
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         _write_jsonl(path, list(records), append=True)
+        with _lock:
+            _metrics["record_saves"] += len(records)
         return len(records)
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("feed_cache save_records failed %s: %s", path, e)
@@ -216,15 +265,85 @@ def save_records(kind: str, name: str, records: Sequence[dict]) -> int:
 def load_records(kind: str, name: str, limit: Optional[int] = None) -> List[dict]:
     path = _path(kind, f"{name}.jsonl")
     if not os.path.exists(path):
+        with _lock:
+            _metrics["record_misses"] += 1
         return []
     try:
         rows = _load_jsonl(path)
+        with _lock:
+            if rows:
+                _metrics["record_hits"] += 1
+            else:
+                _metrics["record_misses"] += 1
         if limit:
             rows = rows[-limit:]
         return rows
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("feed_cache load_records failed %s: %s", path, e)
         return []
+
+
+# ── compaction / retention (E3) ─────────────────────────────────────────────
+
+def compact(kind: Optional[str] = None, dry_run: bool = False) -> Dict[str, int]:
+    """Enforce retention policy across feed-cache files.
+
+    For candle parquet files, trims to the per-granularity max row count
+    (``CANDLE_RETENTION``). For non-OHLCV ``.jsonl`` files, trims to the last
+    ``RECORD_RETENTION`` rows. Returns a summary of rows removed per file.
+
+    Run periodically (e.g. from the optimizer daemon) to bound disk growth.
+    """
+    root = _root()
+    summary: Dict[str, int] = {}
+    kinds = [kind] if kind else ["coinbase_candles", "onchain", "prediction_markets", "news"]
+    for k in kinds:
+        base = os.path.join(root, k)
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _, files in os.walk(base):
+            for fn in files:
+                full = os.path.join(dirpath, fn)
+                try:
+                    if fn.endswith(".parquet"):
+                        if not _HAVE_PARQUET:
+                            continue
+                        import pandas as pd
+
+                        df = pd.read_parquet(full)
+                        keep = _retention_rows(os.path.basename(fn).split(".")[0])
+                        if len(df) > keep:
+                            trimmed = df.tail(keep).reset_index(drop=True)
+                            removed = len(df) - len(trimmed)
+                            if not dry_run:
+                                trimmed.to_parquet(full, index=False)
+                                # keep in-process cache consistent with disk
+                                try:
+                                    sym = os.path.basename(dirpath)
+                                    gran = int(os.path.basename(fn).split(".")[0])
+                                    _mem[_mem_key("coinbase_candles", sym, gran)] = (
+                                        time.time(),
+                                        [[float(x) for x in r] for r in trimmed.values.tolist()],
+                                    )
+                                except Exception:
+                                    pass
+                            summary[full] = removed
+                    elif fn.endswith(".jsonl"):
+                        rows = _load_jsonl(full)
+                        if len(rows) > RECORD_RETENTION:
+                            trimmed = rows[-RECORD_RETENTION:]
+                            removed = len(rows) - len(trimmed)
+                            if not dry_run:
+                                _write_jsonl(full, trimmed)
+                            summary[full] = removed
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.warning("compact skipped %s: %s", full, e)
+    return summary
+
+
+def compact_all(dry_run: bool = False) -> Dict[str, int]:
+    """Compact every feed kind."""
+    return compact(kind=None, dry_run=dry_run)
 
 
 # ── internal jsonl helpers (pandas-free fallback / non-OHLCV) ──────────────

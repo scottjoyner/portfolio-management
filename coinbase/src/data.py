@@ -281,6 +281,19 @@ def fetch_candles_df(
         out["datetime"] = pd.to_datetime(out["ts"], unit="s", utc=True)
         out.set_index("datetime", inplace=True)
         result = out[["open","high","low","close","volume"]]
+        # Durable persist (E4): survive restarts + enable backtest replay.
+        try:
+            from data.feed_cache import save_candles as _fc_save
+            idx = list(result.index.astype("int64") // 1_000_000_000)
+            candles = [
+                [int(ts), float(o), float(h), float(l), float(c), float(v)]
+                for ts, o, h, l, c, v in zip(
+                    idx, result["open"], result["high"], result["low"], result["close"], result["volume"]
+                )
+            ]
+            _fc_save("coinbase_candles", product_id, spb, candles)
+        except Exception as e:  # pragma: no cover - durability is best-effort
+            log.debug("feed_cache persist skipped for %s: %s", product_id, e)
     else:
         rows2 = []
         for fr in frames:

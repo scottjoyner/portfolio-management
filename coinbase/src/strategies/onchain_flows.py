@@ -197,6 +197,11 @@ class OnChainFlowStrategy:
 
         self._cache[cg_id] = result
         self._cache_ts[cg_id] = now
+        try:
+            from data.feed_cache import save_records as _fc_save
+            _fc_save("onchain", f"flow_proxy_{cg_id}", [{"ts": int(now), "cg_id": cg_id, **result}])
+        except Exception:
+            pass
         return result
 
     def invalidate_cache(self) -> None:
