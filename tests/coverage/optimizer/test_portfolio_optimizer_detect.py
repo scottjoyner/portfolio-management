@@ -246,7 +246,7 @@ def test_detect_order_flow_signals(opt):
     opt._feed_mgr = None
     opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)}, usdc=90000.0)
     ops = opt._detect_order_flow_signals()
-    assert any(o.currency == "SOL-USD" for o in ops)
+    assert any(o.currency == "SOL" for o in ops)
 
     # SELL branch
     of_sig.action = "SELL"

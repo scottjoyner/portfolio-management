@@ -2960,7 +2960,7 @@ class PortfolioOptimizer:
                     )
                     ops.append(Opportunity(
                         opp_type=OpportunityType.STRATEGY_SIGNAL,
-                        currency=pid,
+                        currency=cur,
                         side=side,
                         size_usd=size,
                         reason=f"orderflow:spread_z={sig.spread_z:.1f} tight={sig.spread_tight} vol={sig.volume_24h:.0f}",
@@ -3046,7 +3046,7 @@ class PortfolioOptimizer:
                         )
                         ops.append(Opportunity(
                             opp_type=OpportunityType.STRATEGY_SIGNAL,
-                            currency=pid,
+                            currency=cur,
                             side=side,
                             size_usd=size,
                             reason=f"smartflow:{setup.reason}",
@@ -3136,7 +3136,7 @@ class PortfolioOptimizer:
                         )
                         ops.append(Opportunity(
                             opp_type=OpportunityType.STRATEGY_SIGNAL,
-                            currency=pid,
+                            currency=cur,
                             side=side,
                             size_usd=size,
                             reason=of_sig.reason,
@@ -3911,7 +3911,7 @@ class PortfolioOptimizer:
                 continue
             ops.append(Opportunity(
                 opp_type=OpportunityType.TLH,
-                currency=pid,
+                currency=cur,
                 side="SELL",
                 size_usd=h["value"],
                 reason=f"TLH: {pnl:.1f}% loss, est. tax savings ${tax_savings:.0f}",
@@ -4248,7 +4248,7 @@ class PortfolioOptimizer:
                     continue
                 ops.append(Opportunity(
                     opp_type=OpportunityType.VOLUME_CYCLE,
-                    currency=pid,
+                    currency=cur,
                     side="SELL",
                     size_usd=h["value"],
                     reason=f"Volume cycle: close after {age_hours:.1f}h",
@@ -4886,7 +4886,7 @@ class PortfolioOptimizer:
                     if price <= 0:
                         continue
                     nf_sig = self._exchange_netflow.on_bar(
-                        close=price, closes=[price], volumes=None, currency=pid,
+                        close=price, closes=[price], volumes=None,
                     )
                     if not nf_sig or nf_sig.action not in ("BUY", "SELL"):
                         continue
@@ -4923,7 +4923,7 @@ class PortfolioOptimizer:
                     )
                     ops.append(Opportunity(
                         opp_type=OpportunityType.STRATEGY_SIGNAL,
-                        currency=pid,
+                        currency=cur,
                         side=side,
                         size_usd=size,
                         reason=nf_sig.reason,

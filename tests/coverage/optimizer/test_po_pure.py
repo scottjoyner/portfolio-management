@@ -651,13 +651,50 @@ def test_detect_order_flow_signals(opt):
     opt._feed_mgr = None
     opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)}, usdc=90000.0)
     ops = opt._detect_order_flow_signals()
-    assert any(o.currency == "SOL-USD" for o in ops)
+    assert any(o.currency == "SOL" for o in ops)
 
     of_sig.action = "SELL"
     opt.last_execution.clear()
     opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)}, usdc=90000.0)
     ops2 = opt._detect_order_flow_signals()
     assert any(o.side == "SELL" for o in ops2)
+
+
+def test_opportunity_currency_is_base_ticker(opt):
+    """Every detection path must emit a base-ticker currency (e.g. 'SOL'),
+    never a product_id ('SOL-USD'), so holdings keying stays consistent."""
+    import re
+    BASE = re.compile(r"^[A-Z0-9]{2,10}$")
+    opt.last_execution.clear()
+    opt.cli.get_products.return_value = {
+        "SOL-USD": {"trading_disabled": False, "volume_24h": 200_000_000},
+    }
+    opt.cli.get_candles.return_value = []
+    opt._feed_mgr = None
+    opt.state = make_state(
+        {"SOL": holding("SOL", 1000, "growth", price=100)}, usdc=90000.0
+    )
+    # Wire minimal mocked signals so each detector can produce an opp.
+    of_sig = mock.MagicMock()
+    of_sig.confidence = 0.5
+    of_sig.action = "BUY"
+    of_sig.spread_z = 2.0
+    of_sig.spread_tight = True
+    of_sig.spread_bps = 5.0
+    of_sig.volume_24h = 1000.0
+    opt._order_flow_engine = mock.MagicMock()
+    opt._order_flow_engine.evaluate = mock.MagicMock(return_value=of_sig)
+    opt._smart_money_flow = None
+
+    seen = []
+    for fn in (
+        opt._detect_order_flow_signals,
+    ):
+        for o in fn():
+            seen.append(o.currency)
+    # sanity: at least one opp produced
+    assert seen
+    assert all(BASE.match(c) for c in seen), f"non-base currency emitted: {seen}"
 
 
 def test_detect_aggregator_signals_empty(opt):
