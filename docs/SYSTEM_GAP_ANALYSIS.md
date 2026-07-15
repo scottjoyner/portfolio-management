@@ -41,9 +41,10 @@
 - **`/market/universe` returns `coinbase_total: 0`** in this environment (graph/neo4j + pair discovery not wired to live data here). Needs live daemon to populate.
 
 ### G2.4 — Coverage gate below 90%
-- `portfolio_optimizer.py` ≈ 76% line / 82% branch.
+- `portfolio_optimizer.py` ≈ 80% line / 80% branch (after E8 test campaign).
 - `coinbase/src/run_trader_v4.py` ≈ 75% line.
 Both are large legacy files. The user has accepted the **80% pragmatic target**; full 90% gate on these two remains open work (additional unit tests, not behavior changes).
+- **Known latent inconsistency (NOT yet fixed):** `PortfolioOptimizer.best_product(currency, "BUY")` prefers `-USDC` pairs (`SOL-USDC`) while the entire trading universe (incl. `coinbase_universe.py` and every detection path's `product_id`) uses `-USD` pairs (`SOL-USD`). Since most detection paths now set `product_id` explicitly, the USDC fallback only triggers when `product_id` is empty, so live impact is limited — but it is a real BUY→USDC vs -USD divergence worth reconciling (e.g. prefer `-USD` for BUY too) in a later cleanup.
 
 ### G2.5 — Cross-user / file-ownership robustness
 Beyond approvals: any file the optimizer writes as root (`pending_approvals.json`, `optimizer_state.db`, `.unified_signal_cache.json`) is not writable by a dev-launched dashboard. Should standardize on a shared, group-writable runtime dir.
@@ -78,7 +79,7 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 | E5 | Cache-hit + latency metrics in `feed_cache` | Obs | S | DONE |
 | E6 | Fix cross-user approval persistence (shared `approvals_inbox`) | UI | M | DONE |
 | E7 | Offline replay: watchlist + candles serve from `feed_cache` when live feed is down | UI | M | DONE |
-| E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | DONE (optimizer suite 499 passed / 2 skipped; 80% line+branch met; also fixed a latent `Bar(instrument_type=…)` crash in smart-money detection) |
+| E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | DONE (optimizer suite 500 passed / 2 skipped; 80% line+branch met; also fixed a latent `Bar(instrument_type=…)` crash in smart-money detection, a `currency=pid`→base-ticker inconsistency across 6 detection paths, an invalid `currency=` kwarg passed to `ExchangeNetflowSignal.on_bar`, and a mis-indented `Opportunity(...)` constructor in `_detect_strategy_signals`) |
 | E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S | OPEN |
 
 ---
