@@ -2991,7 +2991,7 @@ class PortfolioOptimizer:
         # ── SmartMoneyFlowStrategy: CVD / volume absorption ─────
         if self._smart_money_flow:
             try:
-                from coinbase.src.protocols import Bar, InstrumentType
+                from coinbase.src.protocols import Bar
                 for cur, pid, h in tracked_products:
                     if self._feed_mgr:
                         candles = self._feed_mgr.get_candles_batch([pid], granularity=3600, limit=60)
@@ -3008,7 +3008,6 @@ class PortfolioOptimizer:
                                     close=to_float(c.get("close", 0)),
                                     volume=to_float(c.get("volume", 0)),
                                     timestamp=c.get("time", c.get("timestamp", 0)),
-                                    instrument_type=InstrumentType.SPOT,
                                 ))
                         if len(bars) < 30:
                             continue

@@ -4,6 +4,7 @@ Heavy collaborators are mocked so the process exits cleanly.
 """
 
 import json
+import math
 import os
 import time
 from unittest import mock
@@ -121,8 +122,12 @@ def test_event_markets_exception(po):
 # ===========================================================================
 
 def _candles(n=40, start=100.0, step=1.0):
-    return [{"close": start + i * step, "high": start + i * step + 1,
-             "low": start + i * step - 1, "volume": 1000.0} for i in range(n)]
+    # Linear drift with a mild sinusoidal pullback so RSI stays in a realistic
+    # (non-saturated) band — strong trend, but not an exhaustion extreme.
+    return [{"close": start + i * step + 4.0 * math.sin(2 * math.pi * i / 6.0),
+             "high": start + i * step + 4.0 * math.sin(2 * math.pi * i / 6.0) + 1,
+             "low": start + i * step + 4.0 * math.sin(2 * math.pi * i / 6.0) - 1,
+             "volume": 1000.0} for i in range(n)]
 
 
 def test_coinbase_universe_downtrend_sell(po):
@@ -149,7 +154,7 @@ def test_coinbase_universe_low_liquidity_skip(po):
     candles = _candles()
     po._feed_mgr = mock.MagicMock()
     po._feed_mgr.get_candles_batch.return_value = {"PEPE-USD": candles}
-    po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+    po.state = make_state({}, total_value=100000, usdc=90000)
     # speculative asset with tiny volume -> filtered out
     po.cli.get_products.return_value = {
         "PEPE-USD": {"trading_disabled": False, "volume_24h": 1_000_000.0}}
@@ -164,7 +169,7 @@ def test_coinbase_universe_cli_fallback(po):
     # No feed manager -> CLI candle fetch path.
     candles = _candles()
     po._feed_mgr = None
-    po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+    po.state = make_state({}, total_value=100000, usdc=90000)
     po.cli.get_products.return_value = {
         "SOL-USD": {"trading_disabled": False, "volume_24h": 200_000_000.0}}
     po.cli.get_candles.return_value = candles
@@ -428,7 +433,7 @@ def test_process_opportunity_route_dry(po):
     po.dry_run = True
     po.require_approval = False
     po._feed_mgr = None
-    po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+    po.state = make_state({}, total_value=100000, usdc=90000)
     step = mock.MagicMock()
     step.product_id = "SOL-USD"
     step.direction = "BUY"
@@ -458,7 +463,7 @@ def test_process_opportunity_approval_gate(po, tmp_path):
     with mock.patch.object(P.PortfolioOptimizer, "_best_route_decision_for_opportunity", return_value=None):
         opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 100, "r",
                               entry_price_est=100.0, product_id="SOL-USD")
-        po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+        po.state = make_state({}, total_value=100000, usdc=90000)
         po._process_opportunity(opp)
     assert os.path.exists(po.pending_file)
 
@@ -472,7 +477,7 @@ def test_process_opportunity_preview_fail(po):
     with mock.patch.object(P.PortfolioOptimizer, "_best_route_decision_for_opportunity", return_value=None):
         opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 100, "r",
                               entry_price_est=100.0, product_id="SOL-USD")
-        po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+        po.state = make_state({}, total_value=100000, usdc=90000)
         before = len(po.trade_log)
         po._process_opportunity(opp)
         assert len(po.trade_log) == before
@@ -488,7 +493,7 @@ def test_process_opportunity_live_execute(po):
     with mock.patch.object(P.PortfolioOptimizer, "_best_route_decision_for_opportunity", return_value=None):
         opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 100, "r",
                               entry_price_est=100.0, product_id="SOL-USD")
-        po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+        po.state = make_state({}, total_value=100000, usdc=90000)
         po._process_opportunity(opp)
     assert opp.executed is True
 
@@ -499,6 +504,7 @@ def test_process_opportunity_live_execute(po):
 
 def test_execute_approved_route(po):
     po._feed_mgr = None
+    po.state = make_state({}, total_value=100000, usdc=90000)
     payload = {
         "source": "USDC", "target": "SOL", "score": 0.5,
         "steps": [{"product_id": "SOL-USD", "from_currency": "USDC",
@@ -531,6 +537,7 @@ def test_execute_approved_route(po):
 def test_execute_approved_bracket(po):
     po.dry_run = False
     po.require_approval = False
+    po.state = make_state({}, total_value=100000, usdc=90000)
     po._bracket_mgr = mock.MagicMock()
     po._bracket_mgr.place_bracket.return_value = {"status": "OPEN", "bracket_id": "b1"}
     entry = {"side": "BUY", "currency": "SOL", "size_usd": 100.0,
@@ -549,7 +556,7 @@ def test_execute_approved_live_direct(po):
     po.cli.create_order.return_value = {"id": "ord1"}
     entry = {"side": "BUY", "currency": "SOL", "size_usd": 100.0,
              "product_id": "SOL-USD", "reason": "r", "type": "strategy"}
-    po.state = make_state({"USDC": holding("USDC", 90000, "safe")}, total_value=100000)
+    po.state = make_state({}, total_value=100000, usdc=90000)
     po._execute_approved(entry)
     assert po.trade_log
 

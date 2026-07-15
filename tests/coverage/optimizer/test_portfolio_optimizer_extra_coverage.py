@@ -4,6 +4,7 @@ state persistence. External engines / data sources are faked.
 """
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from unittest import mock
 
@@ -44,9 +45,14 @@ class _SmartMoney:
 
 
 def _candles(n=50, drift=1):
+    # Linear drift with a mild sinusoidal pullback so RSI stays in a realistic
+    # (non-saturated) band — strong trend, but not an exhaustion extreme.
     return [
-        {"open": i, "high": i + 1, "low": max(i - 1, 0.0),
-         "close": 100 + drift * i, "volume": 1000, "time": i}
+        {"open": 100 + drift * i + 5.0 * math.sin(2 * math.pi * i / 5.0) - drift,
+         "high": 100 + drift * i + 5.0 * math.sin(2 * math.pi * i / 5.0) + 1.0,
+         "low": 100 + drift * i + 5.0 * math.sin(2 * math.pi * i / 5.0) - 1.0,
+         "close": 100 + drift * i + 5.0 * math.sin(2 * math.pi * i / 5.0),
+         "volume": 1000, "time": i}
         for i in range(n)
     ]
 
@@ -111,7 +117,9 @@ def test_coinbase_universe_buy_and_sell(opt):
 
 def test_coinbase_universe_new_listing(opt):
     opt.last_execution = {}
-    opt.state = make_state({})
+    # A new listing dumping (downtrend) -> SELL momentum; the asset must be
+    # held to be sold, so seed a WIF position.
+    opt.state = make_state({"WIF": holding("WIF", 1000, "speculative", price=50.0)})
     opt._first_seen_age_days = lambda pid: 5.0
     opt.cli.get_products.return_value = {
         "WIF-USD": {"volume_24h": 5e8, "trading_disabled": False},

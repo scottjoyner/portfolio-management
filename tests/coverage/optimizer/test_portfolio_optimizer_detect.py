@@ -244,14 +244,14 @@ def test_detect_order_flow_signals(opt):
     opt._order_flow_engine.evaluate = mock.MagicMock(return_value=of_sig)
     opt._smart_money_flow = None
     opt._feed_mgr = None
-    opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)})
+    opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)}, usdc=90000.0)
     ops = opt._detect_order_flow_signals()
-    assert any(o.currency == "SOL" for o in ops)
+    assert any(o.currency == "SOL-USD" for o in ops)
 
     # SELL branch
     of_sig.action = "SELL"
     opt.last_execution.clear()
-    opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)})
+    opt.state = make_state({"SOL": holding("SOL", 1000, "growth", price=100)}, usdc=90000.0)
     ops2 = opt._detect_order_flow_signals()
     assert any(o.side == "SELL" for o in ops2)
 

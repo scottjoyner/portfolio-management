@@ -4,6 +4,7 @@ execution paths. All external I/O is mocked; no background threads are spawned.
 """
 
 import json
+import math
 import time
 from types import SimpleNamespace
 from unittest import mock
@@ -222,13 +223,14 @@ def test_detect_coinbase_universe_generates_ops(o):
     o.cli.get_products.return_value = {
         "SOL-USD": {"product_id": "SOL-USD", "trading_disabled": False, "volume_24h": 200_000_000},
     }
-    # Strong up-trend, >=40 candles -> high momentum, high liquidity.
+    # Strong up-trend with realistic pullbacks (so RSI is not saturated to 100,
+    # which the quality filter would reject as exhaustion) -> high momentum.
     trend = [{
         "time": str(i),
-        "open": 100.0 * (1.03 ** i),
-        "high": 100.0 * (1.03 ** i) * 1.01,
-        "low": 100.0 * (1.03 ** i) * 0.99,
-        "close": 100.0 * (1.03 ** i),
+        "open": 100.0 * (1.03 ** i) * (1 + 0.08 * math.sin(2 * math.pi * i / 6.0)),
+        "high": 100.0 * (1.03 ** i) * (1.08 + 0.08 * math.sin(2 * math.pi * i / 6.0)),
+        "low": 100.0 * (1.03 ** i) * (0.92 + 0.08 * math.sin(2 * math.pi * i / 6.0)),
+        "close": 100.0 * (1.03 ** i) * (1 + 0.08 * math.sin(2 * math.pi * i / 6.0)),
         "volume": 1000.0 + i * 50.0,
     } for i in range(60)]
     o.cli.get_candles.return_value = trend
