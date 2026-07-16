@@ -2,17 +2,21 @@
 """
 hermes_agent_loop.py — one iteration of the Hermes agent's PAPER trading competition.
 
-Called periodically (cron). For each candidate pair it:
-  1. pulls recent 1h candles (read-only, via CBClient)
-  2. computes a naive momentum signal (last close vs N hours ago)
-  3. if |momentum| exceeds threshold, records a PAPER fill via hermes_agent_trader
-     (real exchange quote, NO money moved, capped at MAX_NOTIONAL)
+REGIME-GATED MOMENTUM (Phase 1 edge over the bot):
+  The bot trades each pair in isolation. This loop uses BTC-USD as a cross-asset
+  oracle: it classifies the BTC regime (TREND_UP / TREND_DOWN / RANGE / CRISIS)
+  and GATES alt signals on regime compatibility:
+    - TREND_UP   -> only LONG/BUY momentum on alts
+    - TREND_DOWN  -> only SHORT/SELL momentum on alts
+    - RANGE       -> either side, but require a stronger extreme to "fade"
+    - CRISIS      -> STAND DOWN (no trades; event/vol risk)
+  BTC itself only trades its own momentum in TREND regimes (avoids range whipsaw).
 
 All trading is paper/simulation. A live path does not exist here; hermes_agent_trader
 refuses any live attempt unless HERMES_AGENT_LIVE is set by the operator.
 
-ENV (read-only, inherited from .env):
-  KILL_SWITCH, REQUIRE_MANUAL_APPROVAL, MAX_NOTIONAL_PER_TRADE_USD
+ENV (read-only, inherited from .env): KILL_SWITCH, REQUIRE_MANUAL_APPROVAL,
+MAX_NOTIONAL_PER_TRADE_USD
 """
 from __future__ import annotations
 
@@ -31,18 +35,22 @@ try:
 except ValueError:
     MAX_NOTIONAL = 10.0
 
-PAIRS = ["BTC-USD", "ETH-USD", "SOL-USD"]
+# alt universe (the bot trades many; we start with liquid majors + a few it bleeds on)
+ALTS = ["ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "DOGE-USD", "ADA-USD", "DOT-USD"]
+BTC = "BTC-USD"
 HOURS = 5
-MOMENTUM_THRESHOLD = 0.004  # 0.4% move over HOURS to trigger a paper signal
+# momentum thresholds: smaller in RANGE (fade extremes), larger in TREND (confirm)
+MOM_TREND = 0.004   # 0.4%
+MOM_RANGE = 0.007   # 0.7% (stronger extreme to fade in range)
 # Trade at 99% of the cap so base*price rounding never breaches MAX_NOTIONAL.
 NOTIONAL_PER_SIGNAL = round(min(MAX_NOTIONAL * 0.99, 10.0), 2)
 
 
-def _candles(client, product_id: str, hours: int) -> list[dict]:
+def _candles(client, product_id: str, hours: int, granularity: str = "1h") -> list[dict]:
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(hours=hours)
     r = client._cli_json(
-        "products", "candles", product_id, "granularity=1h",
+        "products", "candles", product_id, f"granularity={granularity}",
         f"start={start.isoformat()}", f"end={end.isoformat()}",
     )
     if isinstance(r, dict) and "candles" in r:
@@ -51,7 +59,6 @@ def _candles(client, product_id: str, hours: int) -> list[dict]:
 
 
 def momentum_signal(candles: list[dict]) -> tuple[str | None, float, float]:
-    """Return (side, momentum_pct, last_close). side in {BUY,SELL,None}."""
     if len(candles) < 2:
         return None, 0.0, 0.0
     closes = [float(c["close"]) for c in candles if c.get("close")]
@@ -61,9 +68,10 @@ def momentum_signal(candles: list[dict]) -> tuple[str | None, float, float]:
     if first <= 0:
         return None, 0.0, last
     mom = (last - first) / first
-    if mom > MOMENTUM_THRESHOLD:
+    thr = MOM_TREND  # default; loop may pass a stricter threshold
+    if mom > thr:
         return "BUY", mom, last
-    if mom < -MOMENTUM_THRESHOLD:
+    if mom < -thr:
         return "SELL", mom, last
     return None, mom, last
 
@@ -74,33 +82,83 @@ def run_once(verbose: bool = True) -> dict:
         if verbose:
             print(msg)
         return {"skipped": True, "reason": "kill_switch"}
+
     from coinbase.src.cb_client import CBClient
-    from scripts.hermes_agent_trader import record_signal
+    from scripts.hermes_agent_trader import record_signal, close_position
+    from scripts.hermes_regime import classify_btc, compatible_side
+
     client = CBClient(dry_run_cli=True)
+    regime_info = classify_btc()
+    regime = regime_info["regime"]
+    if verbose:
+        print(f"[regime] BTC={regime} ({regime_info['reason']}) last={regime_info.get('last')}")
+
+    # --- close-pass: exit positions on CRISIS or stale hold ---
+    from scripts.hermes_agent_trader import load_ledger
+    led = load_ledger()
+    HOLD_ITERS = 6
+    now = dt.datetime.now(dt.timezone.utc)
+    for pid, pos in list(led.get("positions", {}).items()):
+        if pos.get("base", 0.0) <= 1e-12:
+            continue
+        entry = pos.get("entry_ts")
+        stale = False
+        if entry:
+            try:
+                age = (now - dt.datetime.fromisoformat(entry)).total_seconds() / 60.0
+                stale = age > HOLD_ITERS * 15  # cron cadence = 15m
+            except Exception:
+                stale = False
+        if regime == "CRISIS" or stale:
+            res = close_position(pid, note=f"exit-{regime}{'-stale' if stale else ''}")
+            if verbose and res.get("action") == "closed":
+                print(f"[close] {pid} -> realized_pnl={res.get('realized_pnl')}")
+
+    if regime == "CRISIS":
+        return {"skipped": True, "reason": "crisis_standdown", "regime": regime}
+
     results = []
-    for pair in PAIRS:
+
+    # --- BTC itself: only trade its momentum in TREND regimes ---
+    if regime in ("TREND_UP", "TREND_DOWN"):
+        candles = _candles(client, BTC, HOURS)
+        side, mom, last = momentum_signal(candles)
+        if side:
+            rec = record_signal(BTC, side, quote_size=NOTIONAL_PER_SIGNAL,
+                                note=f"btc-{regime}-mom{mom:.4f}")
+            results.append({"pair": BTC, "signal": side, "mom": round(mom, 5),
+                           "result": rec.get("action", "?")})
+    else:
+        results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{regime}"})
+
+    # --- Alts: LONG-ONLY, regime-gated (avoids insufficient-fund on shorts) ---
+    # TREND_UP   -> BUY momentum (ride the trend the oracle confirms)
+    # TREND_DOWN  -> stand down alts (no shorts in paper v1)
+    # RANGE       -> dip-buy: BUY only on a downside extreme (fade)
+    for pair in ALTS:
         try:
             candles = _candles(client, pair, HOURS)
             side, mom, last = momentum_signal(candles)
-            if not side:
-                results.append({"pair": pair, "signal": "HOLD", "momentum": round(mom, 5),
-                                "last": round(last, 2)})
-                continue
-            if side == "BUY":
+            if regime == "TREND_UP" and side == "BUY":
                 rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
-                                    note=f"momentum+{mom:.4f}")
+                                    note=f"regime-{regime}-mom+{mom:.4f}")
+                results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
+                               "result": rec.get("action", "?")})
+            elif regime == "RANGE" and mom < -MOM_RANGE:
+                rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
+                                    note=f"regime-{regime}-dipbuy{mom:.4f}")
+                results.append({"pair": pair, "signal": "BUY(dip)", "mom": round(mom, 5),
+                               "result": rec.get("action", "?")})
             else:
-                base = round(NOTIONAL_PER_SIGNAL / last, 8)
-                rec = record_signal(pair, "SELL", base_size=base,
-                                    note=f"momentum-{mom:.4f}")
-            results.append({"pair": pair, "signal": side, "momentum": round(mom, 5),
-                           "result": rec.get("action", "?")})
-        except Exception as exc:  # never crash the loop on a bad quote
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
+                               "regime": regime})
+        except Exception as exc:
             results.append({"pair": pair, "signal": "ERROR", "error": str(exc)[:120]})
+
     if verbose:
         ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-        print(f"[{ts}] agent loop iteration: {json.dumps(results)}")
-    return {"skipped": False, "iterations": results}
+        print(f"[{ts}] agent loop: {json.dumps(results)}")
+    return {"skipped": False, "regime": regime, "iterations": results}
 
 
 def main() -> int:

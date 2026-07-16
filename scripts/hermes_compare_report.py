@@ -28,20 +28,33 @@ def _agent_stats() -> dict:
     if not LEDGER.exists():
         return {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0,
                 "fees": 0.0, "volume": 0.0, "win_rate": 0.0,
-                "pnl_pct": 0.0, "profit_factor": 0.0}
+                "pnl_pct": 0.0, "profit_factor": 0.0, "unreal": 0.0}
     led = json.loads(LEDGER.read_text() or "{}")
     trades = led.get("trades", [])
     pnl = float(led.get("realized_pnl", 0.0))
     fees = sum(float(t.get("commission", 0)) for t in trades)
     volume = sum(float(t.get("quote_size", 0)) for t in trades)
-    # wins/losses approximated by sign of each trade's contribution is not tracked
-    # per-trade pnl in the simple ledger; report round-trip net + trade count.
-    win_rate = 0.0
+    # wins/losses from closed trades (those that carry a realized_pnl field)
+    wins = losses = 0
+    sum_wins = sum_losses = 0.0
+    for t in trades:
+        if "realized_pnl" in t:
+            rp = float(t["realized_pnl"])
+            if rp >= 0:
+                wins += 1
+                sum_wins += rp
+            else:
+                losses += 1
+                sum_losses += -rp
+    closed = wins + losses
+    win_rate = (wins / closed * 100.0) if closed else 0.0
     pnl_pct = (pnl / volume * 100.0) if volume else 0.0
-    return {"trades": len(trades), "wins": 0, "losses": 0, "pnl": round(pnl, 4),
+    pf = (sum_wins / sum_losses) if sum_losses else (float("inf") if sum_wins else 0.0)
+    return {"trades": len(trades), "wins": wins, "losses": losses, "pnl": round(pnl, 4),
             "fees": round(fees, 4), "volume": round(volume, 2),
-            "win_rate": win_rate, "pnl_pct": round(pnl_pct, 4),
-            "profit_factor": 0.0}
+            "win_rate": round(win_rate, 2), "pnl_pct": round(pnl_pct, 4),
+            "profit_factor": round(pf, 3) if pf != float("inf") else "inf",
+            "unreal": 0.0}
 
 
 def _engine_stats() -> dict:

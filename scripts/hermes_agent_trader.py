@@ -39,6 +39,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+import datetime as dt
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -64,6 +65,23 @@ def get_client():
     sys.path.insert(0, str(ROOT))
     from coinbase.src.cb_client import CBClient
     return CBClient(dry_run_cli=True)
+
+
+def _current_price(product_id: str) -> float:
+    """Current mark price via latest 1h candle close (read-only, per-product
+    accurate). NOTE: the `products best-bid-ask product_id=X` CLI call ignores
+    the product_id and always returns ETH-USD, so we mark from candles instead."""
+    from coinbase.src.cb_client import CBClient
+    c = CBClient(dry_run_cli=True)
+    end = dt.datetime.now(dt.timezone.utc)
+    start = end - dt.timedelta(hours=1)
+    r = c._cli_json("products", "candles", product_id, "granularity=1h",
+                    f"start={start.isoformat()}", f"end={end.isoformat()}")
+    if isinstance(r, dict) and "candles" in r:
+        cs = [x for x in r["candles"] if x.get("close")]
+        if cs:
+            return float(cs[-1]["close"])
+    return 0.0
 
 
 def load_ledger() -> dict:
@@ -108,7 +126,33 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
         return _refuse("need quote_size or base_size")
     if quote_size is not None and quote_size > MAX_NOTIONAL:
         return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    q = quote(product_id, side, quote_size=quote_size, base_size=base_size)
+    # SELL via base_size: some products reject fine precision. Retry coarser if the
+    # exchange complains, so a valid signal isn't dropped on a rounding artifact.
+    tried = set()
+    base_attempts = [base_size] + [round(base_size, d) for d in (6, 5, 4, 3, 2)] if base_size else [None]
+    last_err = None
+    q = None
+    for b_att in base_attempts:
+        if b_att in tried:
+            continue
+        tried.add(b_att)
+        q = quote(product_id, side, quote_size=quote_size, base_size=b_att)
+        if q.get("action") == "quote":
+            break
+        err = str(q.get("error", ""))
+        if "precision" in err:
+            last_err = err
+            continue  # try coarser base
+        if "too small" in err or "minimum" in err or "min_size" in err:
+            # Asset's minimum base size exceeds our MAX_NOTIONAL cap — untradeable
+            # at this size. Skip cleanly (not an error worth retrying).
+            return {"action": "min_size_skip", "product_id": product_id,
+                    "reason": "min base size > MAX_NOTIONAL notional"}
+        # non-precision error (e.g. kill switch upstream) -> surface it
+        return q
+    else:
+        return {"action": "quote_error", "error": last_err or "all base-precision attempts failed",
+                "raw": q}
     if q.get("action") != "quote":
         return q
     price = float(q["quote"].get("est_average_filled_price", 0))
@@ -132,6 +176,8 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
     # Update a simple net position (base-weighted) per product
     pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0, "entries": 0})
     if side.upper() == "BUY":
+        if pos.get("base", 0.0) <= 1e-12:
+            pos["entry_ts"] = ts  # fresh entry start time
         pos["base"] += base
         pos["cost_basis"] += notional
     else:  # SELL reduces; realize pnl vs cost basis (avg)
@@ -145,6 +191,63 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
     save_ledger(led)
     return {"action": "signal_recorded", "live": False, "trade": trade,
             "position": pos, "realized_pnl": round(led["realized_pnl"], 6)}
+
+
+def close_position(product_id: str, note: str = "close") -> dict:
+    """Simulated SELL of the full held base at the current real quote.
+    Realizes P&L vs cost basis. Paper-only. No money moves."""
+    if KILL_SWITCH:
+        return _refuse("KILL_SWITCH is active")
+    led = load_ledger()
+    pos = led["positions"].get(product_id)
+    if not pos or pos.get("base", 0.0) <= 1e-12:
+        return {"action": "no_position", "product_id": product_id}
+    base = pos["base"]
+    # Paper close: value the simulated SELL at the REAL current bid (read-only),
+    # realize P&L vs cost basis. We do NOT call orders preview here because that
+    # enforces real account holdings — in paper sim we only need the price.
+    price = _current_price(product_id)
+    if price <= 0:
+        return {"action": "quote_error", "error": "no bid", "product_id": product_id}
+    commission = base * price * 0.0012  # ~0.12% taker, matches preview scale
+    avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
+    proceeds = base * price
+    pnl = (proceeds - commission) - avg_cost * base
+    ts = datetime.now(timezone.utc).isoformat()
+    trade = {"ts": ts, "product_id": product_id, "side": "SELL",
+             "quote_size": round(proceeds, 4), "fill_price": price,
+             "base_size": base, "commission": round(commission, 6), "live": False,
+             "note": note, "realized_pnl": round(pnl, 6)}
+    led["trades"].append(trade)
+    led["realized_pnl"] += pnl
+    led["positions"][product_id] = {"base": 0.0, "cost_basis": 0.0, "entries": pos["entries"] + 1}
+    save_ledger(led)
+    return {"action": "closed", "live": False, "trade": trade,
+            "realized_pnl": round(led["realized_pnl"], 6)}
+
+
+def mark_to_market() -> dict:
+    """Value open positions at current real quotes (read-only). Returns unrealized P&L."""
+    if KILL_SWITCH:
+        return {"error": "KILL_SWITCH active"}
+    led = load_ledger()
+    out = {}
+    total_unreal = 0.0
+    for pid, pos in led["positions"].items():
+        if pos.get("base", 0.0) <= 1e-12:
+            continue
+        try:
+            bid = _current_price(pid)  # candles mark (best-bid-ask ignores product_id)
+            if bid <= 0:
+                continue
+            avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else 0.0
+            unreal = (bid - avg_cost) * pos["base"]
+            out[pid] = {"base": pos["base"], "avg_cost": round(avg_cost, 4),
+                        "bid": bid, "unrealized_pnl": round(unreal, 4)}
+            total_unreal += unreal
+        except Exception:
+            continue
+    return {"positions": out, "total_unrealized_pnl": round(total_unreal, 4)}
 
 
 def propose_live(product_id: str, side: str, quote_size: float,
@@ -192,6 +295,8 @@ def main() -> int:
     ps.add_argument("--quote-size", type=float); ps.add_argument("--base-size", type=float)
     ps.add_argument("--note", default="")
     pl = sub.add_parser("ledger")
+    pc = sub.add_parser("close"); pc.add_argument("product")
+    pm = sub.add_parser("mtm")
     pp = sub.add_parser("propose-live"); pp.add_argument("product"); pp.add_argument("side")
     pp.add_argument("--quote-size", type=float, required=True); pp.add_argument("--note", default="")
     pst = sub.add_parser("status")
@@ -204,6 +309,10 @@ def main() -> int:
                                         args.base_size, args.note), indent=2))
     elif args.cmd == "ledger":
         print(json.dumps(ledger_summary(), indent=2))
+    elif args.cmd == "close":
+        print(json.dumps(close_position(args.product), indent=2))
+    elif args.cmd == "mtm":
+        print(json.dumps(mark_to_market(), indent=2))
     elif args.cmd == "propose-live":
         print(json.dumps(propose_live(args.product, args.side, args.quote_size, args.note), indent=2))
     elif args.cmd == "status":
