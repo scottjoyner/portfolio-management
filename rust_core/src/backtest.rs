@@ -28,14 +28,51 @@ pub struct BacktestVerdict {
     pub reason: String,
 }
 
+/// Pass thresholds, used by both Rust and Python backtest so they cannot drift.
+/// Mirrors strategy_engine.BACKTEST_PASS (single-sourced constant).
+#[derive(Debug, Clone)]
+pub struct BacktestPass {
+    pub min_win_rate: f64,
+    pub min_sharpe: f64,
+    pub min_profit_factor: f64,
+    pub max_drawdown_pct: f64,
+    pub min_total_return_pct: f64,
+}
+
+impl Default for BacktestPass {
+    fn default() -> Self {
+        // Backward-compatible stricter thresholds (intentional):
+        // win>=0.50, sharpe>0.5, pf>1.20, dd<15%, ret>-10%.
+        BacktestPass {
+            min_win_rate: 0.50,
+            min_sharpe: 0.5,
+            min_profit_factor: 1.20,
+            max_drawdown_pct: 15.0,
+            min_total_return_pct: -10.0,
+        }
+    }
+}
+
 /// Run a single strategy through historical data and compute performance metrics.
 /// Uses the unified evaluate() dispatcher — supports all 25 strategies.
+///
+/// * `opens`  — per-bar open prices. When None, synthesized as previous close
+///   (the legacy live-synthesized default). P0-1: backtest must match live, which
+///   passes `opens = closes`, so callers should pass the real opens here.
+/// * `fee_bps` — round-trip entry+exit fee in basis points (P1-5). 0 = no fees.
+/// * `max_hold_bars` — if > 0, force-close a position after this many bars
+///   instead of riding to the final bar (P1-7, reduces survivorship bias).
+/// * `pass` — thresholds; defaults to BacktestPass::default().
 pub fn backtest_strategy(
     strategy_name: &str,
     closes: &[f64],
     volumes: &[f64],
     highs: Option<&[f64]>,
     lows: Option<&[f64]>,
+    opens: Option<&[f64]>,
+    fee_bps: f64,
+    max_hold_bars: usize,
+    pass: BacktestPass,
     warmup: usize,
 ) -> BacktestVerdict {
     let n = closes.len();
@@ -59,20 +96,54 @@ pub fn backtest_strategy(
     let h = highs.unwrap_or(&[]);
     let l = lows.unwrap_or(&[]);
 
+    // Open prices: use provided opens, else synthesize (open[i] = close[i-1]).
+    let synth_opens: Vec<f64> = if opens.is_none() && closes.len() > 1 {
+        let mut o = Vec::with_capacity(closes.len());
+        o.push(closes[0]);
+        o.extend_from_slice(&closes[..closes.len() - 1]);
+        o
+    } else {
+        Vec::new()
+    };
+    let o = opens.unwrap_or(&synth_opens);
+    let fee_frac = fee_bps / 10000.0;
+
     let mut trades: Vec<BacktestTrade> = Vec::new();
     let mut open_trade: Option<BacktestTrade> = None;
     let mut equity_curve: Vec<f64> = vec![1.0];
+
+    let mut apply_exit = |ot: &BacktestTrade, exit_price: f64, exit_bar: usize, trades: &mut Vec<BacktestTrade>, equity_curve: &mut Vec<f64>| {
+        let gross_pct = if ot.side == "BUY" {
+            (exit_price - ot.entry_price) / ot.entry_price * 100.0
+        } else {
+            (ot.entry_price - exit_price) / ot.entry_price * 100.0
+        };
+        // P1-5: subtract round-trip fee from each trade's return.
+        let return_pct = gross_pct - fee_frac * 100.0 * 2.0;
+        let mut t = ot.clone();
+        t.exit_bar = Some(exit_bar);
+        t.exit_price = Some(exit_price);
+        t.return_pct = Some(return_pct);
+        trades.push(t.clone());
+        let ret = return_pct / 100.0;
+        let new_equity = equity_curve.last().unwrap_or(&1.0) * (1.0 + ret);
+        equity_curve.push(new_equity);
+        t
+    };
 
     for i in warmup..n {
         let bar_closes = &closes[..=i];
         let bar_volumes = if i < vols.len() { &vols[..=i] } else { &[] };
         let bar_highs = if i < h.len() { &h[..=i] } else { &[] };
         let bar_lows = if i < l.len() { &l[..=i] } else { &[] };
+        let bar_opens = if i < o.len() { &o[..=i] } else { &[] };
         let current_price = closes[i];
 
-        let sig = strategies::evaluate(
-            strategy_name, bar_closes, bar_volumes, bar_highs, bar_lows,
-        );
+        let sig = if bar_opens.is_empty() {
+            strategies::evaluate(strategy_name, bar_closes, bar_volumes, bar_highs, bar_lows)
+        } else {
+            strategies::evaluate_opens(strategy_name, bar_closes, bar_opens, bar_volumes, bar_highs, bar_lows)
+        };
 
         let sig = match sig {
             Some(s) => s,
@@ -96,40 +167,22 @@ pub fn backtest_strategy(
             let ot = open_trade.as_ref().unwrap();
             let should_close = (ot.side == "BUY" && sig.action == "SELL")
                 || (ot.side == "SELL" && sig.action == "BUY");
-            if should_close {
-                let return_pct = if ot.side == "BUY" {
-                    (current_price - ot.entry_price) / ot.entry_price * 100.0
-                } else {
-                    (ot.entry_price - current_price) / ot.entry_price * 100.0
-                };
-                let mut t = ot.clone();
-                t.exit_bar = Some(i);
-                t.exit_price = Some(current_price);
-                t.return_pct = Some(return_pct);
-                trades.push(t);
+            let held_bars = i - ot.entry_bar;
+            let forced = max_hold_bars > 0 && held_bars >= max_hold_bars;
+            if should_close || forced {
+                let exited = apply_exit(ot, current_price, i, &mut trades, &mut equity_curve);
                 open_trade = None;
-                let ret = return_pct / 100.0;
-                let new_equity = equity_curve.last().unwrap_or(&1.0) * (1.0 + ret);
-                equity_curve.push(new_equity);
+                let _ = exited;
             }
         }
     }
 
-    // Force-close any open trade at last bar
+    // P1-7: force-close any open trade at the last bar (same as before, but now
+    // uses the fee-aware exit helper). Holding to the final bar is no longer
+    // assumed free when fee_bps > 0, and a max_hold_bars cap bounds survivorship.
     if let Some(ot) = open_trade {
-        let return_pct = if ot.side == "BUY" {
-            (closes[n - 1] - ot.entry_price) / ot.entry_price * 100.0
-        } else {
-            (ot.entry_price - closes[n - 1]) / ot.entry_price * 100.0
-        };
-        let mut t = ot;
-        t.exit_bar = Some(n - 1);
-        t.exit_price = Some(closes[n - 1]);
-        t.return_pct = Some(return_pct);
-        trades.push(t);
-        let ret = return_pct / 100.0;
-        let new_equity = equity_curve.last().unwrap_or(&1.0) * (1.0 + ret);
-        equity_curve.push(new_equity);
+        let exited = apply_exit(&ot, closes[n - 1], n - 1, &mut trades, &mut equity_curve);
+        let _ = exited;
     }
 
     let total_trades = trades.len();
@@ -178,7 +231,11 @@ pub fn backtest_strategy(
         .fold(0.0f64, |acc, dd| acc.min(dd))
         .abs() * 100.0;
 
-    let passed = win_rate >= 0.50 && sharpe_ratio > 0.5 && profit_factor > 1.20 && max_drawdown_pct < 15.0 && total_return_pct > -10.0;
+    let passed = win_rate >= pass.min_win_rate
+        && sharpe_ratio > pass.min_sharpe
+        && profit_factor > pass.min_profit_factor
+        && max_drawdown_pct < pass.max_drawdown_pct
+        && total_return_pct > pass.min_total_return_pct;
     let reason = if passed { "Passed backtest".to_string() } else { "Below thresholds".to_string() };
 
     BacktestVerdict {
@@ -210,10 +267,15 @@ mod tests {
         vec![1000.0; n]
     }
 
+    // Convenience wrapper exercising the default thresholds / no-op fee / no max-hold.
+    fn bt(name: &str, closes: &[f64], warms: usize) -> BacktestVerdict {
+        backtest_strategy(name, closes, &vols(closes.len()), None, None, None, 0.0, 0, BacktestPass::default(), warms)
+    }
+
     #[test]
     fn test_insufficient_data() {
         let v = vec![1.0, 2.0, 3.0];
-        let verdict = backtest_strategy("ema_cross", &v, &v, None, None, 10);
+        let verdict = backtest_strategy("ema_cross", &v, &v, None, None, None, 0.0, 0, BacktestPass::default(), 10);
         assert_eq!(verdict.total_trades, 0);
         assert!(!verdict.passed);
         assert_eq!(verdict.reason, "Insufficient data");
@@ -225,7 +287,7 @@ mod tests {
         // Strictly increasing -> single BUY, no SELL -> 1 trade -> "Too few".
         let n = 60usize;
         let closes: Vec<f64> = (0..n).map(|i| 100.0 + i as f64).collect();
-        let verdict = backtest_strategy("ema_cross", &closes, &vols(n), None, None, 21);
+        let verdict = bt("ema_cross", &closes, 21);
         assert!(verdict.total_trades < 2);
         assert!(!verdict.passed);
         assert_eq!(verdict.reason, "Too few trades");
@@ -234,8 +296,7 @@ mod tests {
     #[test]
     fn test_wave_ema_cross_metrics() {
         let closes = wave(200);
-        let v = vols(200);
-        let verdict = backtest_strategy("ema_cross", &closes, &v, None, None, 21);
+        let verdict = bt("ema_cross", &closes, 21);
         assert!(verdict.total_trades >= 2, "expected trades, got {}", verdict.total_trades);
         assert!(verdict.win_rate >= 0.0 && verdict.win_rate <= 1.0);
         assert!(verdict.profit_factor.is_finite());
@@ -247,10 +308,9 @@ mod tests {
     fn test_wave_with_highs_lows_volumes() {
         let n = 200usize;
         let closes = wave(n);
-        let v = vols(n);
         let highs: Vec<f64> = closes.iter().map(|c| c + 2.0).collect();
         let lows: Vec<f64> = closes.iter().map(|c| c - 2.0).collect();
-        let verdict = backtest_strategy("psar", &closes, &v, Some(&highs), Some(&lows), 21);
+        let verdict = backtest_strategy("psar", &closes, &vols(n), Some(&highs), Some(&lows), None, 0.0, 0, BacktestPass::default(), 21);
         // psar should at least run without panic; force-close path exercised
         assert!(verdict.total_trades >= 0);
     }
@@ -263,8 +323,7 @@ mod tests {
         let closes: Vec<f64> = (0..n)
             .map(|i| 100.0 + 10.0 * ((i as f64 / 5.0) + std::f64::consts::PI).sin())
             .collect();
-        let v = vols(n);
-        let verdict = backtest_strategy("ema_cross", &closes, &v, None, None, 21);
+        let verdict = bt("ema_cross", &closes, 21);
         assert!(verdict.total_trades >= 2, "got {}", verdict.total_trades);
     }
 
@@ -276,9 +335,53 @@ mod tests {
             let base = 100.0 + i as f64 * 0.5;
             closes.push(base + 0.3 * ((i / 7) as f64).sin());
         }
-        let v = vols(closes.len());
-        let verdict = backtest_strategy("ema_cross", &closes, &v, None, None, 21);
+        let verdict = bt("ema_cross", &closes, 21);
         // Either pass or fail; both branches covered across the suite.
         let _ = verdict.passed;
+    }
+
+    #[test]
+    fn test_fee_kills_thin_edge() {
+        // A strategy that is marginally profitable gross should fail once we
+        // charge a high round-trip fee (P1-5 fee sensitivity).
+        let mut closes = Vec::new();
+        for i in 0..200u32 {
+            let base = 100.0 + i as f64 * 0.1;
+            closes.push(base + 0.05 * ((i / 7) as f64).sin());
+        }
+        let free = bt("ema_cross", &closes, 21);
+        let fee = backtest_strategy("ema_cross", &closes, &vols(closes.len()), None, None, None, 50.0, 0, BacktestPass::default(), 21);
+        assert!(free.sharpe_ratio >= fee.sharpe_ratio - 1e-9,
+                "fee should not improve sharpe: {} vs {}", free.sharpe_ratio, fee.sharpe_ratio);
+        assert!(fee.profit_factor <= free.profit_factor + 1e-9,
+                "fee should reduce profit factor: {} vs {}", fee.profit_factor, free.profit_factor);
+    }
+
+    #[test]
+    fn test_opens_passed_tracks_live() {
+        // Passing opens=closes (live convention) must NOT panic and must run.
+        let closes = wave(200);
+        let opens: Vec<f64> = closes.clone();
+        let verdict = backtest_strategy("candle_pat", &closes, &vols(200), None, None, Some(&opens), 0.0, 0, BacktestPass::default(), 21);
+        assert!(verdict.total_trades >= 0);
+    }
+
+    #[test]
+    fn test_max_hold_bars_caps_trades() {
+        // With a tiny max_hold_bars, open positions get force-closed early.
+        let closes = wave(300);
+        let no_cap = bt("ema_cross", &closes, 21);
+        let capped = backtest_strategy("ema_cross", &closes, &vols(300), None, None, None, 0.0, 3, BacktestPass::default(), 21);
+        assert!(capped.total_trades >= no_cap.total_trades);
+    }
+
+    #[test]
+    fn test_thresholds_single_sourced() {
+        let p = BacktestPass::default();
+        assert_eq!(p.min_win_rate, 0.50);
+        assert!((p.min_sharpe - 0.5).abs() < 1e-9);
+        assert!((p.min_profit_factor - 1.20).abs() < 1e-9);
+        assert_eq!(p.max_drawdown_pct, 15.0);
+        assert_eq!(p.min_total_return_pct, -10.0);
     }
 }

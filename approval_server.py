@@ -22,11 +22,55 @@ import logging
 import os
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 
 logger = logging.getLogger("approval_server")
+
+
+DEFAULT_APPROVAL_TTL_SECONDS = 24 * 60 * 60  # 24h
+
+
+def is_expired(token_record: Dict[str, Any], ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS) -> bool:
+    """Return True if the approval record is past its expiry timestamp.
+
+    Honors an explicit ``expiry_ts``; falls back to ``created_at`` plus ``ttl_seconds``.
+    Records with neither field are treated as non-expiring (legacy compatibility).
+    """
+    if not isinstance(token_record, dict):
+        return True
+    now = time.time()
+    expiry = token_record.get("expiry_ts")
+    if expiry is not None:
+        try:
+            return float(expiry) < now
+        except (TypeError, ValueError):
+            return False
+    created = token_record.get("created_at")
+    if created is None:
+        return False
+    try:
+        created_ts = float(created)
+    except (TypeError, ValueError):
+        return False
+    return (created_ts + ttl_seconds) < now
+
+
+def stamp_approval_timestamps(record: Dict[str, Any], ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS) -> Dict[str, Any]:
+    """Ensure the approval record carries created_at + expiry_ts (idempotent)."""
+    now = time.time()
+    if record.get("created_at") is None:
+        record["created_at"] = now
+    else:
+        try:
+            now = float(record["created_at"])
+        except (TypeError, ValueError):
+            now = time.time()
+    if record.get("expiry_ts") is None:
+        record["expiry_ts"] = now + ttl_seconds
+    return record
 
 
 class ApprovalHandler(BaseHTTPRequestHandler):
@@ -59,9 +103,23 @@ class ApprovalHandler(BaseHTTPRequestHandler):
             return json.load(f)
 
     def _write_pending(self, data: Dict[str, Any]):
-        with open(self.pending_file, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            json.dump(data, f, indent=2, default=str)
+        """Atomically write pending approvals via temp file + os.replace."""
+        import tempfile
+        directory = os.path.dirname(self.pending_file) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                json.dump(data, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.pending_file)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def _parse_token(self, path: str, prefix: str) -> str:
         return path[len(prefix):] if path.startswith(prefix) else ""
@@ -152,9 +210,12 @@ a {{ color:#1a1a2e; }}
         """Find a token in the canonical file or the shared inbox and set status.
 
         Returns (entry, ok). Handles cross-user manual orders written to the
-        approvals inbox by the dashboard (E6)."""
+        approvals inbox by the dashboard (E6). Expired tokens are rejected."""
         data = self._read_pending()
         if token in data:
+            if is_expired(data[token]):
+                logger.warning("Rejected %s for expired token %s", status, token)
+                return None, False
             data[token]["status"] = status
             data[token]["resolved_at"] = datetime.now(timezone.utc).isoformat()
             self._write_pending(data)

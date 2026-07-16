@@ -29,9 +29,9 @@ def main():
     # Test Neo4j connection
     try:
         db = create_graph_database(
-            os.getenv("NEO4J_URI", "bolt://x1-370.tailcb8954.ts.net:7687"),
+            os.getenv("NEO4J_URI", ""),
             os.getenv("NEO4J_USER", "neo4j"),
-            os.getenv("NEO4J_PASSWORD", "gluhlaf8")
+            os.getenv("NEO4J_PASSWORD", "")
         )
         
         # Test basic query

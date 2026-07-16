@@ -277,8 +277,9 @@ def test_adapter_symbol_mapping_sports():
         "Who wins the super bowl?", "sports") == "BTC-USD"
     assert PMA._question_to_symbol(
         "Will ETH surpass 5000?", "crypto") == "ETH-USD"
+    # word boundary: no keyword match -> empty, no false-positive fallback
     assert PMA._question_to_symbol(
-        "random", "general") == "BTC-USD"
+        "random", "general") == ""
 
 
 def test_adapter_hours_to_expiry():

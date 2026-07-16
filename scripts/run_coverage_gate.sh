@@ -30,12 +30,25 @@ if [ -d "$ROOT/.venv" ]; then
   done
   shopt -u nullglob
   if [ "${#files[@]}" -gt 0 ]; then
-    "$COV_BIN" combine --data-file="$COV_DIR/combined.coverage" "${files[@]}" >/dev/null 2>&1 || true
-    "$COV_BIN" json --data-file="$COV_DIR/combined.coverage" -o "$COV_DIR/python_coverage.json" >/dev/null 2>&1 || true
-    "$PYTHON_BIN" "$GATE" --lang python --manifest "$COV_DIR/python_manifest.txt" \
-      --data "$COV_DIR/python_coverage.json" --threshold "$THRESHOLD" || overall=1
+    if ! "$COV_BIN" combine --data-file="$COV_DIR/combined.coverage" "${files[@]}" >/dev/null 2>&1; then
+      echo "ERROR: coverage combine failed — found data files but could not merge them." >&2
+      overall=1
+    fi
+    if [ ! -f "$COV_DIR/combined.coverage" ]; then
+      echo "ERROR: combined.coverage was not produced — aborting Python gate." >&2
+      overall=1
+    else
+      "$COV_BIN" json --data-file="$COV_DIR/combined.coverage" -o "$COV_DIR/python_coverage.json" >/dev/null 2>&1 || true
+      if [ ! -f "$COV_DIR/python_coverage.json" ]; then
+        echo "ERROR: python_coverage.json was not produced — aborting Python gate." >&2
+        overall=1
+      else
+        "$PYTHON_BIN" "$GATE" --lang python --manifest "$COV_DIR/python_manifest.txt" \
+          --data "$COV_DIR/python_coverage.json" --threshold "$THRESHOLD" || overall=1
+      fi
+    fi
   else
-    echo "No Python coverage data found. Run tests with coverage first."
+    echo "ERROR: No Python coverage data found (root .coverage, /tmp/cov_*.coverage, or $COV_DIR/*.coverage). Run tests with coverage first." >&2
     overall=1
   fi
 else

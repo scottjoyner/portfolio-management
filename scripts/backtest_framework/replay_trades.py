@@ -22,12 +22,16 @@ import sys
 
 
 def _default_root():
-    """Resolve the trade_events root: NAS_FEED_ROOT if set+exists, else data/feed_cache."""
+    """Resolve the trade_events root.
+
+    If NAS_FEED_ROOT is set, honor it explicitly: return its trade_events
+    subdir (even if absent -> caller gets []), so an explicit env override is
+    never silently shadowed by the default root. Only fall back to the repo
+    data/feed_cache when NAS_FEED_ROOT is unset.
+    """
     nas = os.environ.get("NAS_FEED_ROOT")
     if nas:
-        p = os.path.join(nas.rstrip("/"), "trade_events")
-        if os.path.isdir(p):
-            return p
+        return os.path.join(nas.rstrip("/"), "trade_events")
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     return os.path.join(here, "data", "feed_cache", "trade_events")
 

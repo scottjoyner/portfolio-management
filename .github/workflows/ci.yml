@@ -1,13 +1,3 @@
-# CI/CD Pipeline Configuration
-## Date: June 4, 2026 | Time: ~13:58
-
----
-
-## GitHub Actions Workflow
-
-### .github/workflows/ci.yml
-
-```yaml
 name: Trading Strategies CI
 
 on:
@@ -19,31 +9,56 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
-    
+
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
         pip install pytest pytest-cov
-    
+
     - name: Run unit tests
       run: |
         pytest tests/ --cov=trading_system --cov-report=xml
-    
+
     - name: Upload coverage
       uses: codecov/codecov-action@v3
-    
+
     - name: Run performance benchmarks
       run: |
         python performance_benchmarks/run_all_tests.py
-    
+
     - name: Generate report
       run: |
         python performance_benchmarks/cli_report_generator.py --output=benchmark-report.html
+
+  coverage-gate:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-cov
+
+    - name: Produce coverage data for the gate
+      run: |
+        .venv/bin/coverage run --source=. -m pytest tests/ -q || pytest tests/ --cov=. --cov-report= -q
+
+    - name: Run coverage gate (90% per-module)
+      run: |
+        bash scripts/run_coverage_gate.sh

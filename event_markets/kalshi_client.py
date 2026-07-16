@@ -5,7 +5,6 @@ Supports both the legacy email/password login flow and the current
 API-key flow backed by a PEM private key.
 """
 
-import hashlib
 import json
 import logging
 import base64
@@ -186,9 +185,15 @@ class KalshiClient:
             logger.warning("Kalshi: no credentials configured")
             self._token = ""
             return
-        ts = int(time.time() * 1000)
-        raw = f"{ts}{self.password}"
-        sig = hashlib.sha256(raw.encode()).hexdigest()
+        # NOTE (P0-1): Kalshi's legacy email/password login transmits the
+        # plaintext password over HTTPS via a JSON POST to /login. There is NO
+        # signed-auth path for this legacy flow — the documented "SHA256 signed"
+        # form below is FICTIONAL and was never sent. We deliberately compute no
+        # signature and never log the password. Prefer the API-key (RSA-PSS)
+        # signed flow via api_key_id + private_key_path (see _auth_header), which
+        # never transmits a password at all.
+        if self._use_api_key_auth():
+            raise RuntimeError("Kalshi write/login ops require API-key auth; legacy password login is unsupported")
         payload = json.dumps({"email": self.email, "password": self.password}).encode()
         req = urllib.request.Request(
             f"{self.base_url}/login",
@@ -203,7 +208,8 @@ class KalshiClient:
                 data = json.loads(resp.read().decode())
             self._token = data.get("token", "")
             self._member_id = data.get("member_id", "")
-            logger.info("Kalshi: logged in as %s", self._member_id)
+            # Never log the email/password; log only the opaque member id.
+            logger.info("Kalshi: logged in (member=%s)", self._member_id)
         except Exception as e:
             logger.warning("Kalshi login failed: %s", e)
             self._token = ""

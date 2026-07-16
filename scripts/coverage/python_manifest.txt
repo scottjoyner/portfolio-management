@@ -542,3 +542,14 @@ trading_system/valuation/fundamental.py
 trading_system/valuation/models/dcf.py
 trading_system/valuation/models/technical.py
 trading_system/valuation/technical.py
+data/feed_cache
+scripts/backtest_framework/compare_experiments
+scripts/backtest_framework/ensemble
+scripts/backtest_framework/experiment
+scripts/backtest_framework/multitimeframe
+scripts/backtest_framework/promote
+scripts/backtest_framework/regime_experiment
+scripts/backtest_framework/replay_trades
+scripts/backtest_framework/run_experiment
+scripts/backtest_framework/run_suite
+scripts/backtest_framework/walk_forward

@@ -13,6 +13,7 @@ Usage:
 
 import logging
 import time
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,14 @@ from .polymarket_client import PolymarketClient as _PolymarketClient
 from .polymarket_relayer import PolymarketRelayerClient as _PolymarketRelayerClient
 
 logger = logging.getLogger("prediction_markets")
+
+# Word-boundary matcher for short keywords so "eth" doesn't match "ethics",
+# "pol" doesn't match "politics", "btc" doesn't match "botcoin", etc.
+def _kw_in(text: str, kw: str) -> bool:
+    import re
+    if len(kw) < 4:
+        return bool(re.search(r'\b' + re.escape(kw) + r'\b', text))
+    return kw in text
 
 # Crypto / macro keywords used across both platforms
 CRYPTO_KEYWORDS = [
@@ -72,7 +81,32 @@ class PredictionMarket:
     @property
     def is_relevant(self) -> bool:
         q = self.question.lower()
-        return any(kw in q for kw in CRYPTO_KEYWORDS)
+        for kw in CRYPTO_KEYWORDS:
+            if len(kw) < 4:
+                if re.search(r'\b' + re.escape(kw) + r'\b', q):
+                    return True
+            elif kw in q:
+                return True
+        return False
+
+    @property
+    def is_tradeable(self) -> bool:
+        """True only if the market is open AND not resolved/settled.
+
+        A market that resolves mid-cache (status flips to 'closed'/'settled')
+        must never be treated as tradeable. Callers in the hot path should
+        re-check this rather than trusting a cached result.
+        """
+        if not self.is_open:
+            return False
+        # Raw data may carry settlement/closed state from the source feed.
+        raw = self.raw_data or {}
+        if raw.get("settled") or raw.get("closed") or raw.get("accepting_orders") is False:
+            return False
+        status = str(raw.get("status", "") or "").lower()
+        if status in ("settled", "finalized", "closed"):
+            return False
+        return True
 
     def format(self) -> str:
         prices = ", ".join(f"{k}: {v*100:.1f}%" for k, v in self.outcome_prices.items())
@@ -159,7 +193,7 @@ class UnifiedPredictionMarketClient:
                 continue
             ls = min(m.volume / 50000, 1.0) * max(0, 1 - spread * 3)
             category = self._detect_category(m.title)
-            keywords = [kw for kw in CRYPTO_KEYWORDS if kw in m.title.lower()]
+            keywords = [kw for kw in CRYPTO_KEYWORDS if _kw_in(m.title.lower(), kw)]
             results.append(PredictionMarket(
                 platform="kalshi",
                 market_id=m.ticker,
@@ -269,7 +303,7 @@ class UnifiedPredictionMarketClient:
                 r.category = cat
             else:
                 r.category = self._detect_category(r.question)
-            r.keywords = [kw for kw in CRYPTO_KEYWORDS if kw in r.question.lower()]
+            r.keywords = [kw for kw in CRYPTO_KEYWORDS if _kw_in(r.question.lower(), kw)]
         return results
 
     def get_polymarket_order_book(self, token_id: str):
@@ -310,10 +344,10 @@ class UnifiedPredictionMarketClient:
         """Search ALL event categories across both platforms.
 
         Uses keyword-based categorization since Polymarket Gamma tags don't
-        reliably filter by category. Results cached for 45 seconds.
+        reliably filter by category. Results cached for 10 seconds.
         """
         now = time.time()
-        if self._category_cache and (now - self._category_cache_ts) < 45:
+        if self._category_cache and (now - self._category_cache_ts) < 10:
             return self._category_cache
 
         categories = ["crypto", "sports", "politics", "entertainment", "economics", "technology"]
@@ -327,7 +361,7 @@ class UnifiedPredictionMarketClient:
                 cat = self._detect_category(m.question)
                 if cat in result:
                     m.category = cat
-                    m.keywords = [kw for kw in CRYPTO_KEYWORDS if kw in m.question.lower()]
+                    m.keywords = [kw for kw in CRYPTO_KEYWORDS if _kw_in(m.question.lower(), kw)]
                     result[cat].append(m)
         except Exception as e:
             logger.debug("Polymarket category search failed: %s", e)

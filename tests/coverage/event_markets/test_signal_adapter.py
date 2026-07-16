@@ -123,11 +123,13 @@ def test_get_order_book_depth_exception():
 def test_question_to_symbol():
     assert PredictionMarketAdapter._question_to_symbol("Will Bitcoin reach 100k?") == "BTC-USD"
     assert PredictionMarketAdapter._question_to_symbol("Will DOGE moon?") == "DOGE-USD"
-    # word boundary: "pol" should not match "politics"
-    assert PredictionMarketAdapter._question_to_symbol("What is politics?") == "BTC-USD"
-    # fallback by category
-    assert PredictionMarketAdapter._question_to_symbol("random words here", "sports") == "BTC-USD"
-    assert PredictionMarketAdapter._question_to_symbol("random words", "technology") == "NVDA"
+    # word boundary: "pol" should not match "politics", "eth" not "ethics", "btc" not "botcoin"
+    assert PredictionMarketAdapter._question_to_symbol("What is politics?") == ""
+    assert PredictionMarketAdapter._question_to_symbol("ethics debate") == ""
+    assert PredictionMarketAdapter._question_to_symbol("botcoin launch") == ""
+    # no keyword match -> empty (caller treats as "no symbol"), no false-positive fallback
+    assert PredictionMarketAdapter._question_to_symbol("random words here", "sports") == ""
+    assert PredictionMarketAdapter._question_to_symbol("random words", "technology") == ""
 
 
 def test_market_to_signals_buy_and_sell():

@@ -700,6 +700,14 @@ def api_health():
 
     state["operator_state_exists"] = os.path.exists(OPERATOR_STATE_PATH)
 
+    # Backtest/feed cache efficiency counters (P1-6 observability).
+    try:
+        from data.feed_cache import get_metrics as _feed_metrics
+        state["components"]["feed_cache"] = "ok"
+        state["feed_cache_metrics"] = _feed_metrics()
+    except Exception as e:
+        state["components"]["feed_cache"] = f"error: {e}"
+
     healthy_states = {"ok", "empty", "stale"}
     all_ok = all(
         v in healthy_states for v in state["components"].values()
@@ -813,6 +821,57 @@ def _qs(query_string, key, default):
     """Read a query-string param with a default (handles single-value lists)."""
     vals = parse_qs(query_string).get(key)
     return vals[0] if vals else default
+
+
+def _experiments_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "scripts" / "experiments"
+
+
+def api_backtest_experiments(name: str | None = None):
+    """List backtest-framework scorecards from scripts/experiments/ledger.jsonl
+    plus each experiment's scorecard.json (pass_rate, mean_sharpe, n_passed,
+    regime/ensemble summaries)."""
+    exp_dir = _experiments_dir()
+    ledger_path = exp_dir / "ledger.jsonl"
+    rows = []
+    if ledger_path.exists():
+        for line in ledger_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if name is not None:
+        match = next((r for r in rows if r.get("name") == name), None)
+        if match is None:
+            return {"error": f"experiment '{name}' not found", "status": "error"}
+        sc_path = exp_dir / name / "scorecard.json"
+        if sc_path.exists():
+            try:
+                match = {**match, "scorecard_detail": json.loads(sc_path.read_text(encoding="utf-8"))}
+            except json.JSONDecodeError:
+                pass
+        return {"experiment": match, "status": "ok"}
+
+    # Enrich each row with scorecard summary where available.
+    enriched = []
+    for r in rows:
+        entry = dict(r)
+        sc_path = exp_dir / r.get("name", "") / "scorecard.json"
+        if sc_path.exists():
+            try:
+                sc = json.loads(sc_path.read_text(encoding="utf-8"))
+                entry["mean_sharpe_passed"] = sc.get("mean_sharpe_passed", entry.get("mean_sharpe_passed"))
+                entry["n_strategies_tested"] = sc.get("n_strategies_tested")
+                entry["ensemble"] = sc.get("ensemble")
+                entry["regime"] = sc.get("regime")
+            except json.JSONDecodeError:
+                pass
+        enriched.append(entry)
+    return {"experiments": enriched, "count": len(enriched), "status": "ok"}
 
 
 def _ensure_project_root_on_path():
@@ -2702,6 +2761,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/optimizer/param-opt": lambda: _load_json(ROOT / "data" / "param_opt_results.json", {}),
             "/optimizer/wash-sale": lambda: _load_json(ROOT / "data" / "wash_sale_state.json", {}),
             "/optimizer/sr-levels": lambda: _load_json(ROOT / "data" / "sr_levels.json", {}),
+            "/backtests/experiments": lambda: api_backtest_experiments(),
         }
 
         if path in handlers:
@@ -2760,6 +2820,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(json.dumps({"brackets": brackets}, default=str))
             except Exception as e:
                 self._json_response(json.dumps({"error": str(e), "brackets": {}}, default=str), status=500)
+
+        elif path.startswith("/backtests/experiments/"):
+            name = path.split("/backtests/experiments/", 1)[-1].strip().rstrip("/")
+            try:
+                self._json_response(json.dumps(api_backtest_experiments(name=name), default=str))
+            except Exception as e:
+                self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
 
         elif path in ("/dashboard", "", "/"):
             self._serve_dashboard()

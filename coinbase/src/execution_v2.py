@@ -69,6 +69,68 @@ def _fmt_price(v: float) -> str:
     return f"{float(v):.2f}"
 
 
+def _age_tighten_mult(age_s: float, max_hold_s: float) -> float:
+    """Return the age-based tightening multiplier (1.0 = no tightening)."""
+    age_ratio = age_s / max(max_hold_s, 1.0)
+    if age_ratio >= 0.90:
+        return 0.2
+    if age_ratio >= 0.75:
+        return 0.4
+    if age_ratio >= 0.50:
+        return 0.6
+    if age_ratio >= 0.25:
+        return 0.8
+    return 1.0
+
+
+def compute_trailing_stop(
+    side: str,
+    entry_price: float,
+    current_stop: float,
+    highest_price: float,
+    lowest_price: float,
+    initial_stop_dist: float,
+    r_multiple: float,
+    max_hold_s: float,
+    age_s: float,
+    regime: str = "unknown",
+    breakeven_set: bool = False,
+) -> tuple:
+    """Shared breakeven/trail/age-tighten math for both live and paper stop logic.
+
+    Returns (new_stop, breakeven_set). The caller decides whether to actually place
+    an order (live) or just update the in-memory stop (paper). ``side`` is "BUY"/"SELL".
+    """
+    side = side.upper()
+    vol_mult = 1.5 if regime == "high_volatility" else 1.0
+    trailing_dist = initial_stop_dist * vol_mult
+    be_set = bool(breakeven_set)
+
+    if side == "BUY":
+        stop = highest_price - trailing_dist
+        stop = max(stop, current_stop)
+        if r_multiple >= 1.5 and not be_set:
+            stop = max(stop, entry_price)
+            be_set = True
+        if r_multiple >= 2.5:
+            tight_trail = initial_stop_dist * 0.8
+            stop = max(stop, highest_price - tight_trail)
+        age_tighten = _age_tighten_mult(age_s, max_hold_s)
+        if age_tighten < 1.0:
+            stop = max(stop, highest_price - initial_stop_dist * age_tighten)
+        return stop, be_set
+    else:
+        stop = lowest_price + trailing_dist
+        stop = min(stop, current_stop if current_stop > 0 else float("inf"))
+        if r_multiple >= 1.5 and not be_set:
+            stop = min(stop, entry_price)
+            be_set = True
+        age_tighten = _age_tighten_mult(age_s, max_hold_s)
+        if age_tighten < 1.0:
+            stop = min(stop, lowest_price + initial_stop_dist * age_tighten)
+        return stop, be_set
+
+
 class NativeExecutionEngine:
     def __init__(self, cb: CBClient, dry_run: bool = True):
         self.cb = cb
@@ -237,6 +299,8 @@ class BracketManager:
         self.engine = engine
         self._brackets: Dict[str, Dict[str, Any]] = {}
         self._stop_polling = threading.Event()
+        self.poll_failures: int = 0
+        self.max_consecutive_poll_failures: int = 5
 
     def stop_polling(self) -> None:
         """Signal the poll_brackets loop to stop gracefully."""
@@ -355,10 +419,21 @@ class BracketManager:
 
     def poll_brackets(self, poll_secs: int = 5) -> None:
         while not self._stop_polling.is_set():
-            for bid, b in list(self._brackets.items()):
-                if b["status"] != "OPEN":
-                    continue
-                self._check_bracket_status(bid, b)
+            try:
+                for bid, b in list(self._brackets.items()):
+                    if b["status"] != "OPEN":
+                        continue
+                    self._check_bracket_status(bid, b)
+                self.poll_failures = 0
+            except Exception as e:
+                self.poll_failures += 1
+                log.error(
+                    "[BRK-POLL] exception in poll loop (%d/%d): %s",
+                    self.poll_failures, self.max_consecutive_poll_failures, e,
+                )
+                if self.poll_failures >= self.max_consecutive_poll_failures:
+                    log.error("[BRK-POLL] too many consecutive poll failures — surfacing error")
+                    raise
             if poll_secs <= 0:
                 break
             # Wait for either timeout or stop signal
@@ -489,82 +564,32 @@ class BracketManager:
         if not stop_order_id:
             return False
 
-        # Compute new stop using paper logic
-        vol_mult = 1.5 if regime == "high_volatility" else 1.0
-        trailing_dist = initial_stop_dist * vol_mult
-        new_stop = None
+        # Compute new stop using the shared breakeven/trail/age-tighten helper
+        # (same logic used by the paper-mode path).
+        current_stop = b.get("stop_price", 0.0) or 0.0
+        new_stop, be_set = compute_trailing_stop(
+            side=side,
+            entry_price=b["entry_price"],
+            current_stop=current_stop,
+            highest_price=highest_price,
+            lowest_price=lowest_price,
+            initial_stop_dist=initial_stop_dist,
+            r_multiple=r_multiple,
+            max_hold_s=max_hold_s,
+            age_s=age_s,
+            regime=regime,
+            breakeven_set=b.get("breakeven_set", False),
+        )
+        b["breakeven_set"] = be_set
+        if be_set:
+            b["trailing_activated"] = True
 
+        # Only tighten (move up for longs / down for shorts), never loosen
+        old_stop = b.get("stop_price", 0.0)
         if side == "BUY":
-            # Long position trailing logic
-            current_stop = highest_price - trailing_dist
-            current_stop = max(current_stop, b.get("stop_price", 0.0) or 0.0)
-
-            # Breakeven at 1.5R
-            if r_multiple >= 1.5 and not b.get("breakeven_set", False):
-                current_stop = max(current_stop, b["entry_price"])
-                b["breakeven_set"] = True
-                b["trailing_activated"] = True
-
-            # Tight trail at 2.5R
-            if r_multiple >= 2.5:
-                tight_trail = initial_stop_dist * 0.8
-                current_stop = max(current_stop, highest_price - tight_trail)
-                b["trailing_activated"] = True
-
-            # Age tightening
-            age_ratio = age_s / max(max_hold_s, 1.0)
-            age_tighten = 1.0
-            if age_ratio >= 0.90:
-                age_tighten = 0.2
-            elif age_ratio >= 0.75:
-                age_tighten = 0.4
-            elif age_ratio >= 0.50:
-                age_tighten = 0.6
-            elif age_ratio >= 0.25:
-                age_tighten = 0.8
-
-            if age_tighten < 1.0:
-                age_stop = highest_price - initial_stop_dist * age_tighten
-                current_stop = max(current_stop, age_stop)
-
-            new_stop = current_stop
-
-            # Only tighten (move up), never loosen
-            old_stop = b.get("stop_price", 0.0)
             if old_stop > 0 and new_stop <= old_stop:
                 return False
-
         else:
-            # Short position trailing logic
-            current_stop = lowest_price + trailing_dist
-            current_stop = min(current_stop, b.get("stop_price", float("inf")))
-
-            # Breakeven at 1.5R
-            if r_multiple >= 1.5 and not b.get("breakeven_set", False):
-                current_stop = min(current_stop, b["entry_price"])
-                b["breakeven_set"] = True
-                b["trailing_activated"] = True
-
-            # Age tightening
-            age_ratio = age_s / max(max_hold_s, 1.0)
-            age_tighten = 1.0
-            if age_ratio >= 0.90:
-                age_tighten = 0.2
-            elif age_ratio >= 0.75:
-                age_tighten = 0.4
-            elif age_ratio >= 0.50:
-                age_tighten = 0.6
-            elif age_ratio >= 0.25:
-                age_tighten = 0.8
-
-            if age_tighten < 1.0:
-                age_stop = lowest_price + initial_stop_dist * age_tighten
-                current_stop = min(current_stop, age_stop)
-
-            new_stop = current_stop
-
-            # Only tighten (move down for shorts), never loosen
-            old_stop = b.get("stop_price", 0.0)
             if old_stop > 0 and new_stop >= old_stop:
                 return False
 

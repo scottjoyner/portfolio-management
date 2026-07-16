@@ -191,7 +191,7 @@ class PredictionMarketAdapter:
             if use_crypto_only:
                 markets = self._client.get_crypto_markets(limit=30)
                 for m in markets:
-                    if not m.is_open or m.volume < self.min_volume:
+                    if not m.is_open or not m.is_tradeable or m.volume < self.min_volume:
                         continue
                     oi = m.raw_data.get("open_interest")
                     if oi is not None and oi < self.min_open_interest:
@@ -210,7 +210,7 @@ class PredictionMarketAdapter:
                     if all_cats and cat not in all_cats:
                         continue
                     for m in mkt_list:
-                        if not m.is_open or m.volume < self.min_volume:
+                        if not m.is_open or not m.is_tradeable or m.volume < self.min_volume:
                             continue
                         oi = m.raw_data.get("open_interest")
                         if oi is not None and oi < self.min_open_interest:
@@ -235,6 +235,8 @@ class PredictionMarketAdapter:
 
     def _market_to_signals(self, m: PredictionMarket) -> List[Dict[str, Any]]:
         """Convert a single prediction market into 0-2 signals."""
+        if not m.is_tradeable:
+            return []
         mp = m.mid_price
         if mp <= 0 or mp >= 1:
             return []
@@ -346,25 +348,19 @@ class PredictionMarketAdapter:
 
     @staticmethod
     def _question_to_symbol(question: str, category: str = "general") -> str:
-        """Map a prediction market question to the most relevant tradeable symbol."""
+        """Map a prediction market question to the most relevant tradeable symbol.
+
+        Uses WORD-BOUNDARY matching exclusively so short tickers don't false-match
+        substrings: "pol" != "politics", "eth" != "ethics", "btc" != "botcoin".
+        Returns "" when no keyword matches (callers treat that as "no symbol").
+        """
         import re
         q = question.lower()
         for kw, sym in EVENT_SYMBOL_MAP:
-            # Use word-boundary matching to avoid substring false positives
-            # e.g. "pol" shouldn't match "politics"
             pattern = r"\b" + re.escape(kw) + r"\b"
             if re.search(pattern, q):
                 return sym
-        # Fallback by category
-        cat_map = {
-            "crypto": "BTC-USD",
-            "economics": "BTC-USD",
-            "sports": "BTC-USD",
-            "politics": "BTC-USD",
-            "entertainment": "BTC-USD",
-            "technology": "NVDA",
-        }
-        return cat_map.get(category, "BTC-USD")
+        return ""
 
 
 def _depth_price(level) -> float:

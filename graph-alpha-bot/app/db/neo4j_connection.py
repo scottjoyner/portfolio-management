@@ -11,14 +11,17 @@ class Neo4jConnection:
     
     def __init__(
         self, 
-        uri: str = "bolt://x1-370.tailcb8954.ts.net:7687",
+        uri: str = "",
         user: str = "neo4j",
-        password: str = os.getenv("NEO4J_PASSWORD", "gluhlaf8"),
+        password: str = "",
         database: str = "neo4j"
     ):
-        self.uri = uri
-        self.user = user
-        self.password = password
+        # P1-7: never embed secrets/tailnet URIs. Resolve from the environment
+        # with NO defaults — a missing NEO4J_URI/PASSWORD must fail loudly
+        # rather than connect to a hardcoded personal host or use a literal pw.
+        self.uri = uri or os.getenv("NEO4J_URI", "")
+        self.user = user or os.getenv("NEO4J_USER", "neo4j")
+        self.password = password or os.getenv("NEO4J_PASSWORD", "")
         self.database = database
         self.driver: Optional[Driver] = None
         self.use_fallback = False
@@ -129,8 +132,8 @@ class Neo4jConnection:
 
 def get_connection(uri=None, user=None, password=None) -> Neo4jConnection:
     """Get or create a Neo4j connection instance."""
-    uri = uri or os.getenv("NEO4J_URI", "bolt://x1-370.tailcb8954.ts.net:7687")
+    uri = uri or os.getenv("NEO4J_URI", "")
     user = user or os.getenv("NEO4J_USER", "neo4j")
-    password = password or os.getenv("NEO4J_PASSWORD", "gluhlaf8")
+    password = password or os.getenv("NEO4J_PASSWORD", "")
     
     return Neo4jConnection(uri=uri, user=user, password=password)

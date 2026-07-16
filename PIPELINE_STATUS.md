@@ -77,7 +77,7 @@ cd /home/scott/git/portfolio-management/graph-alpha-bot && \
 **File:** `app/db/neo4j_connection.py`
 
 - Correctly configured with SSL handling for tailscale nodes
-- Authentication issue: password "gluhlaf8" is invalid for x1-370 node
+- Authentication issue: configured NEO4J_PASSWORD (from env) is invalid for the x1-370 node
 - Automatically falls back to local JSON storage (fully functional)
 
 **To fix Neo4j connection:**

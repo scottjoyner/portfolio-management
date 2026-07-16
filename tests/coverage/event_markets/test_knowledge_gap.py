@@ -158,6 +158,21 @@ def _news_resp():
     return r
 
 
+def _news_resp_rich():
+    """4 items spanning >=2 distinct feeds (for significance under stricter KG)."""
+    r = MagicMock()
+    r.raise_for_status.return_value = None
+    r.text = (
+        "<rss><channel>"
+        "<item><title>Bitcoin surges</title><link>u1</link><description>btc profit gain rally</description></item>"
+        "<item><title>BTC rises</title><link>u2</link><description>btc breakout boom</description></item>"
+        "<item><title>Ethereum adoption</title><link>u3</link><description>eth upgrade growth</description></item>"
+        "<item><title>Crypto momentum</title><link>u4</link><description>btc bullish positive</description></item>"
+        "</channel></rss>"
+    )
+    return r
+
+
 def test_news_researcher_search():
     n = NewsResearcher()
     with patch("event_markets.knowledge_gap.RSS_FEEDS", [("http://feed", "Feed")]):
@@ -224,7 +239,7 @@ def test_analyzer_question_significant():
     a = KnowledgeGapAnalyzer()
     with patch("requests.Session", return_value=_wiki_session(positive=True)):
         with patch.object(a._web, "_get_page_extract", return_value="rally profit adoption boom"):
-            with patch("requests.get", return_value=_news_resp()):
+            with patch("requests.get", return_value=_news_resp_rich()):
                 res = a.analyze_question("Will BTC reach 100k?", 0.5)
     assert res is not None
     assert res.direction == "undervalued"
@@ -288,7 +303,7 @@ def test_main_question_with_gap(capsys, monkeypatch):
     a = KnowledgeGapAnalyzer()
     with patch("requests.Session", return_value=_wiki_session(positive=True)):
         with patch.object(a._web, "_get_page_extract", return_value="rally profit adoption boom"):
-            with patch("requests.get", return_value=_news_resp()):
+            with patch("requests.get", return_value=_news_resp_rich()):
                 with patch("event_markets.knowledge_gap.KnowledgeGapAnalyzer",
                            return_value=a):
                     kg.main()

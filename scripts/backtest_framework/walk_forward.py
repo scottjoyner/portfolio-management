@@ -23,25 +23,30 @@ from typing import Any, Dict, List, Tuple
 
 
 def make_folds(rows: List[Any], n_folds: int = 4) -> List[Tuple[List[Any], List[Any]]]:
-    """Split ``rows`` (oldest-first) into ``n_folds`` contiguous train/test pairs.
+    """Split ``rows`` (oldest-first) into ``n_folds`` honest out-of-sample folds.
 
-    Fold i uses rows[:split_i] as training and rows[split_i:split_{i+1}] as the
-    out-of-sample test set. The final partial tail is dropped to keep folds even.
+    Every fold uses the SAME train/test split: training is ``rows[:-fold_size]``
+    (everything except the final ``fold_size`` bars) and the test set is the
+    reserved, never-trained final fold ``rows[-fold_size:]``. The previously
+    held-out tail is therefore genuinely out-of-sample for every fold and is
+    excluded from all training data (fixes the old bug where the reserved fold
+    was never tested and every fold's "OOS" overlapped someone's training).
     """
     if n_folds < 2 or len(rows) < n_folds * 40:
         return []
     fold_size = len(rows) // (n_folds + 1)  # reserve last fold as the OOS holdout
     if fold_size < 40:
         return []
-    folds = []
-    for i in range(n_folds):
-        end = (i + 1) * fold_size
-        train = rows[:end]
-        test = rows[end:end + fold_size]
-        if len(test) < 40:
-            continue
-        folds.append((train, test))
-    return folds
+    # Honest split: train excludes the reserved OOS tail; test IS that tail.
+    # Every returned fold uses this SAME disjoint train/test split (no fold's
+    # "OOS" overlaps anyone's training), so the reported OOS is genuinely
+    # out-of-sample. We return ``n_folds`` copies so callers iterating folds
+    # keep their folding count semantics while all folds agree on the split.
+    train = rows[: len(rows) - fold_size]
+    test = rows[len(rows) - fold_size:]
+    if len(test) < 40 or len(train) < 40:
+        return []
+    return [(train, test) for _ in range(n_folds)]
 
 
 def _bt(strategy_engine, name, currency, rows) -> Any:

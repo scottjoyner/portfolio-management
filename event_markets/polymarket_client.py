@@ -360,10 +360,15 @@ class PolymarketClient:
             vol = float(vol_raw or 0)
         events = raw.get("events", [])
         event_slug = events[0].get("slug", "") if events else ""
-        # Use Gamma's bestBid/bestAsk / spread directly
+        # Use Gamma's bestBid/bestAsk / spread directly. A missing book
+        # (bestAsk absent) means we have NO valid ask => treat as spread=1.0
+        # so the liquidity filter rejects it (overstated liquidity guard, P1-8).
         g_spread = float(raw.get("spread", 0) or 0)
         yes_bid = float(raw.get("bestBid", 0) or 0)
-        yes_ask = float(raw.get("bestAsk", 1) or 1)
+        raw_ask = raw.get("bestAsk")
+        yes_ask = float(raw_ask) if raw_ask not in (None, "", 0) else 0.0
+        if g_spread <= 0 and yes_ask <= 0:
+            g_spread = 1.0
         token_ids_raw = raw.get("clobTokenIds") or []
         if isinstance(token_ids_raw, str):
             try:

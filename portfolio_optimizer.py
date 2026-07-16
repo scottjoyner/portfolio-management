@@ -859,7 +859,9 @@ class PortfolioOptimizer:
         self.trade_log: List[dict] = []
         self.running = False
         self._bt_cache: Dict[str, BacktestVerdict] = {}
-        self._bt_cache_ttl: float = 3600
+        self._bt_cache_ttl: float = 86400
+        self._bt_cache_warn_emitted: bool = False
+        self._bt_cache_warn_threshold: int = 10
         self._portfolio_peak_value: float = 0.0
         self._seen_products_meta_prefix = "coinbase_first_seen:"
         self.graph_store: Optional[Any] = None
@@ -870,6 +872,17 @@ class PortfolioOptimizer:
         # Local SQLite store
         self.store = StateStore(db_path)
         self.capital_policy: Dict[str, Any] = dict(DEFAULT_CAPITAL_POLICY)
+
+        # Tunable threshold config (P1-9) — defaults preserved from prior hardcoding.
+        self.cfg: Dict[str, Any] = {
+            "max_notional_core": float(os.getenv("OP_MAX_NOTIONAL_CORE", "5000")),
+            "max_notional_opportunity": float(os.getenv("OP_MAX_NOTIONAL_OPP", "4000")),
+            "max_notional_arb": float(os.getenv("OP_MAX_NOTIONAL_ARB", "3000")),
+            "max_notional_funding_buy": 2000.0,
+            "max_notional_funding_sell": 3000.0,
+            "aggregator_min_priority": float(os.getenv("OP_AGG_MIN_PRIORITY", "0.05")),
+            "aggregator_min_volume_usd": float(os.getenv("OP_AGG_MIN_VOLUME", "500000")),
+        }
 
         # Optional Neo4j store (system of record)
         self.neo4j_store: Optional[Neo4jStore] = None
@@ -1156,6 +1169,13 @@ class PortfolioOptimizer:
         cached = source_store.load_bt_cache(ttl=self._bt_cache_ttl)
         for key, data in cached.items():
             self._bt_cache[key] = BacktestVerdict(**data)
+        if not self._bt_cache_warn_emitted and len(self._bt_cache) < self._bt_cache_warn_threshold:
+            logger.warning(
+                "BT cache under-populated: %d entries (threshold %d). Slow markets may fall "
+                "back to default strategy weights until backtests populate the cache.",
+                len(self._bt_cache), self._bt_cache_warn_threshold,
+            )
+            self._bt_cache_warn_emitted = True
         ages = source_store.load_position_ages()
         self.position_ages.update(ages)
         if self.trade_log:
@@ -3513,9 +3533,10 @@ class PortfolioOptimizer:
     def _detect_opportunities(self) -> List[Opportunity]:
         ops = []
 
-        # Run parameter optimization periodically (weekly)
-        self._run_periodic_param_optimization()
-        self._apply_optimized_params()
+        # Run parameter optimization periodically (weekly) — gated internally by interval
+        if time.time() - self._last_param_opt_ts >= self._param_opt_interval:
+            self._run_periodic_param_optimization()
+            self._apply_optimized_params()
 
         # Enhanced TLH with wash-sale avoidance
         ops.extend(self._detect_enhanced_tlh())
@@ -3523,14 +3544,15 @@ class PortfolioOptimizer:
         ops.extend(self._detect_stock_opportunities())
         ops.extend(self._detect_fee_tier_volume())
         ops.extend(self._detect_rebalance())
-        ops.extend(self._detect_rebalance_bot())
-        ops.extend(self._detect_stairstep())
         ops.extend(self._detect_strategy_signals())
-        ops.extend(self._detect_funding_and_onchain_signals())
         ops.extend(self._detect_volume_cycles())
         ops.extend(self._detect_accumulator_signals())
-        ops.extend(self._detect_aggregator_signals())
+        ops.extend(self._detect_rebalance_bot())
+        ops.extend(self._detect_stairstep())
         ops.extend(self._detect_event_markets())
+
+        # Funding / onchain micro-structure signals (dimension 8)
+        ops.extend(self._detect_funding_and_onchain_signals())
 
         # Order flow / microstructure signals
         ops.extend(self._detect_order_flow_signals())
@@ -3891,43 +3913,10 @@ class PortfolioOptimizer:
         return ops
 
     def _detect_tlh(self) -> List[Opportunity]:
-        if time.time() - self.last_execution.get("tlh", 0) < OP_COOLDOWN["tlh"]:
-            return []
-        if not self.state:
-            return []
-        ops = []
-        for cur, h in self.state.holdings.items():
-            if cur in ("USDC", "USDT", "DAI") or h["value"] < self.min_value:
-                continue
-            if self._is_static_currency(cur):
-                continue
-            pnl = h.get("unrealized_pnl_pct")
-            if pnl is None or pnl >= -5:
-                continue
-            loss_usd = abs(h["value"] * pnl / 100)
-            tax_savings = loss_usd * 0.20
-            priority = min(abs(pnl) / 30, 1.0)
-            pid = self.cli.best_product(cur, "SELL")
-            if not pid:
-                continue
-            ops.append(Opportunity(
-                opp_type=OpportunityType.TLH,
-                currency=cur,
-                side="SELL",
-                size_usd=h["value"],
-                reason=f"TLH: {pnl:.1f}% loss, est. tax savings ${tax_savings:.0f}",
-                priority=priority,
-                product_id=pid,
-                entry_price_est=h.get("price", 0),
-                stop_loss_pct=0,
-                take_profit_pct=0,
-                holding_period_hours=0,
-                expected_return_pct=tax_savings / max(h["value"], 1) * 100,
-                risk_pct=0,
-            ))
-        if ops:
-            logger.info("TLH: %d candidates", len(ops))
-        return ops
+        # P0-1: previously a dead duplicate of _detect_enhanced_tlh (never wired
+        # into _detect_opportunities). Kept as an alias for backward-compat with
+        # callers/tests; all TLH logic now lives in _detect_enhanced_tlh.
+        return self._detect_enhanced_tlh()
 
     def _detect_fee_tier_volume(self) -> List[Opportunity]:
         if time.time() - self.last_execution.get("fee_tier", 0) < OP_COOLDOWN["fee_tier"]:
@@ -4233,6 +4222,8 @@ class PortfolioOptimizer:
     def _detect_volume_cycles(self) -> List[Opportunity]:
         if time.time() - self.last_execution.get("cycle", 0) < OP_COOLDOWN["cycle"]:
             return []
+        if not self.state:
+            return []
         ops = []
         now = time.time()
         for cur, h in self.state.holdings.items():
@@ -4414,7 +4405,7 @@ class PortfolioOptimizer:
 
         # Batch-compute all signals via vectorized compute backend (GPU/NumPy)
         try:
-            products_list = [(h["currency"] + "-USD", h["classification"]) for h, _, _, _, _, _ in parsed_data]
+            products_list = [(pid, h["classification"]) for h, pid, _, _, _, _ in parsed_data]
             closes_dict = {pid: c for _, pid, c, _, _, _ in parsed_data}
             volumes_dict = {pid: v for _, pid, _, v, _, _ in parsed_data}
             highs_dict = {pid: hi for _, pid, _, _, hi, _ in parsed_data}
@@ -4568,7 +4559,7 @@ class PortfolioOptimizer:
                         avg_loss_pct=best_verdict.max_drawdown_pct if best_verdict.max_drawdown_pct > 0 else 1.5,
                         confidence=agg.confidence,
                         kelly_fraction=0.25,
-                        max_notional=5000.0,
+                        max_notional=self.cfg["max_notional_core"],
                         min_notional=self.min_value,
                         capital_limit=(remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity),
                     )
@@ -4579,7 +4570,7 @@ class PortfolioOptimizer:
                         confidence=agg.confidence,
                         liquidity=min(to_float(h.get("liquidity_score", 0.7) or 0.7), 1.0),
                         cap_pct=0.01,
-                        max_notional=4000.0,
+                        max_notional=self.cfg["max_notional_opportunity"],
                         min_notional=self.min_value,
                         capital_limit=(remaining_core_capacity if bucket == "core" else remaining_opportunity_capacity),
                     )
@@ -4615,6 +4606,23 @@ class PortfolioOptimizer:
                 final_confidence = agg.confidence
                 if self.confidence_engine:
                     try:
+                        # Best-effort real inputs for the modifiers that were
+                        # previously stubbed (P1-8). global_consensus is derived
+                        # from the live aggregated signal direction mix;
+                        # market_leaders are the largest current holdings.
+                        _buy = sum(1 for a in aggregated if a.direction == "BUY")
+                        _sell = sum(1 for a in aggregated if a.direction == "SELL")
+                        _tot = max(len(aggregated), 1)
+                        global_consensus = (_buy - _sell) / _tot
+                        if self.state:
+                            market_leaders = sorted(
+                                self.state.holdings.items(),
+                                key=lambda kv: kv[1].get("value", 0),
+                                reverse=True,
+                            )[:5]
+                            market_leaders = [k for k, _ in market_leaders]
+                        else:
+                            market_leaders = []
                         class _Sig: pass
                         sig_stub = _Sig()
                         sig_stub.symbol = currency
@@ -4629,9 +4637,9 @@ class PortfolioOptimizer:
                                 "price": h.get("price", 0),
                             },
                             regime=_detect_regime({"change_pct": h.get("change_24h", 0)}),
-                            market_leaders=[],  # No per-leader data available; cross-correlation penalty skipped
-                            sentiment_score=0.0,
-                            global_consensus=0.5,
+                            market_leaders=market_leaders,
+                            sentiment_score=0.0,  # not computable here; modifier skips when 0
+                            global_consensus=global_consensus,
                         )
                         final_confidence = mod_result.modified_confidence
                     except Exception as e:
@@ -4719,14 +4727,29 @@ class PortfolioOptimizer:
             try:
                 btc_price = self._current_price_for_symbol("BTC-USD")
                 if btc_price > 0:
-                    funding_sig = self._funding_contrarian.on_bar(
-                        close=btc_price,
-                        closes=[btc_price],
-                        volumes=None,
-                        highs=None,
-                        lows=None,
-                        currency="BTC",
-                    )
+                    # Build real BTC candle history (>=30 bars) for warmup.
+                    btc_closes: List[float] = []
+                    try:
+                        if self._feed_mgr:
+                            btc_candles = self._feed_mgr.get_candles_batch(["BTC-USD"], granularity=3600, limit=100)
+                        else:
+                            from coinbase.src.rest_feed import fetch_candles_batch
+                            btc_candles = fetch_candles_batch(["BTC-USD"], granularity=3600, limit=100, max_workers=1)
+                        btc_closes = [float(c[4]) for c in btc_candles.get("BTC-USD", []) if len(c) > 4]
+                    except Exception:
+                        btc_closes = []
+                    if len(btc_closes) < 30:
+                        # Insufficient history for indicator warmup; skip the signal.
+                        logger.debug("Funding contrarian skipped: only %d BTC candles (<30)", len(btc_closes))
+                    else:
+                        funding_sig = self._funding_contrarian.on_bar(
+                            close=btc_closes[-1],
+                            closes=btc_closes,
+                            volumes=None,
+                            highs=None,
+                            lows=None,
+                            currency="BTC",
+                        )
                     if funding_sig and funding_sig.action in ("BUY", "SELL"):
                         side = funding_sig.action
                         conf = min(funding_sig.confidence, 0.70)
@@ -5149,7 +5172,7 @@ class PortfolioOptimizer:
             from coinbase.src.pair_discovery import top_coinbase_pairs
             import urllib3, json
 
-            pairs = top_coinbase_pairs(n=50, min_volume_usd=500_000)
+            pairs = top_coinbase_pairs(n=50, min_volume_usd=self.cfg["aggregator_min_volume_usd"])
             if not pairs:
                 return []
             pids = [p[0] for p in pairs]
@@ -5194,7 +5217,7 @@ class PortfolioOptimizer:
         self.last_execution["aggregator"] = time.time()
 
         # Filter to actionable signals
-        actionable = [r for r in results if r.direction in ("BUY", "SELL") and r.priority >= 0.05]
+        actionable = [r for r in results if r.direction in ("BUY", "SELL") and r.priority >= self.cfg["aggregator_min_priority"]]
         if not actionable:
             return []
 
@@ -5311,7 +5334,29 @@ class PortfolioOptimizer:
 
         if ops:
             logger.info("Aggregator signals: %d opportunities", len(ops))
+
+        # Persist the aggregator's in-memory backtest cache so cross-product
+        # verdicts survive restarts (P0-3).
+        self._flush_aggregator_bt_cache(agg)
         return ops
+
+    def _flush_aggregator_bt_cache(self, agg: Any) -> None:
+        """Flush a SignalAggregator's in-memory _bt_cache to the StateStore."""
+        if agg is None:
+            return
+        cache = getattr(agg, "_bt_cache", None)
+        if not cache:
+            return
+        try:
+            for ck, v in cache.items():
+                if v is None:
+                    continue
+                data = dict(v) if isinstance(v, dict) else getattr(v, "__dict__", None)
+                if data is None:
+                    continue
+                self.store.save_bt_cache(ck, data)
+        except Exception as e:
+            logger.debug("Failed to flush aggregator BT cache: %s", e)
 
     def _detect_event_markets(self) -> List[Opportunity]:
         if not self.event_engine and not self._pm_client:
@@ -5377,7 +5422,7 @@ class PortfolioOptimizer:
                         confidence=arb.confidence,
                         liquidity=0.8,
                         cap_pct=0.01,
-                        max_notional=3000.0,
+                        max_notional=self.cfg["max_notional_arb"],
                         min_notional=self.min_value,
                         capital_limit=remaining_opportunity_capacity,
                     )

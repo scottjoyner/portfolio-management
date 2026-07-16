@@ -51,6 +51,18 @@ if _HAS_PYDANTIC:
         kill_switch: bool = Field(default=True)
         live_trading_enabled: bool = Field(default=False)
         require_approvals: bool = Field(default=True)
+
+        @field_validator("require_approvals", mode="before")
+        @classmethod
+        def _coerce_require_approvals(cls, v):
+            # Honor both REQUIRE_APPROVALS (primary) and REQUIRE_APPROVAL (.env) env flags.
+            if _env_bool("REQUIRE_APPROVAL", False):
+                return True
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                return _env_bool("REQUIRE_APPROVALS", False) or v.strip().lower() in TRUE_VALUES
+            return _env_bool("REQUIRE_APPROVALS", False)
         products: str = Field(default="")
         risk_per_trade_pct: float = Field(default=0.01)
         max_notional_per_trade_usd: float = Field(default=100.0)
@@ -105,7 +117,7 @@ if _HAS_PYDANTIC:
                 dry_run=_env_bool("COINBASE_DRY_RUN", True),
                 kill_switch=_env_bool("KILL_SWITCH", True),
                 live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED", False),
-                require_approvals=_env_bool("REQUIRE_APPROVALS", True),
+                require_approvals=_env_bool("REQUIRE_APPROVALS", True) or _env_bool("REQUIRE_APPROVAL", False),
                 products=os.getenv("PRODUCTS", ""),
                 risk_per_trade_pct=float(os.getenv("RISK_PER_TRADE_PCT", "0.01")),
                 max_notional_per_trade_usd=float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "100")),
@@ -182,7 +194,7 @@ else:
                 dry_run=_env_bool("COINBASE_DRY_RUN", True),
                 kill_switch=_env_bool("KILL_SWITCH", True),
                 live_trading_enabled=_env_bool("LIVE_TRADING_ENABLED", False),
-                require_approvals=_env_bool("REQUIRE_APPROVALS", True),
+                require_approvals=_env_bool("REQUIRE_APPROVALS", True) or _env_bool("REQUIRE_APPROVAL", False),
                 products=os.getenv("PRODUCTS", ""),
                 risk_per_trade_pct=float(os.getenv("RISK_PER_TRADE_PCT", "0.01")),
                 max_notional_per_trade_usd=float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "100")),
@@ -251,6 +263,26 @@ class LiveSafetyValidator:
             raise RuntimeError(
                 f"Live safety checks failed ({len(issues)} issues):\n  "
                 + "\n  ".join(issues)
+            )
+
+    @staticmethod
+    def assert_kill_switch_resolved(config: TradingConfig) -> None:
+        """Hard block if the kill switch state is ambiguous in LIVE (non-dry-run) mode.
+
+        A kill switch that is active (env or file) must prevent live trading. If we are
+        live and somehow the switch is not active, that's the expected state; but if the
+        switch state cannot be determined (or we are in live mode without an explicit
+        intent), fail loudly rather than proceeding silently.
+        """
+        if config.mode != "live":
+            return
+        if config.dry_run:
+            # dry-run live mode is preview-only; never a hard block.
+            return
+        if KillSwitch.is_active():
+            raise RuntimeError(
+                "Live trading blocked: kill switch is active "
+                "(set KILL_SWITCH=false and remove data/trading_kill_switch to proceed)."
             )
 
 

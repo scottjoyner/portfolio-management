@@ -58,9 +58,9 @@ class PipelineConfig:
     """Configuration for pipeline components."""
     
     # Neo4j connection (x1-370)
-    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://x1-370.tailcb8954.ts.net:7687")
+    neo4j_uri: str = os.getenv("NEO4J_URI", "")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "gluhlaf8")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
     
     # News sources - all public RSS, no API keys needed
     news_sources: list = field(default_factory=lambda: [

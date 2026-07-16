@@ -729,13 +729,20 @@ class EventTraderV4:
         if self.paper_monthly_volume < 500.0:
             return (0, 0.0, 0.0)
         vol = max(0.0, self.paper_trailing_volume_30d)
-        tier = 1
-        last = (60.0, 40.0)
-        for i, (min_vol, taker, maker) in enumerate(self.FEE_TIERS):
+        # Find the highest (lowest-fee) tier whose volume threshold is met.
+        tier = 0
+        taker = 60.0
+        maker = 40.0
+        for i, (min_vol, t, m) in enumerate(self.FEE_TIERS):
             if vol >= min_vol:
                 tier = i + 1
-                last = (taker, maker)
-        return (tier, last[0], last[1])
+                taker = t
+                maker = m
+            else:
+                break
+        if tier < 1:
+            tier = 1
+        return (tier, taker, maker)
 
     def _effective_fee_bps(self) -> float:
         """Blended fee rate: maker_pct × maker_bps + (1 - maker_pct) × taker_bps."""
@@ -1719,7 +1726,10 @@ class EventTraderV4:
                 }
                 for h in self._core_holdings.values()
             ]
-            path.write_text(json.dumps(data, indent=2))
+            tmp_path = path.with_suffix(".tmp")
+            with tmp_path.open("w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            tmp_path.replace(path)
         except Exception as e:
             log.debug("Failed to persist core holdings: %s", e)
 
@@ -1749,18 +1759,18 @@ class EventTraderV4:
             tmp_path = self._paper_state_path.with_suffix(".tmp")
             with self._paper_lock:
                 snapshot = self._paper_state_snapshot()
-            with tmp_path.open("w", encoding="utf-8") as f:
-                json.dump(snapshot, f, indent=2, default=str)
-            bak1 = self._paper_state_path.with_suffix(".json.bak")
-            bak2 = self._paper_state_path.with_suffix(".json.bak2")
-            bak3 = self._paper_state_path.with_suffix(".json.bak3")
-            if bak2.exists():
-                bak3.write_text(bak2.read_text())
-            if bak1.exists():
-                bak2.write_text(bak1.read_text())
-            if self._paper_state_path.exists():
-                bak1.write_text(self._paper_state_path.read_text())
-            tmp_path.replace(self._paper_state_path)
+                with tmp_path.open("w", encoding="utf-8") as f:
+                    json.dump(snapshot, f, indent=2, default=str)
+                bak1 = self._paper_state_path.with_suffix(".json.bak")
+                bak2 = self._paper_state_path.with_suffix(".json.bak2")
+                bak3 = self._paper_state_path.with_suffix(".json.bak3")
+                if bak2.exists():
+                    bak3.write_text(bak2.read_text())
+                if bak1.exists():
+                    bak2.write_text(bak1.read_text())
+                if self._paper_state_path.exists():
+                    bak1.write_text(self._paper_state_path.read_text())
+                tmp_path.replace(self._paper_state_path)
             self.health_status["last_state_save_ts"] = time.time()
         except Exception as e:
             log.debug("Failed to save paper state: %s", e)

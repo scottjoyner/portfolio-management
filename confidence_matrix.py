@@ -23,10 +23,12 @@ logger = logging.getLogger("confidence_matrix")
 # Mirrors rust_core/src/confidence.rs (10 groups for 68 strategies)
 INDEPENDENCE_GROUPS: Dict[str, set] = {
     "trend": {"ema_cross", "macd", "trix", "adx", "psar", "hma", "aroon",
-              "elder_ray", "ichimoku", "dpo", "kama", "dmi_cross", "vma"},
+              "elder_ray", "ichimoku", "dpo", "kama", "dmi_cross", "vma",
+              "hp_trend", "supertrend"},
     "momentum": {"rsi_revert", "cmo", "williams_r", "zscore_revert", "force_idx",
                  "true_cci", "kst", "mom_accel", "multi_rsi", "stoch",
-                 "vortex", "rvi", "coppock"},
+                 "vortex", "rvi", "coppock", "kalman_mr", "vw_rsi",
+                 "fisher", "ultimate_osc"},
     "volatility": {"boll_break", "vwap_revert", "keltner", "donchian",
                    "bb_squeeze", "vcp", "choppiness", "mass_idx",
                    "envelope", "atr_channel", "std_channel", "vol_ratio"},
@@ -80,6 +82,9 @@ DEFAULT_STRATEGY_WEIGHTS: Dict[str, float] = {
     # New order-flow + on-chain strategies
     "order_flow_cvd": 0.55, "wick_pressure": 0.55, "exchange_netflow": 0.5, "stablecoin_flow": 0.55,
     "funding_contrarian": 0.5, "exchange_flow": 0.5, "btc_dxy_corr": 0.5,
+    # Growth-focused + Kalman/HP-filter Rust strategies (P0-3)
+    "supertrend": 0.55, "fisher": 0.55, "ultimate_osc": 0.55, "vw_rsi": 0.55,
+    "kalman_mr": 0.55, "hp_trend": 0.55,
 }
 
 # Asset class boost multipliers

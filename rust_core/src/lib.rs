@@ -556,8 +556,16 @@ fn run_strategy_opens_py(strategy_name: &str, closes: Vec<f64>, opens: Vec<f64>,
 }
 
 /// Python wrapper: backtest a strategy. Returns a dict-like tuple.
+///
+/// P0-1: `opens` now forwarded (defaults to None = synthesize prev-close, legacy
+/// behavior). P1-5: `fee_bps` rounds-trip fee subtracted per trade. P1-7:
+/// `max_hold_bars` caps position lifetime. P1-6: thresholds single-sourced from
+/// Python's BACKTEST_PASS (passed as min_win_rate, min_sharpe, min_pf,
+/// max_dd_pct, min_ret_pct); all default to the canonical stricter values.
 #[pyfunction]
-#[pyo3(signature = (strategy_name, closes, volumes, warmup=20, highs=None, lows=None))]
+#[pyo3(signature = (strategy_name, closes, volumes, warmup=20, highs=None, lows=None,
+                    opens=None, fee_bps=0.0, max_hold_bars=0,
+                    min_win_rate=0.50, min_sharpe=0.5, min_pf=1.20, max_dd_pct=15.0, min_ret_pct=-10.0))]
 fn backtest_strategy_py(
     strategy_name: &str,
     closes: Vec<f64>,
@@ -565,9 +573,25 @@ fn backtest_strategy_py(
     warmup: usize,
     highs: Option<Vec<f64>>,
     lows: Option<Vec<f64>>,
+    opens: Option<Vec<f64>>,
+    fee_bps: f64,
+    max_hold_bars: usize,
+    min_win_rate: f64,
+    min_sharpe: f64,
+    min_pf: f64,
+    max_dd_pct: f64,
+    min_ret_pct: f64,
 ) -> PyResult<Vec<f64>> {
+    let pass = backtest::BacktestPass {
+        min_win_rate,
+        min_sharpe,
+        min_profit_factor: min_pf,
+        max_drawdown_pct: max_dd_pct,
+        min_total_return_pct: min_ret_pct,
+    };
     let verdict = backtest::backtest_strategy(
-        strategy_name, &closes, &volumes, highs.as_deref(), lows.as_deref(), warmup,
+        strategy_name, &closes, &volumes, highs.as_deref(), lows.as_deref(),
+        opens.as_deref(), fee_bps, max_hold_bars, pass, warmup,
     );
     Ok(vec![
         verdict.total_trades as f64,
@@ -646,7 +670,9 @@ fn confidence_class_boost_py(strategy: String, asset_class: String) -> f64 {
 /// Python wrapper: backtest MULTIPLE strategies in parallel using rayon.
 /// Returns a list of (strategy_name, [total_trades, win_rate, ...]) tuples.
 #[pyfunction]
-#[pyo3(signature = (strategy_names, closes, volumes, warmup=20, highs=None, lows=None))]
+#[pyo3(signature = (strategy_names, closes, volumes, warmup=20, highs=None, lows=None,
+                    opens=None, fee_bps=0.0, max_hold_bars=0,
+                    min_win_rate=0.50, min_sharpe=0.5, min_pf=1.20, max_dd_pct=15.0, min_ret_pct=-10.0))]
 fn backtest_multi_py(
     strategy_names: Vec<String>,
     closes: Vec<f64>,
@@ -654,13 +680,29 @@ fn backtest_multi_py(
     warmup: usize,
     highs: Option<Vec<f64>>,
     lows: Option<Vec<f64>>,
+    opens: Option<Vec<f64>>,
+    fee_bps: f64,
+    max_hold_bars: usize,
+    min_win_rate: f64,
+    min_sharpe: f64,
+    min_pf: f64,
+    max_dd_pct: f64,
+    min_ret_pct: f64,
 ) -> Vec<(String, Vec<f64>)> {
     use rayon::prelude::*;
+    let pass = backtest::BacktestPass {
+        min_win_rate,
+        min_sharpe,
+        min_profit_factor: min_pf,
+        max_drawdown_pct: max_dd_pct,
+        min_total_return_pct: min_ret_pct,
+    };
     strategy_names
         .par_iter()
         .map(|name| {
             let verdict = backtest::backtest_strategy(
-                name, &closes, &volumes, highs.as_deref(), lows.as_deref(), warmup,
+                name, &closes, &volumes, highs.as_deref(), lows.as_deref(),
+                opens.as_deref(), fee_bps, max_hold_bars, pass.clone(), warmup,
             );
             (
                 name.clone(),
@@ -966,11 +1008,11 @@ mod coverage_tests {
         assert!(all_o.iter().all(|x| x.2 >= 0.0 && x.2 <= 1.0));
         let _some2 = run_strategy_opens_py("rsi_revert", c.clone(), opens.clone(), v.clone(), h.clone(), l.clone());
         assert!(_some2.is_some() || _some2.is_none());
-        let bt = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone())).unwrap();
+        let bt = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()), None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0).unwrap();
         assert_eq!(bt.len(), 9);
-        let bt2 = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, None, None).unwrap();
+        let bt2 = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, None, None, None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0).unwrap();
         assert_eq!(bt2.len(), 9);
-        let multi = backtest_multi_py(vec!["ema_cross".to_string(), "rsi_revert".to_string()], c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()));
+        let multi = backtest_multi_py(vec!["ema_cross".to_string(), "rsi_revert".to_string()], c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()), None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0);
         assert_eq!(multi.len(), 2);
         let signals = vec![("ema_cross".to_string(), "BUY".to_string(), 0.8, "x".to_string())];
         let mut bt_weights = std::collections::HashMap::new();

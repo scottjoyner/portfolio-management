@@ -103,10 +103,32 @@ class KnowledgeGapAssessment:
     def is_significant(self) -> bool:
         return abs(self.gap) > 0.10 and self.confidence > 0.25
 
+    @property
+    def signal_action(self) -> str:
+        """Direction of the trade implied by this assessment, in the SAME
+        convention used by signal_adapter.py and portfolio_optimizer.py:
+
+            YES-probability semantics:
+              - "undervalued"  => market's YES price is too LOW vs evidence
+                                     => YES will resolve higher => BUY YES.
+              - "overvalued"   => market's YES price is too HIGH vs evidence
+                                     => YES will resolve lower => SELL YES.
+
+        This is the SINGLE SOURCE OF TRUTH for the knowledge-gap direction.
+        Consumers (signal_adapter, optimizer) must reconcile their own
+        mid_price-based BUY/SELL rule against this, not invent a second one.
+        """
+        if self.direction == "undervalued":
+            return "BUY"
+        if self.direction == "overvalued":
+            return "SELL"
+        return "HOLD"
+
     def to_signal_dict(self) -> Dict[str, Any]:
+        action = self.signal_action
         return {
             "symbol": "?",
-            "action": "BUY" if self.direction == "undervalued" else "SELL",
+            "action": action,
             "base_confidence": round(self.confidence, 3),
             "final_confidence": round(self.confidence, 3),
             "opportunity_score": round(abs(self.gap) * self.confidence, 4),
@@ -367,7 +389,7 @@ class KnowledgeGapAnalyzer:
         enable_web_search: bool = True,
         enable_news_search: bool = True,
         min_gap: float = 0.10,
-        min_evidence: int = 2,
+        min_evidence: int = 4,
         cache_ttl: int = 300,
     ):
         self._web = WebResearcher() if enable_web_search else None
@@ -375,10 +397,16 @@ class KnowledgeGapAnalyzer:
         self._sentiment = SentimentAnalyzer()
         self.min_gap = min_gap
         self.min_evidence = min_evidence
+        self.min_distinct_feeds = 2
+        self._cache: Dict[str, Tuple[float, Optional[KnowledgeGapAssessment]]] = {}
+        self._cache_ttl = cache_ttl
 
     def analyze(self, market: PredictionMarket) -> Optional[KnowledgeGapAssessment]:
         """Run knowledge gap analysis on a single prediction market."""
         return self.analyze_question(market.question, market.mid_price, market.platform)
+
+    def _cache_key(self, question: str, market_probability: float) -> str:
+        return f"{question.strip().lower()}|{round(market_probability, 4)}"
 
     def analyze_question(
         self,
@@ -387,6 +415,14 @@ class KnowledgeGapAnalyzer:
         platform: str = "",
     ) -> Optional[KnowledgeGapAssessment]:
         """Run knowledge gap analysis on a question with a given market probability."""
+        # Question-keyed TTL cache so repeat analyses don't re-hit Wikipedia+RSS.
+        key = self._cache_key(question, market_probability)
+        now = time.time()
+        if key in self._cache:
+            ts, cached = self._cache[key]
+            if now - ts < self._cache_ttl:
+                return cached
+
         topics = _extract_topics(question)
         if not topics:
             return None
@@ -420,13 +456,19 @@ class KnowledgeGapAnalyzer:
             )
             return None
 
-        # Score each result
-        scores = []
+        # Score each result. Weight by |sentiment| so a single high-relevance
+        # neutral article (evidence_score~0.5, i.e. no conviction) cannot
+        # dominate. Neutral hits contribute little; strong hits dominate.
+        weights = []
+        weighted = []
         for r in unique_results:
             s, _ = self._sentiment.analyze(r.text)
-            scores.append(s * r.relevance_score)
-
-        evidence_score, sentiment_label = self._sentiment.aggregate(scores)
+            w = abs(s) * r.relevance_score
+            weights.append(w)
+            weighted.append(s * w)
+        total_w = sum(weights)
+        evidence_score = (sum(weighted) / total_w) if total_w > 0 else 0.0
+        sentiment_label = self._sentiment.aggregate([evidence_score])[1]
 
         # Normalize evidence_score from [-1, 1] to [0, 1]
         evidence_probability = (evidence_score + 1) / 2
@@ -460,6 +502,16 @@ class KnowledgeGapAnalyzer:
             top_results=top,
         )
 
+        # P1-5: require evidence to span >= min_distinct_feeds distinct feeds
+        # (default 2) so a single dominant feed cannot drive a noise boost.
+        distinct_feeds = len(sources)
+        if distinct_feeds < self.min_distinct_feeds:
+            logger.debug(
+                "Suppressing gap for '%s': only %d distinct feed(s) (need %d)",
+                question[:60], distinct_feeds, self.min_distinct_feeds,
+            )
+            assessment.confidence = 0.0
+
         logger.info(
             "Knowledge gap: '%s' market=%.0f%% evidence=%.0f%% gap=%+.0f%% "
             "(%s, %d results, %.0f%% conf)",
@@ -468,6 +520,7 @@ class KnowledgeGapAnalyzer:
             direction, len(unique_results), confidence * 100,
         )
 
+        self._cache[key] = (time.time(), assessment)
         return assessment
 
     def analyze_markets(

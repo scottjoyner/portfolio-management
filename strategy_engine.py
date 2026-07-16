@@ -2654,6 +2654,40 @@ class BacktestVerdict:
     reason: str
 
 
+# ── Single-sourced backtest pass thresholds (P1-6) ──────────────────
+# These are the *intentional* stricter thresholds (stricter than the docs'
+# looser spec). Both the Python backtest and the Rust backtest receive these
+# values so the two engines can never drift apart.
+BACKTEST_PASS: Dict[str, float] = {
+    "min_win_rate": 0.50,
+    "min_sharpe": 0.5,
+    "min_profit_factor": 1.20,
+    "max_drawdown_pct": 15.0,
+    "min_total_return_pct": -10.0,
+}
+
+
+def _close_backtest_trade(
+    trade: "BacktestTrade",
+    exit_price: float,
+    exit_bar: int,
+    trades: List["BacktestTrade"],
+    equity: List[float],
+    fee_bps: float = 0.0,
+) -> None:
+    """Record an exit for ``trade`` (P1-5: subtract round-trip entry+exit fee)."""
+    if trade.side == "BUY":
+        gross = (exit_price - trade.entry_price) / trade.entry_price * 100.0
+    else:
+        gross = (trade.entry_price - exit_price) / trade.entry_price * 100.0
+    return_pct = gross - (fee_bps / 100.0) * 2.0 * 100.0
+    trade.exit_bar = exit_bar
+    trade.exit_price = exit_price
+    trade.return_pct = return_pct
+    trades.append(trade)
+    equity.append(equity[-1] * (1.0 + return_pct / 100.0))
+
+
 def backtest_strategy(
     strategy_name: str,
     currency: str,
@@ -2663,6 +2697,9 @@ def backtest_strategy(
     lows: Optional[List[float]] = None,
     warmup: int = 30,
     min_trades: int = 3,
+    opens: Optional[List[float]] = None,
+    fee_bps: float = 0.0,
+    max_hold_bars: int = 0,
 ) -> BacktestVerdict:
     """Run a strategy through historical data and score its recent performance.
 
@@ -2675,6 +2712,7 @@ def backtest_strategy(
         rust_result = _rust_backtest_strategy(
             strategy_name, currency, closes, volumes,
             highs=highs, lows=lows, warmup=warmup,
+            opens=opens, fee_bps=fee_bps, max_hold_bars=max_hold_bars,
         )
         if rust_result is not None:
             return rust_result
@@ -2737,47 +2775,20 @@ def backtest_strategy(
         elif open_trade is None and sig.action == "SELL":
             open_trade = BacktestTrade(i, closes[i], "SELL", reason=sig.reason)
         elif open_trade is not None:
-            if (open_trade.side == "BUY" and sig.action == "SELL") or (
+            opp = (open_trade.side == "BUY" and sig.action == "SELL") or (
                 open_trade.side == "SELL" and sig.action == "BUY"
-            ):
-                open_trade.exit_bar = i
-                open_trade.exit_price = closes[i]
-                if open_trade.side == "BUY":
-                    open_trade.return_pct = (
-                        (closes[i] - open_trade.entry_price)
-                        / open_trade.entry_price
-                        * 100
-                    )
-                else:
-                    open_trade.return_pct = (
-                        (open_trade.entry_price - closes[i])
-                        / open_trade.entry_price
-                        * 100
-                    )
-                trades.append(open_trade)
+            )
+            held = i - open_trade.entry_bar
+            forced = max_hold_bars > 0 and held >= max_hold_bars
+            if opp or forced:
+                _close_backtest_trade(open_trade, closes[i], i, trades, equity, fee_bps)
+                peak = max(peak, equity[-1])
                 open_trade = None
 
-                ret = (
-                    trades[-1].return_pct / 100.0
-                    if trades[-1].return_pct is not None
-                    else 0.0
-                )
-                equity.append(equity[-1] * (1 + ret))
-                peak = max(peak, equity[-1])
-
-    # Force-close any open trade at the last bar
+    # Force-close any open trade at the last bar (P1-7: not assumed free when fee_bps>0).
     if open_trade is not None:
-        open_trade.exit_bar = len(closes) - 1
-        open_trade.exit_price = closes[-1]
-        if open_trade.side == "BUY":
-            open_trade.return_pct = (
-                (closes[-1] - open_trade.entry_price) / open_trade.entry_price * 100
-            )
-        else:
-            open_trade.return_pct = (
-                (open_trade.entry_price - closes[-1]) / open_trade.entry_price * 100
-            )
-        trades.append(open_trade)
+        _close_backtest_trade(open_trade, closes[-1], len(closes) - 1, trades, equity, fee_bps)
+        peak = max(peak, equity[-1])
 
     if len(trades) < min_trades:
         return BacktestVerdict(
@@ -2825,7 +2836,10 @@ def backtest_strategy(
         else 0.0
     )
     vol = math.sqrt(variance) if variance > 0 else 0.001
-    sharpe = (avg_ret * 100) / (vol * 100) if vol > 0 else 0.0
+    # P0-4: unify Sharpe definition with Rust: mean per-trade return / std(ret) * sqrt(n).
+    # (The previous (avg_ret*100)/(vol*100) canceled the *100, so this is numerically
+    #  identical for the python path, but now it matches the Rust engine exactly.)
+    sharpe = (avg_ret / vol) * math.sqrt(len(returns)) if vol > 0 and returns else 0.0
 
     dd = max(0.0, (peak - min(equity)) / peak) if equity else 0.0
 
@@ -2833,27 +2847,26 @@ def backtest_strategy(
     regime = _classify_regime(closes)
 
     dd_pct = dd * 100.0
+    # P1-6: thresholds single-sourced from BACKTEST_PASS (shared with Rust).
     passed = (
-        win_rate >= 0.50
-        and sharpe > 0.5
-        and profit_factor > 1.20
-        and dd_pct < 15.0
-        and total_return > -10.0
+        win_rate >= BACKTEST_PASS["min_win_rate"]
+        and sharpe > BACKTEST_PASS["min_sharpe"]
+        and profit_factor > BACKTEST_PASS["min_profit_factor"]
+        and dd_pct < BACKTEST_PASS["max_drawdown_pct"]
+        and total_return > BACKTEST_PASS["min_total_return_pct"]
     )
-    if not passed and win_rate >= 0.55 and sharpe > 0.8:
-        passed = True  # high win rate overrides
 
     reasons = []
     if not passed:
-        if win_rate < 0.50:
-            reasons.append(f"win_rate {win_rate:.0%} < 50%")
-        if sharpe <= 0.5:
-            reasons.append(f"Sharpe {sharpe:.2f} <= 0.5")
-        if profit_factor <= 1.20:
-            reasons.append(f"profit_factor {profit_factor:.2f} <= 1.20")
-        if dd_pct >= 15.0:
-            reasons.append(f"max_drawdown {dd_pct:.1f}% >= 15%")
-        if total_return <= -10.0:
+        if win_rate < BACKTEST_PASS["min_win_rate"]:
+            reasons.append(f"win_rate {win_rate:.0%} < {BACKTEST_PASS['min_win_rate']:.0%}")
+        if sharpe <= BACKTEST_PASS["min_sharpe"]:
+            reasons.append(f"Sharpe {sharpe:.2f} <= {BACKTEST_PASS['min_sharpe']}")
+        if profit_factor <= BACKTEST_PASS["min_profit_factor"]:
+            reasons.append(f"profit_factor {profit_factor:.2f} <= {BACKTEST_PASS['min_profit_factor']}")
+        if dd_pct >= BACKTEST_PASS["max_drawdown_pct"]:
+            reasons.append(f"max_drawdown {dd_pct:.1f}% >= {BACKTEST_PASS['max_drawdown_pct']}")
+        if total_return <= BACKTEST_PASS["min_total_return_pct"]:
             reasons.append(f"return {total_return:.1f}% too negative")
 
     return BacktestVerdict(
@@ -3084,8 +3097,19 @@ def batch_backtest_rust(
             volumes = [1.0] * len(closes)
         highs = info.get("highs")
         lows = info.get("lows")
+        opens = info.get("opens") or closes  # P0-1: match live opens=closes
+        fee_bps = info.get("fee_bps", 0.0)
+        max_hold = info.get("max_hold_bars", 0)
         try:
-            raw = _rust_core.backtest_multi_py(names, closes, volumes, warmup, highs=highs, lows=lows)
+            raw = _rust_core.backtest_multi_py(
+                names, closes, volumes, warmup, highs=highs, lows=lows,
+                opens=opens, fee_bps=fee_bps, max_hold_bars=max_hold,
+                min_win_rate=BACKTEST_PASS["min_win_rate"],
+                min_sharpe=BACKTEST_PASS["min_sharpe"],
+                min_pf=BACKTEST_PASS["min_profit_factor"],
+                max_dd_pct=BACKTEST_PASS["max_drawdown_pct"],
+                min_ret_pct=BACKTEST_PASS["min_total_return_pct"],
+            )
             for s_name, metrics in raw:
                 ck = f"{s_name}/{currency}"
                 if len(metrics) >= 9:
@@ -3128,12 +3152,33 @@ def _rust_backtest_strategy(
     highs: Optional[List[float]] = None,
     lows: Optional[List[float]] = None,
     warmup: int = 30,
+    opens: Optional[List[float]] = None,
+    fee_bps: float = 0.0,
+    max_hold_bars: int = 0,
 ) -> Optional[BacktestVerdict]:
-    """Run backtest in Rust for supported strategies, returning None for unsupported ones."""
+    """Run backtest in Rust for supported strategies, returning None for unsupported ones.
+
+    P0-1: ``opens`` is forwarded to Rust so backtest matches live ``run_strategies``
+    (which passes ``opens=closes``). When omitted, ``opens=closes`` is used so the
+    pattern strategies read the same open values as live trading instead of the
+    legacy synthesized prev-close.
+    P1-5: ``fee_bps`` round-trip fee is subtracted per trade in Rust.
+    P1-6: thresholds are single-sourced from ``BACKTEST_PASS`` and passed through.
+    """
     if not _HAS_RUST or strategy_name not in _RUST_STRATEGIES:
         return None
     try:
-        bt = _rust_core.backtest_strategy_py(strategy_name, closes, volumes, warmup, highs=highs, lows=lows)
+        if opens is None:
+            opens = closes
+        bt = _rust_core.backtest_strategy_py(
+            strategy_name, closes, volumes, warmup, highs=highs, lows=lows,
+            opens=opens, fee_bps=fee_bps, max_hold_bars=max_hold_bars,
+            min_win_rate=BACKTEST_PASS["min_win_rate"],
+            min_sharpe=BACKTEST_PASS["min_sharpe"],
+            min_pf=BACKTEST_PASS["min_profit_factor"],
+            max_dd_pct=BACKTEST_PASS["max_drawdown_pct"],
+            min_ret_pct=BACKTEST_PASS["min_total_return_pct"],
+        )
         if bt is None or len(bt) < 9:
             return None
         passed = bool(bt[8])

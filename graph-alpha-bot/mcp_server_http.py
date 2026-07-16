@@ -27,9 +27,9 @@ except ImportError:
 
 
 class Config:
-    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://x1-370:7687")
+    neo4j_uri: str = os.getenv("NEO4J_URI", "")
     neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "gluhlaf8")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
     
     http_port: int = int(os.getenv("HTTP_PORT", "8080"))
 

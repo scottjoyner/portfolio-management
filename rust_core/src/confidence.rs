@@ -45,12 +45,13 @@ const TREND_STRATS: &[&str] = &[
     "ema_cross", "macd", "trix", "adx", "psar", "hma", "aroon",
     "elder_ray", "ichimoku", "dpo",
     "kama", "dmi_cross", "vma",
-    "hp_trend",
+    "hp_trend", "supertrend",
 ];
 const MOMENTUM_STRATS: &[&str] = &[
     "rsi_revert", "cmo", "williams_r", "zscore_revert", "force_idx",
     "true_cci", "kst", "mom_accel", "multi_rsi", "stoch",
     "vortex", "rvi", "coppock",
+    "kalman_mr", "vw_rsi", "fisher", "ultimate_osc",
 ];
 const VOLATILITY_STRATS: &[&str] = &[
     "boll_break", "vwap_revert", "keltner", "donchian",
@@ -142,6 +143,8 @@ pub fn default_weight(strategy: &str) -> f64 {
         "funding_contrarian" | "exchange_flow" | "btc_dxy_corr" => 0.5,
         // New Rust strategies (73-74)
         "kalman_mr" | "hp_trend" => 0.55,
+        // 4 new growth-focused strategies (69-72)
+        "supertrend" | "fisher" | "ultimate_osc" | "vw_rsi" => 0.55,
         _ => 0.5,
     }
 }
@@ -520,7 +523,7 @@ mod coverage_tests {
         "sup_res","liq_vac","donch_pull","impulse_exh","range_exp_idx","de_marker","gap_revert",
         "rsi_fail","cvd_flow","avwap","linreg_slope","hurst","scci","ulcer","ema_dev","kalman_mr",
         "kalshi","polymarket","crypto_news","funding_contrarian","exchange_flow","order_flow",
-        "macro_risk","btc_dxy_corr",
+        "macro_risk","btc_dxy_corr","supertrend","fisher","ultimate_osc","vw_rsi",
     ];
 
     const GROUP_REP: &[(&str, &str)] = &[
