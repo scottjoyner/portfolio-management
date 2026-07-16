@@ -351,11 +351,19 @@ def main() -> None:
         pidfile = _pidfile_path()
         if pidfile.exists():
             try:
-                pid = int(pidfile.read_text().strip())
-                os.kill(pid, 0)
-                print(f"Supervisor already running (PID {pid}). Use 'restart' first.")
-                sys.exit(1)
-            except OSError:
+                raw = pidfile.read_text().strip()
+                if not raw:
+                    # Empty/corrupt PID file (e.g. left behind by a crash) must be
+                    # treated as "not running" — not as a fatal int('') ValueError.
+                    pidfile.unlink(missing_ok=True)
+                else:
+                    pid = int(raw)
+                    os.kill(pid, 0)
+                    print(f"Supervisor already running (PID {pid}). Use 'restart' first.")
+                    sys.exit(1)
+            except (OSError, ValueError):
+                # OSError: stale PID (no such process) -> safe to start.
+                # ValueError: non-integer content -> treat as not running.
                 pass
 
         os.chdir(str(ROOT))
