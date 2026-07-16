@@ -1,4 +1,4 @@
-# data-collector service — rebuilt from current code (shared Python runtime).
+# approval-server service — rebuilt from current code (shared Python runtime).
 # Build context: repo root (portfolio-management/)
 FROM python:3.12-slim
 
@@ -28,4 +28,4 @@ RUN useradd -u 1000 -m -s /bin/bash appuser &&     chown -R appuser:appuser /app
 USER appuser
 
 WORKDIR /app
-CMD ["python3", "-u", "data_collector.py"]
+CMD ["python3", "-u", "approval_server.py --host 0.0.0.0 --port 8080 --pending-file /app/data/pending_approvals.json"]
