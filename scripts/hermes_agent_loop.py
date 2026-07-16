@@ -86,7 +86,9 @@ def run_once(verbose: bool = True) -> dict:
         return {"skipped": True, "reason": "kill_switch"}
 
     from coinbase.src.cb_client import CBClient
-    from scripts.hermes_agent_trader import record_signal, close_position, open_short
+    from scripts.hermes_agent_trader import (record_signal, close_position,
+                                             open_short, close_short,
+                                             drawdown_circuit, size_for, load_ledger)
     from scripts.hermes_regime import classify_btc, compatible_side
     from scripts.hermes_meta import load_bot_edge, asset_edge
 
@@ -96,9 +98,16 @@ def run_once(verbose: bool = True) -> dict:
     if verbose:
         print(f"[regime] BTC={regime} ({regime_info['reason']}) last={regime_info.get('last')}")
 
-    # Meta-layer: load the bot's own per-asset edge once per run. The bot cannot
-    # analyze its own _records; we use it as a confirmation filter (Phase 2 edge).
+    # Meta-layer: load the bot's own per-asset edge once per run.
     bot_edge = load_bot_edge()
+
+    # Phase 4: drawdown circuit — stand down NEW entries if the agent's own
+    # recent paper hit-rate collapsed or drawdown too deep. Open positions are
+    # still managed (closed) regardless.
+    circuit = drawdown_circuit()
+    circuit_open = circuit["open"]
+    if verbose and not circuit_open:
+        print(f"[circuit] CLOSED: {circuit['reason']}")
     # --- close-pass: exit positions on CRISIS or stale hold ---
     from scripts.hermes_agent_trader import load_ledger, close_position, close_short
     led = load_ledger()
@@ -164,6 +173,12 @@ def run_once(verbose: bool = True) -> dict:
                                "regime": regime})
                 continue
 
+            # Phase 4: drawdown circuit blocks NEW entries (open positions still managed)
+            if not circuit_open:
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
+                               "reason": f"circuit:{circuit['reason']}"})
+                continue
+
             # Meta penalty: bot bleeds here -> demand 1.5x stronger signal
             if ed["verdict"] == "bot_bleeds_here":
                 thr_ok = (regime == "TREND_UP" and abs(mom) > MOM_TREND * 1.5) or \
@@ -176,16 +191,20 @@ def run_once(verbose: bool = True) -> dict:
                                    "bot_edge": ed["edge"]})
                     continue
 
+            # Phase 4: adaptive size by signal strength (Kelly-lite)
+            notional = size_for(mom)
             if want_long:
-                rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
-                                    note=f"regime-{regime}-LONG-mom+{mom:.4f}-bot:{ed['verdict']}")
+                rec = record_signal(pair, "BUY", quote_size=notional,
+                                    note=f"regime-{regime}-LONG-mom+{mom:.4f}-bot:{ed['verdict']}-sz{notional}")
                 results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
-                               "bot_edge": ed["edge"], "result": rec.get("action", "?")})
+                               "size": notional, "bot_edge": ed["edge"],
+                               "result": rec.get("action", "?")})
             else:  # short
-                rec = open_short(pair, NOTIONAL_PER_SIGNAL,
-                               note=f"regime-{regime}-SHORT-mom-{mom:.4f}-bot:{ed['verdict']}")
+                rec = open_short(pair, notional,
+                               note=f"regime-{regime}-SHORT-mom-{mom:.4f}-bot:{ed['verdict']}-sz{notional}")
                 results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 5),
-                               "bot_edge": ed["edge"], "result": rec.get("action", "?")})
+                               "size": notional, "bot_edge": ed["edge"],
+                               "result": rec.get("action", "?")})
         except Exception as exc:
             results.append({"pair": pair, "signal": "ERROR", "error": str(exc)[:120]})
 

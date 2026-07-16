@@ -289,6 +289,56 @@ def close_short(product_id: str, note: str = "close-short") -> dict:
             "realized_pnl": round(led["realized_pnl"], 6)}
 
 
+def recent_stats(led: dict | None = None, n: int = 10) -> dict:
+    """Rolling stats over the last N CLOSED trades (those carrying realized_pnl).
+    Used by the drawdown circuit (Phase 4): stand down new entries when the
+    agent's own recent paper hit-rate collapses."""
+    if led is None:
+        led = load_ledger()
+    closed = [t for t in led.get("trades", []) if "realized_pnl" in t]
+    window = closed[-n:] if n else closed
+    wins = sum(1 for t in window if t["realized_pnl"] >= 0)
+    losses = len(window) - wins
+    pnl = sum(t["realized_pnl"] for t in window)
+    peak = 0.0
+    dd = 0.0
+    run = 0.0
+    for t in window:
+        run += t["realized_pnl"]
+        peak = max(peak, run)
+        dd = min(dd, run - peak)
+    return {
+        "n": len(window), "wins": wins, "losses": losses,
+        "win_rate": round(wins / len(window) * 100.0, 2) if window else 0.0,
+        "pnl": round(pnl, 4), "max_drawdown": round(dd, 4),
+    }
+
+
+def size_for(mom: float, cap: float | None = None) -> float:
+    """Kelly-lite sizing (Phase 4): stronger |momentum| -> larger notional,
+    clamped to [30%, 100%] of the cap. Small signals stay small."""
+    if cap is None:
+        cap = MAX_NOTIONAL
+    MOM_REF = 0.02  # 2% move -> ~full size
+    frac = max(0.3, min(1.0, abs(mom) / MOM_REF))
+    return round(cap * frac * 0.99, 2)  # 99% of cap to avoid notional breach
+
+
+def drawdown_circuit(led: dict | None = None, n: int = 10,
+                     min_win_rate: float = 40.0,
+                     max_dd: float = -5.0) -> dict:
+    """Return whether NEW entries should be blocked (circuit open) + reason.
+    Opens when recent win-rate < min_win_rate OR max_drawdown < max_dd."""
+    s = recent_stats(led, n)
+    if s["n"] < 4:
+        return {"open": True, "reason": "insufficient_samples", "stats": s}
+    if s["win_rate"] < min_win_rate:
+        return {"open": False, "reason": f"win_rate {s['win_rate']}% < {min_win_rate}%", "stats": s}
+    if s["max_drawdown"] < max_dd:
+        return {"open": False, "reason": f"drawdown {s['max_drawdown']} < {max_dd}", "stats": s}
+    return {"open": True, "reason": "ok", "stats": s}
+
+
 def close_all(note: str = "close-all") -> dict:
     """Close every open long and short (used on CRISIS / shutdown)."""
     led = load_ledger()
