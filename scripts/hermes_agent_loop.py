@@ -86,7 +86,7 @@ def run_once(verbose: bool = True) -> dict:
         return {"skipped": True, "reason": "kill_switch"}
 
     from coinbase.src.cb_client import CBClient
-    from scripts.hermes_agent_trader import record_signal, close_position
+    from scripts.hermes_agent_trader import record_signal, close_position, open_short
     from scripts.hermes_regime import classify_btc, compatible_side
     from scripts.hermes_meta import load_bot_edge, asset_edge
 
@@ -100,7 +100,7 @@ def run_once(verbose: bool = True) -> dict:
     # analyze its own _records; we use it as a confirmation filter (Phase 2 edge).
     bot_edge = load_bot_edge()
     # --- close-pass: exit positions on CRISIS or stale hold ---
-    from scripts.hermes_agent_trader import load_ledger
+    from scripts.hermes_agent_trader import load_ledger, close_position, close_short
     led = load_ledger()
     HOLD_ITERS = 6
     now = dt.datetime.now(dt.timezone.utc)
@@ -116,9 +116,15 @@ def run_once(verbose: bool = True) -> dict:
             except Exception:
                 stale = False
         if regime == "CRISIS" or stale:
-            res = close_position(pid, note=f"exit-{regime}{'-stale' if stale else ''}")
-            if verbose and res.get("action") == "closed":
-                print(f"[close] {pid} -> realized_pnl={res.get('realized_pnl')}")
+            if pid.startswith("SHORT:"):
+                true_pid = pid.replace("SHORT:", "")
+                res = close_short(true_pid, note=f"exit-{regime}{'-stale' if stale else ''}")
+                if verbose and res.get("action") == "short_closed":
+                    print(f"[close-short] {true_pid} -> realized_pnl={res.get('realized_pnl')}")
+            else:
+                res = close_position(pid, note=f"exit-{regime}{'-stale' if stale else ''}")
+                if verbose and res.get("action") == "closed":
+                    print(f"[close] {pid} -> realized_pnl={res.get('realized_pnl')}")
 
     if regime == "CRISIS":
         return {"skipped": True, "reason": "crisis_standdown", "regime": regime}
@@ -137,37 +143,49 @@ def run_once(verbose: bool = True) -> dict:
     else:
         results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{regime}"})
 
-    # --- Alts: LONG-ONLY, regime-gated, META-filtered (Phase 1 + 2) ---
-    # TREND_UP   -> BUY momentum (ride the trend the oracle confirms)
-    # TREND_DOWN  -> stand down alts (no shorts in paper v1)
-    # RANGE       -> dip-buy: BUY only on a downside extreme (fade)
-    # Meta-filter: if the bot BLEEDS this asset (verified negative edge), require a
-    #   STRONGER own-signal before touching it; if the bot WINS here, normal gate.
+    # --- Alts: regime-gated, META-filtered, BOTH SIDES (Phase 1+2+3) ---
+    # TREND_UP   -> LONG momentum (ride the trend the oracle confirms)
+    # TREND_DOWN  -> SHORT momentum (profit from the downtrend)
+    # RANGE       -> fade extremes: dip-BUY on downside, short on upside
+    # Meta-filter: bot_bleeds_here demands 1.5x stronger own-signal.
     for pair in ALTS:
         try:
             ed = asset_edge(pair, bot_edge)
             candles = _candles(client, pair, HOURS)
             side, mom, last = momentum_signal(candles)
-            want_buy = (regime == "TREND_UP" and side == "BUY") or \
-                       (regime == "RANGE" and mom < -MOM_RANGE)
-            if not want_buy:
+
+            # Decide desired action from regime + own momentum
+            want_long = (regime == "TREND_UP" and side == "BUY") or \
+                        (regime == "RANGE" and mom < -MOM_RANGE)
+            want_short = (regime == "TREND_DOWN" and side == "SELL") or \
+                         (regime == "RANGE" and mom > MOM_RANGE)
+            if not (want_long or want_short):
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
                                "regime": regime})
                 continue
+
             # Meta penalty: bot bleeds here -> demand 1.5x stronger signal
             if ed["verdict"] == "bot_bleeds_here":
                 thr_ok = (regime == "TREND_UP" and abs(mom) > MOM_TREND * 1.5) or \
-                         (regime == "RANGE" and mom < -MOM_RANGE * 1.5)
+                         (regime == "TREND_DOWN" and abs(mom) > MOM_TREND * 1.5) or \
+                         (regime == "RANGE" and abs(mom) > MOM_RANGE * 1.5)
                 if not thr_ok:
                     results.append({"pair": pair, "signal": "HOLD",
                                    "mom": round(mom, 5),
                                    "reason": "bot_bleeds+weak",
                                    "bot_edge": ed["edge"]})
                     continue
-            rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
-                                note=f"regime-{regime}-mom+{mom:.4f}-bot:{ed['verdict']}")
-            results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
-                           "bot_edge": ed["edge"], "result": rec.get("action", "?")})
+
+            if want_long:
+                rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
+                                    note=f"regime-{regime}-LONG-mom+{mom:.4f}-bot:{ed['verdict']}")
+                results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
+                               "bot_edge": ed["edge"], "result": rec.get("action", "?")})
+            else:  # short
+                rec = open_short(pair, NOTIONAL_PER_SIGNAL,
+                               note=f"regime-{regime}-SHORT-mom-{mom:.4f}-bot:{ed['verdict']}")
+                results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 5),
+                               "bot_edge": ed["edge"], "result": rec.get("action", "?")})
         except Exception as exc:
             results.append({"pair": pair, "signal": "ERROR", "error": str(exc)[:120]})
 

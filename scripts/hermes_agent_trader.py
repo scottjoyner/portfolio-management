@@ -226,6 +226,84 @@ def close_position(product_id: str, note: str = "close") -> dict:
             "realized_pnl": round(led["realized_pnl"], 6)}
 
 
+def open_short(product_id: str, quote_size: float, note: str = "short") -> dict:
+    """Open a SIMULATED SHORT (paper). Stores magnitude as a SHORT: keyed position
+    with entry_price = current candle mark. No real borrow/sell; no money moves.
+    P&L on close = (entry - exit) * magnitude - commission."""
+    if KILL_SWITCH:
+        return _refuse("KILL_SWITCH is active")
+    if quote_size is None or quote_size <= 0:
+        return _refuse("need quote_size for short")
+    if quote_size > MAX_NOTIONAL:
+        return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
+    price = _current_price(product_id)
+    if price <= 0:
+        return {"action": "quote_error", "error": "no mark", "product_id": product_id}
+    magnitude = quote_size / price  # positive = size of short
+    commission = quote_size * 0.0012
+    led = load_ledger()
+    ts = datetime.now(timezone.utc).isoformat()
+    key = f"SHORT:{product_id}"
+    pos = led["positions"].get(key, {"base": 0.0, "entry_price": 0.0,
+                                    "entries": 0, "entry_ts": ts})
+    pos["base"] += magnitude
+    pos["entry_price"] = price  # simple: latest entry price
+    pos["entry_ts"] = ts
+    pos["entries"] += 1
+    led["positions"][key] = pos
+    trade = {"ts": ts, "product_id": product_id, "side": "SHORT_OPEN",
+             "quote_size": round(quote_size, 4), "fill_price": price,
+             "base_size": round(magnitude, 8), "commission": round(commission, 6),
+             "live": False, "note": note}
+    led["trades"].append(trade)
+    save_ledger(led)
+    return {"action": "short_opened", "live": False, "trade": trade, "position": pos}
+
+
+def close_short(product_id: str, note: str = "close-short") -> dict:
+    """Close a simulated short: buy back at current candle mark. Realizes P&L."""
+    if KILL_SWITCH:
+        return _refuse("KILL_SWITCH is active")
+    led = load_ledger()
+    key = f"SHORT:{product_id}"
+    pos = led["positions"].get(key)
+    if not pos or pos.get("base", 0.0) <= 1e-12:
+        return {"action": "no_short", "product_id": product_id}
+    magnitude = pos["base"]
+    entry = pos["entry_price"]
+    exit_px = _current_price(product_id)
+    if exit_px <= 0:
+        return {"action": "quote_error", "error": "no mark", "product_id": product_id}
+    commission = magnitude * exit_px * 0.0012
+    pnl = (entry - exit_px) * magnitude - commission  # short wins if exit < entry
+    ts = datetime.now(timezone.utc).isoformat()
+    trade = {"ts": ts, "product_id": product_id, "side": "SHORT_CLOSE",
+             "quote_size": round(magnitude * exit_px, 4), "fill_price": exit_px,
+             "base_size": round(magnitude, 8), "commission": round(commission, 6),
+             "live": False, "note": note, "realized_pnl": round(pnl, 6)}
+    led["trades"].append(trade)
+    led["realized_pnl"] += pnl
+    led["positions"][key] = {"base": 0.0, "entry_price": 0.0, "entries": pos["entries"] + 1}
+    save_ledger(led)
+    return {"action": "short_closed", "live": False, "trade": trade,
+            "realized_pnl": round(led["realized_pnl"], 6)}
+
+
+def close_all(note: str = "close-all") -> dict:
+    """Close every open long and short (used on CRISIS / shutdown)."""
+    led = load_ledger()
+    longs = [p for p, v in led["positions"].items()
+             if not p.startswith("SHORT:") and v.get("base", 0) > 1e-12]
+    shorts = [p.replace("SHORT:", "") for p, v in led["positions"].items()
+              if p.startswith("SHORT:") and v.get("base", 0) > 1e-12]
+    res = {"longs": [], "shorts": []}
+    for p in longs:
+        res["longs"].append({p: close_position(p, note=note).get("action")})
+    for p in shorts:
+        res["shorts"].append({p: close_short(p, note=note).get("action")})
+    return res
+
+
 def mark_to_market() -> dict:
     """Value open positions at current real quotes (read-only). Returns unrealized P&L."""
     if KILL_SWITCH:
@@ -237,13 +315,23 @@ def mark_to_market() -> dict:
         if pos.get("base", 0.0) <= 1e-12:
             continue
         try:
-            bid = _current_price(pid)  # candles mark (best-bid-ask ignores product_id)
+            true_pid = pid.replace("SHORT:", "") if pid.startswith("SHORT:") else pid
+            bid = _current_price(true_pid)  # candles mark (best-bid-ask ignores product_id)
             if bid <= 0:
                 continue
-            avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else 0.0
-            unreal = (bid - avg_cost) * pos["base"]
-            out[pid] = {"base": pos["base"], "avg_cost": round(avg_cost, 4),
-                        "bid": bid, "unrealized_pnl": round(unreal, 4)}
+            if pid.startswith("SHORT:"):
+                # short: unrealized = (entry - mark) * magnitude
+                entry = pos.get("entry_price", bid)
+                unreal = (entry - bid) * pos["base"]
+                out[true_pid] = {"side": "SHORT", "magnitude": round(pos["base"], 6),
+                                "entry": round(entry, 4), "mark": bid,
+                                "unrealized_pnl": round(unreal, 4)}
+            else:
+                avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else 0.0
+                unreal = (bid - avg_cost) * pos["base"]
+                out[pid] = {"side": "LONG", "base": pos["base"],
+                            "avg_cost": round(avg_cost, 4), "bid": bid,
+                            "unrealized_pnl": round(unreal, 4)}
             total_unreal += unreal
         except Exception:
             continue
@@ -296,6 +384,10 @@ def main() -> int:
     ps.add_argument("--note", default="")
     pl = sub.add_parser("ledger")
     pc = sub.add_parser("close"); pc.add_argument("product")
+    psh = sub.add_parser("short"); psh.add_argument("product")
+    psh.add_argument("--quote-size", type=float, required=True); psh.add_argument("--note", default="short")
+    pcs = sub.add_parser("closeshort"); pcs.add_argument("product")
+    pca = sub.add_parser("closeall")
     pm = sub.add_parser("mtm")
     pp = sub.add_parser("propose-live"); pp.add_argument("product"); pp.add_argument("side")
     pp.add_argument("--quote-size", type=float, required=True); pp.add_argument("--note", default="")
@@ -311,6 +403,12 @@ def main() -> int:
         print(json.dumps(ledger_summary(), indent=2))
     elif args.cmd == "close":
         print(json.dumps(close_position(args.product), indent=2))
+    elif args.cmd == "short":
+        print(json.dumps(open_short(args.product, args.quote_size, args.note), indent=2))
+    elif args.cmd == "closeshort":
+        print(json.dumps(close_short(args.product), indent=2))
+    elif args.cmd == "closeall":
+        print(json.dumps(close_all(), indent=2))
     elif args.cmd == "mtm":
         print(json.dumps(mark_to_market(), indent=2))
     elif args.cmd == "propose-live":
