@@ -10,14 +10,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install dependencies from the canonical requirements file
-COPY deploy/requirements.txt /app/deploy/requirements.txt
-RUN pip install --no-cache-dir -r /app/deploy/requirements.txt
+# Copy deploy/ first so the root requirements.txt `-r deploy/requirements.txt` resolves
+COPY deploy/ /app/deploy/
+# Install the exact dependency set from the working local .venv (lockfile).
+# deploy/requirements.txt is the documented canonical set; this lock pins
+# the precise versions that are known to run the trader end-to-end.
+COPY deploy/requirements.venv-lock.txt /app/requirements.lock.txt
+RUN pip install --no-cache-dir -r /app/requirements.lock.txt
 
 # Copy real source trees that exist in the repo
 COPY trading_system/ /app/trading_system/
 COPY coinbase/ /app/coinbase/
 COPY config.yaml /app/
+# Copy root-level modules needed by the trader (strategy_engine + transitive deps)
+COPY strategy_engine.py confidence_matrix.py state_store.py market_universe.py neo4j_store.py notification.py portfolio_optimizer.py approval_server.py /app/
+# Copy the prebuilt Rust extension (strategy_engine imports rust_core)
+COPY rust_core/ /app/rust_core/
 
 # Make trading_system importable (onchain.* lives here)
 ENV PYTHONPATH=/app/trading_system:/app/coinbase
@@ -36,5 +44,6 @@ WORKDIR /app/trading_system
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python3 -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9090/ping'); sys.exit(0)" || exit 1
 
-# Default command: run the onchain poller service
-CMD ["python3", "-u", "-m", "onchain.pollers.service"]
+# Default command: run the hardened paper trader with a health server on 9090
+# (matches the compose healthcheck hitting /ping on 9090).
+CMD ["python3", "-u", "/app/coinbase/src/run_trader_v4.py", "--mode", "paper", "--health-port", "9090"]
