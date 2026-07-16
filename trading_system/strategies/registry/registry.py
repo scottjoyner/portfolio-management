@@ -55,6 +55,18 @@ from strategies.sentiment.volume_attention import VolumeAttentionMomentumStrateg
 from strategies.timeseries.dfa_alpha import DFAAlphaRegimeStrategy
 from strategies.timeseries.hurst_regime import HurstRegimeStrategy
 from strategies.timeseries.sample_entropy import SampleEntropyRegimeStrategy
+from strategies.risk.vol_target_overlay import VolTargetOverlayStrategy
+from strategies.risk.risk_parity_zscore import RiskParityZScoreStrategy
+from strategies.risk.ewma_var_breakout import EwmaVarBreakoutStrategy
+from strategies.trend.multitf_confluence import MultiTFTrendConfluenceStrategy
+from strategies.trend.timeframe_momentum_divergence import TimeframeMomentumDivergenceStrategy
+from strategies.trend.volatility_cycle_align import VolatilityCycleAlignStrategy
+from strategies.volatility.garch_vol_forecast import GarchLiteVolForecastStrategy
+from strategies.volatility.vol_clustering_breakout import VolClusteringBreakoutStrategy
+from strategies.volatility.regime_persistence_vol import RegimePersistenceVolStrategy
+from strategies.crypto.funding_contrarian_proxy import FundingRateContrarianProxyStrategy
+from strategies.crypto.liquidation_cascade_proxy import LiquidationCascadeProxyStrategy
+from strategies.crypto.ob_imbalance_extreme import OBImbalanceExtremeReversionStrategy
 
 
 def load_strategies() -> list:
@@ -115,6 +127,18 @@ def load_strategies() -> list:
         MajorityVoteEnsembleStrategy(),
         ConvictionWeightedCompositeStrategy(),
         RegimeSwitchingBlendStrategy(),
+        VolTargetOverlayStrategy(),
+        RiskParityZScoreStrategy(),
+        EwmaVarBreakoutStrategy(),
+        MultiTFTrendConfluenceStrategy(),
+        TimeframeMomentumDivergenceStrategy(),
+        VolatilityCycleAlignStrategy(),
+        GarchLiteVolForecastStrategy(),
+        VolClusteringBreakoutStrategy(),
+        RegimePersistenceVolStrategy(),
+        FundingRateContrarianProxyStrategy(),
+        LiquidationCascadeProxyStrategy(),
+        OBImbalanceExtremeReversionStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced
