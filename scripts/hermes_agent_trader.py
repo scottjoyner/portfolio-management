@@ -118,15 +118,53 @@ def quote(product_id: str, side: str, quote_size: float | None = None,
 
 def record_signal(product_id: str, side: str, quote_size: float | None = None,
                   base_size: float | None = None, note: str = "",
-                  regime: str = "", setup: str = "") -> dict:
+                  regime: str = "", setup: str = "", price: float | None = None) -> dict:
     """Simulate a paper fill at the real preview price and log it to the ledger.
-    This is the agent 'competing' — a paper position, no money moves."""
+    This is the agent 'competing' — a paper position, no money moves.
+
+    `price` (optional) is the decision price (e.g. candle last close) used for the
+    paper fill. When passed, NO live quote is fetched — the paper sim is fully
+    self-contained from candles (Phase 9c: removes dry_run preview dependency so
+    signals actually record in paper competition). Falls back to live preview."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     if quote_size is None and base_size is None:
         return _refuse("need quote_size or base_size")
     if quote_size is not None and quote_size > MAX_NOTIONAL:
         return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
+    # If a decision price was supplied, simulate the fill directly (no live quote).
+    if price is not None and price > 0:
+        notional = quote_size if quote_size is not None else (base_size or 0) * price
+        if notional > MAX_NOTIONAL + 0.01:
+            return _refuse(f"notional {notional:.2f} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
+        base = (quote_size / price) if quote_size is not None else (base_size or 0)
+        commission = notional * 0.0012
+        led = load_ledger()
+        ts = datetime.now(timezone.utc).isoformat()
+        trade = {
+            "ts": ts, "product_id": product_id, "side": side.upper(),
+            "quote_size": round(notional, 4), "fill_price": round(price, 8),
+            "base_size": round(base, 8), "commission": round(commission, 6),
+            "live": False, "note": note, "regime": regime, "setup": setup,
+        }
+        led["trades"].append(trade)
+        pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0, "entries": 0})
+        if side.upper() == "BUY":
+            if pos.get("base", 0.0) <= 1e-12:
+                pos["entry_ts"] = ts
+            pos["base"] += base
+            pos["cost_basis"] += notional
+        else:
+            avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
+            proceeds = base * price
+            led["realized_pnl"] += (proceeds - avg_cost * base)
+            pos["base"] = max(0.0, pos["base"] - base)
+            pos["cost_basis"] = max(0.0, pos["cost_basis"] - avg_cost * base)
+        pos["entries"] += 1
+        led["positions"][product_id] = pos
+        save_ledger(led)
+        return {"action": "signal_recorded", "live": False, "trade": trade,
+                "position": pos, "realized_pnl": round(led["realized_pnl"], 6)}
     # SELL via base_size: some products reject fine precision. Retry coarser if the
     # exchange complains, so a valid signal isn't dropped on a rounding artifact.
     tried = set()
@@ -229,17 +267,21 @@ def close_position(product_id: str, note: str = "close", price: float | None = N
 
 
 def open_short(product_id: str, quote_size: float, note: str = "short",
-               regime: str = "", setup: str = "") -> dict:
+               regime: str = "", setup: str = "", price: float | None = None) -> dict:
     """Open a SIMULATED SHORT (paper). Stores magnitude as a SHORT: keyed position
     with entry_price = current candle mark. No real borrow/sell; no money moves.
-    P&L on close = (entry - exit) * magnitude - commission."""
+    P&L on close = (entry - exit) * magnitude - commission.
+
+    `price` (optional) overrides the decision mark (Phase 9c: candle-derived, no
+    live fetch needed for paper competition)."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     if quote_size is None or quote_size <= 0:
         return _refuse("need quote_size for short")
     if quote_size > MAX_NOTIONAL:
         return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    price = _current_price(product_id)
+    if price is None or price <= 0:
+        price = _current_price(product_id)
     if price <= 0:
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
     magnitude = quote_size / price  # positive = size of short

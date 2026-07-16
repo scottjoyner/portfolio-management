@@ -76,6 +76,28 @@ def _closes(candles: list) -> list:
     return [float(c["close"]) for c in candles if c.get("close")]
 
 
+def local_regime(candles: list) -> str:
+    """Per-asset regime from its OWN 120h candles (z-score + EMA20 alignment).
+    Decouples asset direction from the BTC-weighted global regime so the agent
+    can LONG uptrending alts even when BTC's MTF says TREND_DOWN (Phase 9d:
+    trade the tape in front of you, not BTC's shadow). Returns
+    TREND_UP / TREND_DOWN / RANGE."""
+    closes = _closes(candles)
+    if len(closes) < 22:
+        return "RANGE"
+    ti = TechnicalIndicatorSet()
+    for p in closes:
+        ti.ingest(p, 0.0)
+    z = ti.zscore(period=20)
+    ema20 = ti.ema(period=20)
+    last = closes[-1]
+    if z > 0.5 and last > ema20:
+        return "TREND_UP"
+    if z < -0.5 and last < ema20:
+        return "TREND_DOWN"
+    return "RANGE"
+
+
 def indicator_signal(candles: list, regime: str) -> tuple[str, float, dict]:
     """Return (side, strength, detail). side in {BUY, SELL, HOLD}."""
     closes = _closes(candles)

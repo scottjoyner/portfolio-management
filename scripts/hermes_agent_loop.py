@@ -46,19 +46,40 @@ HOURS = 5
 # momentum thresholds: smaller in RANGE (fade extremes), larger in TREND (confirm)
 MOM_TREND = 0.004   # 0.4%
 MOM_RANGE = 0.007   # 0.7% (stronger extreme to fade in range)
-# Trade at 99% of the cap so base*price rounding never breaches MAX_NOTIONAL.
-NOTIONAL_PER_SIGNAL = round(min(MAX_NOTIONAL * 0.99, 10.0), 2)
+# Trade at the full cap (fees are ~0.24% round-trip; larger notional dilutes
+# fee drag — profit mandate). MAX_NOTIONAL is the inherited safety cap.
+NOTIONAL_PER_SIGNAL = round(MAX_NOTIONAL, 2)
 
 
 def _candles(client, product_id: str, hours: int, granularity: str = "1h") -> list[dict]:
-    end = dt.datetime.now(dt.timezone.utc)
-    start = end - dt.timedelta(hours=hours)
-    r = client._cli_json(
-        "products", "candles", product_id, f"granularity={granularity}",
-        f"start={start.isoformat()}", f"end={end.isoformat()}",
-    )
-    if isinstance(r, dict) and "candles" in r:
-        return r["candles"]
+    """Live candles via the bot's OWN REST feed (fetch_candles_batch_sync) —
+    the SAME real Coinbase Exchange public API the strategy engine uses, so the
+    agent competes on real prices (not the frozen dry-run CLI mock). Converts the
+    (ts,open,high,low,close,vol) tuples to the {close,volume,start} dicts the rest
+    of the loop expects. Phase 9g: this is what makes PnL real/observable.
+    NOTE: this is read-only market data — no orders, no auth."""
+    try:
+        from coinbase.src.rest_feed import fetch_candles_batch_sync
+        gran_s = {"1h": 3600, "4h": 14400, "15m": 900}.get(granularity, 3600)
+        lim = min(max(int(hours * 3600 / gran_s), 5), 300)
+        out = fetch_candles_batch_sync([product_id], granularity=gran_s, limit=lim)
+        rows = out.get(product_id, [])
+        if rows:
+            return [{"close": float(c[4]), "volume": float(c[5]),
+                     "start": int(c[0])} for c in rows]
+    except Exception as exc:
+        # Fall back to the frozen dry-run CLI mock only if the live feed fails.
+        try:
+            end = dt.datetime.now(dt.timezone.utc)
+            start = end - dt.timedelta(hours=hours)
+            r = client._cli_json(
+                "products", "candles", product_id, f"granularity={granularity}",
+                f"start={start.isoformat()}", f"end={end.isoformat()}",
+            )
+            if isinstance(r, dict) and "candles" in r:
+                return r["candles"]
+        except Exception:
+            pass
     return []
 
 
@@ -83,17 +104,17 @@ def momentum_signal(candles: list[dict]) -> tuple[str | None, float, float]:
 # Phase 15: per-position exit logic (TP / SL / timeout / regime-flip).
 # Keeps the book round-tripping so the expectancy table fills and we can
 # OBSERVE the agent's edge vs the bot. Risk:reward = 1.5:2.0 (SL tighter than TP).
-TP_LONG = 0.020    # +2.0% take-profit on longs
-SL_LONG = -0.015   # -1.5% stop-loss on longs
-TP_SHORT = -0.020  # -2.0% take-profit on shorts
-SL_SHORT = 0.015   # +1.5% stop-loss on shorts
+TP_LONG = 0.040    # +4.0% take-profit on longs (let winners run, bot-style)
+SL_LONG = -0.010   # -1.0% stop-loss on longs (cut losers small)
+TP_SHORT = -0.040  # -4.0% take-profit on shorts
+SL_SHORT = 0.010   # +1.0% stop-loss on shorts
 TIMEOUT_RANGE = 8  # cycles (~2h) before giving up in range
 TIMEOUT_TREND = 12  # cycles (~3h) in trend
 # Breakeven lock: once price moves >=1.2% in our favor, tighten SL to entry.
 BE_LOCK = 0.012
 
 
-def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool):
+def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool, local: str = ""):
     try:
         cur_f = float(cur) if cur is not None else 0.0
     except (TypeError, ValueError):
@@ -123,10 +144,13 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
         return True, "tp"
     if pnl <= eff_sl:
         return True, "sl"
-    # regime flip: longs exit if we leave an uptrend; shorts exit if we leave a downtrend
-    if not is_short and regime in ("TREND_DOWN", "CRISIS"):
+    # regime flip: use the POSITION'S LOCAL regime (Phase 9d) — not BTC's global
+    # regime — so a long on an uptrending alt isn't force-closed just because BTC
+    # says TREND_DOWN. Only the global CRISIS stand-down is shared.
+    flip = local or regime
+    if not is_short and flip in ("TREND_DOWN", "CRISIS"):
         return True, "regimeflip"
-    if is_short and regime in ("TREND_UP", "CRISIS"):
+    if is_short and flip in ("TREND_UP", "CRISIS"):
         return True, "regimeflip"
     # timeout by regime
     if stale:
@@ -149,7 +173,7 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_meta import load_bot_edge, asset_edge, best_bot_setups, bot_confirms
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
     from scripts.hermes_overlay import overlay_state
-    from scripts.hermes_signals import indicator_signal
+    from scripts.hermes_signals import indicator_signal, local_regime
     from scripts.hermes_expectancy import universe_tilt, expectancy_table
     from scripts.hermes_portfolio import correlation_to_btc, exposure_ok
 
@@ -222,14 +246,22 @@ def run_once(verbose: bool = True) -> dict:
                 stale = age > HOLD_ITERS * 15  # cron cadence = 15m
             except Exception:
                 stale = False
-        # current price for this position's asset
+        # current price for this position's asset — use the SAME 120h window last
+        # close as entry (Phase 9f: consistent mark source, no window mismatch that
+        # distorts PnL between entry and exit). Also reuse it for local-regime.
         true_pid = pid.replace("SHORT:", "")
         try:
-            cd = _candles(client, true_pid, 2)
+            cd = _candles(client, true_pid, 120)
             cur = cd[-1]["close"] if cd else None
         except Exception:
             cur = None
-        close_now, reason = _exit_check(pid, pos, cur, regime, stale)
+        # Phase 9d: compute the position's LOCAL regime for flip-exit logic.
+        local = ""
+        try:
+            local = local_regime(cd) if cd else ""
+        except Exception:
+            local = ""
+        close_now, reason = _exit_check(pid, pos, cur, regime, stale, local)
         if close_now:
             px = float(cur) if cur is not None else None
             if pid.startswith("SHORT:"):
@@ -246,17 +278,29 @@ def run_once(verbose: bool = True) -> dict:
 
     results = []
 
-    # --- BTC itself: only trade its momentum in TREND regimes ---
-    if regime in ("TREND_UP", "TREND_DOWN"):
-        candles = _candles(client, BTC, HOURS)
-        side, mom, last = momentum_signal(candles)
-        if side:
-            rec = record_signal(BTC, side, quote_size=NOTIONAL_PER_SIGNAL,
-                                note=f"btc-{regime}-mom{mom:.4f}")
-            results.append({"pair": BTC, "signal": side, "mom": round(mom, 5),
+    # --- BTC itself: trade its OWN local regime direction (Phase 9d), not the
+    # global MTF vote. Long only if BTC's 120h candles are TREND_UP, short if
+    # TREND_DOWN. Skip in RANGE/CRISIS. This stops whipsaw longs in a downtrend. ---
+    btc_candles = _candles(client, BTC, 120)
+    btc_local = local_regime(btc_candles)
+    if btc_local == "TREND_UP":
+        side, mom, last = momentum_signal(btc_candles)
+        if side == "BUY":
+            rec = record_signal(BTC, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
+                                note=f"btc-localUP-mom{mom:.4f}",
+                                price=last if last and last > 0 else None)
+            results.append({"pair": BTC, "signal": "BUY", "mom": round(mom, 5),
+                           "result": rec.get("action", "?")})
+    elif btc_local == "TREND_DOWN":
+        side, mom, last = momentum_signal(btc_candles)
+        if side == "SELL":
+            rec = open_short(BTC, NOTIONAL_PER_SIGNAL,
+                             note=f"btc-localDOWN-mom{mom:.4f}",
+                             price=last if last and last > 0 else None)
+            results.append({"pair": BTC, "signal": "SHORT", "mom": round(mom, 5),
                            "result": rec.get("action", "?")})
     else:
-        results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{regime}"})
+        results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{btc_local}"})
 
     # --- Alts: regime-gated, META-filtered, BOTH SIDES, INDICATOR-driven (P1-9) ---
     # TREND_UP   -> LONG on trend-confirmed setups (z>0, price>EMA, rsi>50)
@@ -271,14 +315,23 @@ def run_once(verbose: bool = True) -> dict:
             # Wider window (120h @1h = 120 bars) so indicators have enough
             # samples; the dry-run CLI caps the default HOURS window at ~5 bars.
             candles = _candles(client, pair, 120)
+            # Phase 9d: trade each asset on its OWN local regime, not BTC's shadow.
+            # The global gate below still enforces risk-off (vol/circuit/news/MIXED).
+            local = local_regime(candles)
             # Phase 9: indicator overlay (bot's own TechnicalIndicatorSet math)
-            side, strength, det = indicator_signal(candles, regime)
+            side, strength, det = indicator_signal(candles, local)
+            last = float(candles[-1]["close"]) if candles and candles[-1].get("close") else 0.0
             if side == "HOLD":
                 results.append({"pair": pair, "signal": "HOLD", "mom": None,
                                "regime": regime, "detail": det.get("reason")})
                 continue
             mom = det.get("z", 0.0)  # use z-score as the "momentum" proxy for sizing
             setup = det.get("setup", "other")
+            # Phase 8: strategy mimicry — does the bot's backtest endorse THIS
+            # asset+setup type? Computed early so the meta-filter (below) can use it.
+            setup_type = "mean_revert" if "revert" in setup or "fade" in setup else \
+                          "trend" if "trend" in setup else "other"
+            conf = bot_confirms(pair, setup_type, best_bot_setups())
 
             # Decide desired action from regime + indicator side
             want_long = side == "BUY"
@@ -299,21 +352,19 @@ def run_once(verbose: bool = True) -> dict:
                                "reason": f"gate:{why}"})
                 continue
 
-            # Meta penalty: bot bleeds here -> demand 1.5x stronger signal
-            if ed["verdict"] == "bot_bleeds_here":
-                thr_ok = abs(mom) > MOM_TREND * 1.5
-                if not thr_ok:
-                    results.append({"pair": pair, "signal": "HOLD",
-                                   "mom": round(mom, 4),
-                                   "reason": "bot_bleeds+weak",
-                                   "bot_edge": ed["edge"]})
-                    continue
+            # Meta-filter (Phase 9e / profit mandate): the bot's OWN backtest is
+            # the ground truth. Trade ONLY assets where the bot shows positive edge.
+            #  - bot_bleeds_here -> SKIP entirely (bot loses here; don't trade blind)
+            #  - bot_wins_here   -> MIMIC (trade same direction; confirmed alpha)
+            #  - unknown/neutral -> SKIP (no edge evidence; don't trade blind)
+            verdict = ed["verdict"]
+            if verdict != "bot_wins_here":
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": f"meta:{verdict}", "bot_edge": ed["edge"]})
+                continue
 
-            # Phase 8: strategy mimicry boost — bot provably wins this asset
-            # with the SAME setup type? If so, this is confirmed alpha (gated).
-            setup_type = "mean_revert" if "revert" in setup or "fade" in setup else \
-                          "trend" if "trend" in setup else "other"
-            conf = bot_confirms(pair, setup_type, best_bot_setups())
+            # Phase 8: strategy mimicry boost — conf already computed above (asset+setup
+            # endorsement). If confirmed, this is validated alpha (gated).
             conf_mult = 1.25 if conf["confirmed"] else 1.0
 
             # Phase 10: own-paper tilt — drop assets the AGENT itself keeps losing
@@ -350,7 +401,8 @@ def run_once(verbose: bool = True) -> dict:
                 rec = record_signal(pair, "BUY", quote_size=notional,
                                     note=f"regime-{regime}-LONG-{setup}-mom{mom:.3f}"
                                          f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}",
-                                    regime=regime, setup=setup)
+                                    regime=regime, setup=setup,
+                                    price=last if last and last > 0 else None)
                 results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 4),
                                "size": notional, "bot_edge": ed["edge"],
                                "confirmed": conf["confirmed"],
@@ -359,7 +411,8 @@ def run_once(verbose: bool = True) -> dict:
                 rec = open_short(pair, notional,
                                note=f"regime-{regime}-SHORT-{setup}-mom{mom:.3f}"
                                     f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}",
-                               regime=regime, setup=setup)
+                               regime=regime, setup=setup,
+                               price=last if last and last > 0 else None)
                 results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 4),
                                "size": notional, "bot_edge": ed["edge"],
                                "confirmed": conf["confirmed"],
