@@ -105,13 +105,21 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
     entry = (pos.get("entry_price") if is_short else pos.get("cost_basis")) or 0.0
     if entry <= 0:
         return False, ""
-    # P&L fraction (long: (cur-entry)/entry; short: (entry-cur)/entry)
+    # P&L fraction (long: (cur-entry)/entry; short: (entry-cur)/entry) — both in
+    # PROFIT terms (positive = we made money). The TP_/SL_ constants are expressed
+    # as PRICE-MOVE direction (TP_SHORT=-0.020 = "price drops 2%"), so for shorts
+    # we must NEGATE them to get pnl-space thresholds. OLD code used tp=TP_SHORT
+    # (-0.020) directly in `pnl >= tp`, which fired "tp" on ANY small loss
+    # (e.g. -0.007 >= -0.020) -> instant fake close + fee churn. Fix: convert.
     pnl = (cur_f - entry) / entry if not is_short else (entry - cur_f) / entry
-    tp = TP_SHORT if is_short else TP_LONG
-    sl = SL_SHORT if is_short else SL_LONG
+    # Convert price-move constants (TP_SHORT=-0.020 = "price drops 2%") into
+    # pnl-space thresholds (positive = profit). For shorts, a price DROP is a
+    # PROFIT, so negate.
+    tp_pnl = TP_LONG if not is_short else -TP_SHORT
+    sl_pnl = SL_LONG if not is_short else -SL_SHORT
     # breakeven lock: if in profit >= BE_LOCK, never let it hit SL again
-    eff_sl = 0.0 if pnl >= BE_LOCK else sl
-    if pnl >= tp:
+    eff_sl = 0.0 if pnl >= BE_LOCK else sl_pnl
+    if pnl >= tp_pnl:
         return True, "tp"
     if pnl <= eff_sl:
         return True, "sl"

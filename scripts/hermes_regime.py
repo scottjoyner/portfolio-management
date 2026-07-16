@@ -70,7 +70,13 @@ def classify_candles(candles: list[dict]) -> dict:
     midpoint_dist = abs(last - mid) / spread if spread > 0 else 1.0
 
     TREND_THRESH = 0.015
-    VOL_THRESH = 0.012
+    # Phase 6c: VOL_THRESH re-tuned from 0.012 -> 0.035. The OLD 1.2% per-candle
+    # stdev classified CRISIS far too eagerly — BTC's normal realized vol is 1-4%
+    # per candle on 4h/daily windows, so the regime was almost always CRISIS,
+    # which forced the 1d vote to CRISIS and broke the MTF 2/3 agreement (agent
+    # stuck at 0 trades). New threshold: only true vol expansion (>=3.5% stdev)
+    # = CRISIS. Normal crypto chop is now RANGE/TREND as intended.
+    VOL_THRESH = 0.035
     RANGE_MID = 0.25
 
     if vol > VOL_THRESH:
