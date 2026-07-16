@@ -81,6 +81,7 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 | E7 | Offline replay: watchlist + candles serve from `feed_cache` when live feed is down | UI | M | DONE |
 | E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | DONE (optimizer suite 500 passed / 2 skipped; 80% line+branch met; also fixed a latent `Bar(instrument_type=…)` crash in smart-money detection, a `currency=pid`→base-ticker inconsistency across 6 detection paths, an invalid `currency=` kwarg passed to `ExchangeNetflowSignal.on_bar`, and a mis-indented `Opportunity(...)` constructor in `_detect_strategy_signals`) |
 | E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S | OPEN |
+| E10 | Key-free backtest data collector aggregating Coinbase + Yahoo + CoinGecko + Binance into durable `feed_cache` on SSD | Data | M | DONE (`scripts/collect_backtest_data.py`; Coinbase/Yahoo/CoinGecko verified writing to `/media/scott/SSD_4TB/feed_cache`; Binance geo-blocked from this network but code path correct) |
 
 ---
 
@@ -106,7 +107,8 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 - [x] Watchlist 30s TTL cache + offline fallback to `feed_cache` (E7).
 - [x] `scripts/backfill_feed_cache.py` added + verified (E2).
 - [x] `tests/coverage/test_feed_cache.py` (9) + `test_optimizer_inbox.py` + `test_dashboard_offline.py` added + wired into `run_all_tests.sh`.
-- [x] Full harness green (9 suites); `tests/coverage/optimizer/` suite green at 499 passed / 2 skipped; `portfolio_optimizer.py` coverage 80% line+branch (E8 target met).
+- [x] Full harness green (9 suites); `tests/coverage/optimizer/` suite green at 500 passed / 2 skipped; `portfolio_optimizer.py` coverage 80% line+branch (E8 target met).
 - [x] 12 previously-failing optimizer tests fixed (realistic candle trends, buy-capacity/state setup, `SOL-USD` currency assertion) + a latent `Bar(instrument_type=…)` crash in smart-money detection repaired.
+- [x] `scripts/collect_backtest_data.py` added (E10): aggregates Coinbase public candles + Yahoo Finance + CoinGecko market caps + Binance funding (all key-free) into `feed_cache` on the SSD; idempotent append+de-dup; verified writing to `/media/scott/SSD_4TB/feed_cache`.
 - [ ] E9 live `/market/universe` verification under daemon.
 - [ ] Production NAS write confirmed under systemd (root).

@@ -111,3 +111,67 @@ def test_non_ohlcv_records():
     # append dedup by content is not expected; ensure append works
     save_records("onchain", "exchange_netflow", [{"ts": 3, "metric": "netflow", "value": 0.0}])
     assert len(load_records("onchain", "exchange_netflow")) == 3
+
+
+# ── collector normalization (scripts/collect_backtest_data.py) ────────────────
+
+def test_collector_yahoo_normalization():
+    import scripts.collect_backtest_data as C
+    fake = {
+        "chart": {"result": [{
+            "timestamp": [1700000000, 1700086400],
+            "indicators": {"quote": [{
+                "open": [100.0, 101.0],
+                "high": [105.0, 106.0],
+                "low": [99.0, 100.0],
+                "close": [104.0, 105.5],
+                "volume": [1000, 1100],
+            }]},
+        }]},
+    }
+    # patch the network call
+    C._get_json = lambda url, timeout=20: fake
+    rows = C._yahoo_candles("AAPL", 30)
+    assert len(rows) == 2
+    t, o, h, lo, c, v = rows[0]
+    assert (o, h, lo, c, v) == (100.0, 105.0, 99.0, 104.0, 1000)
+    # writes through feed_cache into the temp root
+    saved = C.save_candles("yahoo_candles", "AAPL", 86400, rows)
+    assert saved == 2
+    assert len(load_candles("yahoo_candles", "AAPL", 86400)) == 2
+
+
+def test_collector_coingecko_normalization():
+    import scripts.collect_backtest_data as C
+    fake = {
+        "prices": [[1700000000000, 42000.0], [1700086400000, 42100.0]],
+        "total_volumes": [[1700000000000, 500.0], [1700086400000, 600.0]],
+    }
+    C._get_json = lambda url, timeout=20: fake
+    rows = C._coingecko_candles("bitcoin", 30)
+    assert len(rows) == 2
+    t, o, h, lo, c, v = rows[0]
+    # CoinGecko prices are ms -> converted to seconds; candle-form collapses OHLC to close
+    assert abs(t - 1700000000.0) < 1.0
+    assert c == 42000.0
+    assert v == 500.0
+    saved = C.save_candles("coingecko_candles", "BTC", 86400, rows)
+    assert saved == 2
+
+
+def test_collector_binance_snapshot_shape():
+    import scripts.collect_backtest_data as C
+    fake = [
+        {"symbol": "BTCUSDT", "lastFundingRate": "0.0001",
+         "markPrice": "42000.0", "indexPrice": "41999.0"},
+        {"symbol": "ETHUSDT", "lastFundingRate": "-0.0002",
+         "markPrice": "2200.0", "indexPrice": "2199.0"},
+    ]
+    C._get_json = lambda url, timeout=20: fake
+    snap = C._binance_funding_snapshot()
+    assert snap is not None
+    assert len(snap["rates"]) == 2
+    assert snap["rates"][0]["symbol"] == "BTCUSDT"
+    assert snap["rates"][0]["lastFundingRate"] == 0.0001
+    n = C.save_records("binance_funding", "premium_index", [snap])
+    assert n == 1
