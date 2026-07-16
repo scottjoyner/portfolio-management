@@ -100,27 +100,36 @@ def indicator_signal(candles: list, regime: str) -> tuple[str, float, dict]:
         "vol_ratio": round(vr, 2), "last": round(last, 2),
     }
 
-    # volume confirmation: ignore signals on thin tape (fakeout guard)
-    liq_ok = vr >= 0.6
+    # volume confirmation: thin tape can fakeout, but a HARD gate at vr>=0.6
+    # blocks most valid signals (alt 1h candles routinely have vr<0.6). Phase 9b:
+    # make volume a SOFT strength discount, not a hard block — keeps trade flow
+    # (profit mandate) while still weighting liquid tape higher.
+    liq_ok = vr >= 0.35
+    liq_discount = min(1.0, max(0.5, vr))  # 0.5..1.0 multiplier on strength
 
     if regime == "RANGE":
-        if pct_b < 0.12 and z < -1.2 and liq_ok:
-            strength = min(1.0, (0.12 - pct_b) / 0.12 * 0.6 + min(abs(z), 3) / 3 * 0.4)
+        if pct_b < 0.15 and z < -1.0:
+            strength = min(1.0, (0.15 - pct_b) / 0.15 * 0.6 + min(abs(z), 3) / 3 * 0.4) * liq_discount
             return "BUY", round(strength, 3), {**detail, "setup": "mean_revert_dip"}
-        if pct_b > 0.88 and z > 1.2 and liq_ok:
-            strength = min(1.0, (pct_b - 0.88) / 0.12 * 0.6 + min(abs(z), 3) / 3 * 0.4)
+        if pct_b > 0.85 and z > 1.0:
+            strength = min(1.0, (pct_b - 0.85) / 0.15 * 0.6 + min(abs(z), 3) / 3 * 0.4) * liq_discount
             return "SELL", round(strength, 3), {**detail, "setup": "mean_revert_fade"}
         return "HOLD", 0.0, {**detail, "reason": "not_at_extreme"}
 
     if regime == "TREND_UP":
-        if z > 0 and last > ema20 and rsi > 50 and liq_ok:
-            strength = min(1.0, (z / 2.0) * 0.5 + ((rsi - 50) / 50.0) * 0.5)
+        # Phase 9b: core directional filter = z>0 AND price>EMA20 (the edge).
+        # RSI band widened 50->45 (near-neutral RSI no longer kills valid trends);
+        # volume is soft (liq_discount) not hard.
+        if z > 0 and last > ema20 and rsi > 45:
+            strength = min(1.0, (z / 2.0) * 0.5 + ((rsi - 45) / 55.0) * 0.5) * liq_discount
             return "BUY", round(strength, 3), {**detail, "setup": "trend_continuation"}
         return "HOLD", 0.0, {**detail, "reason": "trend_not_confirmed"}
 
     if regime == "TREND_DOWN":
-        if z < 0 and last < ema20 and rsi < 50 and liq_ok:
-            strength = min(1.0, (abs(z) / 2.0) * 0.5 + ((50 - rsi) / 50.0) * 0.5)
+        # Phase 9b: core directional filter = z<0 AND price<EMA20. RSI band
+        # widened 50->55; volume soft.
+        if z < 0 and last < ema20 and rsi < 55:
+            strength = min(1.0, (abs(z) / 2.0) * 0.5 + ((55 - rsi) / 55.0) * 0.5) * liq_discount
             return "SELL", round(strength, 3), {**detail, "setup": "trend_fade_short"}
         return "HOLD", 0.0, {**detail, "reason": "trend_not_confirmed"}
 
