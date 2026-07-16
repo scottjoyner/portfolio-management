@@ -379,10 +379,101 @@ def close_short(product_id: str, note: str = "close-short", price: float | None 
             "realized_pnl": round(led["realized_pnl"], 6)}
 
 
+def add_to_position(product_id: str, add_margin: float, price: float | None = None,
+                     note: str = "add-to-winner") -> dict:
+    """Pyramid into an EXISTING paper position (long or short) by averaging the
+    entry and increasing exposure. Margin accounting mirrors record_signal/
+    open_short: longs debit margin+commission, shorts credit margin-commission.
+    Paper-only. Used by the agent's 'add-to-winner' edge (let winners run harder
+    when the setup is still confirmed)."""
+    if KILL_SWITCH:
+        return _refuse("KILL_SWITCH is active")
+    if add_margin is None or add_margin <= 0:
+        return _refuse("need add_margin > 0")
+    if add_margin > MAX_NOTIONAL:
+        return _refuse(f"add_margin {add_margin} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
+    is_short = product_id.startswith("SHORT:") or led_short_key(product_id)
+    key = f"SHORT:{product_id}" if is_short else product_id
+    led = load_ledger()
+    pos = led["positions"].get(key)
+    if not pos or pos.get("base", 0.0) <= 1e-12:
+        return {"action": "no_position", "product_id": product_id}
+    if price is None or price <= 0:
+        price = _current_price(product_id if not is_short else product_id)
+    if price <= 0:
+        return {"action": "quote_error", "error": "no mark", "product_id": product_id}
+    lev = pos.get("leverage", AGENT_LEVERAGE)
+    commission = add_margin * 0.0012
+    ts = datetime.now(timezone.utc).isoformat()
+    base = 0.0
+    magnitude = 0.0
+    if is_short:
+        magnitude = add_margin / price
+        # average entry price across the (now larger) short
+        prev_base = pos["base"]
+        pos["entry_price"] = ((pos["entry_price"] * prev_base) + (price * magnitude)) / (prev_base + magnitude)
+        pos["base"] += magnitude
+        pos["exposure"] = pos.get("exposure", 0.0) + (magnitude * price * lev)
+        pos["cost_basis"] = pos.get("cost_basis", 0.0) + add_margin  # margin tied up
+        led["cash"] = led.get("cash", 10000.0) + (add_margin - commission)
+        side_tag = "SHORT_ADD"
+    else:
+        base = (add_margin * lev) / price
+        prev_base = pos["base"]
+        pos["entry_price"] = ((pos["entry_price"] * prev_base) + (price * base)) / (prev_base + base)
+        pos["base"] += base
+        pos["cost_basis"] = pos.get("cost_basis", 0.0) + add_margin
+        pos["exposure"] = pos.get("exposure", 0.0) + (base * price * lev)
+        led["cash"] = led.get("cash", 10000.0) - (add_margin + commission)
+        side_tag = "BUY_ADD"
+    pos["entries"] = pos.get("entries", 0) + 1
+    pos["adds"] = pos.get("adds", 0) + 1
+    led["positions"][key] = pos
+    trade = {"ts": ts, "product_id": product_id, "side": side_tag,
+             "quote_size": round(add_margin, 4),
+             "exposure": round((base if not is_short else magnitude) * price * lev, 4),
+             "leverage": lev, "fill_price": price,
+             "base_size": round(base if not is_short else magnitude, 8),
+             "commission": round(commission, 6), "live": False, "note": note}
+    led["trades"].append(trade)
+    save_ledger(led)
+    return {"action": "position_added", "live": False, "trade": trade, "position": pos}
+
+
+def led_short_key(product_id: str) -> bool:
+    """True if product_id already exists as a SHORT: key in the ledger."""
+    return load_ledger()["positions"].get(f"SHORT:{product_id}") is not None
+
+
+def bot_recent_fills(minutes: int = 15) -> dict:
+    """Same-team intel: read the bot's LIVE paper fills from its state file and
+    return {product_id: {'side': 'BUY'|'SELL', 'ts': float, 'strategy': str}}
+    for fills within the last `minutes`. The bot is the conservative book; when
+    it just opened the SAME side on the SAME asset as the agent, that's a free
+    confirmation signal (it's literally trading the same alpha). Paper-only read."""
+    out: dict = {}
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        p = _P(__file__).resolve().parent.parent / "data" / "paper_trader_v4_state.json"
+        if not p.exists():
+            return out
+        d = _json.loads(p.read_text())
+        trades = d.get("paper_trades", [])
+        cutoff = (datetime.now(timezone.utc).timestamp()) - minutes * 60.0
+        for t in trades:
+            ts = t.get("ts", 0.0)
+            if ts < cutoff:
+                continue
+            pid = t.get("product_id", "")
+            side = "BUY" if t.get("side", "").upper() == "BUY" else "SELL"
+            out[pid] = {"side": side, "ts": ts, "strategy": t.get("strategy", "")}
+    except Exception:
+        return out
+    return out
+
+
 def recent_stats(led: dict | None = None, n: int = 10) -> dict:
-    """Rolling stats over the last N CLOSED trades (those carrying realized_pnl).
-    Used by the drawdown circuit (Phase 4): stand down new entries when the
-    agent's own recent paper hit-rate collapses."""
     if led is None:
         led = load_ledger()
     closed = [t for t in led.get("trades", []) if "realized_pnl" in t]

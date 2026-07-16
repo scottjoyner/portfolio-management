@@ -113,9 +113,18 @@ TIMEOUT_RANGE = 8  # cycles (~2h) before giving up in range
 TIMEOUT_TREND = 12  # cycles (~3h) in trend
 # Breakeven lock: once price moves >=1.2% in our favor, tighten SL to entry.
 BE_LOCK = 0.012
+# Phase 18 (edge): trailing stop — once a winner is in profit, lock in gains by
+# closing if it retraces TRAIL_PCT from its peak profit. Only active after BE_LOCK.
+TRAIL_PCT = 0.018   # 1.8% drawdown from peak profit triggers exit (winners)
+MAX_ADDS = 2       # pyramid at most twice into a single winner
+# Vol-scaled TP multiplier: in low-vol/trending regimes let winners run further;
+# in choppy/extreme-vol regimes take profits sooner.
+VOL_TP_MULT = {"LOW": 1.25, "NORMAL": 1.0, "HIGH": 0.85, "EXTREME": 0.7}
+ADD_PROFIT_THRESHOLD = 0.020  # add-to-winner only once in profit >= 2%
 
 
-def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool, local: str = ""):
+def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool,
+                local: str = "", vol_bucket: str = "NORMAL", bot_coholds: bool = False):
     try:
         cur_f = float(cur) if cur is not None else 0.0
     except (TypeError, ValueError):
@@ -137,10 +146,23 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
     # Convert price-move constants (TP_SHORT=-0.020 = "price drops 2%") into
     # pnl-space thresholds (positive = profit). For shorts, a price DROP is a
     # PROFIT, so negate.
-    tp_pnl = TP_LONG if not is_short else -TP_SHORT
+    tp_mult = VOL_TP_MULT.get(vol_bucket, 1.0)
+    # Same-team confirmation: if the bot co-holds the same side, trust the winner
+    # a bit more — widen TP slightly and engage the trailing stop earlier.
+    if bot_coholds:
+        tp_mult *= 1.10
+    tp_pnl = (TP_LONG if not is_short else -TP_SHORT) * tp_mult
     sl_pnl = SL_LONG if not is_short else -SL_SHORT
     # breakeven lock: if in profit >= BE_LOCK, never let it hit SL again
     eff_sl = 0.0 if pnl >= BE_LOCK else sl_pnl
+    # Phase 18: trailing stop — track peak profit, exit on retrace from peak.
+    peak = pos.get("trail_peak", pnl)
+    if pnl > peak:
+        peak = pnl
+        pos["trail_peak"] = round(peak, 6)
+    trail_active = peak >= BE_LOCK
+    if trail_active and pnl <= peak - TRAIL_PCT:
+        return True, "trail"
     if pnl >= tp_pnl:
         return True, "tp"
     if pnl <= eff_sl:
@@ -170,7 +192,8 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_agent_trader import (record_signal, close_position,
                                              open_short, close_short,
                                              drawdown_circuit, size_for, load_ledger,
-                                             update_equity)
+                                             update_equity, add_to_position,
+                                             bot_recent_fills)
     from scripts.hermes_regime import classify_candles, compatible_side
     from scripts.hermes_meta import load_bot_edge, asset_edge, best_bot_setups, bot_confirms
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
@@ -237,6 +260,10 @@ def run_once(verbose: bool = True) -> dict:
     # Phase 15: per-position TP/SL/timeout exit — without this, paper trades
     # never round-trip (only closed on CRISIS/stale), so the expectancy table
     # stays empty and we can't OBSERVE whether the agent beats the bot.
+    # Phase 18 (same-team): pull the bot's live fills once per run so we can
+    # (a) widen TP / trail earlier when the bot co-holds our side, and
+    # (b) pyramid into winners the bot also endorses.
+    bot_fills = bot_recent_fills(minutes=20)
     for pid, pos in list(led.get("positions", {}).items()):
         if pos.get("base", 0.0) <= 1e-12:
             continue
@@ -252,6 +279,7 @@ def run_once(verbose: bool = True) -> dict:
         # close as entry (Phase 9f: consistent mark source, no window mismatch that
         # distorts PnL between entry and exit). Also reuse it for local-regime.
         true_pid = pid.replace("SHORT:", "")
+        is_short_pos = pid.startswith("SHORT:")
         try:
             cd = _candles(client, true_pid, 120)
             cur = cd[-1]["close"] if cd else None
@@ -263,10 +291,15 @@ def run_once(verbose: bool = True) -> dict:
             local = local_regime(cd) if cd else ""
         except Exception:
             local = ""
-        close_now, reason = _exit_check(pid, pos, cur, regime, stale, local)
+        # Phase 18: same-team co-hold check (bot trading same side, last 20m)
+        bot_side = bot_fills.get(true_pid, {}).get("side")
+        want_side = "SELL" if is_short_pos else "BUY"
+        bot_coholds = bot_side is not None and bot_side == want_side
+        close_now, reason = _exit_check(pid, pos, cur, regime, stale, local,
+                                        vol_bucket=vol["bucket"], bot_coholds=bot_coholds)
         if close_now:
             px = float(cur) if cur is not None else None
-            if pid.startswith("SHORT:"):
+            if is_short_pos:
                 res = close_short(true_pid, note=f"exit-{regime}-{reason}", price=px)
                 if verbose and res.get("action") == "short_closed":
                     print(f"[close-short] {true_pid} {reason} -> pnl={res.get('realized_pnl')}")
@@ -274,6 +307,28 @@ def run_once(verbose: bool = True) -> dict:
                 res = close_position(pid, note=f"exit-{regime}-{reason}", price=px)
                 if verbose and res.get("action") == "closed":
                     print(f"[close] {pid} {reason} -> pnl={res.get('realized_pnl')}")
+            continue
+        # Phase 18: ADD-TO-WINNER — pyramid into a confirmed winner the bot also
+        # endorses. Only when: in profit >= 2%, local regime still favors us,
+        # under MAX_ADDS, and we have margin headroom. Scales the snowball legally.
+        pos["trail_peak"] = pos.get("trail_peak", 0.0)
+        entry_px = (pos.get("entry_price") if is_short_pos else pos.get("cost_basis")) or 0.0
+        if entry_px > 0 and cur:
+            pnl_now = ((cur - entry_px) / entry_px if not is_short_pos
+                       else (entry_px - cur) / entry_px)
+        else:
+            pnl_now = 0.0
+        adds = pos.get("adds", 0)
+        same_dir = ((not is_short_pos and local in ("TREND_UP", "RANGE"))
+                    or (is_short_pos and local in ("TREND_DOWN", "RANGE")))
+        if (pnl_now >= ADD_PROFIT_THRESHOLD and adds < MAX_ADDS
+                and same_dir and bot_coholds and entry_gate_open):
+            add_margin = min(MAX_NOTIONAL * 0.40, MAX_NOTIONAL - (pos.get("cost_basis", 0.0)))
+            if add_margin >= 20.0:
+                ar = add_to_position(true_pid, add_margin, price=cur,
+                                     note=f"add-to-winner-pnl{pnl_now:.3f}-botcohold")
+                if verbose and ar.get("action") == "position_added":
+                    print(f"[add] {true_pid} +${add_margin} (pyramid #{adds+1}, pnl={pnl_now:.3f})")
 
     if regime == "CRISIS":
         return {"skipped": True, "reason": "crisis_standdown", "regime": regime}
@@ -383,10 +438,6 @@ def run_once(verbose: bool = True) -> dict:
                                "reason": f"meta:{verdict}", "bot_edge": ed["edge"]})
                 continue
 
-            # Phase 8: strategy mimicry boost — conf already computed above (asset+setup
-            # endorsement). If confirmed, this is validated alpha (gated).
-            conf_mult = 1.25 if conf["confirmed"] else 1.0
-
             # Phase 10: own-paper tilt — drop assets the AGENT itself keeps losing
             at = tilt.get(pair)
             if at and at["tilt"] == "drop":
@@ -395,11 +446,25 @@ def run_once(verbose: bool = True) -> dict:
                                "agent_pnl": at["agent_pnl"]})
                 continue
 
-            # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry.
+            # Phase 8: strategy mimicry boost — conf already computed above (asset+setup
+            # endorsement). If confirmed, this is validated alpha (gated).
+            conf_mult = 1.25 if conf["confirmed"] else 1.0
+            # Phase 18 (same-team): if the bot just opened the SAME side on this
+            # asset in the last 20m, that's a free live confirmation — boost size.
+            # The bot is the conservative book; its live fill endorses our alpha.
+            bot_fill = bot_fills.get(pair, {})
+            if bot_fill and bot_fill.get("side") == ("BUY" if want_long else "SELL"):
+                conf_mult *= 1.15
+
+            # Phase 4+6+7+8 sizing: strength x vol-conviction x sentiment x mimicry.
             # AGGRESSIVE: full $250 cap for confirmed alpha; moonshots get 25% (small
             # but real skin in the game); scale to full cap on strong conviction.
+            # Phase 18: EQUITY-COMPOUNDING — scale size by growing book equity so the
+            # agent snowballs like the bot did (size off equity/start, capped 1.5x).
+            eq_factor = min(1.5, max(0.5, (led.get("equity", 10000.0)
+                                           / led.get("starting_capital", 10000.0))))
             size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult * news["size_mult"]
-            raw = min(size_for(mom), size_for(0.02)) * strength * size_mult
+            raw = min(size_for(mom), size_for(0.02)) * strength * size_mult * eq_factor
             if verdict == "bot_wins_here":
                 floor = MAX_NOTIONAL * 0.60
             elif is_moonshot:
