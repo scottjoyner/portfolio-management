@@ -36,9 +36,11 @@ except ValueError:
     MAX_NOTIONAL = 10.0
 
 # alt universe: liquid majors + the bot's PROVEN-LOSING alts (where my regime
-# method may have alpha the bot lacks). The meta-filter penalizes the latter.
+# method may have alpha) + the bot's PROVEN-WINNING alts (strategy mimicry,
+# Phase 8: when my indicator confirms the SAME setup type the bot wins on, boost).
 ALTS = ["ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "DOGE-USD", "ADA-USD",
-         "DOT-USD", "NCT-USD", "PERP-USD", "STORJ-USD", "ZEC-USD", "GNO-USD"]
+        "DOT-USD", "NCT-USD", "PERP-USD", "STORJ-USD", "ZEC-USD", "GNO-USD",
+        "IOTX-USD", "HFT-USD", "MATH-USD"]  # bot proven winners (cvd_flow/vwap_revert/obv_div)
 BTC = "BTC-USD"
 HOURS = 5
 # momentum thresholds: smaller in RANGE (fade extremes), larger in TREND (confirm)
@@ -90,9 +92,10 @@ def run_once(verbose: bool = True) -> dict:
                                              open_short, close_short,
                                              drawdown_circuit, size_for, load_ledger)
     from scripts.hermes_regime import classify_candles, compatible_side
-    from scripts.hermes_meta import load_bot_edge, asset_edge
+    from scripts.hermes_meta import load_bot_edge, asset_edge, best_bot_setups, bot_confirms
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
     from scripts.hermes_overlay import overlay_state
+    from scripts.hermes_signals import indicator_signal
 
     client = CBClient(dry_run_cli=True)
 
@@ -173,64 +176,82 @@ def run_once(verbose: bool = True) -> dict:
     else:
         results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{regime}"})
 
-    # --- Alts: regime-gated, META-filtered, BOTH SIDES (Phase 1+2+3) ---
-    # TREND_UP   -> LONG momentum (ride the trend the oracle confirms)
-    # TREND_DOWN  -> SHORT momentum (profit from the downtrend)
-    # RANGE       -> fade extremes: dip-BUY on downside, short on upside
+    # --- Alts: regime-gated, META-filtered, BOTH SIDES, INDICATOR-driven (P1-9) ---
+    # TREND_UP   -> LONG on trend-confirmed setups (z>0, price>EMA, rsi>50)
+    # TREND_DOWN  -> SHORT on confirmed downtrend setups
+    # RANGE       -> mean-reversion fades (Bollinger %B extremes + z-score)
     # Meta-filter: bot_bleeds_here demands 1.5x stronger own-signal.
+    # Phase 8 boost: if the BOT provably wins on this asset with the SAME
+    #   setup type the agent's indicator just confirmed -> boost conviction.
     for pair in ALTS:
         try:
             ed = asset_edge(pair, bot_edge)
-            candles = _candles(client, pair, HOURS)
-            side, mom, last = momentum_signal(candles)
+            # Wider window (120h @1h = 120 bars) so indicators have enough
+            # samples; the dry-run CLI caps the default HOURS window at ~5 bars.
+            candles = _candles(client, pair, 120)
+            # Phase 9: indicator overlay (bot's own TechnicalIndicatorSet math)
+            side, strength, det = indicator_signal(candles, regime)
+            if side == "HOLD":
+                results.append({"pair": pair, "signal": "HOLD", "mom": None,
+                               "regime": regime, "detail": det.get("reason")})
+                continue
+            mom = det.get("z", 0.0)  # use z-score as the "momentum" proxy for sizing
+            setup = det.get("setup", "other")
 
-            # Decide desired action from regime + own momentum
-            want_long = (regime == "TREND_UP" and side == "BUY") or \
-                        (regime == "RANGE" and mom < -MOM_RANGE)
-            want_short = (regime == "TREND_DOWN" and side == "SELL") or \
-                         (regime == "RANGE" and mom > MOM_RANGE)
+            # Decide desired action from regime + indicator side
+            want_long = side == "BUY"
+            want_short = side == "SELL"
             if not (want_long or want_short):
-                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
                                "regime": regime})
                 continue
 
-            # Composite gate (Phase 4+6+7): MIXED regime / EXTREME vol /
-            # drawdown circuit / extreme-greed+event all block NEW entries.
+            # Composite gate (Phase 4+6+7)
             if not entry_gate_open:
                 why = ("MIXED" if regime == "MIXED" else
                        "EXTREME_VOL" if vol["stand_down"] else
                        f"circuit:{circuit['reason']}" if not circuit_open else
                        "sentiment_standdown")
-                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
                                "reason": f"gate:{why}"})
                 continue
 
             # Meta penalty: bot bleeds here -> demand 1.5x stronger signal
             if ed["verdict"] == "bot_bleeds_here":
-                thr_ok = (regime == "TREND_UP" and abs(mom) > MOM_TREND * 1.5) or \
-                         (regime == "TREND_DOWN" and abs(mom) > MOM_TREND * 1.5) or \
-                         (regime == "RANGE" and abs(mom) > MOM_RANGE * 1.5)
+                thr_ok = abs(mom) > MOM_TREND * 1.5
                 if not thr_ok:
                     results.append({"pair": pair, "signal": "HOLD",
-                                   "mom": round(mom, 5),
+                                   "mom": round(mom, 4),
                                    "reason": "bot_bleeds+weak",
                                    "bot_edge": ed["edge"]})
                     continue
 
-            # Phase 4+6+7 sizing: signal strength × vol-conviction × sentiment mult
-            size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"]
-            notional = round(size_for(mom) * size_mult, 2)
+            # Phase 8: strategy mimicry boost — bot provably wins this asset
+            # with the SAME setup type? If so, this is confirmed alpha (gated).
+            setup_type = "mean_revert" if "revert" in setup or "fade" in setup else \
+                          "trend" if "trend" in setup else "other"
+            conf = bot_confirms(pair, setup_type, best_bot_setups())
+            conf_mult = 1.25 if conf["confirmed"] else 1.0
+
+            # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry
+            size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult
+            notional = round(min(size_for(mom), size_for(0.02)) * strength * size_mult, 2)
+            notional = min(notional, MAX_NOTIONAL)
             if want_long:
                 rec = record_signal(pair, "BUY", quote_size=notional,
-                                    note=f"regime-{regime}-LONG-mom+{mom:.4f}-bot:{ed['verdict']}-sz{notional}")
-                results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
+                                    note=f"regime-{regime}-LONG-{setup}-mom{mom:.3f}"
+                                         f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}")
+                results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 4),
                                "size": notional, "bot_edge": ed["edge"],
+                               "confirmed": conf["confirmed"],
                                "result": rec.get("action", "?")})
             else:  # short
                 rec = open_short(pair, notional,
-                               note=f"regime-{regime}-SHORT-mom-{mom:.4f}-bot:{ed['verdict']}-sz{notional}")
-                results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 5),
+                               note=f"regime-{regime}-SHORT-{setup}-mom{mom:.3f}"
+                                    f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}")
+                results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 4),
                                "size": notional, "bot_edge": ed["edge"],
+                               "confirmed": conf["confirmed"],
                                "result": rec.get("action", "?")})
         except Exception as exc:
             results.append({"pair": pair, "signal": "ERROR", "error": str(exc)[:120]})

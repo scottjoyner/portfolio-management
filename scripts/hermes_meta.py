@@ -89,11 +89,63 @@ def best_assets(n: int = 5) -> list:
     return [(p, v["edge"], v["win_rate"], v["trades"]) for p, v in ranked[:n]]
 
 
-if __name__ == "__main__":
-    import sys
-    cache = load_bot_edge()
-    print(f"bot tracks {len(cache)} assets")
-    print(f"{'asset':14}{'edge($)':>14}{'wr%':>8}{'trades':>8}  verdict")
-    for p, v in sorted(cache.items(), key=lambda x: -x[1]["edge"]):
-        ed = asset_edge(p, cache)
-        print(f"{p:14}{v['edge']:>14.2f}{v['win_rate']:>8.1f}{v['trades']:>8}  {ed['verdict']}")
+# Map the bot's 20 strategies -> the indicator family the agent can confirm with
+# its own TechnicalIndicatorSet (Phase 9). Used for strategy mimicry (Phase 8):
+# if the bot PROVABLY wins on asset X with a mean-reversion strat, and the
+# agent's Bollinger/z-score says X is mean-reverting, that's a confirmed double.
+STRAT_TYPE = {
+    "vwap_revert": "mean_revert", "kalman_mr": "mean_revert",
+    "boll_break": "breakout", "donchian": "breakout",
+    "snr_idx": "mean_revert", "sup_res": "mean_revert",
+    "chaikin_mf": "flow", "cvd_flow": "flow", "obv_div": "flow",
+    "vol_prof": "vol_profile", "range_exp_idx": "vol_profile",
+    "williams_r": "momentum", "mfi": "momentum", "cmo": "momentum",
+    "de_marker": "momentum", "ad_div": "momentum", "vrsi": "momentum",
+    "multi_rsi": "momentum", "force_idx": "momentum", "ema_cross": "trend",
+}
+
+
+def best_bot_setups(min_trades: int = 2, min_pnl: float = 0.0) -> list:
+    """The bot's proven (strategy, asset) winners. The agent steals this alpha:
+    trigger entries when its own indicator confirms the SAME setup type."""
+    if not PERF.exists():
+        return []
+    try:
+        d = json.loads(PERF.read_text() or "{}")
+    except Exception:
+        return []
+    recs = d.get("_records", {})
+    out = []
+    for k, v in recs.items():
+        strat, prod = k.split("/", 1) if "/" in k else (k, "?")
+        trades = int(v.get("trades", 0))
+        pnl = float(v.get("total_pnl", 0))
+        wins = int(v.get("wins", 0))
+        losses = int(v.get("losses", 0))
+        if trades < min_trades or pnl < min_pnl:
+            continue
+        wr = (wins / (wins + losses) * 100.0) if (wins + losses) else 0.0
+        out.append({
+            "strategy": strat, "asset": prod,
+            "type": STRAT_TYPE.get(strat, "other"),
+            "pnl": round(pnl, 4), "trades": trades,
+            "win_rate": round(wr, 2),
+        })
+    return sorted(out, key=lambda x: -x["pnl"])
+
+
+def bot_confirms(asset: str, setup_type: str, cache: list | None = None) -> dict:
+    """Does the bot PROVABLY win on `asset` with a strategy of `setup_type`?
+    Returns {confirmed, best_pnl, n, examples} so the agent can boost conviction
+    on confirmed setups (the bot's edge, gated by the agent's risk layers)."""
+    if cache is None:
+        cache = best_bot_setups()
+    hits = [s for s in cache if s["asset"] == asset and s["type"] == setup_type]
+    if not hits:
+        return {"confirmed": False, "best_pnl": 0.0, "n": 0, "examples": []}
+    return {
+        "confirmed": True,
+        "best_pnl": max(s["pnl"] for s in hits),
+        "n": len(hits),
+        "examples": [(s["strategy"], s["pnl"], s["win_rate"]) for s in hits[:3]],
+    }
