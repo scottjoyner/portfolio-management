@@ -96,6 +96,12 @@ except ImportError:
     _HAS_CONFIDENCE_ENGINE = False
     logger.warning("ConfidenceEngine not available (trading_system.signal_confidence)")
 
+# New trading-system registry strategies (12 mean-reversion/momentum/volatility/microstructure)
+try:
+    from trading_system.strategies.registry.registry import load_strategies as _load_trading_system_strategies
+except Exception:  # pragma: no cover
+    _load_trading_system_strategies = None
+
 try:
     from trading_system.core.performance_model import latency_tuned_priority as _latency_tuned_priority
 except Exception:
@@ -447,7 +453,7 @@ COINBASE_FEE_TIERS = [
 ]
 
 # Minimum time between executions of the same type (seconds)
-OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "rebalance_bot": 3600, "stairstep": 60, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300, "funding_onchain": 600, "order_flow": 600}
+OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "rebalance_bot": 3600, "stairstep": 60, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300, "funding_onchain": 600, "order_flow": 600, "new_registry_strategies": 300}
 
 # Fee tier volume cycling
 CYCLE_MIN_PROFIT_PCT = 0.0   # we'll break even or small loss for volume
@@ -1023,6 +1029,8 @@ class PortfolioOptimizer:
             except Exception as e:
                 logger.warning("SmartFeed initialization failed: %s", e)
                 self._feed_mgr = None
+
+        self._new_strategies: Optional[List[Any]] = None
 
         self._arb_scanner: Optional[Any] = None
         if self._pm_client:
@@ -3615,6 +3623,7 @@ class PortfolioOptimizer:
         ops.extend(self._detect_fee_tier_volume())
         ops.extend(self._detect_rebalance())
         ops.extend(self._detect_strategy_signals())
+        ops.extend(self._detect_new_registry_strategies())
         ops.extend(self._detect_volume_cycles())
         ops.extend(self._detect_accumulator_signals())
         ops.extend(self._detect_rebalance_bot())
@@ -4768,6 +4777,212 @@ class PortfolioOptimizer:
 
         if ops:
             logger.info("Strategy signals: %d opportunities", len(ops))
+        return ops
+
+    # 12 known new trading-system strategy ids (registry-loaded)
+    _NEW_STRATEGY_IDS = frozenset({
+        "BollingerBandReversionStrategy",
+        "RsiBounceReversionStrategy",
+        "DonchianMeanReversionStrategy",
+        "EmaMacdMomentumStrategy",
+        "AdxDiStrengthStrategy",
+        "AroonBreakoutMomentumStrategy",
+        "KeltnerVolBreakoutStrategy",
+        "BollingerSqueezeVolExpansionStrategy",
+        "DonchianChoppinessVolBreakoutStrategy",
+        "TradeFlowImbalanceStrategy",
+        "SpreadCompressionStrategy",
+        "CvdExhaustionStrategy",
+    })
+
+    def _detect_new_registry_strategies(self) -> List[Opportunity]:
+        """Run the 12 new registry strategies on each holding; emit STRATEGY_SIGNAL ops."""
+        if time.time() - self.last_execution.get("new_registry_strategies", 0) < OP_COOLDOWN["new_registry_strategies"]:
+            return []
+        if _load_trading_system_strategies is None or not self.state:
+            return []
+
+        # Lazy-init the 12 strategy instances
+        if self._new_strategies is None:
+            try:
+                all_strats = _load_trading_system_strategies()
+                self._new_strategies = [s for s in all_strats if getattr(s, "strategy_id", None) in self._NEW_STRATEGY_IDS]
+            except Exception as e:
+                logger.debug("Registry strategy load failed: %s", e)
+                self._new_strategies = []
+        if not self._new_strategies:
+            return []
+
+        candidates = [
+            h for h in self.state.holdings.values()
+            if h["currency"] not in ("USDC", "USDT", "DAI") and h["value"] >= self.min_value and not self._is_static_currency(h["currency"])
+        ]
+        if not candidates:
+            return []
+
+        ops: List[Opportunity] = []
+        remaining_buy_capacity = self._buy_capacity()
+
+        parsed_data: List[Tuple[dict, str, List[float], List[float], List[float], List[float]]] = []
+        candidate_pids = [(h, h.get("product_id", f"{h['currency']}-USD")) for h in candidates]
+
+        if self._feed_mgr:
+            all_pids = [pid for _, pid in candidate_pids]
+            batched = self._feed_mgr.get_candles_batch(all_pids, granularity=3600, limit=100)
+            for h, pid in candidate_pids:
+                candles = batched.get(pid)
+                if not candles or len(candles) < 30:
+                    continue
+                closes, volumes, highs, lows = [], [], [], []
+                for c in reversed(candles):
+                    if isinstance(c, dict):
+                        closes.append(to_float(c.get("close", 0)))
+                        volumes.append(to_float(c.get("volume", 0)))
+                        highs.append(to_float(c.get("high", 0)))
+                        lows.append(to_float(c.get("low", 0)))
+                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                        closes.append(to_float(c[4]))
+                        volumes.append(to_float(c[5]))
+                        highs.append(to_float(c[2]))
+                        lows.append(to_float(c[1]))
+                if len(closes) < 30:
+                    continue
+                parsed_data.append((h, pid, closes, volumes, highs, lows))
+        else:
+            candle_futs = {}
+            for h, pid in candidate_pids:
+                fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
+                candle_futs[fut] = (h, pid)
+            for fut in as_completed(candle_futs):
+                h, pid = candle_futs[fut]
+                try:
+                    candles = fut.result()
+                except Exception as e:
+                    logger.debug("Candle fetch failed for %s: %s", pid, e)
+                    continue
+                if not candles or len(candles) < 30:
+                    continue
+                closes, volumes, highs, lows = [], [], [], []
+                for c in reversed(candles):
+                    if isinstance(c, dict):
+                        closes.append(to_float(c.get("close", 0)))
+                        volumes.append(to_float(c.get("volume", 0)))
+                        highs.append(to_float(c.get("high", 0)))
+                        lows.append(to_float(c.get("low", 0)))
+                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
+                        closes.append(to_float(c[4]))
+                        volumes.append(to_float(c[5]))
+                        highs.append(to_float(c[2]))
+                        lows.append(to_float(c[1]))
+                if len(closes) < 30:
+                    continue
+                parsed_data.append((h, pid, closes, volumes, highs, lows))
+
+        for h, pid, closes, volumes, highs, lows in parsed_data:
+            currency = h["currency"]
+            price = to_float(h.get("price", 0)) or (closes[-1] if closes else 0.0)
+            score = 0.0
+            if len(closes) >= 2 and closes[-2] != 0:
+                score = max(-1.0, min(1.0, (closes[-1] - closes[-2]) / closes[-2]))
+            market_state = {
+                "product_id": pid,
+                "currency": currency,
+                "close": closes[-1] if closes else price,
+                "closes": closes,
+                "highs": highs,
+                "lows": lows,
+                "volumes": volumes,
+                "open": closes[0] if closes else price,
+                "price": price,
+                "score": score,
+                "warmup_complete": len(closes) >= 30,
+                "best_bid": price * 0.999,
+                "best_ask": price * 1.001,
+                "mid_price": price,
+                "spread_bps": 2.0,
+                "bid_volume": 0.0,
+                "ask_volume": 0.0,
+                "trade_flow_imbalance": 0.0,
+                "imbalance": 0.0,
+                "cumulative_delta": 0.0,
+            }
+
+            for strategy in self._new_strategies:
+                try:
+                    sig = strategy.generate_signal(market_state)
+                except Exception as e:
+                    logger.debug("Strategy %s failed on %s: %s", getattr(strategy, "strategy_id", "?"), currency, e)
+                    continue
+                if sig is None or abs(getattr(sig, "score", 0.0)) <= 0:
+                    continue
+
+                side = "BUY" if sig.score > 0 else "SELL"
+                confidence = getattr(sig, "confidence", min(1.0, abs(sig.score)))
+                use_pid = self.cli.best_product(currency, side)
+                if not use_pid:
+                    continue
+
+                if side == "BUY" and remaining_buy_capacity < self.min_value:
+                    continue
+                if side == "SELL" and h["value"] < self.min_value:
+                    continue
+
+                daily_chg = abs(to_float(h.get("change_24h", 0)))
+                exit_plan = self._compute_exit_plan(
+                    currency, confidence,
+                    expected_return_pct=max(confidence * 10.0, 0.5),
+                    trade_style="momentum" if side == "BUY" else "mean_reversion",
+                    side=side,
+                    volatility_pct=max(daily_chg * 1.5, 5.0),
+                )
+                graph_multiplier = self._graph_multiplier_for_product(use_pid, max_boost=0.25)
+                final_conf = min(0.95, confidence * graph_multiplier)
+
+                if side == "BUY":
+                    size = min(self._buy_capacity(), self.cfg.get("max_notional_opportunity", 50.0))
+                    size = min(size * graph_multiplier, remaining_buy_capacity, self.cfg.get("max_notional_opportunity", 50.0))
+                else:
+                    size = min(h["value"], self.cfg.get("max_notional_opportunity", 50.0))
+                    size = min(size * graph_multiplier, h["value"])
+                if size < self.min_value:
+                    continue
+
+                if side == "BUY":
+                    remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
+
+                ops.append(Opportunity(
+                    opp_type=OpportunityType.STRATEGY_SIGNAL,
+                    currency=currency,
+                    side=side,
+                    size_usd=size,
+                    reason=f"new:{sig.strategy_id} {sig.reason} (conf={final_conf:.2f})",
+                    priority=self._latency_adjusted_priority(
+                        min(final_conf * 0.8 + 0.1, 0.95),
+                        "momentum" if side == "BUY" else "mean_reversion",
+                    ),
+                    product_id=use_pid,
+                    entry_price_est=h.get("price", 0),
+                    stop_loss_pct=exit_plan["stop_loss_pct"],
+                    take_profit_pct=exit_plan["take_profit_pct"],
+                    holding_period_hours=exit_plan["holding_period_hours"],
+                    expected_return_pct=exit_plan["expected_return_pct"],
+                    risk_pct=exit_plan["risk_pct"],
+                    meta={
+                        "aggregated": False,
+                        "confidence": final_conf,
+                        "graph_overlay": graph_multiplier,
+                        "graph_score": self._graph_score_for_product(use_pid),
+                        "strategy_count": 1,
+                        "strategies": [sig.strategy_id],
+                        "agreeing_groups": [],
+                        "capital_bucket": "opportunity",
+                        "trade_style": "momentum" if side == "BUY" else "mean_reversion",
+                        "exit_plan": exit_plan,
+                    },
+                ))
+
+        if ops:
+            logger.info("New registry strategies: %d opportunities", len(ops))
         return ops
 
     def _detect_funding_and_onchain_signals(self) -> List[Opportunity]:
