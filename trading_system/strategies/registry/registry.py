@@ -22,10 +22,13 @@ from strategies.mean_reversion.zscore import MeanReversionZScoreStrategy
 from strategies.microstructure.cvd_exhaustion import CvdExhaustionStrategy
 from strategies.microstructure.exchange_netflow_proxy import ExchangeNetflowProxyStrategy
 from strategies.microstructure.orderbook_imbalance import OrderBookImbalanceStrategy
+from strategies.microstructure.roll_microprice_bias import RollMicropriceBiasStrategy
 from strategies.microstructure.spread_compression import SpreadCompressionStrategy
 from strategies.microstructure.stablecoin_flow_proxy import StablecoinFlowProxyStrategy
 from strategies.microstructure.trade_flow_imbalance import TradeFlowImbalanceStrategy
+from strategies.microstructure.vpin_proxy import VpinProxyStrategy
 from strategies.microstructure.volume_flow_accdist import VolumeFlowAccDistStrategy
+from strategies.microstructure.amihud_illiquidity import AmihudIlliquidityProxyStrategy
 from strategies.momentum.adx_di_strength import AdxDiStrengthStrategy
 from strategies.momentum.aroon_breakout import AroonBreakoutMomentumStrategy
 from strategies.momentum.ema_macd_momentum import EmaMacdMomentumStrategy
@@ -43,6 +46,15 @@ from strategies.volatility.keltner_channel_breakout import KeltnerVolBreakoutStr
 from strategies.volatility.vol_breakout import VolatilityBreakoutStrategy
 from strategies.volatility.vol_filtered_breakout import VolFilteredBreakoutStrategy
 from strategies.volatility.vol_term_structure_carry import VolTermStructureCarryStrategy
+from strategies.ensemble.conviction_weighted import ConvictionWeightedCompositeStrategy
+from strategies.ensemble.majority_vote import MajorityVoteEnsembleStrategy
+from strategies.ensemble.regime_switching_blend import RegimeSwitchingBlendStrategy
+from strategies.sentiment.price_acceleration import PriceAccelerationSentimentStrategy
+from strategies.sentiment.return_dispersion import ReturnDispersionFearGreedStrategy
+from strategies.sentiment.volume_attention import VolumeAttentionMomentumStrategy
+from strategies.timeseries.dfa_alpha import DFAAlphaRegimeStrategy
+from strategies.timeseries.hurst_regime import HurstRegimeStrategy
+from strategies.timeseries.sample_entropy import SampleEntropyRegimeStrategy
 
 
 def load_strategies() -> list:
@@ -91,6 +103,18 @@ def load_strategies() -> list:
         VolTermStructureCarryStrategy(),
         VolFilteredBreakoutStrategy(),
         BollingerBandwidthReversionStrategy(),
+        AmihudIlliquidityProxyStrategy(),
+        RollMicropriceBiasStrategy(),
+        VpinProxyStrategy(),
+        ReturnDispersionFearGreedStrategy(),
+        VolumeAttentionMomentumStrategy(),
+        PriceAccelerationSentimentStrategy(),
+        HurstRegimeStrategy(),
+        DFAAlphaRegimeStrategy(),
+        SampleEntropyRegimeStrategy(),
+        MajorityVoteEnsembleStrategy(),
+        ConvictionWeightedCompositeStrategy(),
+        RegimeSwitchingBlendStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced
