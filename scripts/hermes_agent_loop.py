@@ -121,6 +121,11 @@ MAX_ADDS = 2       # pyramid at most twice into a single winner
 # in choppy/extreme-vol regimes take profits sooner.
 VOL_TP_MULT = {"LOW": 1.25, "NORMAL": 1.0, "HIGH": 0.85, "EXTREME": 0.7}
 ADD_PROFIT_THRESHOLD = 0.020  # add-to-winner only once in profit >= 2%
+# Phase 18b: deployment headroom — aim for a DIVERSIFIED book, not 1 position.
+# Cap correlated exposure at 40% of live equity (scales with the snowball) and
+# allow up to MAX_OPEN_POSITIONS concurrent trades across uncorrelated alts.
+MAX_OPEN_POSITIONS = 8        # target diversified book size
+CORR_CAP_FRAC = 0.40          # max BTC-correlated notional = equity * this
 
 
 def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool,
@@ -200,7 +205,7 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_overlay import overlay_state
     from scripts.hermes_signals import indicator_signal, local_regime, flow_signal
     from scripts.hermes_expectancy import universe_tilt, expectancy_table
-    from scripts.hermes_portfolio import correlation_to_btc, exposure_ok
+    from scripts.hermes_portfolio import correlation_to_btc, exposure_ok, CORRELATED_CAP_USD
 
     client = CBClient(dry_run_cli=True)
 
@@ -476,11 +481,24 @@ def run_once(verbose: bool = True) -> dict:
 
             # Phase 11: concentration gate — don't let BTC-correlated exposure
             # exceed the cap (a single BTC shock must not wreck the whole book).
+            # Cap scales with live equity (40% of book) so the snowball can deploy
+            # more as it grows, while still containing a BTC shock to ~40% of equity.
+            corr_cap = max(CORRELATED_CAP_USD, led.get("equity", 10000.0) * CORR_CAP_FRAC)
             ok, why = exposure_ok(pair, "BUY" if want_long else "SHORT",
-                                  notional, corr_cache, led)
+                                  notional, corr_cache, led, cap=corr_cap)
             if not ok:
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
                                "reason": f"gate:{why}", "corr": corr_cache.get(pair)})
+                continue
+
+            # Phase 18b: diversified-book gate — don't open beyond MAX_OPEN_POSITIONS
+            # concurrent trades (count longs + shorts). Lets the book spread across
+            # uncorrelated alts instead of camping at one position.
+            open_count = sum(1 for p, v in led.get("positions", {}).items()
+                             if v.get("base", 0.0) > 1e-12)
+            if open_count >= MAX_OPEN_POSITIONS:
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": f"max_positions:{open_count}"})
                 continue
 
             # One position per asset at a time — don't pyramid on every tick.

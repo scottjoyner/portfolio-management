@@ -35,8 +35,11 @@ from scripts.hermes_agent_loop import _candles
 from scripts.hermes_agent_trader import load_ledger, MAX_NOTIONAL
 
 # Max BTC-correlated open notional (long or short) the agent allows at once.
-# $20 ~= two max-size positions; keeps a single BTC shock from wiping the book.
-CORRELATED_CAP_USD = 20.0
+# 40% of the $10k starting book ($4000) — lets the agent run a diversified book
+# of ~15-20 correlated positions while still containing a single BTC shock to
+# ~40% of equity. Uncorrelated alts (|r|<0.5) are never capped, so the agent can
+# deploy freely across independent flow shots.
+CORRELATED_CAP_USD = 4000.0
 # Assets with r >= this to BTC count as "BTC-correlated" for the cap.
 CORR_THRESHOLD = 0.5
 
