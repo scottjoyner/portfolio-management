@@ -118,7 +118,8 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
         return {"action": "signal_error", "error": "bad preview price/base", "quote": q["quote"]}
     # Notional for the gating check when base-only
     notional = quote_size if quote_size is not None else base * price
-    if notional > MAX_NOTIONAL:
+    # tolerance for float/rounding drift (e.g. 10.08 vs cap 10.0 from base rounding)
+    if notional > MAX_NOTIONAL + 0.01:
         return _refuse(f"notional {notional:.2f} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
     led = load_ledger()
     ts = datetime.now(timezone.utc).isoformat()
