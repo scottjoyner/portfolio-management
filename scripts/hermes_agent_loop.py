@@ -35,8 +35,10 @@ try:
 except ValueError:
     MAX_NOTIONAL = 10.0
 
-# alt universe (the bot trades many; we start with liquid majors + a few it bleeds on)
-ALTS = ["ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "DOGE-USD", "ADA-USD", "DOT-USD"]
+# alt universe: liquid majors + the bot's PROVEN-LOSING alts (where my regime
+# method may have alpha the bot lacks). The meta-filter penalizes the latter.
+ALTS = ["ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD", "DOGE-USD", "ADA-USD",
+         "DOT-USD", "NCT-USD", "PERP-USD", "STORJ-USD", "ZEC-USD", "GNO-USD"]
 BTC = "BTC-USD"
 HOURS = 5
 # momentum thresholds: smaller in RANGE (fade extremes), larger in TREND (confirm)
@@ -86,6 +88,7 @@ def run_once(verbose: bool = True) -> dict:
     from coinbase.src.cb_client import CBClient
     from scripts.hermes_agent_trader import record_signal, close_position
     from scripts.hermes_regime import classify_btc, compatible_side
+    from scripts.hermes_meta import load_bot_edge, asset_edge
 
     client = CBClient(dry_run_cli=True)
     regime_info = classify_btc()
@@ -93,6 +96,9 @@ def run_once(verbose: bool = True) -> dict:
     if verbose:
         print(f"[regime] BTC={regime} ({regime_info['reason']}) last={regime_info.get('last')}")
 
+    # Meta-layer: load the bot's own per-asset edge once per run. The bot cannot
+    # analyze its own _records; we use it as a confirmation filter (Phase 2 edge).
+    bot_edge = load_bot_edge()
     # --- close-pass: exit positions on CRISIS or stale hold ---
     from scripts.hermes_agent_trader import load_ledger
     led = load_ledger()
@@ -131,27 +137,37 @@ def run_once(verbose: bool = True) -> dict:
     else:
         results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{regime}"})
 
-    # --- Alts: LONG-ONLY, regime-gated (avoids insufficient-fund on shorts) ---
+    # --- Alts: LONG-ONLY, regime-gated, META-filtered (Phase 1 + 2) ---
     # TREND_UP   -> BUY momentum (ride the trend the oracle confirms)
     # TREND_DOWN  -> stand down alts (no shorts in paper v1)
     # RANGE       -> dip-buy: BUY only on a downside extreme (fade)
+    # Meta-filter: if the bot BLEEDS this asset (verified negative edge), require a
+    #   STRONGER own-signal before touching it; if the bot WINS here, normal gate.
     for pair in ALTS:
         try:
+            ed = asset_edge(pair, bot_edge)
             candles = _candles(client, pair, HOURS)
             side, mom, last = momentum_signal(candles)
-            if regime == "TREND_UP" and side == "BUY":
-                rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
-                                    note=f"regime-{regime}-mom+{mom:.4f}")
-                results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
-                               "result": rec.get("action", "?")})
-            elif regime == "RANGE" and mom < -MOM_RANGE:
-                rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
-                                    note=f"regime-{regime}-dipbuy{mom:.4f}")
-                results.append({"pair": pair, "signal": "BUY(dip)", "mom": round(mom, 5),
-                               "result": rec.get("action", "?")})
-            else:
+            want_buy = (regime == "TREND_UP" and side == "BUY") or \
+                       (regime == "RANGE" and mom < -MOM_RANGE)
+            if not want_buy:
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
                                "regime": regime})
+                continue
+            # Meta penalty: bot bleeds here -> demand 1.5x stronger signal
+            if ed["verdict"] == "bot_bleeds_here":
+                thr_ok = (regime == "TREND_UP" and abs(mom) > MOM_TREND * 1.5) or \
+                         (regime == "RANGE" and mom < -MOM_RANGE * 1.5)
+                if not thr_ok:
+                    results.append({"pair": pair, "signal": "HOLD",
+                                   "mom": round(mom, 5),
+                                   "reason": "bot_bleeds+weak",
+                                   "bot_edge": ed["edge"]})
+                    continue
+            rec = record_signal(pair, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
+                                note=f"regime-{regime}-mom+{mom:.4f}-bot:{ed['verdict']}")
+            results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 5),
+                           "bot_edge": ed["edge"], "result": rec.get("action", "?")})
         except Exception as exc:
             results.append({"pair": pair, "signal": "ERROR", "error": str(exc)[:120]})
 
