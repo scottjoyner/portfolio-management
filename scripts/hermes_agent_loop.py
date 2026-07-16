@@ -80,6 +80,52 @@ def momentum_signal(candles: list[dict]) -> tuple[str | None, float, float]:
     return None, mom, last
 
 
+# Phase 15: per-position exit logic (TP / SL / timeout / regime-flip).
+# Keeps the book round-tripping so the expectancy table fills and we can
+# OBSERVE the agent's edge vs the bot. Risk:reward = 1.5:2.0 (SL tighter than TP).
+TP_LONG = 0.020    # +2.0% take-profit on longs
+SL_LONG = -0.015   # -1.5% stop-loss on longs
+TP_SHORT = -0.020  # -2.0% take-profit on shorts
+SL_SHORT = 0.015   # +1.5% stop-loss on shorts
+TIMEOUT_RANGE = 8  # cycles (~2h) before giving up in range
+TIMEOUT_TREND = 12  # cycles (~3h) in trend
+# Breakeven lock: once price moves >=1.2% in our favor, tighten SL to entry.
+BE_LOCK = 0.012
+
+
+def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool):
+    try:
+        cur_f = float(cur) if cur is not None else 0.0
+    except (TypeError, ValueError):
+        cur_f = 0.0
+    if cur_f <= 0:
+        return False, ""
+    is_short = pid.startswith("SHORT:")
+    # longs store cost_basis (notional); shorts store entry_price (mark)
+    entry = (pos.get("entry_price") if is_short else pos.get("cost_basis")) or 0.0
+    if entry <= 0:
+        return False, ""
+    # P&L fraction (long: (cur-entry)/entry; short: (entry-cur)/entry)
+    pnl = (cur_f - entry) / entry if not is_short else (entry - cur_f) / entry
+    tp = TP_SHORT if is_short else TP_LONG
+    sl = SL_SHORT if is_short else SL_LONG
+    # breakeven lock: if in profit >= BE_LOCK, never let it hit SL again
+    eff_sl = 0.0 if pnl >= BE_LOCK else sl
+    if pnl >= tp:
+        return True, "tp"
+    if pnl <= eff_sl:
+        return True, "sl"
+    # regime flip: longs exit if we leave an uptrend; shorts exit if we leave a downtrend
+    if not is_short and regime in ("TREND_DOWN", "CRISIS"):
+        return True, "regimeflip"
+    if is_short and regime in ("TREND_UP", "CRISIS"):
+        return True, "regimeflip"
+    # timeout by regime
+    if stale:
+        return True, "timeout"
+    return False, ""
+
+
 def run_once(verbose: bool = True) -> dict:
     if KILL_SWITCH:
         msg = "KILL_SWITCH active — agent loop skipped"
@@ -105,8 +151,7 @@ def run_once(verbose: bool = True) -> dict:
     mtf = multi_timeframe_regime("BTC-USD", client)
     regime = mtf["regime"]  # MIXED if <2/3 timeframes agree (fakeout guard)
     # vol regime on the 4h BTC window (stand down new entries if EXTREME)
-    from scripts.hermes_agent_loop import _candles as _c
-    btc_4h = _c(client, "BTC-USD", 120, granularity="4h")
+    btc_4h = _candles(client, "BTC-USD", 120, granularity="4h")
     vol = vol_regime(btc_4h)
     overlay = overlay_state()  # sentiment (F&G) + macro-event risk
     from scripts.hermes_news import news_sentiment
@@ -155,6 +200,9 @@ def run_once(verbose: bool = True) -> dict:
                 corr_cache[a] = 0.0
     HOLD_ITERS = 6
     now = dt.datetime.now(dt.timezone.utc)
+    # Phase 15: per-position TP/SL/timeout exit — without this, paper trades
+    # never round-trip (only closed on CRISIS/stale), so the expectancy table
+    # stays empty and we can't OBSERVE whether the agent beats the bot.
     for pid, pos in list(led.get("positions", {}).items()):
         if pos.get("base", 0.0) <= 1e-12:
             continue
@@ -166,16 +214,24 @@ def run_once(verbose: bool = True) -> dict:
                 stale = age > HOLD_ITERS * 15  # cron cadence = 15m
             except Exception:
                 stale = False
-        if regime == "CRISIS" or stale:
+        # current price for this position's asset
+        true_pid = pid.replace("SHORT:", "")
+        try:
+            cd = _candles(client, true_pid, 2)
+            cur = cd[-1]["close"] if cd else None
+        except Exception:
+            cur = None
+        close_now, reason = _exit_check(pid, pos, cur, regime, stale)
+        if close_now:
+            px = float(cur) if cur is not None else None
             if pid.startswith("SHORT:"):
-                true_pid = pid.replace("SHORT:", "")
-                res = close_short(true_pid, note=f"exit-{regime}{'-stale' if stale else ''}")
+                res = close_short(true_pid, note=f"exit-{regime}-{reason}", price=px)
                 if verbose and res.get("action") == "short_closed":
-                    print(f"[close-short] {true_pid} -> realized_pnl={res.get('realized_pnl')}")
+                    print(f"[close-short] {true_pid} {reason} -> pnl={res.get('realized_pnl')}")
             else:
-                res = close_position(pid, note=f"exit-{regime}{'-stale' if stale else ''}")
+                res = close_position(pid, note=f"exit-{regime}-{reason}", price=px)
                 if verbose and res.get("action") == "closed":
-                    print(f"[close] {pid} -> realized_pnl={res.get('realized_pnl')}")
+                    print(f"[close] {pid} {reason} -> pnl={res.get('realized_pnl')}")
 
     if regime == "CRISIS":
         return {"skipped": True, "reason": "crisis_standdown", "regime": regime}
@@ -272,6 +328,14 @@ def run_once(verbose: bool = True) -> dict:
             if not ok:
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
                                "reason": f"gate:{why}", "corr": corr_cache.get(pair)})
+                continue
+
+            # One position per asset at a time — don't pyramid on every tick.
+            long_open = led["positions"].get(pair, {}).get("base", 0.0) > 1e-9
+            short_open = led["positions"].get(f"SHORT:{pair}", {}).get("base", 0.0) > 1e-9
+            if long_open or short_open:
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": "already_open"})
                 continue
 
             if want_long:

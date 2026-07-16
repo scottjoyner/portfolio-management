@@ -149,3 +149,45 @@ def bot_confirms(asset: str, setup_type: str, cache: list | None = None) -> dict
         "n": len(hits),
         "examples": [(s["strategy"], s["pnl"], s["win_rate"]) for s in hits[:3]],
     }
+
+
+def bot_expectancy_by_asset() -> dict:
+    """The COMPETITION benchmark: the bot's per-asset expectancy from _records.
+    expectancy_per_trade = avg_win*win_rate - avg_loss*(1-win_rate), where
+    avg_win = pnl/wins, avg_loss = -pnl/losses (signed). Aggregates all strategies
+    per asset. Returns {asset: {exp, win_rate, trades, pnl}} so the agent's own
+    expectancy table can be compared apples-to-apples."""
+    if not PERF.exists():
+        return {}
+    try:
+        d = json.loads(PERF.read_text() or "{}")
+    except Exception:
+        return {}
+    recs = d.get("_records", {})
+    agg: dict = {}
+    for k, v in recs.items():
+        strat, prod = k.split("/", 1) if "/" in k else (k, "?")
+        trades = int(v.get("trades", 0))
+        pnl = float(v.get("total_pnl", 0))
+        wins = int(v.get("wins", 0))
+        losses = int(v.get("losses", 0))
+        if trades == 0:
+            continue
+        a = agg.setdefault(prod, {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0})
+        a["pnl"] += pnl
+        a["trades"] += trades
+        a["wins"] += wins
+        a["losses"] += losses
+    out = {}
+    for prod, a in agg.items():
+        wr = a["wins"] / a["trades"] if a["trades"] else 0.0
+        avg_win = (a["pnl"] / a["wins"]) if a["wins"] else 0.0
+        avg_loss = (-a["pnl"] / a["losses"]) if a["losses"] else 0.0
+        exp = avg_win * wr - avg_loss * (1 - wr)
+        out[prod] = {
+            "expectancy": round(exp, 4),
+            "win_rate": round(wr * 100, 1),
+            "trades": a["trades"],
+            "pnl": round(a["pnl"], 2),
+        }
+    return out

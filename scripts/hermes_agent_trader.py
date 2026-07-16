@@ -195,9 +195,11 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
             "position": pos, "realized_pnl": round(led["realized_pnl"], 6)}
 
 
-def close_position(product_id: str, note: str = "close") -> dict:
+def close_position(product_id: str, note: str = "close", price: float | None = None) -> dict:
     """Simulated SELL of the full held base at the current real quote.
-    Realizes P&L vs cost basis. Paper-only. No money moves."""
+    Realizes P&L vs cost basis. Paper-only. No money moves.
+    `price` (optional) lets the caller pass the decision price (loop passes the
+    same candle mark used for the TP/SL decision, so execution == decision)."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     led = load_ledger()
@@ -205,10 +207,8 @@ def close_position(product_id: str, note: str = "close") -> dict:
     if not pos or pos.get("base", 0.0) <= 1e-12:
         return {"action": "no_position", "product_id": product_id}
     base = pos["base"]
-    # Paper close: value the simulated SELL at the REAL current bid (read-only),
-    # realize P&L vs cost basis. We do NOT call orders preview here because that
-    # enforces real account holdings — in paper sim we only need the price.
-    price = _current_price(product_id)
+    if price is None or price <= 0:
+        price = _current_price(product_id)
     if price <= 0:
         return {"action": "quote_error", "error": "no bid", "product_id": product_id}
     commission = base * price * 0.0012  # ~0.12% taker, matches preview scale
@@ -263,8 +263,10 @@ def open_short(product_id: str, quote_size: float, note: str = "short",
     return {"action": "short_opened", "live": False, "trade": trade, "position": pos}
 
 
-def close_short(product_id: str, note: str = "close-short") -> dict:
-    """Close a simulated short: buy back at current candle mark. Realizes P&L."""
+def close_short(product_id: str, note: str = "close-short", price: float | None = None) -> dict:
+    """Close a simulated short: buy back at current candle mark. Realizes P&L.
+    `price` (optional) lets the caller pass the decision price (loop passes the
+    same candle mark used for the TP/SL decision, so execution == decision)."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     led = load_ledger()
@@ -274,7 +276,9 @@ def close_short(product_id: str, note: str = "close-short") -> dict:
         return {"action": "no_short", "product_id": product_id}
     magnitude = pos["base"]
     entry = pos["entry_price"]
-    exit_px = _current_price(product_id)
+    if price is None or price <= 0:
+        price = _current_price(product_id)
+    exit_px = price
     if exit_px <= 0:
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
     commission = magnitude * exit_px * 0.0012

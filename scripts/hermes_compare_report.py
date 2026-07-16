@@ -123,6 +123,7 @@ def main() -> int:
     print("=" * 64)
 
     # --- Phase 10: agent's own walk-forward expectancy (by regime/asset/side) ---
+    tbl: dict = {}
     try:
         from scripts.hermes_expectancy import expectancy_table, universe_tilt
         tbl = expectancy_table()
@@ -147,6 +148,40 @@ def main() -> int:
             print("\n(Phase 10: no closed paper trades yet — run the loop to populate)")
     except Exception as exc:
         print(f"\n[expectancy] skipped: {exc}")
+
+    # --- Phase 15: COMPETITION OBSERVER (agent expectancy vs bot expectancy) ---
+    try:
+        from scripts.hermes_meta import bot_expectancy_by_asset
+        bot_exp = bot_expectancy_by_asset()
+        # agent expectancy aggregated per ASSET (collapse regime/side)
+        agent_per_asset: dict = {}
+        for k, c in (tbl or {}).items():
+            asset = k.split("|")[1] if "|" in k else k
+            a = agent_per_asset.setdefault(asset, {"exp": 0.0, "n": 0, "wr": 0.0})
+            a["exp"] += c["expectancy"] * c["n"]
+            a["n"] += c["n"]
+            a["wr"] += c["win_rate"] * c["n"]
+        print()
+        print("PHASE 15 — COMPETITION OBSERVER (agent vs bot, per asset)")
+        print("-" * 64)
+        print(f"{'asset':<12}{'agent_wr%':>10}{'bot_wr%':>9}{'agent_exp$':>11}{'bot_exp$*':>10}")
+        shared = sorted(set(agent_per_asset) & set(bot_exp))
+        for asset in shared:
+            ae = agent_per_asset[asset]
+            a_wr = ae["wr"] / ae["n"] if ae["n"] else 0.0
+            a_exp = ae["exp"] / ae["n"] if ae["n"] else 0.0
+            be_ = bot_exp[asset]
+            # Fair contest = win-rate % (scale-invariant). Bot $ expectancy is
+            # BACKTEST-SCALE (_records), NOT comparable to the $10/trade agent book.
+            beat = "BEATS BOT ✓" if a_wr > be_["win_rate"] else ""
+            print(f"{asset:<12}{a_wr:>10.1f}{be_['win_rate']:>9.1f}"
+                  f"{a_exp:>+11.4f}{be_['expectancy']:>+10.4f}  {beat}")
+        if not shared:
+            print("  (no shared assets with closed agent trades yet — run the loop)")
+        print("  * bot_exp$ is BACKTEST-SCALE (_records), not comparable to agent $")
+        print("=" * 64)
+    except Exception as exc:
+        print(f"\n[competition] skipped: {exc}")
 
     # --- Phase 12: live-promotion trigger ---
     try:
