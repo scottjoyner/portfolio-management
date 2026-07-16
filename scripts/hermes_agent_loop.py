@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 KILL_SWITCH = os.getenv("KILL_SWITCH", "").lower() in ("1", "true", "yes")
 try:
-    MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "10"))
+    MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "250"))
 except ValueError:
     MAX_NOTIONAL = 10.0
 
@@ -169,7 +169,8 @@ def run_once(verbose: bool = True) -> dict:
     from coinbase.src.cb_client import CBClient
     from scripts.hermes_agent_trader import (record_signal, close_position,
                                              open_short, close_short,
-                                             drawdown_circuit, size_for, load_ledger)
+                                             drawdown_circuit, size_for, load_ledger,
+                                             update_equity)
     from scripts.hermes_regime import classify_candles, compatible_side
     from scripts.hermes_meta import load_bot_edge, asset_edge, best_bot_setups, bot_confirms
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
@@ -384,9 +385,14 @@ def run_once(verbose: bool = True) -> dict:
                                "agent_pnl": at["agent_pnl"]})
                 continue
 
-            # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry
+            # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry.
+            # For a $10k book with a ~$250/trade cap we need REAL deployment, not
+            # $5 scraps — so floor at 40% of cap for bot_wins_here (confirmed alpha)
+            # and scale to full cap on strong conviction.
             size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult * news["size_mult"]
-            notional = round(min(size_for(mom), size_for(0.02)) * strength * size_mult, 2)
+            raw = min(size_for(mom), size_for(0.02)) * strength * size_mult
+            floor = MAX_NOTIONAL * 0.40 if ed["verdict"] == "bot_wins_here" else MAX_NOTIONAL * 0.20
+            notional = round(max(raw, floor), 2)
             notional = min(notional, MAX_NOTIONAL)
 
             # Phase 11: concentration gate — don't let BTC-correlated exposure
@@ -429,9 +435,19 @@ def run_once(verbose: bool = True) -> dict:
         except Exception as exc:
             results.append({"pair": pair, "signal": "ERROR", "error": str(exc)[:120]})
 
+    ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     if verbose:
-        ts = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         print(f"[{ts}] agent loop: {json.dumps(results)}")
+    # Phase 16: recompute equity (cash + open MTM) so the head-to-head digest
+    # compares agent vs bot from a flat $10k start, same as the bot's paper book.
+    try:
+        eq = update_equity()
+        if verbose:
+            print(f"[{ts}] equity: cash={eq['cash']} unreal={eq['unrealized']} "
+                  f"equity=${eq['equity']} ({eq['return_pct']:+}%) peak=${eq['peak_equity']}")
+    except Exception as exc:
+        if verbose:
+            print(f"[equity] update failed: {exc}")
     return {"skipped": False, "regime": regime, "iterations": results}
 
 

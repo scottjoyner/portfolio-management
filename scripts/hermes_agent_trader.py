@@ -49,7 +49,7 @@ LEDGER = ROOT / "data" / "hermes_agent_ledger.json"
 KILL_SWITCH = os.getenv("KILL_SWITCH", "").lower() in ("1", "true", "yes")
 REQUIRE_MANUAL_APPROVAL = os.getenv("REQUIRE_MANUAL_APPROVAL", "").lower() in ("1", "true", "yes")
 try:
-    MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "10"))
+    MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "250"))
 except ValueError:
     MAX_NOTIONAL = 10.0
 HERMES_AGENT_LIVE = os.getenv("HERMES_AGENT_LIVE", "").lower() in ("1", "true", "yes")
@@ -91,6 +91,8 @@ def load_ledger() -> dict:
         except Exception:
             pass
     return {"positions": {}, "trades": [], "realized_pnl": 0.0,
+            "cash": 10000.0, "equity": 10000.0, "peak_equity": 10000.0,
+            "equity_curve": [10000.0], "starting_capital": 10000.0,
             "created_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -154,10 +156,12 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
                 pos["entry_ts"] = ts
             pos["base"] += base
             pos["cost_basis"] += notional
+            led["cash"] = led.get("cash", 10000.0) - (notional + commission)
         else:
             avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
             proceeds = base * price
-            led["realized_pnl"] += (proceeds - avg_cost * base)
+            led["realized_pnl"] += (proceeds - commission) - avg_cost * base
+            led["cash"] = led.get("cash", 10000.0) + (proceeds - commission)
             pos["base"] = max(0.0, pos["base"] - base)
             pos["cost_basis"] = max(0.0, pos["cost_basis"] - avg_cost * base)
         pos["entries"] += 1
@@ -253,6 +257,7 @@ def close_position(product_id: str, note: str = "close", price: float | None = N
     avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
     proceeds = base * price
     pnl = (proceeds - commission) - avg_cost * base
+    led["cash"] = led.get("cash", 10000.0) + (proceeds - commission)
     ts = datetime.now(timezone.utc).isoformat()
     trade = {"ts": ts, "product_id": product_id, "side": "SELL",
              "quote_size": round(proceeds, 4), "fill_price": price,
@@ -287,6 +292,7 @@ def open_short(product_id: str, quote_size: float, note: str = "short",
     magnitude = quote_size / price  # positive = size of short
     commission = quote_size * 0.0012
     led = load_ledger()
+    led["cash"] = led.get("cash", 10000.0) + (quote_size - commission)
     ts = datetime.now(timezone.utc).isoformat()
     key = f"SHORT:{product_id}"
     pos = led["positions"].get(key, {"base": 0.0, "entry_price": 0.0,
@@ -325,6 +331,7 @@ def close_short(product_id: str, note: str = "close-short", price: float | None 
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
     commission = magnitude * exit_px * 0.0012
     pnl = (entry - exit_px) * magnitude - commission  # short wins if exit < entry
+    led["cash"] = led.get("cash", 10000.0) - (magnitude * exit_px + commission)
     ts = datetime.now(timezone.utc).isoformat()
     trade = {"ts": ts, "product_id": product_id, "side": "SHORT_CLOSE",
              "quote_size": round(magnitude * exit_px, 4), "fill_price": exit_px,
@@ -435,6 +442,33 @@ def mark_to_market() -> dict:
         except Exception:
             continue
     return {"positions": out, "total_unrealized_pnl": round(total_unreal, 4)}
+
+
+def update_equity() -> dict:
+    """Recompute agent EQUITY (cash + open mark-to-market) and persist it the
+    same way the bot tracks paper_equity_curve / paper_peak_equity, so the
+    head-to-head digest compares apples-to-apples from a $10k start. Returns the
+    current equity snapshot."""
+    led = load_ledger()
+    cash = led.get("cash", 10000.0)
+    mtm = mark_to_market()
+    unreal = mtm.get("total_unrealized_pnl", 0.0)
+    equity = cash + unreal
+    start = led.get("starting_capital", 10000.0)
+    peak = max(led.get("peak_equity", equity), equity)
+    curve = led.get("equity_curve", [start])
+    curve.append(round(equity, 2))
+    if len(curve) > 5000:
+        curve = curve[-5000:]
+    led["cash"] = round(cash, 2)
+    led["equity"] = round(equity, 2)
+    led["peak_equity"] = round(peak, 2)
+    led["equity_curve"] = curve
+    led["return_pct"] = round((equity - start) / start * 100.0, 4)
+    save_ledger(led)
+    return {"cash": round(cash, 2), "unrealized": round(unreal, 2),
+            "equity": round(equity, 2), "peak_equity": round(peak, 2),
+            "return_pct": led["return_pct"]}
 
 
 def propose_live(product_id: str, side: str, quote_size: float,
