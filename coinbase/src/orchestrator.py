@@ -172,13 +172,8 @@ class ExecutionOrchestrator:
             return default
 
     def _kill_switch_active(self) -> bool:
-        if self._env_bool("TRADER_KILL_SWITCH", False):
-            return True
-        kill_path = os.getenv("TRADER_KILL_SWITCH_PATH", "data/trading_kill_switch")
-        try:
-            return os.path.exists(kill_path)
-        except Exception:
-            return False
+        from .config import is_kill_switch_active
+        return is_kill_switch_active()
 
     def _blocked_result(self, sig: TradeSignal, reason: str, status: str = "blocked") -> Dict[str, Any]:
         return {
