@@ -52,6 +52,14 @@ try:
     MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "250"))
 except ValueError:
     MAX_NOTIONAL = 10.0
+# Phase 17: LEVERAGE — the agent is the aggressive moonshot book. Operator
+# authorized leverage (bot runs --max-leverage 2.0; agent goes harder). Margin
+# per trade is capped at MAX_NOTIONAL; EXPOSURE = margin * AGENT_LEVERAGE.
+# Paper-only: no borrow, no liquidation — PnL just scales by leverage.
+try:
+    AGENT_LEVERAGE = float(os.getenv("AGENT_LEVERAGE", "3.0"))
+except ValueError:
+    AGENT_LEVERAGE = 3.0
 HERMES_AGENT_LIVE = os.getenv("HERMES_AGENT_LIVE", "").lower() in ("1", "true", "yes")
 
 
@@ -136,34 +144,49 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
         return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
     # If a decision price was supplied, simulate the fill directly (no live quote).
     if price is not None and price > 0:
-        notional = quote_size if quote_size is not None else (base_size or 0) * price
-        if notional > MAX_NOTIONAL + 0.01:
-            return _refuse(f"notional {notional:.2f} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-        base = (quote_size / price) if quote_size is not None else (base_size or 0)
-        commission = notional * 0.0012
+        margin = quote_size if quote_size is not None else (base_size or 0) * price
+        if margin > MAX_NOTIONAL + 0.01:
+            return _refuse(f"margin {margin:.2f} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
+        lev = AGENT_LEVERAGE
+        exposure = margin * lev  # leveraged notional (PnL scales by lev)
+        base = exposure / price if price > 0 else 0.0
+        commission = margin * 0.0012  # fee on margin deployed
         led = load_ledger()
         ts = datetime.now(timezone.utc).isoformat()
         trade = {
             "ts": ts, "product_id": product_id, "side": side.upper(),
-            "quote_size": round(notional, 4), "fill_price": round(price, 8),
+            "quote_size": round(margin, 4), "exposure": round(exposure, 4),
+            "leverage": lev, "fill_price": round(price, 8),
             "base_size": round(base, 8), "commission": round(commission, 6),
             "live": False, "note": note, "regime": regime, "setup": setup,
         }
         led["trades"].append(trade)
-        pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0, "entries": 0})
+        pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0,
+                                                "exposure": 0.0, "entries": 0})
         if side.upper() == "BUY":
             if pos.get("base", 0.0) <= 1e-12:
                 pos["entry_ts"] = ts
+                pos["entry_price"] = price
+            else:
+                # weighted-average entry price
+                prev_base = pos["base"]
+                pos["entry_price"] = ((pos["entry_price"] * prev_base) + (price * base)) / (prev_base + base)
             pos["base"] += base
-            pos["cost_basis"] += notional
-            led["cash"] = led.get("cash", 10000.0) - (notional + commission)
+            pos["cost_basis"] += margin  # margin tied up (not full exposure)
+            pos["exposure"] += exposure
+            led["cash"] = led.get("cash", 10000.0) - (margin + commission)
         else:
-            avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
-            proceeds = base * price
-            led["realized_pnl"] += (proceeds - commission) - avg_cost * base
-            led["cash"] = led.get("cash", 10000.0) + (proceeds - commission)
+            avg_entry = (pos["entry_price"] if pos.get("entry_price")
+                         else price)
+            avg_exposure = pos.get("exposure", 0.0)
+            # close a fraction `base` of the position; scale pnl by leverage
+            frac = (base / pos["base"]) if pos["base"] > 0 else 1.0
+            pnl = (price - avg_entry) * base * lev - commission
+            led["realized_pnl"] += pnl
+            led["cash"] = led.get("cash", 10000.0) + (margin + pnl)
             pos["base"] = max(0.0, pos["base"] - base)
-            pos["cost_basis"] = max(0.0, pos["cost_basis"] - avg_cost * base)
+            pos["cost_basis"] = max(0.0, pos["cost_basis"] - margin)
+            pos["exposure"] = max(0.0, pos["exposure"] - exposure)
         pos["entries"] += 1
         led["positions"][product_id] = pos
         save_ledger(led)
@@ -254,13 +277,15 @@ def close_position(product_id: str, note: str = "close", price: float | None = N
     if price <= 0:
         return {"action": "quote_error", "error": "no bid", "product_id": product_id}
     commission = base * price * 0.0012  # ~0.12% taker, matches preview scale
-    avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
-    proceeds = base * price
-    pnl = (proceeds - commission) - avg_cost * base
-    led["cash"] = led.get("cash", 10000.0) + (proceeds - commission)
+    entry = pos.get("entry_price", price)
+    lev = pos.get("leverage", AGENT_LEVERAGE)
+    pnl = (price - entry) * base * lev - commission  # PnL scales by leverage
+    margin = pos.get("cost_basis", 0.0)  # margin tied up, released on close
+    led["cash"] = led.get("cash", 10000.0) + (margin + pnl)
     ts = datetime.now(timezone.utc).isoformat()
     trade = {"ts": ts, "product_id": product_id, "side": "SELL",
-             "quote_size": round(proceeds, 4), "fill_price": price,
+             "quote_size": round(base * price, 4), "exposure": round(base * price * lev, 4),
+             "leverage": lev, "fill_price": price,
              "base_size": base, "commission": round(commission, 6), "live": False,
              "note": note, "realized_pnl": round(pnl, 6)}
     led["trades"].append(trade)
@@ -300,10 +325,15 @@ def open_short(product_id: str, quote_size: float, note: str = "short",
     pos["base"] += magnitude
     pos["entry_price"] = price  # simple: latest entry price
     pos["entry_ts"] = ts
+    pos["exposure"] = pos.get("exposure", 0.0) + (magnitude * price * AGENT_LEVERAGE)
+    pos["leverage"] = AGENT_LEVERAGE
+    pos["cost_basis"] = pos.get("cost_basis", 0.0) + quote_size  # margin tied up
     pos["entries"] += 1
     led["positions"][key] = pos
     trade = {"ts": ts, "product_id": product_id, "side": "SHORT_OPEN",
-             "quote_size": round(quote_size, 4), "fill_price": price,
+             "quote_size": round(quote_size, 4),
+             "exposure": round(magnitude * price * AGENT_LEVERAGE, 4),
+             "leverage": AGENT_LEVERAGE, "fill_price": price,
              "base_size": round(magnitude, 8), "commission": round(commission, 6),
              "live": False, "note": note, "regime": regime, "setup": setup}
     led["trades"].append(trade)
@@ -330,11 +360,15 @@ def close_short(product_id: str, note: str = "close-short", price: float | None 
     if exit_px <= 0:
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
     commission = magnitude * exit_px * 0.0012
-    pnl = (entry - exit_px) * magnitude - commission  # short wins if exit < entry
-    led["cash"] = led.get("cash", 10000.0) - (magnitude * exit_px + commission)
+    lev = pos.get("leverage", AGENT_LEVERAGE)
+    pnl = (entry - exit_px) * magnitude * lev - commission  # short wins if exit < entry
+    margin = pos.get("cost_basis", 0.0)
+    led["cash"] = led.get("cash", 10000.0) + (pnl - margin)
     ts = datetime.now(timezone.utc).isoformat()
     trade = {"ts": ts, "product_id": product_id, "side": "SHORT_CLOSE",
-             "quote_size": round(magnitude * exit_px, 4), "fill_price": exit_px,
+             "quote_size": round(magnitude * exit_px, 4),
+             "exposure": round(magnitude * exit_px * lev, 4),
+             "leverage": lev, "fill_price": exit_px,
              "base_size": round(magnitude, 8), "commission": round(commission, 6),
              "live": False, "note": note, "realized_pnl": round(pnl, 6)}
     led["trades"].append(trade)
@@ -426,17 +460,19 @@ def mark_to_market() -> dict:
             if bid <= 0:
                 continue
             if pid.startswith("SHORT:"):
-                # short: unrealized = (entry - mark) * magnitude
+                # short: unrealized = (entry - mark) * magnitude * leverage
                 entry = pos.get("entry_price", bid)
-                unreal = (entry - bid) * pos["base"]
+                lev = pos.get("leverage", AGENT_LEVERAGE)
+                unreal = (entry - bid) * pos["base"] * lev
                 out[true_pid] = {"side": "SHORT", "magnitude": round(pos["base"], 6),
-                                "entry": round(entry, 4), "mark": bid,
+                                "entry": round(entry, 4), "mark": bid, "leverage": lev,
                                 "unrealized_pnl": round(unreal, 4)}
             else:
-                avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else 0.0
-                unreal = (bid - avg_cost) * pos["base"]
+                avg_cost = pos.get("entry_price", bid)
+                lev = pos.get("leverage", AGENT_LEVERAGE)
+                unreal = (bid - avg_cost) * pos["base"] * lev
                 out[pid] = {"side": "LONG", "base": pos["base"],
-                            "avg_cost": round(avg_cost, 4), "bid": bid,
+                            "avg_cost": round(avg_cost, 4), "bid": bid, "leverage": lev,
                             "unrealized_pnl": round(unreal, 4)}
             total_unreal += unreal
         except Exception:

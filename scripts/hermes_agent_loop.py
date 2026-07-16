@@ -365,10 +365,20 @@ def run_once(verbose: bool = True) -> dict:
             # Meta-filter (Phase 9e / profit mandate): the bot's OWN backtest is
             # the ground truth. Trade ONLY assets where the bot shows positive edge.
             #  - bot_bleeds_here -> SKIP entirely (bot loses here; don't trade blind)
-            #  - bot_wins_here   -> MIMIC (trade same direction; confirmed alpha)
-            #  - unknown/neutral -> SKIP (no edge evidence; don't trade blind)
+            #  - bot_wins_here   -> MIMIC (trade same direction; confirmed alpha) FULL size
+            #  - unknown/neutral -> MOONSHOT: trade only on HIGH-conviction flow/trend
+            #                      signals (strength>=0.5), smaller size. The agent is
+            #                      the aggressive book — it takes shots the conservative
+            #                      bot won't. Still skips bot_bleeds_here (proven losers).
+            #  - bot_bleeds_here -> SKIP (don't fight a proven loser; that's not aggression,
+            #                      it's just burning margin)
             verdict = ed["verdict"]
-            if verdict != "bot_wins_here":
+            is_moonshot = verdict in ("unknown", "neutral") and strength >= 0.5
+            if verdict == "bot_bleeds_here":
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": f"meta:{verdict}", "bot_edge": ed["edge"]})
+                continue
+            if verdict != "bot_wins_here" and not is_moonshot:
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
                                "reason": f"meta:{verdict}", "bot_edge": ed["edge"]})
                 continue
@@ -386,12 +396,16 @@ def run_once(verbose: bool = True) -> dict:
                 continue
 
             # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry.
-            # For a $10k book with a ~$250/trade cap we need REAL deployment, not
-            # $5 scraps — so floor at 40% of cap for bot_wins_here (confirmed alpha)
-            # and scale to full cap on strong conviction.
+            # AGGRESSIVE: full $250 cap for confirmed alpha; moonshots get 25% (small
+            # but real skin in the game); scale to full cap on strong conviction.
             size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult * news["size_mult"]
             raw = min(size_for(mom), size_for(0.02)) * strength * size_mult
-            floor = MAX_NOTIONAL * 0.40 if ed["verdict"] == "bot_wins_here" else MAX_NOTIONAL * 0.20
+            if verdict == "bot_wins_here":
+                floor = MAX_NOTIONAL * 0.60
+            elif is_moonshot:
+                floor = MAX_NOTIONAL * 0.25
+            else:
+                floor = MAX_NOTIONAL * 0.20
             notional = round(max(raw, floor), 2)
             notional = min(notional, MAX_NOTIONAL)
 
