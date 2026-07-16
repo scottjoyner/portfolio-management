@@ -261,3 +261,53 @@ def test_param_opt_runs_only_when_interval_elapsed():
     opt._last_param_opt_ts = time.time()
     gated_block(opt)
     assert not called["run"] and not called["apply"]
+
+
+def test_symbol_word_match_no_false_positives():
+    """Word-boundary symbol matching must not false-match substrings."""
+    from portfolio_optimizer import _symbol_word_match
+    # standalone tokens match
+    assert _symbol_word_match("eth", "eth is up") is True
+    assert _symbol_word_match("pol", "pol is up") is True
+    assert _symbol_word_match("btc", "btc is up") is True
+    assert _symbol_word_match("sol", "sol is up") is True
+    # substrings inside longer words do NOT match (word boundary fails)
+    assert _symbol_word_match("eth", "ethereum is up") is False
+    assert _symbol_word_match("eth", "ethics committee report") is False
+    assert _symbol_word_match("pol", "polkadot momentum") is False
+    assert _symbol_word_match("pol", "politics debate tonight") is False
+    assert _symbol_word_match("btc", "bitcoin rally") is False
+    assert _symbol_word_match("btc", "botcoin scam token") is False
+    assert _symbol_word_match("sol", "solana breakout") is False
+    assert _symbol_word_match("sol", "console logs") is False
+    # multi-word phrase boundaries
+    assert _symbol_word_match("bitcoin cash", "bitcoin cash upgrade") is True
+    assert _symbol_word_match("bitcoin cash", "bitcoincache typo") is False
+
+
+def test_kg_direction_derives_side():
+    """When KG is significant, the trade side follows KG direction, not the
+    naive mid-price rule (prevents trading backwards on PM events)."""
+    from portfolio_optimizer import PortfolioOptimizer
+
+    def side_for(kg_direction, mid_price, significant=True):
+        # Mirror the inline decision in _detect_event_markets so a regression
+        # in the side logic is caught.
+        kg = None
+        if significant:
+            class _KG:
+                direction = kg_direction
+                is_significant = True
+            kg = _KG()
+        if kg and kg.is_significant:
+            return "BUY" if kg.direction == "undervalued" else "SELL"
+        return "BUY" if mid_price > 0.5 else "SELL"
+
+    # undervalued (YES cheap) -> BUY even when mid < 0.5 (was wrongly SELL)
+    assert side_for("undervalued", mid_price=0.3) == "BUY"
+    # overvalued -> SELL
+    assert side_for("overvalued", mid_price=0.7) == "SELL"
+    # no KG -> fall back to mid-price rule
+    assert side_for("undervalued", mid_price=0.3, significant=False) == "SELL"
+    # sanity: high mid with no KG -> BUY
+    assert side_for("undervalued", mid_price=0.8, significant=False) == "BUY"

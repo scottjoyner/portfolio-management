@@ -797,6 +797,19 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+import re as _re_mod
+
+
+def _symbol_word_match(keyword: str, text: str) -> bool:
+    """Word-boundary substring match for PM question -> crypto symbol mapping.
+
+    Avoids false positives from naive ``kw in text`` (e.g. 'eth' in 'ethics',
+    'pol' in 'politics', 'btc' in 'botcoin'). Multi-word phrases also get
+    boundaries so 'bitcoin cash' won't match inside 'bitcoincache'.
+    """
+    return _re_mod.search(r"\b" + _re_mod.escape(keyword) + r"\b", text) is not None
+
+
 # ---------------------------------------------------------------------------
 # Portfolio Optimizer
 # ---------------------------------------------------------------------------
@@ -5510,7 +5523,7 @@ class PortfolioOptimizer:
             question_lower = m.question.lower()
             crypto_symbol = None
             for kw, sym in self._SYMBOL_MAP:
-                if kw in question_lower:
+                if _symbol_word_match(kw, question_lower):
                     crypto_symbol = sym
                     break
             # Fallback: use category default
@@ -5535,7 +5548,14 @@ class PortfolioOptimizer:
 
             is_actionable = m.category in actionable_categories
             if crypto_symbol and conf > 0.3 and is_actionable:
-                side = "BUY" if m.mid_price > 0.5 else "SELL"
+                # Derive side from KG direction when significant (undervalued ->
+                # YES is cheap -> BUY; overvalued -> SELL), else fall back to the
+                # naive mid-price rule. This matches knowledge_gap.to_signal_dict
+                # and prevents trading backwards on PM events.
+                if kg and kg.is_significant:
+                    side = "BUY" if kg.direction == "undervalued" else "SELL"
+                else:
+                    side = "BUY" if m.mid_price > 0.5 else "SELL"
                 bucket = "core" if crypto_symbol.replace("-USD", "").upper() in CORE_LONG_TERM_ASSETS else "opportunity"
                 size = self._risk_reward_size(
                     expected_return_pct=max(conf * 12.0, 0.5),
