@@ -1,29 +1,32 @@
 # Portfolio Manager Service
+# Build context: repo root (portfolio-management/)
 FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir \
-    pandas==2.2.0 \
-    numpy==1.26.2 \
-    pyyaml==6.0.1 \
-    requests==2.31.0
+COPY deploy/requirements.txt /app/deploy/requirements.txt
+RUN pip install --no-cache-dir -r /app/deploy/requirements.txt
 
-# Copy application code
-COPY portfolio_manager.py /app/
-COPY run_backtest.py /app/
+# Copy real source trees that exist in the repo
+COPY coinbase/ /app/coinbase/
+COPY trading_system/ /app/trading_system/
+COPY portfolio_optimizer.py config.yaml /app/
 
-# Create directories for logs and data
 RUN mkdir -p /app/logs /app/data
 
-# Switch to non-root user (security)
-RUN adduser --disabled-password --gecos '' appuser && \
+RUN useradd -u 1000 -m -s /bin/bash appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# Expose ports for health checks
-EXPOSE 3001
+EXPOSE 9090
 
-# Start script
-CMD ["python", "/app/run_backtest.py"]
+# Real HTTP healthcheck against the trader health server
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python3 -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9090/ping'); sys.exit(0)" || exit 1
+
+# Run the real Coinbase trader with an HTTP health port
+CMD ["python3", "-u", "/app/coinbase/src/run_trader_v4.py", "--mode", "paper", "--health-port", "9090"]

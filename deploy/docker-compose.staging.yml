@@ -1,33 +1,29 @@
 # Trading System Staging Deployment Stack
-## Target Machine: destroyer (ThinkPad T14 i7 32GB RAM)
-## Purpose: Pre-production testing and validation
-## Date: 2026-05-27 | Status: Ready for staging deployment
+# Build context: repo root (portfolio-management/)
+# NOTE: Docker Compose is the canonical deploy path.
 
 services:
-  # Main Trading Service - Staging Environment
   trading-service:
-    image: destroyer/trading-service:staging-latest
+    image: ghcr.io/falcon/trading-system:staging-latest
     build:
-      context: /home/destroyer/trading_system
-      dockerfile: ../deploy/Dockerfile.prod
+      context: .
+      dockerfile: deploy/Dockerfile.prod
       args:
         ENVIRONMENT: staging
-    container_name: trading-runtime-staging-destructor
+    container_name: trading-runtime-staging
     restart: unless-stopped
     environment:
-      - RPC_URL=https://eth-goerli.alchemy.com/v2/YOUR_GOERLI_KEY  # Goerli testnet
-      - METADATA_CACHE_TTL=600  # 10 minutes for faster feedback
+      - RPC_URL=https://eth-goerli.alchemy.com/v2/YOUR_GOERLI_KEY
+      - METADATA_CACHE_TTL=600
       - EVENT_QUEUE_CAPACITY=5000
       - LOG_LEVEL=DEBUG
       - ONCHAIN_NETWORKS=ethereum,goerli,sepolia
       - STAGING_MODE=true
     volumes:
-      - /home/destroyer/trading_system/logs/staging:/app/logs
-      - /home/destroyer/trading_system/data/staging:/app/data
-      # Mount local code for development (optional)
-      # - ./trading_system/onchain:/app/onchain:ro
+      - ./logs/staging:/app/logs
+      - ./data/staging:/app/data
     healthcheck:
-      test: ["CMD", "python3", "-c", "print('STAGING OK')"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9090/ping'); sys.exit(0)"]
       interval: 30s
       timeout: 10s
       retries: 2
@@ -35,11 +31,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G     # Limit memory for staging
-          cpus: '2'      # Limit CPU for staging
+          memory: 2G
+          cpus: '2'
     networks:
-      - tailscale-prod
+      - trading-network
 
 networks:
-  tailscale-prod:
-    external: true  # Use existing Tailscale network
+  trading-network:
+    driver: bridge

@@ -1,14 +1,19 @@
 # Portfolio Management System Dependencies
 # Install with: pip install -r requirements.txt
+#
+# The canonical runtime dependency set lives in deploy/requirements.txt
+# (built for the Docker / production environment). Root-only tooling deps
+# used by the local .venv are appended below.
 
-# Core data sources
-yfinance>=0.2.36
-requests>=2.31.0
+-r deploy/requirements.txt
 
-# Utilities
-python-dotenv>=1.0.0
-
-# Prediction-market execution (Polymarket CLOB, on-chain order signing)
+# Root-only tooling / prediction-market execution deps
 py-clob-client>=0.34.0
 eth-account>=0.13.0
 web3>=7.0.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Core data sources for the root-level scripts
+yfinance>=0.2.36
+requests>=2.31.0

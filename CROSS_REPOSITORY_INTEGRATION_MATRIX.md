@@ -1,34 +1,31 @@
 # Cross-Repository Integration Matrix
 
-**Date:** 2026-05-27  
-**Repos:** `~/git/portfolio-management/` (secondary) ↔ `~/git/crypto-trading/` (primary)  
-**Purpose:** Map all components and integration paths between repositories  
+**Date:** 2026-05-27
+**Repo:** `~/git/portfolio-management/` (single canonical repository)
+**Purpose:** Map components and integration paths within this repository.
+
+> NOTE: This document was originally written to describe a split between a
+> `crypto-trading/` "primary" repo and this `portfolio-management/` "secondary"
+> repo. The `crypto-trading/` repository does not exist; all components
+> described below now reside within `portfolio-management/`. References to a
+> primary/secondary split are historical and should be read as describing
+> sub-trees of this single repository.
 
 ---
 
-## Repository Comparison
+## Repository Overview
 
-### Primary: `~/git/crypto-trading/` ✅
-Complete crypto trading platform with 120+ production files.
+### `~/git/portfolio-management/` (canonical)
 
-| Directory | Files | Status | Location in PM |
-|-----------|-------|--------|----------------|
-| apps/api/ | 800 lines | ✅ Production | N/A (merged) |
-| storage/postgres/ | 1,200 lines | ✅ Production | trading_system/database |
-| onchain/runtime/ | 75KB | ✅ Complete | trading_system/onchain/runtime |
-| exchange/coinbase/ | 700 lines | ✅ Production | coinbase/ |
-| risk/approvals/ | 400 lines | ✅ Production | trading_system/docs/repo_audit |
-| strategies/market_making/ | 900 lines | ✅ Production | trading_system/docs/AGENTIC_EVALUATION_PLAN |
-| deploy/ | 500 lines | ✅ Production | deploy/ |
-
-### Secondary: `~/git/portfolio-management/trading_system/` ⚠️
-Contains specialized components from Phase 1.4 implementation.
-
-| Component | Lines | Purpose | Integration Action |
-|-----------|-------|---------|-------------------|
-| graph-alpha-bot/ | ~3KB README + app/ | Neo4j-based financial data pipeline | Review: merge as optional module? |
-| coinbase/ | 500 lines | Coinbase-specific connectors | Merge into exchange/coinbase/ |
-| deploy/ | 600 lines | Production deployment assets | Already synced with primary |
+| Directory | Files | Status | Notes |
+|-----------|-------|--------|-------|
+| apps/api/ | 800 lines | ✅ Production | Node/TS API |
+| trading_system/database/ | 1,200 lines | ✅ Production | SQLAlchemy schemas |
+| trading_system/onchain/runtime/ | 75KB | ✅ Complete | Onchain runtime |
+| coinbase/ | 700 lines | ✅ Production | Coinbase connectors |
+| risk/approvals/ | 400 lines | ✅ Production | Approval workflow |
+| strategies/market_making/ | 900 lines | ✅ Production | MM strategies |
+| deploy/ | 600 lines | ✅ Production | Deploy assets |
 
 ---
 

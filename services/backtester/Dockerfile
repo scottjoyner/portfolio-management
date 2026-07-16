@@ -1,32 +1,33 @@
 # Backtester Service
+# Build context: repo root (portfolio-management/)
 FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir \
-    pandas==2.2.0 \
-    numpy==1.26.2 \
-    pyyaml==6.0.1 \
-    requests==2.31.0
+COPY deploy/requirements.txt /app/deploy/requirements.txt
+RUN pip install --no-cache-dir -r /app/deploy/requirements.txt
 
-# Copy application code
-COPY backtester.py /app/
+# Copy real source trees that exist in the repo
+COPY coinbase/ /app/coinbase/
+COPY trading_system/ /app/trading_system/
+COPY scripts/ /app/scripts/
+COPY config.yaml /app/
 
-# Create directories
 RUN mkdir -p /app/logs /app/data
 
-# Switch to non-root user (security)
-RUN adduser --disabled-password --gecos '' appuser && \
+RUN useradd -u 1000 -m -s /bin/bash appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# Expose port
 EXPOSE 3002
 
-# Health check
-HEALTHCHECK --interval=60s --timeout=30 --retries=2 \
-    CMD python -c "import sys; sys.path.insert(0, '/app'); from backtester import *; b=Backtester()"
+# The backtester is a batch process; verify the module imports cleanly
+HEALTHCHECK --interval=60s --timeout=30s --retries=3 \
+    CMD python3 -c "import sys; sys.path.insert(0, '/app/trading_system'); import backtester; print('OK')" || exit 1
 
-# Run scheduled backtests every 6 hours
-CMD ["python", "-m", "schedular"]
+# Run the real backtester entrypoint
+CMD ["python3", "-u", "/app/trading_system/backtester.py"]

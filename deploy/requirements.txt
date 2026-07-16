@@ -5,7 +5,7 @@
 aiohttp>=3.9.0
 
 # Ethereum ABI parsing (optional, for event decoding)
-8|eth_abi>=5.0.0
+eth_abi>=5.0.0
 
 # ============================================================================
 # DATABASE INTEGRATION (Phase 1A - All API endpoints now query PostgreSQL)
