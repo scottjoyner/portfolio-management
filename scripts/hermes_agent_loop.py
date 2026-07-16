@@ -89,26 +89,47 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_agent_trader import (record_signal, close_position,
                                              open_short, close_short,
                                              drawdown_circuit, size_for, load_ledger)
-    from scripts.hermes_regime import classify_btc, compatible_side
+    from scripts.hermes_regime import classify_candles, compatible_side
     from scripts.hermes_meta import load_bot_edge, asset_edge
+    from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
+    from scripts.hermes_overlay import overlay_state
 
     client = CBClient(dry_run_cli=True)
-    regime_info = classify_btc()
-    regime = regime_info["regime"]
+
+    # --- Phase 6+7: MULTI-TIMEFRAME regime + VOL + SENTIMENT/EVENT overlay ---
+    mtf = multi_timeframe_regime("BTC-USD", client)
+    regime = mtf["regime"]  # MIXED if <2/3 timeframes agree (fakeout guard)
+    # vol regime on the 4h BTC window (stand down new entries if EXTREME)
+    from scripts.hermes_agent_loop import _candles as _c
+    btc_4h = _c(client, "BTC-USD", 120, granularity="4h")
+    vol = vol_regime(btc_4h)
+    overlay = overlay_state()  # sentiment (F&G) + macro-event risk
     if verbose:
-        print(f"[regime] BTC={regime} ({regime_info['reason']}) last={regime_info.get('last')}")
+        print(f"[mtf] {regime} votes={mtf['votes']} vol={vol['bucket']} "
+              f"fg={overlay['fear_greed'].get('bucket')} ev={overlay['event']['reason']}")
 
-    # Meta-layer: load the bot's own per-asset edge once per run.
-    bot_edge = load_bot_edge()
-
-    # Phase 4: drawdown circuit — stand down NEW entries if the agent's own
-    # recent paper hit-rate collapsed or drawdown too deep. Open positions are
-    # still managed (closed) regardless.
+    # Composite NEW-ENTRY gate (any of these close the gate; open positions still managed):
+    #  - MIXED regime (timeframes disagree)
+    #  - EXTREME vol
+    #  - drawdown circuit tripped (Phase 4)
+    #  - EXTREME_GREED + macro event (sell-the-news, Phase 7)
     circuit = drawdown_circuit()
     circuit_open = circuit["open"]
-    if verbose and not circuit_open:
-        print(f"[circuit] CLOSED: {circuit['reason']}")
-    # --- close-pass: exit positions on CRISIS or stale hold ---
+    entry_gate_open = (regime != "MIXED" and not vol["stand_down"]
+                      and circuit_open and not overlay["stand_down_new"])
+    if verbose and not entry_gate_open:
+        why = ("MIXED" if regime == "MIXED" else
+               "EXTREME_VOL" if vol["stand_down"] else
+               f"circuit:{circuit['reason']}" if not circuit_open else
+               "sentiment_standdown")
+        print(f"[gate] CLOSED new entries: {why}")
+
+    # quick stand-down on CRISIS / MIXED / EXTREME_VOL
+    if regime in ("CRISIS", "MIXED") or vol["stand_down"]:
+        # still run close-pass below, but skip new entries
+        pass
+    # Meta-layer: load the bot's own per-asset edge once per run.
+    bot_edge = load_bot_edge()
     from scripts.hermes_agent_trader import load_ledger, close_position, close_short
     led = load_ledger()
     HOLD_ITERS = 6
@@ -173,10 +194,15 @@ def run_once(verbose: bool = True) -> dict:
                                "regime": regime})
                 continue
 
-            # Phase 4: drawdown circuit blocks NEW entries (open positions still managed)
-            if not circuit_open:
+            # Composite gate (Phase 4+6+7): MIXED regime / EXTREME vol /
+            # drawdown circuit / extreme-greed+event all block NEW entries.
+            if not entry_gate_open:
+                why = ("MIXED" if regime == "MIXED" else
+                       "EXTREME_VOL" if vol["stand_down"] else
+                       f"circuit:{circuit['reason']}" if not circuit_open else
+                       "sentiment_standdown")
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 5),
-                               "reason": f"circuit:{circuit['reason']}"})
+                               "reason": f"gate:{why}"})
                 continue
 
             # Meta penalty: bot bleeds here -> demand 1.5x stronger signal
@@ -191,8 +217,9 @@ def run_once(verbose: bool = True) -> dict:
                                    "bot_edge": ed["edge"]})
                     continue
 
-            # Phase 4: adaptive size by signal strength (Kelly-lite)
-            notional = size_for(mom)
+            # Phase 4+6+7 sizing: signal strength × vol-conviction × sentiment mult
+            size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"]
+            notional = round(size_for(mom) * size_mult, 2)
             if want_long:
                 rec = record_signal(pair, "BUY", quote_size=notional,
                                     note=f"regime-{regime}-LONG-mom+{mom:.4f}-bot:{ed['verdict']}-sz{notional}")

@@ -48,9 +48,9 @@ def _returns(candles: list[dict]) -> list[float]:
     return out
 
 
-def classify_btc(hours: int = 48) -> dict:
-    """Return BTC regime + supporting stats. Paper-safe, read-only."""
-    candles = _candles("BTC-USD", "4h", hours)
+def classify_candles(candles: list[dict]) -> dict:
+    """Core regime classifier from a candle list (any timeframe). Stateless,
+    read-only. Pulled out of classify_btc so MTF can run it on 1h/4h/1d."""
     if len(candles) < 4:
         return {"regime": "UNKNOWN", "reason": "insufficient candles",
                 "trend": 0.0, "vol": 0.0, "n": len(candles)}
@@ -59,21 +59,19 @@ def classify_btc(hours: int = 48) -> dict:
     n = len(closes)
     first, last = closes[0], closes[-1]
     trend = (last - first) / first if first > 0 else 0.0
-    # realized vol = stdev of returns (per-bar), annualized-ish not needed
     if rets:
         mean = sum(rets) / len(rets)
         var = sum((x - mean) ** 2 for x in rets) / len(rets)
         vol = var ** 0.5
     else:
         vol = 0.0
-    # range-boundness: how close last close is to the window midpoint
     mid = (min(closes) + max(closes)) / 2.0
     spread = (max(closes) - min(closes))
     midpoint_dist = abs(last - mid) / spread if spread > 0 else 1.0
 
-    TREND_THRESH = 0.015   # >1.5% over 48h = trending
-    VOL_THRESH = 0.012      # per-4h-bar vol above this = crisis/elevated
-    RANGE_MID = 0.25        # last within 25% of midpoint = range-bound
+    TREND_THRESH = 0.015
+    VOL_THRESH = 0.012
+    RANGE_MID = 0.25
 
     if vol > VOL_THRESH:
         regime = "CRISIS"
@@ -85,12 +83,18 @@ def classify_btc(hours: int = 48) -> dict:
         regime = "RANGE"
         reason = f"midpoint_dist {midpoint_dist:.3f} < {RANGE_MID}"
     else:
-        regime = "RANGE"  # default to range (conservative) if ambiguous
+        regime = "RANGE"
         reason = f"ambiguous (trend={trend:+.4f}, mid={midpoint_dist:.3f}) -> RANGE"
 
     return {"regime": regime, "reason": reason, "trend": round(trend, 5),
             "vol": round(vol, 5), "midpoint_dist": round(midpoint_dist, 4),
             "n": n, "last": round(last, 2)}
+
+
+def classify_btc(hours: int = 48) -> dict:
+    """Return BTC regime + supporting stats (4h candles). Paper-safe, read-only."""
+    candles = _candles("BTC-USD", "4h", hours)
+    return classify_candles(candles)
 
 
 def compatible_side(regime: str, momentum_side: str) -> bool:
