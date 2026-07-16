@@ -11,26 +11,38 @@ from strategies.exchange_bots.twap import TwapStrategy
 from strategies.execution_algos.vwap_twap import VwapTwapExecutionStrategy
 from strategies.market_making.adaptive_spread_mm import AdaptiveSpreadMMStrategy
 from strategies.market_making.stair_step_mm import StairStepMarketMakerStrategy
+from strategies.cross_asset.beta_reversion import BetaAdjustedCointegrationReversionStrategy
+from strategies.cross_asset.momentum_divergence import CrossAssetMomentumDivergenceStrategy
+from strategies.cross_asset.spread_zscore import SpreadZScoreReversionStrategy
 from strategies.mean_reversion.bollinger_reversion_signal import BollingerBandReversionStrategy
 from strategies.mean_reversion.donchian_mean_reversion import DonchianMeanReversionStrategy
 from strategies.mean_reversion.grid_capture import GridRebalanceCaptureStrategy
 from strategies.mean_reversion.rsi_bounce_reversion import RsiBounceReversionStrategy
 from strategies.mean_reversion.zscore import MeanReversionZScoreStrategy
 from strategies.microstructure.cvd_exhaustion import CvdExhaustionStrategy
+from strategies.microstructure.exchange_netflow_proxy import ExchangeNetflowProxyStrategy
 from strategies.microstructure.orderbook_imbalance import OrderBookImbalanceStrategy
 from strategies.microstructure.spread_compression import SpreadCompressionStrategy
+from strategies.microstructure.stablecoin_flow_proxy import StablecoinFlowProxyStrategy
 from strategies.microstructure.trade_flow_imbalance import TradeFlowImbalanceStrategy
+from strategies.microstructure.volume_flow_accdist import VolumeFlowAccDistStrategy
 from strategies.momentum.adx_di_strength import AdxDiStrengthStrategy
 from strategies.momentum.aroon_breakout import AroonBreakoutMomentumStrategy
 from strategies.momentum.ema_macd_momentum import EmaMacdMomentumStrategy
+from strategies.ml.kalman_mean_reversion import KalmanAdaptiveMeanReversionStrategy
+from strategies.ml.online_linear_regression import OnlineLinearRegressionMomentumStrategy
+from strategies.ml.volatility_regime_adaptive import VolatilityRegimeAdaptiveStrategy
 from strategies.special.basis_carry import BasisCarryDerivativesStrategy
 from strategies.special.liquidity_snapback import LiquidityVacuumSnapbackStrategy
 from strategies.stat_arb.pairs import PairsTradingStrategy
 from strategies.trend.breakout import TrendFollowingBreakoutStrategy
+from strategies.volatility.bollinger_bandwidth_reversion import BollingerBandwidthReversionStrategy
 from strategies.volatility.bollinger_squeeze_expansion import BollingerSqueezeVolExpansionStrategy
 from strategies.volatility.donchian_choppiness_breakout import DonchianChoppinessVolBreakoutStrategy
 from strategies.volatility.keltner_channel_breakout import KeltnerVolBreakoutStrategy
 from strategies.volatility.vol_breakout import VolatilityBreakoutStrategy
+from strategies.volatility.vol_filtered_breakout import VolFilteredBreakoutStrategy
+from strategies.volatility.vol_term_structure_carry import VolTermStructureCarryStrategy
 
 
 def load_strategies() -> list:
@@ -67,6 +79,18 @@ def load_strategies() -> list:
         TradeFlowImbalanceStrategy(),
         SpreadCompressionStrategy(),
         CvdExhaustionStrategy(),
+        VolumeFlowAccDistStrategy(),
+        ExchangeNetflowProxyStrategy(),
+        StablecoinFlowProxyStrategy(),
+        SpreadZScoreReversionStrategy(),
+        CrossAssetMomentumDivergenceStrategy(),
+        BetaAdjustedCointegrationReversionStrategy(),
+        KalmanAdaptiveMeanReversionStrategy(),
+        OnlineLinearRegressionMomentumStrategy(),
+        VolatilityRegimeAdaptiveStrategy(),
+        VolTermStructureCarryStrategy(),
+        VolFilteredBreakoutStrategy(),
+        BollingerBandwidthReversionStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced

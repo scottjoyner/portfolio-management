@@ -43,6 +43,7 @@ _BT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="opt_bt")
 # Strategy engine
 from strategy_engine import run_strategies as _run_strategies
 from strategy_engine import batch_signals_fast as _batch_signals_fast
+from strategy_engine import batch_signals_universe as _batch_signals_universe
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
@@ -4489,7 +4490,17 @@ class PortfolioOptimizer:
             volumes_dict = {pid: v for _, pid, _, v, _, _ in parsed_data}
             highs_dict = {pid: hi for _, pid, _, _, hi, _ in parsed_data}
             lows_dict = {pid: lo for _, pid, _, _, _, lo in parsed_data}
-            batch_results = _batch_signals_fast(products_list, closes_dict, volumes_dict, highs_dict, lows_dict)
+            # Parallel universe eval: one rayon-backed Rust call across ALL
+            # products (single Python<->Rust round-trip) instead of N serial
+            # per-product calls. Falls back to the legacy per-product path.
+            try:
+                batch_results = _batch_signals_universe(
+                    [p for p, _ in products_list],
+                    closes_dict, volumes_dict, highs_dict, lows_dict,
+                )
+            except Exception as e:
+                logger.debug("Universe batch signal generation failed (%s); falling back", e)
+                batch_results = _batch_signals_fast(products_list, closes_dict, volumes_dict, highs_dict, lows_dict)
         except Exception as e:
             logger.debug("Batch signal generation failed: %s", e)
             batch_results = {}

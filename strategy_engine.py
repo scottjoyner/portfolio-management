@@ -3133,6 +3133,150 @@ def batch_backtest_rust(
             logger.debug("Rust batch backtest for %s failed: %s", currency, e)
     return results
 
+
+# ── Universe-wide parallel evaluation (single Rust round-trip) ─────
+
+def batch_signals_universe(
+    products: List[Tuple[str, str]],
+    closes_dict: Dict[str, List[float]],
+    volumes_dict: Dict[str, List[float]],
+    highs_dict: Optional[Dict[str, List[float]]] = None,
+    lows_dict: Optional[Dict[str, List[float]]] = None,
+    opens_dict: Optional[Dict[str, List[float]]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Run ALL strategies on the whole product universe in ONE Rust call.
+
+    Evaluates every product via ``rust_core.evaluate_universe_py`` (rayon over
+    products, one task each) in a single Python↔Rust round-trip. Returns the
+    same shape as :func:`batch_signals_rust` (pid -> {strategy_name: action}).
+
+    Falls back to the existing per-product :func:`batch_signals_rust` loop if
+    Rust is unavailable, the new binding is missing, or the call raises.
+    """
+    if not _HAS_RUST or not hasattr(_rust_core, "evaluate_universe_py"):
+        return batch_signals_rust(products, closes_dict, volumes_dict,
+                                  highs_dict or {}, lows_dict or {})
+    try:
+        pids = [pid for pid, _ in products]
+        if not pids:
+            return {}
+        closes_map = {pid: (closes_dict.get(pid) or []) for pid in pids}
+        volumes_map = {pid: (volumes_dict.get(pid) or []) for pid in pids}
+        # Build plain dicts (missing entries dropped so Rust treats them as absent).
+        hm = {pid: highs_dict[pid] for pid in pids if highs_dict and pid in highs_dict} if highs_dict else None
+        lm = {pid: lows_dict[pid] for pid in pids if lows_dict and pid in lows_dict} if lows_dict else None
+        om = {pid: opens_dict[pid] for pid in pids if opens_dict and pid in opens_dict} if opens_dict else None
+        raw = _rust_core.evaluate_universe_py(
+            pids, closes_map, volumes_map, hm, lm, om,
+        )
+        results: Dict[str, Dict[str, str]] = {}
+        for pid in pids:
+            pid_sigs: Dict[str, str] = {}
+            for s_name, action, confidence, reason in raw.get(pid, []):
+                pid_sigs[s_name] = action
+            results[pid] = pid_sigs
+        return results
+    except Exception as e:
+        logger.debug("batch_signals_universe failed, falling back: %s", e)
+        prods = [(pid, "growth") for pid in (p[0] if isinstance(p, (tuple, list)) else p) for p in products] \
+            if products and isinstance(products[0], (tuple, list)) else products
+        return batch_signals_rust(prods, closes_dict, volumes_dict,
+                                  highs_dict or {}, lows_dict or {})
+
+
+def batch_backtest_universe(
+    strategies: List[Tuple[str, str, List[float], List[float], Optional[List[float]], Optional[List[float]]]],
+    warmup: int = 30,
+) -> Dict[str, "BacktestVerdict"]:
+    """Backtest the given strategy set for each product in ONE Rust call.
+
+    Wraps ``rust_core.backtest_universe_py`` (rayon over products). Returns the
+    same shape as :func:`batch_backtest_rust` (cache_key -> BacktestVerdict).
+
+    Falls back to :func:`batch_backtest_rust` if Rust is unavailable, the new
+    binding is missing, or the call raises.
+    """
+    if not _HAS_RUST or not hasattr(_rust_core, "backtest_universe_py"):
+        return batch_backtest_rust(strategies, warmup=warmup)
+    try:
+        # Group strategies by product (currency).
+        by_product: Dict[str, Dict[str, Any]] = {}
+        for s_name, currency, closes, volumes, highs, lows in strategies:
+            if s_name not in _RUST_STRATEGIES:
+                continue
+            if currency not in by_product:
+                by_product[currency] = {"names": set(), "closes": closes,
+                                        "volumes": volumes, "highs": highs,
+                                        "lows": lows}
+            by_product[currency]["names"].add(s_name)
+
+        if not by_product:
+            return {}
+
+        pids = list(by_product.keys())
+        closes_map = {}
+        volumes_map = {}
+        hm: Dict[str, List[float]] = {}
+        lm: Dict[str, List[float]] = {}
+        names_by_product: List[List[str]] = []
+        for pid in pids:
+            info = by_product[pid]
+            closes = info["closes"]
+            if len(closes) <= warmup:
+                continue
+            volumes = info["volumes"] if info["volumes"] else [1.0] * len(closes)
+            if len(volumes) != len(closes):
+                volumes = [1.0] * len(closes)
+            closes_map[pid] = closes
+            volumes_map[pid] = volumes
+            if info.get("highs"):
+                hm[pid] = info["highs"]
+            if info.get("lows"):
+                lm[pid] = info["lows"]
+            names_by_product.append(sorted(info["names"]))
+
+        if not closes_map:
+            return {}
+
+        raw = _rust_core.backtest_universe_py(
+            # flat list of all strategy names (per-product sets applied in Rust loop);
+            # backtest_universe_py backtests the SAME set for every product, so we
+            # pass the union and accept the slight over-compute on sparse products.
+            sorted({n for ns in names_by_product for n in ns}),
+            list(closes_map.keys()), closes_map, volumes_map, warmup,
+            hm if hm else None, lm if lm else None, None,
+            0.0, 0,
+            BACKTEST_PASS["min_win_rate"], BACKTEST_PASS["min_sharpe"],
+            BACKTEST_PASS["min_profit_factor"], BACKTEST_PASS["max_drawdown_pct"],
+            BACKTEST_PASS["min_total_return_pct"],
+        )
+        results: Dict[str, "BacktestVerdict"] = {}
+        for pid in raw:
+            for s_name, metrics in raw[pid]:
+                ck = f"{s_name}/{pid}"
+                if len(metrics) >= 9:
+                    passed = bool(metrics[8])
+                    results[ck] = BacktestVerdict(
+                        strategy=s_name,
+                        currency=pid,
+                        total_trades=int(metrics[0]),
+                        winning_trades=int(metrics[1]),
+                        losing_trades=int(metrics[2]),
+                        win_rate=metrics[3],
+                        total_return_pct=metrics[4],
+                        sharpe_ratio=metrics[5],
+                        profit_factor=metrics[6],
+                        max_drawdown_pct=metrics[7],
+                        regime="AUTO",
+                        passed=passed,
+                        reason="Rust universe batch" if passed else "Rust universe batch: below thresholds",
+                    )
+        return results
+    except Exception as e:
+        logger.debug("batch_backtest_universe failed, falling back: %s", e)
+        return batch_backtest_rust(strategies, warmup=warmup)
+
+
 try:
     import rust_core as _rust_core
     _HAS_RUST = True

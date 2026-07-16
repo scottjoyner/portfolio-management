@@ -722,6 +722,118 @@ fn backtest_multi_py(
         .collect()
 }
 
+/// Python wrapper: evaluate ALL strategies for a UNIVERSE of products in
+/// parallel (one rayon task per product). Returns a dict product_id ->
+/// Vec<(name, action, confidence, reason)>.
+#[pyfunction]
+#[pyo3(signature = (products, closes_map, volumes_map, highs_map=None, lows_map=None, opens_map=None))]
+fn evaluate_universe_py(
+    products: Vec<String>,
+    closes_map: HashMap<String, Vec<f64>>,
+    volumes_map: HashMap<String, Vec<f64>>,
+    highs_map: Option<HashMap<String, Vec<f64>>>,
+    lows_map: Option<HashMap<String, Vec<f64>>>,
+    opens_map: Option<HashMap<String, Vec<f64>>>,
+) -> HashMap<String, Vec<(String, String, f64, String)>> {
+    use rayon::prelude::*;
+    products.par_iter().map(|pid| {
+        let closes = closes_map.get(pid).cloned().unwrap_or_default();
+        let volumes = volumes_map.get(pid).cloned().unwrap_or_default();
+        let highs = highs_map.as_ref().and_then(|m| m.get(pid).cloned());
+        let lows = lows_map.as_ref().and_then(|m| m.get(pid).cloned());
+        let opens = opens_map.as_ref().and_then(|m| m.get(pid).cloned());
+        let results = match (&highs, &lows, &opens) {
+            (Some(h), Some(l), Some(o)) => {
+                strategies::evaluate_all_opens(&closes, o, &volumes, h, l)
+            }
+            _ => {
+                strategies::evaluate_all(
+                    &closes,
+                    &volumes,
+                    highs.as_deref().unwrap_or(&[]),
+                    lows.as_deref().unwrap_or(&[]),
+                )
+            }
+        };
+        let mapped: Vec<(String, String, f64, String)> = results
+            .into_iter()
+            .map(|(n, s)| (n, s.action, s.confidence, s.reason))
+            .collect();
+        (pid.clone(), mapped)
+    }).collect()
+}
+
+/// Python wrapper: backtest a SET of strategies for EACH product in parallel
+/// (rayon over products; within each product the strategy set is backtested
+/// sequentially). Returns a dict product_id -> Vec<(strategy_name, verdict_vec)>.
+#[pyfunction]
+#[pyo3(signature = (strategy_names, products, closes_map, volumes_map, warmup=20, highs_map=None, lows_map=None,
+                    opens_map=None, fee_bps=0.0, max_hold_bars=0,
+                    min_win_rate=0.50, min_sharpe=0.5, min_pf=1.20, max_dd_pct=15.0, min_ret_pct=-10.0))]
+fn backtest_universe_py(
+    strategy_names: Vec<String>,
+    products: Vec<String>,
+    closes_map: HashMap<String, Vec<f64>>,
+    volumes_map: HashMap<String, Vec<f64>>,
+    warmup: usize,
+    highs_map: Option<HashMap<String, Vec<f64>>>,
+    lows_map: Option<HashMap<String, Vec<f64>>>,
+    opens_map: Option<HashMap<String, Vec<f64>>>,
+    fee_bps: f64,
+    max_hold_bars: usize,
+    min_win_rate: f64,
+    min_sharpe: f64,
+    min_pf: f64,
+    max_dd_pct: f64,
+    min_ret_pct: f64,
+) -> HashMap<String, Vec<(String, Vec<f64>)>> {
+    use rayon::prelude::*;
+    let pass = backtest::BacktestPass {
+        min_win_rate,
+        min_sharpe,
+        min_profit_factor: min_pf,
+        max_drawdown_pct: max_dd_pct,
+        min_total_return_pct: min_ret_pct,
+    };
+    products.par_iter().map(|pid| {
+        let closes = closes_map.get(pid).cloned().unwrap_or_default();
+        let volumes = volumes_map.get(pid).cloned().unwrap_or_default();
+        let highs = highs_map.as_ref().and_then(|m| m.get(pid).cloned());
+        let lows = lows_map.as_ref().and_then(|m| m.get(pid).cloned());
+        let opens = opens_map.as_ref().and_then(|m| m.get(pid).cloned());
+        let mut results: Vec<(String, Vec<f64>)> = Vec::with_capacity(strategy_names.len());
+        for name in &strategy_names {
+            let verdict = backtest::backtest_strategy(
+                name,
+                &closes,
+                &volumes,
+                highs.as_deref(),
+                lows.as_deref(),
+                opens.as_deref(),
+                fee_bps,
+                max_hold_bars,
+                pass.clone(),
+                warmup,
+            );
+            results.push((
+                name.clone(),
+                vec![
+                    verdict.total_trades as f64,
+                    verdict.winning_trades as f64,
+                    verdict.losing_trades as f64,
+                    verdict.win_rate,
+                    verdict.total_return_pct,
+                    verdict.sharpe_ratio,
+                    verdict.profit_factor,
+                    verdict.max_drawdown_pct,
+                    if verdict.passed { 1.0 } else { 0.0 },
+                ],
+            ));
+        }
+        (pid.clone(), results)
+    }).collect()
+}
+
 /// ── Rebalance module PyO3 bindings ────────────────────────────────
 
 /// Python wrapper: multi-asset drift-threshold rebalancer with slim-profit selling.
@@ -847,6 +959,8 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_strategy_opens_py, m)?)?;
     m.add_function(wrap_pyfunction!(backtest_strategy_py, m)?)?;
     m.add_function(wrap_pyfunction!(backtest_multi_py, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_universe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(backtest_universe_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_aggregate_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_weight_from_bt_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_default_weight_py, m)?)?;
@@ -1019,6 +1133,77 @@ mod coverage_tests {
         bt_weights.insert("ema_cross".to_string(), 1.2);
         let agg = confidence_aggregate_py(signals, "growth".to_string(), "BTC".to_string(), bt_weights);
         assert!(agg.iter().all(|x| x.2 >= 0.0 && x.2 <= 1.0));
+    }
+
+    #[test]
+    fn test_universe_bindings() {
+        use std::collections::HashMap;
+        let (c, h, l, v) = ohlcv();
+        let opens: Vec<f64> = c.iter().enumerate().map(|(i, _)| if i == 0 { c[0] } else { c[i - 1] }).collect();
+        let products = vec!["BTC-USD".to_string(), "ETH-USD".to_string(), "SOL-USD".to_string()];
+        let mut closes_map = HashMap::new();
+        let mut volumes_map = HashMap::new();
+        let mut highs_map = HashMap::new();
+        let mut lows_map = HashMap::new();
+        let mut opens_map = HashMap::new();
+        for p in &products {
+            closes_map.insert(p.clone(), c.clone());
+            volumes_map.insert(p.clone(), v.clone());
+            highs_map.insert(p.clone(), h.clone());
+            lows_map.insert(p.clone(), l.clone());
+            opens_map.insert(p.clone(), opens.clone());
+        }
+        let out = evaluate_universe_py(
+            products.clone(),
+            closes_map,
+            volumes_map,
+            Some(highs_map),
+            Some(lows_map),
+            Some(opens_map),
+        );
+        assert_eq!(out.len(), 3);
+        for p in &products {
+            let res = out.get(p).expect("product present");
+            assert!(!res.is_empty(), "expected strategies for {}", p);
+            for (_, _, conf, _) in res {
+                assert!(*conf >= 0.0 && *conf <= 1.0, "confidence in [0,1]");
+            }
+        }
+
+        // Backtest universe: 2 strategies x 3 products.
+        let strat = vec!["ema_cross".to_string(), "rsi_revert".to_string()];
+        let mut closes_map = HashMap::new();
+        let mut volumes_map = HashMap::new();
+        for p in &products {
+            closes_map.insert(p.clone(), c.clone());
+            volumes_map.insert(p.clone(), v.clone());
+        }
+        let bt = backtest_universe_py(
+            strat.clone(),
+            products.clone(),
+            closes_map,
+            volumes_map,
+            20,
+            None,
+            None,
+            None,
+            0.0,
+            0,
+            0.50,
+            0.5,
+            1.20,
+            15.0,
+            -10.0,
+        );
+        assert_eq!(bt.len(), 3);
+        for p in &products {
+            let res = bt.get(p).expect("product present");
+            assert_eq!(res.len(), 2);
+            for (name, verdict) in res {
+                assert!(strat.contains(name));
+                assert_eq!(verdict.len(), 9);
+            }
+        }
     }
 
     #[test]
