@@ -82,6 +82,7 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 | E8 | Unit tests to lift `portfolio_optimizer.py` / `run_trader_v4.py` to 80%+ branch | QA | M | DONE (optimizer suite 500 passed / 2 skipped; 80% line+branch met; also fixed a latent `Bar(instrument_type=…)` crash in smart-money detection, a `currency=pid`→base-ticker inconsistency across 6 detection paths, an invalid `currency=` kwarg passed to `ExchangeNetflowSignal.on_bar`, and a mis-indented `Opportunity(...)` constructor in `_detect_strategy_signals`) |
 | E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S | OPEN |
 | E10 | Key-free backtest data collector aggregating Coinbase + Yahoo + CoinGecko + Binance into durable `feed_cache` on SSD | Data | M | DONE (`scripts/collect_backtest_data.py`; Coinbase/Yahoo/CoinGecko verified writing to `/media/scott/SSD_4TB/feed_cache`; Binance geo-blocked from this network but code path correct) |
+| E11 | Paper/live trader doubles as a backtest data factory: every candle fetch already persisted to `feed_cache` via `rest_feed._persist_nas`; added `EventTraderV4._record_trade_event` writing labeled entry/exit records to `trade_events/<PRODUCT>.jsonl`. Launch trader with `NAS_FEED_ROOT` pointed at the SSD to harvest live candles + trade outcomes continuously | Data | S | DONE |
 
 ---
 
@@ -112,3 +113,4 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 - [x] `scripts/collect_backtest_data.py` added (E10): aggregates Coinbase public candles + Yahoo Finance + CoinGecko market caps + Binance funding (all key-free) into `feed_cache` on the SSD; idempotent append+de-dup; verified writing to `/media/scott/SSD_4TB/feed_cache`.
 - [ ] E9 live `/market/universe` verification under daemon.
 - [ ] Production NAS write confirmed under systemd (root).
+- [x] `EventTraderV4._record_trade_event` added (E11): paper/live trader now writes labeled entry/exit records to `trade_events/<PRODUCT>.jsonl` in the same `feed_cache` as harvested candles; candle fetches were already persisted via `rest_feed._persist_nas`. Trader doubles as a backtest data factory when launched with `NAS_FEED_ROOT` on the SSD.

@@ -266,3 +266,42 @@ def test_execute_impl_scale_in_short():
     before = pos.qty
     t._paper_execute_impl("BTC-USD", 95.0, [_opp("SELL")])
     assert pos.qty > before
+
+
+def test_trade_events_persisted_to_feed_cache():
+    """A paper entry then exit must write labeled records to feed_cache
+    (trade_events/<PRODUCT>.jsonl) so the run doubles as a backtest data factory."""
+    import os
+    import sys
+    import tempfile
+
+    root = tempfile.mkdtemp(prefix="trade_event_test_")
+    os.environ["NAS_FEED_ROOT"] = root
+    import data.feed_cache as fc
+    # Point feed_cache at the temp root for this test without disturbing imports.
+    fc._RESOLVED_ROOT = root
+    import data.feed_cache as _fc
+    _fc._RESOLVED_ROOT = root
+
+    t = _mktrader()
+    t._last_price = {"BTC-USD": 100.0}
+    # entry
+    t._paper_execute_impl("BTC-USD", 100.0, [_opp("BUY", conf=0.7)])
+    assert "BTC-USD" in t.paper_positions
+    # exit via trailing timeout
+    pos = t.paper_positions["BTC-USD"]
+    pos.entry_ts = time.time() - 80000  # force age stop
+    t._last_price = {"BTC-USD": 100.0}
+    t._paper_execute_impl("BTC-USD", 100.0, [_opp("SELL", conf=0.3)])
+    assert "BTC-USD" not in t.paper_positions
+
+    from data.feed_cache import load_records
+    events = load_records("trade_events", "BTC-USD")
+    kinds = [e["kind"] for e in events]
+    assert "entry" in kinds
+    assert "exit" in kinds
+    entry = next(e for e in events if e["kind"] == "entry")
+    assert entry["side"] == "LONG"
+    assert entry["strategy"]
+    exit_ev = next(e for e in events if e["kind"] == "exit")
+    assert "pnl" in exit_ev and "reason" in exit_ev

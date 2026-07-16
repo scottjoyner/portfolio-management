@@ -2189,6 +2189,13 @@ class EventTraderV4:
             "PAPER EXIT %s qty=%.6f entry=%.4f exit=%.4f pnl=$%.2f reason=%s",
             pos.product_id, pos.qty, pos.entry_price, exit_price, pnl, reason,
         )
+        self._record_trade_event(
+            "exit", pos.product_id, exit_price, side=exit_side,
+            strategy=str(pos.strategy), qty=pos.qty, entry_price=pos.entry_price,
+            notional=exit_notional, fee=fee, pnl=round(pnl, 4),
+            reason=reason, regime=str(getattr(pos, "regime", "")),
+            hold_s=round(time.time() - pos.entry_ts, 1),
+        )
         if abs(pnl) >= 1.0:
             self._push_notification("trade", f"EXIT {pos.product_id}",
                                     f"{'PROFIT' if win else 'LOSS'} ${pnl:.2f} | {reason} | {pos.strategy}",
@@ -2586,6 +2593,23 @@ class EventTraderV4:
                     self._feed_mgr.remove_position(pid)
                 self.paper_last_trade_ts[pid] = time.time()
 
+    def _record_trade_event(self, kind: str, product_id: str, price: float, **fields) -> None:
+        """Persist a labeled trade event to the durable feed cache for backtesting.
+
+        Entries (entry / exit / scale_in / scale_out / reject) are written as
+        JSON records to ``trade_events/<PRODUCT>.jsonl`` in the same store as the
+        harvested candles (``feed_cache``, rooted at ``NAS_FEED_ROOT``). This lets
+        a paper/live run double as a data factory: candles *plus* what the
+        strategy actually did and what happened next. Best-effort; never raises.
+        """
+        try:
+            from data.feed_cache import save_records
+            rec = {"ts": time.time(), "kind": kind, "product_id": product_id, "price": price}
+            rec.update(fields)
+            save_records("trade_events", product_id, [rec])
+        except Exception as e:  # pragma: no cover - durability is best-effort
+            log.debug("trade event persist skipped for %s: %s", product_id, e)
+
     def _paper_open_position(self, product_id: str, price: float, opp: Dict[str, Any]) -> None:
         if price <= 0:
             return
@@ -2792,6 +2816,14 @@ class EventTraderV4:
         )
         self.paper_positions[product_id] = pos
         self.paper_last_trade_ts[product_id] = time.time()
+        self._record_trade_event(
+            "entry", product_id, fill_price, side=side_label,
+            strategy=strategy_name, qty=qty, notional=notional, fee=fee,
+            confidence=round(confidence, 4), win_rate=round(win_rate, 4),
+            sharpe=round(sharpe, 4), regime=regime, atr_14=atr_val,
+            stop_price=stop_loss_price, target_price=take_profit_price,
+            leverage=leverage,
+        )
         if self._feed_mgr:
             self._feed_mgr.add_position(product_id)
         with self._analytics_lock:
