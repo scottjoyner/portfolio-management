@@ -1067,7 +1067,7 @@ pub fn support_resistance(closes: &[f64], _opens: &[f64], highs: &[f64], lows: &
 /// ── Strategy 28: Liquidity Vacuum Reversal ──────────────────────
 
 pub fn liquidity_vacuum(closes: &[f64], _opens: &[f64], highs: &[f64], lows: &[f64], volumes: &[f64]) -> Option<Signal> {
-    let n = closes.len().min(highs.len()).min(lows.len()).min(volumes.len());
+    let n = closes.len().min(_opens.len()).min(highs.len()).min(lows.len()).min(volumes.len());
     if n < 15 {
         return None;
     }
@@ -1205,7 +1205,7 @@ pub fn volatility_compression(closes: &[f64], _opens: &[f64], highs: &[f64], low
 /// ── Strategy 31: Impulse Exhaustion Reversal ───────────────────
 
 pub fn impulse_exhaustion(closes: &[f64], _opens: &[f64], highs: &[f64], lows: &[f64], volumes: &[f64]) -> Option<Signal> {
-    let n = closes.len().min(highs.len()).min(lows.len()).min(volumes.len());
+    let n = closes.len().min(_opens.len()).min(highs.len()).min(lows.len()).min(volumes.len());
     if n < 15 {
         return None;
     }
@@ -3095,8 +3095,18 @@ pub fn hp_trend_cycle(closes: &[f64]) -> Option<Signal> {
 /// Run a single strategy by name.
 pub fn evaluate(name: &str, closes: &[f64], volumes: &[f64],
                  highs: &[f64], lows: &[f64]) -> Option<Signal> {
-    let opens = &[];
-    evaluate_opens(name, closes, opens, volumes, highs, lows)
+    // Synthesize opens from closes (each bar's open = previous close) so that
+    // strategies indexing `opens[n-1]` during a backtest window (which starts at
+    // `i = warmup`, e.g. index 30) do not panic on an empty opens slice.
+    let opens: Vec<f64> = if closes.len() > 1 {
+        let mut o = Vec::with_capacity(closes.len());
+        o.push(closes[0]);
+        o.extend_from_slice(&closes[..closes.len() - 1]);
+        o
+    } else {
+        closes.to_vec()
+    };
+    evaluate_opens(name, closes, &opens, volumes, highs, lows)
 }
 
 /// Run a single strategy with opens data.
