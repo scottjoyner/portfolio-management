@@ -301,6 +301,38 @@ def test_opportunity_defaults():
     assert o.executed is False
 
 
+def test_record_trade_buy_then_sell_keys_base_ticker(opt):
+    """A BUY then SELL on the same base must net cleanly and never create a
+    product_id-keyed orphan holding (the currency=pid regression class)."""
+    opt.cli.best_product.side_effect = lambda c, s: f"{c}-USD"
+    opt.state = make_state({}, total_value=100000.0, usdc=90000.0)
+
+    buy = P.Opportunity(
+        P.OpportunityType.STRATEGY_SIGNAL,
+        currency="SOL", side="BUY", size_usd=1000.0,
+        reason="buy", product_id="SOL-USD", entry_price_est=100.0,
+    )
+    opt._record_trade(buy, total_fee=1.0)
+
+    # BUY must key the holding by base ticker, not the product_id.
+    assert "SOL" in opt.state.holdings
+    assert "SOL-USD" not in opt.state.holdings
+    assert opt.state.holdings["SOL"]["product_id"] == "SOL-USD"
+    assert opt.state.holdings["SOL"]["value"] == 1000.0
+    assert opt.state.usdc_balance == pytest.approx(90000.0 - 1000.0)
+
+    sell = P.Opportunity(
+        P.OpportunityType.STRATEGY_SIGNAL,
+        currency="SOL", side="SELL", size_usd=1000.0,
+        reason="sell", product_id="SOL-USD", entry_price_est=100.0,
+    )
+    opt._record_trade(sell, total_fee=1.0)
+
+    # SELL nets the position to zero and removes the holding entirely.
+    assert "SOL" not in opt.state.holdings
+    assert opt.state.usdc_balance == pytest.approx(90000.0 - 1000.0 + 1000.0 * 0.97)
+
+
 def test_portfolio_state_defaults():
     s = P.PortfolioState(holdings={})
     assert s.total_value == 0.0
