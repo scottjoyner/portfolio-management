@@ -198,3 +198,32 @@ def test_backtest_from_cache_reads_harvested_parquet():
     assert summary["symbols"] == ["BTC-USD"]
     first = summary["results"][0]
     assert "sharpe" in first and "win_rate" in first and "passed" in first
+
+
+def test_backtest_writes_bt_cache(tmp_path):
+    """--bt-cache-db must persist verdicts into a StateStore so ConfidenceMatrix
+    can consume them as per-strategy weights."""
+    import scripts.backtest_from_cache as B
+    from state_store import StateStore
+
+    candles = []
+    t0 = 1_700_000_000
+    price = 100.0
+    for i in range(200):
+        price += 0.2
+        candles.append([float(t0 + i * 3600), price - 0.5, price + 0.5,
+                         price - 1.0, price, 1000.0 + i])
+    save_candles("coinbase_candles", "BTC-USD", 3600, candles)
+
+    db = str(tmp_path / "btcache.db")
+    summary = B.run(B._args_for(granularity=3600, symbols="BTC-USD",
+                                strategies="ema_cross,rsi_revert", max_bars=5000,
+                                bt_cache_db=db))
+    assert summary["n_signals"] >= 1
+    store = StateStore(db_path=db)
+    rows = store.load_bt_cache(ttl=10 ** 9)
+    assert len(rows) == summary["n_signals"]
+    assert any(k.startswith("ema_cross/BTC") for k in rows)
+    # the optimizer's ConfidenceMatrix consumes win_rate/sharpe_ratio keys
+    v = rows["ema_cross/BTC"]
+    assert "win_rate" in v and "sharpe_ratio" in v

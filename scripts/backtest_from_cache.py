@@ -54,12 +54,13 @@ def _list_symbols(granularity: int, symbols: Optional[List[str]] = None) -> List
 
 
 def _run(symbol: str, granularity: int, strategies: List[str], warmup: int,
-         min_trades: int, max_bars: int = 5000) -> List[Dict[str, Any]]:
+         min_trades: int, max_bars: int = 5000):
+    """Return (rows, verdicts) where verdicts are raw BacktestVerdict objects."""
     rows = load_candles(KIND, symbol, granularity)
     if max_bars and len(rows) > max_bars:
         rows = rows[-max_bars:]  # trailing window for fast, meaningful validation
     if len(rows) < warmup + 20:
-        return []
+        return [], []
     closes = [r[4] for r in rows]
     opens = [r[1] for r in rows]
     highs = [r[2] for r in rows]
@@ -67,6 +68,7 @@ def _run(symbol: str, granularity: int, strategies: List[str], warmup: int,
     volumes = [r[5] for r in rows]
     currency = symbol.split("-")[0]
     out = []
+    verdicts = []
     for name in strategies:
         try:
             v = S.backtest_strategy(
@@ -76,6 +78,7 @@ def _run(symbol: str, granularity: int, strategies: List[str], warmup: int,
         except BaseException as e:  # catches Rust PanicException from bad strategies
             log.debug("backtest %s/%s failed: %s", symbol, name, e)
             continue
+        verdicts.append(v)
         out.append({
             "symbol": symbol,
             "strategy": v.strategy,
@@ -89,11 +92,12 @@ def _run(symbol: str, granularity: int, strategies: List[str], warmup: int,
             "regime": v.regime,
             "reason": v.reason,
         })
-    return out
+    return out, verdicts
 
 
 def _args_for(granularity=3600, symbols="", strategies="", warmup=30,
-            min_trades=3, max_bars=5000, include_external=False, top=25):
+            min_trades=3, max_bars=5000, include_external=False, top=25,
+            bt_cache_db="", only_passed=False):
     """Build a lightweight args namespace for programmatic/test use."""
     class _A:
         pass
@@ -106,7 +110,33 @@ def _args_for(granularity=3600, symbols="", strategies="", warmup=30,
     a.max_bars = max_bars
     a.include_external = include_external
     a.top = top
+    a.bt_cache_db = bt_cache_db
+    a.only_passed = only_passed
     return a
+
+
+def _write_bt_cache(db_path: str, verdicts, only_passed: bool) -> int:
+    """Persist backtest verdicts into the optimizer's StateStore bt_cache so
+    ConfidenceMatrix picks up per-strategy weights. Keyed ``strategy/currency``.
+    Returns the number of rows written.
+    """
+    try:
+        from state_store import StateStore
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("bt_cache write skipped (state_store unavailable): %s", e)
+        return 0
+    store = StateStore(db_path=db_path)
+    n = 0
+    for v in verdicts:
+        if only_passed and not getattr(v, "passed", False):
+            continue
+        key = f"{v.strategy}/{v.currency}"
+        try:
+            store.save_bt_cache(key, v)
+            n += 1
+        except Exception as e:  # pragma: no cover - defensive
+            log.debug("bt_cache save failed for %s: %s", key, e)
+    return n
 
 
 def run(args) -> Dict[str, Any]:
@@ -123,8 +153,14 @@ def run(args) -> Dict[str, Any]:
                             [s.strip() for s in args.symbols.split(",")] if args.symbols else None)
     log.info("Backtesting %d symbols x %d strategies @ %ds", len(symbols), len(strategies), args.granularity)
     all_rows: List[Dict[str, Any]] = []
+    all_verdicts = []
     for sym in symbols:
-        all_rows.extend(_run(sym, args.granularity, strategies, args.warmup, args.min_trades, args.max_bars))
+        rows, verdicts = _run(sym, args.granularity, strategies, args.warmup, args.min_trades, args.max_bars)
+        all_rows.extend(rows)
+        all_verdicts.extend(verdicts)
+    if args.bt_cache_db:
+        _write_bt_cache(args.bt_cache_db, all_verdicts, args.only_passed)
+        log.info("Wrote %d verdicts to bt_cache db %s", len(all_verdicts), args.bt_cache_db)
 
     passed = [r for r in all_rows if r["passed"]]
     # Rank passing strategies by sharpe then profit factor.
@@ -155,6 +191,11 @@ def cli():
                    help="cap candles to the trailing N bars for fast, meaningful validation")
     p.add_argument("--include-external", action="store_true",
                    help="also backtest the 9 external-data/order-flow strategies (slower Python path)")
+    p.add_argument("--bt-cache-db", default="",
+                   help="write verdicts into this optimizer StateStore db (e.g. optimizer_state.db) "
+                        "so ConfidenceMatrix uses them as bt_weights")
+    p.add_argument("--only-passed", action="store_true",
+                   help="with --bt-cache-db, only persist strategies that passed backtest")
     p.add_argument("--json", default="", help="write full JSON report to this path")
     p.add_argument("--top", type=int, default=25, help="print top N passing strategies")
     args = p.parse_args()
