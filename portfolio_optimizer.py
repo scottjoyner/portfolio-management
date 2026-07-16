@@ -205,6 +205,63 @@ except Exception:
     _HAS_EXECUTION_ENGINE = False
 
 
+def hermes_confirmation(product_id: str, edge: Optional[dict] = None) -> dict:
+    """Confirmation filter that feeds the Hermes agent's meta-layer edge into the
+    optimizer WITHOUT touching core selection logic.
+
+    `edge` is an optional dict produced by ``scripts.hermes_meta.asset_edge``
+    ({edge, trades, win_rate, confidence, verdict}). When present and well-formed
+    it returns a confirmation flag + bias multiplier used to sort/filter candidates.
+    When missing, corrupt, or for an unknown asset, this is a strict NO-OP
+    (confirmed=True, mult=1.0) so the optimizer behaves exactly as before.
+    """
+    neutral = {"confirmed": True, "mult": 1.0, "verdict": "no_hermes_data"}
+    if not edge or not isinstance(edge, dict):
+        return neutral
+    verdict = edge.get("verdict")
+    if verdict == "unknown" or verdict is None:
+        return neutral
+    if not edge.get("confidence"):
+        return {"confirmed": True, "mult": 0.9, "verdict": verdict}
+    if verdict == "bot_wins_here":
+        return {"confirmed": True, "mult": 1.15, "verdict": verdict}
+    if verdict == "bot_bleeds_here":
+        return {"confirmed": False, "mult": 0.6, "verdict": verdict}
+    return {"confirmed": True, "mult": 1.0, "verdict": verdict}
+
+
+def hermes_rank_boost(candidates: List[dict],
+                       edge_fn: Optional[Callable[[str], Optional[dict]]] = None) -> List[dict]:
+    """Apply ``hermes_confirmation`` to a list of candidate dicts (each having a
+    ``product_id`` key). Defensive: missing data leaves candidates unchanged.
+    Non-confirmed candidates are dropped; confirmed ones get ``hermes_mult``
+    folded into their ``priority`` (defaulting to 1.0 when absent).
+    """
+    if not candidates:
+        return []
+    if edge_fn is None:
+        return candidates
+    out = []
+    for c in candidates:
+        try:
+            pid = c.get("product_id") or c.get("currency")
+            if not pid:
+                out.append(c)
+                continue
+            conf = hermes_confirmation(pid, edge_fn(pid))
+            if not conf["confirmed"]:
+                continue
+            c = dict(c)
+            base = float(c.get("priority", 1.0))
+            c["priority"] = base * conf["mult"]
+            c["hermes_verdict"] = conf["verdict"]
+            out.append(c)
+        except Exception:
+            out.append(c)
+    out.sort(key=lambda x: float(x.get("priority", 1.0)), reverse=True)
+    return out
+
+
 def _compute_adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> float:
     """Compute ADX (Average Directional Index) for regime detection.
     Returns ADX value (0-100). >25 = trending, <20 = ranging."""
@@ -6156,6 +6213,13 @@ class PortfolioOptimizer:
     def _process_opportunity(self, opp: Opportunity):
         logger.info("Processing [%.2f] %s %s $%.0f: %s",
                      opp.priority, opp.side, opp.currency, opp.size_usd, opp.reason)
+
+        try:
+            from coinbase.src.config import validate_opportunity_side
+            validate_opportunity_side(opp.side)
+        except ValueError as exc:
+            logger.warning("  → Invalid order side (%s); skipping opportunity", exc)
+            return
 
         if self._is_static_currency(opp.currency):
             logger.info("  → Static long-term holding skipped: %s", opp.currency)

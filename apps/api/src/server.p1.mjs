@@ -108,7 +108,11 @@ function isP1Route(pathname) {
     || pathname === '/api/arbitrage/opportunities/persist'
     || pathname === '/api/paper/sweep'
     || pathname === '/api/paper/sweep/history'
-    || pathname === '/api/market-data/live-quotes';
+    || pathname === '/api/market-data/live-quotes'
+    || pathname === '/api/secrets'
+    || pathname === '/api/secrets/auto-rotate/config'
+    || pathname === '/api/secrets/auto-rotate/run'
+    || /^\/api\/secrets\/rotate\/[^/]+$/.test(pathname);
 }
 
 function makeSummary(state, store, runtime) {
@@ -235,7 +239,7 @@ export async function handleRequest(req, options = {}) {
   return out;
 }
 
-export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
+export async function startServer(port = Number(process.env.PORT || 3000), options = {}) {
   assertRuntimeEnv({ ...process.env, ...(options.env || {}) });
   const store = createOperatorStore(options);
   const s = http.createServer(async (req, res) => {
@@ -249,6 +253,12 @@ export function startServer(port = Number(process.env.PORT || 3000), options = {
     }
   });
   s.listen(port);
+  const { startAutoRotate } = await import('./secrets.mjs');
+  startAutoRotate({
+    getConfig: () => store.state?.config || {},
+    mutate: fn => store.mutate(fn),
+    intervalMs: Number(process.env.SECRET_AUTO_ROTATE_MS || 86_400_000),
+  });
   return s;
 }
 

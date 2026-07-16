@@ -5,6 +5,7 @@ import { ExecutionReconciler } from '../../../packages/execution/src/reconciliat
 import { SettlementTracker } from '../../../packages/execution/src/settlement.mjs';
 import { createOpportunity, createResearchJob, decideBudgetApproval, decideOpportunity, ensureOpportunityState, requestBudgetApproval, summarizeAgentCosts } from './opportunityFlows.mjs';
 import { fetchPredictionMarketSnapshots, generateOpportunitiesFromArbitrage, generateOpportunitiesFromConnectors, generateOpportunitiesFromPredictionMarkets, generateOpportunitiesFromStrategySignals, ingestConnectorSnapshots } from './opportunityGenerator.mjs';
+import { applyManualUpdate, applyRotation, buildSecretsView, validateSecretUpdate } from './secrets.mjs';
 
 export function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -498,6 +499,62 @@ export async function handleOperatorRoute({ method, pathname, state, store, read
   if (method === 'GET' && pathname === '/api/execution/events') {
     const events = execEngine.getAllEvents();
     return { status: 200, body: { ok: true, events } };
+  }
+
+  // === Secrets Management Routes ===
+  if (method === 'GET' && pathname === '/api/secrets') {
+    return { status: 200, body: { ok: true, secrets: buildSecretsView(state.config || {}) } };
+  }
+
+  if (method === 'PUT' && pathname === '/api/secrets') {
+    const body = await readJsonBody();
+    const { errors, updates } = validateSecretUpdate(body);
+    if (errors.length) return { status: 400, body: { ok: false, errors } };
+    return mutate(store, async current => {
+      const result = applyManualUpdate(current.config, updates);
+      current.audit.push({ id: nextId('audit', current.audit), action: 'secrets_updated', actor: 'operator', at: new Date().toISOString(), details: result.updatedFields.join(', '), payload: { fields: result.updatedFields } });
+      return { config: current.config, updatedFields: result.updatedFields };
+    });
+  }
+
+  const rotateSecret = routeMatch(pathname, '/api/secrets/rotate/:provider');
+  if (method === 'POST' && rotateSecret) {
+    return mutate(store, async current => {
+      const result = applyRotation(current.config, rotateSecret.provider);
+      if (!result.ok) return { errors: [result.error] };
+      current.audit.push({ id: nextId('audit', current.audit), action: 'secret_rotated', actor: 'operator', at: new Date().toISOString(), details: `${rotateSecret.provider}: ${result.rotatedFields.join(', ')}`, payload: { provider: rotateSecret.provider, fields: result.rotatedFields } });
+      return { config: current.config, rotatedFields: result.rotatedFields, provider: rotateSecret.provider };
+    });
+  }
+
+  if (method === 'POST' && pathname === '/api/secrets/auto-rotate/config') {
+    const body = await readJsonBody();
+    return mutate(store, async current => {
+      const enabled = Boolean(body.enabled);
+      const intervalMs = Number(body.intervalMs || body.intervalDays ? Number(body.intervalDays) * 86_400_000 : 0);
+      const rotationDays = Number(body.rotationDays || current.config.secretRotationDays || 30);
+      current.config.autoRotateSecrets = enabled;
+      current.config.autoRotateIntervalMs = intervalMs;
+      current.config.secretRotationDays = rotationDays;
+      current.config.secretAutoRotateUpdatedAt = new Date().toISOString();
+      current.audit.push({ id: nextId('audit', current.audit), action: 'secret_auto_rotate_configured', actor: 'operator', at: new Date().toISOString(), details: `enabled=${enabled} intervalMs=${intervalMs}`, payload: { enabled, intervalMs, rotationDays } });
+      return { config: current.config };
+    });
+  }
+
+  if (method === 'POST' && pathname === '/api/secrets/auto-rotate/run') {
+    return mutate(store, async current => {
+      const rotationDays = Number(current.config.secretRotationDays || 30);
+      const view = buildSecretsView(current.config || {});
+      const dueProviders = view.providers.filter(p => p.rotatable && (p.freshnessState === 'expired' || p.freshnessState === 'due_soon' || !p.complete));
+      const rotated = [];
+      for (const p of dueProviders) {
+        const result = applyRotation(current.config, p.id);
+        if (result.ok) rotated.push({ provider: p.id, fields: result.rotatedFields });
+      }
+      current.audit.push({ id: nextId('audit', current.audit), action: 'secret_auto_rotate_run', actor: 'auto-rotate', at: new Date().toISOString(), details: `${rotated.length} providers rotated`, payload: { rotated } });
+      return { ok: true, rotated, rotationDays };
+    });
   }
 
   // === Config Routes ===

@@ -344,3 +344,31 @@ def test_execute_with_bracket_invalid_size(opt):
     op = mkopp(P.OpportunityType.STRATEGY_SIGNAL, "BUY", "ETH", size_usd=1000,
                entry_price_est=0.0)
     opt._execute_with_bracket(op, 0.0, True)
+
+
+# ----------------------------------------------------- bug #46 side="PAIR" guard
+def test_process_opportunity_rejects_pair_side(opt):
+    # Bug #46: side="PAIR" is semantically wrong and must not reach any
+    # execution path (preview/place). The guard at the top of
+    # _process_opportunity must drop the opportunity before any order call.
+    from coinbase.src.config import validate_opportunity_side
+    with mock.patch("coinbase.src.config.validate_opportunity_side",
+                    side_effect=validate_opportunity_side) as spy:
+        opt._process_opportunity(
+            mkopp(P.OpportunityType.EVENT_ARBITRAGE, "PAIR", "BTC", size_usd=1000,
+                  product_id="kalshi:polymarket"))
+        spy.assert_called_once()
+    # The bad side is rejected (ValueError) and the opp is not executed.
+    op = mkopp(P.OpportunityType.STRATEGY_SIGNAL, "PAIR", "XRP", size_usd=1000)
+    opt._execute_with_bracket = mock.MagicMock()
+    opt.notifier = None
+    opt._process_opportunity(op)
+    opt._execute_with_bracket.assert_not_called()
+
+
+def test_process_opportunity_accepts_valid_sides(opt):
+    for side in ("BUY", "SELL"):
+        op = mkopp(P.OpportunityType.EVENT_MARKET, side, "BTC", size_usd=1000,
+                    meta={"platform": "kalshi", "market_question": "q"})
+        # Should not raise; notify-only path proceeds.
+        opt._process_opportunity(op)

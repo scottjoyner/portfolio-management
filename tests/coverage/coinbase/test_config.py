@@ -6,6 +6,8 @@ from coinbase.src.config import (
     TradingConfig,
     LiveSafetyValidator,
     KillSwitch,
+    is_kill_switch_active,
+    validate_opportunity_side,
     TRUE_VALUES,
     FALSE_VALUES,
     _env_bool,
@@ -135,10 +137,55 @@ def test_kill_switch_env_active(monkeypatch, tmp_path):
 def test_kill_switch_file(monkeypatch, tmp_path):
     monkeypatch.setenv("KILL_SWITCH", "false")
     p = tmp_path / "ks"
-    monkeypatch.setattr(config.KillSwitch, "KILL_PATH", p)
+    monkeypatch.setenv("TRADER_KILL_SWITCH_PATH", str(p))
     assert KillSwitch.is_active() is False
-    KillSwitch.engage()
+    p.touch()
     assert KillSwitch.is_active() is True
-    KillSwitch.disengage()
+    p.unlink()
     assert KillSwitch.is_active() is False
     assert p.exists() is False
+
+
+def test_is_kill_switch_active_canonical_env(monkeypatch, tmp_path):
+    # Canonical env var is the single source of truth for all execution paths.
+    monkeypatch.setenv("KILL_SWITCH", "false")
+    p = tmp_path / "ks"
+    monkeypatch.setenv("TRADER_KILL_SWITCH_PATH", str(p))
+    # Env false + no file -> inactive
+    assert is_kill_switch_active() is False
+    # Env true overrides everything (file-based divergence no longer matters)
+    monkeypatch.setenv("KILL_SWITCH", "true")
+    assert is_kill_switch_active() is True
+    # KillSwitch.is_active() must agree with the shared helper
+    assert KillSwitch.is_active() == is_kill_switch_active()
+
+
+def test_is_kill_switch_active_file_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("KILL_SWITCH", "false")
+    p = tmp_path / "ks"
+    monkeypatch.setenv("TRADER_KILL_SWITCH_PATH", str(p))
+    assert is_kill_switch_active() is False
+    p.touch()
+    assert is_kill_switch_active() is True
+    os.remove(str(p))
+    assert is_kill_switch_active() is False
+
+
+def test_validate_opportunity_side_ok():
+    assert validate_opportunity_side("BUY") == "BUY"
+    assert validate_opportunity_side("sell") == "SELL"
+    assert validate_opportunity_side(" BUY ") == "BUY"
+
+
+def test_validate_opportunity_side_rejects_pair():
+    # Bug #46: side="PAIR" must never reach live order placement.
+    import pytest
+    with pytest.raises(ValueError):
+        validate_opportunity_side("PAIR")
+    with pytest.raises(ValueError):
+        validate_opportunity_side("pair")
+    with pytest.raises(ValueError):
+        validate_opportunity_side(None)
+    with pytest.raises(ValueError):
+        validate_opportunity_side("LONG")
+

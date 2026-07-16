@@ -5,6 +5,12 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+# Orchestrator unit tests execute (paper) signals, so the canonical kill
+# switch defaults to OFF here. The dedicated TestUnifiedKillSwitch /
+# TestKillSwitch classes still flip KILL_SWITCH explicitly to assert the
+# unified behavior matches run_trader_v4.
+os.environ.setdefault("KILL_SWITCH", "false")
+
 import coinbase.src.orchestrator as O
 from coinbase.src.orchestrator import ExecutionOrchestrator, TradeMode, TradeSignal
 from coinbase.src.protocols import Direction, InstrumentType, Opportunity
@@ -112,14 +118,19 @@ class TestKillSwitch(unittest.TestCase):
         self.o = ExecutionOrchestrator(mode=TradeMode.PAPER, cb=None)
 
     def test_kill_switch_env(self):
-        with mock.patch.dict(os.environ, {"TRADER_KILL_SWITCH": "true"}):
+        # Orchestrator now honors the canonical KILL_SWITCH env var (unified
+        # with run_trader_v4 via coinbase.src.config.is_kill_switch_active).
+        with mock.patch.dict(os.environ, {"KILL_SWITCH": "true"}):
             self.assertTrue(self.o._kill_switch_active())
+        with mock.patch.dict(os.environ, {"KILL_SWITCH": "false"}):
+            self.assertFalse(self.o._kill_switch_active())
 
     def test_kill_switch_path(self):
         import tempfile
         d = tempfile.mkdtemp()
         p = os.path.join(d, "kill")
-        with mock.patch.dict(os.environ, {"TRADER_KILL_SWITCH_PATH": p}, clear=False):
+        with mock.patch.dict(os.environ, {"KILL_SWITCH": "false",
+                                          "TRADER_KILL_SWITCH_PATH": p}, clear=False):
             self.assertFalse(self.o._kill_switch_active())
             open(p, "w").close()
             self.assertTrue(self.o._kill_switch_active())
@@ -589,6 +600,48 @@ class TestStatus(unittest.TestCase):
         g = o.execution_guard_status()
         self.assertIn("kill_switch_active", g)
         self.assertIn("max_orders_per_tick", g)
+
+
+@mock.patch("coinbase.src.orchestrator.CBClient", mock.Mock())
+class TestUnifiedKillSwitch(unittest.TestCase):
+    """Both live execution paths must honor the SAME kill-switch value.
+
+    Regression guard for the divergent-env-var bug: previously v4 used
+    ``KILL_SWITCH`` while orchestrator used ``TRADER_KILL_SWITCH``. Now both
+    route through ``coinbase.src.config.is_kill_switch_active``.
+    """
+
+    def setUp(self):
+        self.o = ExecutionOrchestrator(mode=TradeMode.PAPER, cb=None)
+        import coinbase.src.config as cfg
+        from coinbase.src.config import KillSwitch
+        self.cfg = cfg
+        self.KillSwitch = KillSwitch
+
+    def _v4_active(self):
+        return self.KillSwitch.is_active()
+
+    def test_both_agree_env_false(self):
+        with mock.patch.dict(os.environ, {"KILL_SWITCH": "false"}, clear=False):
+            self.assertFalse(self.o._kill_switch_active())
+            self.assertFalse(self._v4_active())
+
+    def test_both_agree_env_true(self):
+        with mock.patch.dict(os.environ, {"KILL_SWITCH": "true"}, clear=False):
+            self.assertTrue(self.o._kill_switch_active())
+            self.assertTrue(self._v4_active())
+
+    def test_both_agree_file_fallback(self):
+        import tempfile
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "kill")
+        with mock.patch.dict(os.environ, {"KILL_SWITCH": "false",
+                                          "TRADER_KILL_SWITCH_PATH": p}, clear=False):
+            self.assertFalse(self.o._kill_switch_active())
+            self.assertFalse(self._v4_active())
+            open(p, "w").close()
+            self.assertTrue(self.o._kill_switch_active())
+            self.assertTrue(self._v4_active())
 
 
 if __name__ == "__main__":

@@ -11,6 +11,29 @@ log = logging.getLogger(__name__)
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 FALSE_VALUES = {"0", "false", "no", "n", "off"}
 
+KILL_SWITCH_ENV = "KILL_SWITCH"
+KILL_SWITCH_PATH_ENV = "TRADER_KILL_SWITCH_PATH"
+
+VALID_ORDER_SIDES = {"BUY", "SELL"}
+EVENT_ARBITRAGE_SIDE = "PAIR"
+
+
+def is_kill_switch_active() -> bool:
+    """Single canonical kill-switch check shared by every execution path.
+
+    Both ``run_trader_v4`` and ``orchestrator`` must agree on kill-switch
+    state, otherwise one path can trade live while the other believes it is
+    halted. This helper is the only place that reads the canonical env var
+    (``KILL_SWITCH``) and the kill-switch file, so divergence is impossible.
+    """
+    if _env_bool(KILL_SWITCH_ENV, True):
+        return True
+    kill_path = os.getenv(KILL_SWITCH_PATH_ENV, str(KillSwitch.KILL_PATH))
+    try:
+        return os.path.exists(kill_path)
+    except Exception:
+        return False
+
 _HAS_PYDANTIC = False
 try:
     from pydantic import BaseModel, Field, field_validator
@@ -293,9 +316,7 @@ class KillSwitch:
 
     @classmethod
     def is_active(cls) -> bool:
-        if _env_bool("KILL_SWITCH", True):
-            return True
-        return cls.KILL_PATH.exists()
+        return is_kill_switch_active()
 
     @classmethod
     def engage(cls) -> None:
@@ -304,3 +325,23 @@ class KillSwitch:
     @classmethod
     def disengage(cls) -> None:
         cls.KILL_PATH.unlink(missing_ok=True)
+
+
+def validate_opportunity_side(side: str) -> str:
+    """Reject any order side that is not BUY/SELL before live placement.
+
+    Bug #46 tracked an unresolved ``side="PAIR"`` semantic in the
+    event-arbitrage execution path. ``side="PAIR"`` is not a Coinbase order
+    side and must never reach ``preview_order`` / ``place_order``. This guard
+    raises ``ValueError`` on any unrecognized side so the bad value is caught
+    at the safety boundary instead of silently producing a bogus order.
+    """
+    if side is None:
+        raise ValueError("order side is None (expected BUY or SELL)")
+    normalized = str(side).strip().upper()
+    if normalized not in VALID_ORDER_SIDES:
+        raise ValueError(
+            f"order side {side!r} is not a valid Coinbase order side "
+            f"(expected one of {sorted(VALID_ORDER_SIDES)})"
+        )
+    return normalized

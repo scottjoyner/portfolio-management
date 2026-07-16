@@ -19,6 +19,11 @@ class _Fill:
     partial_fill_pct = 1.0
 
 
+class _PartialFill:
+    entry_price = 100.0
+    partial_fill_pct = 0.5
+
+
 def _wire(t):
     t._perf_tracker = MagicMock()
     t._perf_tracker.get.return_value = None
@@ -130,3 +135,14 @@ def test_paper_open_with_portfolio_risk():
     t._portfolio_risk = pr
     t._paper_open_position("BTC-USD", 100.0, _opp())
     assert "BTC-USD" in t.paper_positions
+
+
+def test_paper_open_partial_fill_scales_qty():
+    t = _make_trader()
+    _wire(t)
+    t._fill_model.estimate.return_value = _PartialFill()
+    t._paper_open_position("BTC-USD", 100.0, _opp())
+    pos = t.paper_positions["BTC-USD"]
+    # partial_fill_pct=0.5 scales the filled qty to half of the full-fill case.
+    assert pos.entry_notional == 7000.0
+    assert pos.qty == 70.0
