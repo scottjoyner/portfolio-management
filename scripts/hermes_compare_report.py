@@ -164,6 +164,22 @@ def main() -> int:
         print("=" * 64)
     except Exception as exc:
         print(f"\n[live_ready] skipped: {exc}")
+
+    # --- Phase 14: news-flow sentiment (the bot has no news model) ---
+    try:
+        from scripts.hermes_news import news_sentiment
+        ns = news_sentiment()
+        print()
+        print("PHASE 14 — NEWS SENTIMENT (keyless RSS, soft overlay)")
+        print("-" * 64)
+        print(f"  bucket: {ns['bucket']}  score: {ns['score']}  "
+              f"size_mult: {ns['size_mult']}  stand_down: {ns['stand_down_new']}")
+        print(f"  headlines scanned: {ns['n_headlines']} (scored {ns.get('scored')})")
+        for s, h in ns.get("samples", []):
+            print(f"   {s:+.1f}  {h}")
+        print("=" * 64)
+    except Exception as exc:
+        print(f"\n[news] skipped: {exc}")
     return 0
 
 

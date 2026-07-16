@@ -109,9 +109,12 @@ def run_once(verbose: bool = True) -> dict:
     btc_4h = _c(client, "BTC-USD", 120, granularity="4h")
     vol = vol_regime(btc_4h)
     overlay = overlay_state()  # sentiment (F&G) + macro-event risk
+    from scripts.hermes_news import news_sentiment
+    news = news_sentiment()  # Phase 14: news-flow sentiment (soft overlay)
     if verbose:
         print(f"[mtf] {regime} votes={mtf['votes']} vol={vol['bucket']} "
-              f"fg={overlay['fear_greed'].get('bucket')} ev={overlay['event']['reason']}")
+              f"fg={overlay['fear_greed'].get('bucket')} ev={overlay['event']['reason']} "
+              f"news={news['bucket']}({news['score']})")
 
     # Composite NEW-ENTRY gate (any of these close the gate; open positions still managed):
     #  - MIXED regime (timeframes disagree)
@@ -121,12 +124,14 @@ def run_once(verbose: bool = True) -> dict:
     circuit = drawdown_circuit()
     circuit_open = circuit["open"]
     entry_gate_open = (regime != "MIXED" and not vol["stand_down"]
-                      and circuit_open and not overlay["stand_down_new"])
+                      and circuit_open and not overlay["stand_down_new"]
+                      and not news["stand_down_new"])  # Phase 14: news panic soft-gate
     if verbose and not entry_gate_open:
         why = ("MIXED" if regime == "MIXED" else
                "EXTREME_VOL" if vol["stand_down"] else
                f"circuit:{circuit['reason']}" if not circuit_open else
-               "sentiment_standdown")
+               "sentiment_standdown" if overlay["stand_down_new"] else
+               "news_panic")
         print(f"[gate] CLOSED new entries: {why}")
 
     # quick stand-down on CRISIS / MIXED / EXTREME_VOL
@@ -224,7 +229,8 @@ def run_once(verbose: bool = True) -> dict:
                 why = ("MIXED" if regime == "MIXED" else
                        "EXTREME_VOL" if vol["stand_down"] else
                        f"circuit:{circuit['reason']}" if not circuit_open else
-                       "sentiment_standdown")
+                       "sentiment_standdown" if overlay["stand_down_new"] else
+                       "news_panic")
                 results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
                                "reason": f"gate:{why}"})
                 continue
@@ -255,7 +261,7 @@ def run_once(verbose: bool = True) -> dict:
                 continue
 
             # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry
-            size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult
+            size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult * news["size_mult"]
             notional = round(min(size_for(mom), size_for(0.02)) * strength * size_mult, 2)
             notional = min(notional, MAX_NOTIONAL)
 
