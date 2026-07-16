@@ -96,6 +96,8 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
     from scripts.hermes_overlay import overlay_state
     from scripts.hermes_signals import indicator_signal
+    from scripts.hermes_expectancy import universe_tilt, expectancy_table
+    from scripts.hermes_portfolio import correlation_to_btc, exposure_ok
 
     client = CBClient(dry_run_cli=True)
 
@@ -135,6 +137,17 @@ def run_once(verbose: bool = True) -> dict:
     bot_edge = load_bot_edge()
     from scripts.hermes_agent_trader import load_ledger, close_position, close_short
     led = load_ledger()
+    # Phase 10: own-paper universe tilt (auto-drop assets the AGENT keeps losing on)
+    tilt = universe_tilt(led)
+    # Phase 11: BTC-correlation cache (gates concentration risk). Computed once
+    # per run; ~15 assets × 120 candles. Skip in CRISIS/MIXED (no new entries).
+    corr_cache: dict = {}
+    if entry_gate_open:
+        for a in ALTS:
+            try:
+                corr_cache[a] = round(correlation_to_btc(a, client), 2)
+            except Exception:
+                corr_cache[a] = 0.0
     HOLD_ITERS = 6
     now = dt.datetime.now(dt.timezone.utc)
     for pid, pos in list(led.get("positions", {}).items()):
@@ -233,14 +246,33 @@ def run_once(verbose: bool = True) -> dict:
             conf = bot_confirms(pair, setup_type, best_bot_setups())
             conf_mult = 1.25 if conf["confirmed"] else 1.0
 
+            # Phase 10: own-paper tilt — drop assets the AGENT itself keeps losing
+            at = tilt.get(pair)
+            if at and at["tilt"] == "drop":
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": "agent_drop",
+                               "agent_pnl": at["agent_pnl"]})
+                continue
+
             # Phase 4+6+7+8 sizing: strength × vol-conviction × sentiment × mimicry
             size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult
             notional = round(min(size_for(mom), size_for(0.02)) * strength * size_mult, 2)
             notional = min(notional, MAX_NOTIONAL)
+
+            # Phase 11: concentration gate — don't let BTC-correlated exposure
+            # exceed the cap (a single BTC shock must not wreck the whole book).
+            ok, why = exposure_ok(pair, "BUY" if want_long else "SHORT",
+                                  notional, corr_cache, led)
+            if not ok:
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": f"gate:{why}", "corr": corr_cache.get(pair)})
+                continue
+
             if want_long:
                 rec = record_signal(pair, "BUY", quote_size=notional,
                                     note=f"regime-{regime}-LONG-{setup}-mom{mom:.3f}"
-                                         f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}")
+                                         f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}",
+                                    regime=regime, setup=setup)
                 results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 4),
                                "size": notional, "bot_edge": ed["edge"],
                                "confirmed": conf["confirmed"],
@@ -248,7 +280,8 @@ def run_once(verbose: bool = True) -> dict:
             else:  # short
                 rec = open_short(pair, notional,
                                note=f"regime-{regime}-SHORT-{setup}-mom{mom:.3f}"
-                                    f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}")
+                                    f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}",
+                               regime=regime, setup=setup)
                 results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 4),
                                "size": notional, "bot_edge": ed["edge"],
                                "confirmed": conf["confirmed"],

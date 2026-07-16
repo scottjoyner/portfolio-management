@@ -15,6 +15,15 @@ Read-only: reads JSON, prints. Writes nothing.
 """
 from __future__ import annotations
 
+import sys as _sys
+from pathlib import Path as _P
+
+# Bootstrap so `from scripts...` works whether imported by the loop (cwd=repo)
+# or run directly (python scripts/hermes_compare_report.py).
+_REPO = str(_P(__file__).resolve().parent.parent)
+if _REPO not in _sys.path:
+    _sys.path.insert(0, _REPO)
+
 import json
 import sys
 from pathlib import Path
@@ -97,9 +106,9 @@ def main() -> int:
     rows = [
         ("paper trades", a["trades"], e["trades"]),
         ("strategies", "-", e["strategies"]),
-        ("realized P&L ($)", f'{a["pnl"]:.4f}', f'{e["pnl"]:.2f}'),
-        ("volume ($)", f'{a["volume"]:.2f}', f'{e["volume"]:.2f}'),
-        ("fees ($)", f'{a["fees"]:.4f}', f'{e["fees"]:.2f}'),
+        ("realized P&L ($)", f'{a["pnl"]:.4f}', f'{e["pnl"]:.2f}*'),
+        ("volume ($)", f'{a["volume"]:.2f}', f'{e["volume"]:.2f}*'),
+        ("fees ($)", f'{a["fees"]:.4f}', f'{e["fees"]:.2f}*'),
         ("win rate (%)", f'{a["win_rate"]:.1f}', f'{e["win_rate"]:.1f}'),
         ("P&L % of vol", f'{a["pnl_pct"]:.4f}', f'{e["pnl_pct"]:.4f}'),
         ("profit factor", str(a["profit_factor"]), str(e["profit_factor"])),
@@ -107,10 +116,54 @@ def main() -> int:
     for name, av, ev in rows:
         print(f"{name:<22}{str(av):>20}{str(ev):>20}")
     print("-" * 64)
-    print("Scale note: agent capped at $10/trade (MAX_NOTIONAL). Engine _records are")
-    print("trade-level small-$; engine aggregate ($M) excluded from head-to-head.")
-    print("Agent per-trade win/loss attribution is pending (round-trip net only).")
+    print("Scale note: agent capped at $10/trade (MAX_NOTIONAL); engine _records are")
+    print("BACKTEST-SCALE ($M) per strategy, NOT trade-level small-$. Raw-$ rows marked")
+    print("'*' are NOT comparable. Fair contest = win rate %, P&L % of vol, profit")
+    print("factor (all scale-invariant). Agent per-trade win/loss is round-trip net.")
     print("=" * 64)
+
+    # --- Phase 10: agent's own walk-forward expectancy (by regime/asset/side) ---
+    try:
+        from scripts.hermes_expectancy import expectancy_table, universe_tilt
+        tbl = expectancy_table()
+        tilt = universe_tilt()
+        if tbl:
+            print()
+            print("AGENT PAPER EXPECTANCY (Phase 10 — own ledger, by regime|asset|side)")
+            print("-" * 64)
+            print(f"{'cell':<46}{'n':>3}{'wr%':>6}{'exp$':>9}")
+            for k, c in sorted(tbl.items(), key=lambda x: -x[1]["expectancy"]):
+                flag = "✓" if c["trusted"] else "~"
+                print(f"{flag} {k:<44}{c['n']:>3}{c['win_rate']:>6.1f}{c['expectancy']:>+9.4f}")
+            drops = [a for a, v in tilt.items() if v["tilt"] == "drop"]
+            boosts = [a for a, v in tilt.items() if v["tilt"] == "boost"]
+            if drops or boosts:
+                print("-" * 64)
+                if boosts:
+                    print(f"  TILT boost: {', '.join(boosts)}")
+                if drops:
+                    print(f"  TILT drop : {', '.join(drops)} (agent keeps losing here)")
+        else:
+            print("\n(Phase 10: no closed paper trades yet — run the loop to populate)")
+    except Exception as exc:
+        print(f"\n[expectancy] skipped: {exc}")
+
+    # --- Phase 12: live-promotion trigger ---
+    try:
+        from scripts.hermes_expectancy import live_ready
+        lr = live_ready()
+        print()
+        print("PHASE 12 — LIVE PROMOTION TRIGGER (paper-readiness gate)")
+        print("-" * 64)
+        print(f"  READY TO PROMOTE: {'YES ✅' if lr['ready'] else 'NO'}")
+        print(f"  closed paper trades: {lr['n_closed']}")
+        print(f"  positive-expectancy regimes: {lr['regimes_positive'] or 'none'}")
+        print(f"  drawdown circuit open: {lr['circuit_open']}")
+        for r in lr["reasons"]:
+            print(f"   - {r}")
+        print("=" * 64)
+    except Exception as exc:
+        print(f"\n[live_ready] skipped: {exc}")
     return 0
 
 

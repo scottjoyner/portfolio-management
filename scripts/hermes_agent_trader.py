@@ -117,7 +117,8 @@ def quote(product_id: str, side: str, quote_size: float | None = None,
 
 
 def record_signal(product_id: str, side: str, quote_size: float | None = None,
-                  base_size: float | None = None, note: str = "") -> dict:
+                  base_size: float | None = None, note: str = "",
+                  regime: str = "", setup: str = "") -> dict:
     """Simulate a paper fill at the real preview price and log it to the ledger.
     This is the agent 'competing' — a paper position, no money moves."""
     if KILL_SWITCH:
@@ -171,6 +172,7 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
         "ts": ts, "product_id": product_id, "side": side.upper(),
         "quote_size": notional, "fill_price": price, "base_size": base,
         "commission": commission, "live": False, "note": note,
+        "regime": regime, "setup": setup,
     }
     led["trades"].append(trade)
     # Update a simple net position (base-weighted) per product
@@ -226,7 +228,8 @@ def close_position(product_id: str, note: str = "close") -> dict:
             "realized_pnl": round(led["realized_pnl"], 6)}
 
 
-def open_short(product_id: str, quote_size: float, note: str = "short") -> dict:
+def open_short(product_id: str, quote_size: float, note: str = "short",
+               regime: str = "", setup: str = "") -> dict:
     """Open a SIMULATED SHORT (paper). Stores magnitude as a SHORT: keyed position
     with entry_price = current candle mark. No real borrow/sell; no money moves.
     P&L on close = (entry - exit) * magnitude - commission."""
@@ -254,7 +257,7 @@ def open_short(product_id: str, quote_size: float, note: str = "short") -> dict:
     trade = {"ts": ts, "product_id": product_id, "side": "SHORT_OPEN",
              "quote_size": round(quote_size, 4), "fill_price": price,
              "base_size": round(magnitude, 8), "commission": round(commission, 6),
-             "live": False, "note": note}
+             "live": False, "note": note, "regime": regime, "setup": setup}
     led["trades"].append(trade)
     save_ledger(led)
     return {"action": "short_opened", "live": False, "trade": trade, "position": pos}
