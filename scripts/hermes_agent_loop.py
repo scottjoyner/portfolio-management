@@ -65,7 +65,8 @@ def _candles(client, product_id: str, hours: int, granularity: str = "1h") -> li
         out = fetch_candles_batch_sync([product_id], granularity=gran_s, limit=lim)
         rows = out.get(product_id, [])
         if rows:
-            return [{"close": float(c[4]), "volume": float(c[5]),
+            return [{"close": float(c[4]), "open": float(c[1]), "high": float(c[2]),
+                     "low": float(c[3]), "volume": float(c[5]),
                      "start": int(c[0])} for c in rows]
     except Exception as exc:
         # Fall back to the frozen dry-run CLI mock only if the live feed fails.
@@ -173,7 +174,7 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_meta import load_bot_edge, asset_edge, best_bot_setups, bot_confirms
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
     from scripts.hermes_overlay import overlay_state
-    from scripts.hermes_signals import indicator_signal, local_regime
+    from scripts.hermes_signals import indicator_signal, local_regime, flow_signal
     from scripts.hermes_expectancy import universe_tilt, expectancy_table
     from scripts.hermes_portfolio import correlation_to_btc, exposure_ok
 
@@ -320,17 +321,25 @@ def run_once(verbose: bool = True) -> dict:
             local = local_regime(candles)
             # Phase 9: indicator overlay (bot's own TechnicalIndicatorSet math)
             side, strength, det = indicator_signal(candles, local)
+            # Phase 9h: ORDER-FLOW overlay — if the trend/mean-revert indicator
+            # holds, try the bot's FLOW edge (cvd_flow / obv_div). This lets the
+            # agent mirror the bot's proven flow winners (IOTX/MATH/HFT).
+            if side == "HOLD":
+                f_side, f_strength, f_det = flow_signal(candles)
+                if f_side != "HOLD":
+                    side, strength, det = f_side, f_strength, f_det
             last = float(candles[-1]["close"]) if candles and candles[-1].get("close") else 0.0
             if side == "HOLD":
                 results.append({"pair": pair, "signal": "HOLD", "mom": None,
                                "regime": regime, "detail": det.get("reason")})
                 continue
-            mom = det.get("z", 0.0)  # use z-score as the "momentum" proxy for sizing
+            mom = det.get("z", strength)  # z-score for trend; flow strength otherwise
             setup = det.get("setup", "other")
             # Phase 8: strategy mimicry — does the bot's backtest endorse THIS
             # asset+setup type? Computed early so the meta-filter (below) can use it.
-            setup_type = "mean_revert" if "revert" in setup or "fade" in setup else \
-                          "trend" if "trend" in setup else "other"
+            setup_type = ("flow" if ("flow" in setup or "cvd" in setup or "obv" in setup or "div" in setup)
+                          else "mean_revert" if ("revert" in setup or "fade" in setup)
+                          else "trend" if "trend" in setup else "other")
             conf = bot_confirms(pair, setup_type, best_bot_setups())
 
             # Decide desired action from regime + indicator side

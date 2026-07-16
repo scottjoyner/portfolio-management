@@ -158,6 +158,92 @@ def indicator_signal(candles: list, regime: str) -> tuple[str, float, dict]:
     return "HOLD", 0.0, {**detail, "reason": f"regime_{regime}"}
 
 
+def flow_signal(candles: list) -> tuple[str, float, dict]:
+    """ORDER-FLOW overlay — ports the bot's proven FLOW edge (SmartMoneyFlowStrategy:
+    CVD divergence + A/D-line divergence) onto the agent's candle feed. The bot's
+    backtest wins are flow-typed (IOTX cvd_flow, MATH obv_div, HFT vwap_revert), so
+    the agent MUST be able to generate flow setups to mirror that alpha.
+
+    Requires OHLCV candles (open/high/low/close/volume). Returns
+    (side, strength, detail) where detail['setup'] is 'cvd_flow' or 'obv_div' so the
+    meta-filter's bot_confirms() matches STRAT_TYPE ('flow').
+
+    Logic (from strat_orderflow.py, simplified to stateless per-call):
+      * CVD = cumulative (bid_vol - ask_vol); bid/ask split by candle direction.
+      * CVD divergence: price trend up + CVD trend down -> SHORT; inverse -> LONG.
+      * A/D (OBV) line divergence: money-flow cumulative vs price trend.
+    """
+    if len(candles) < 22:
+        return "HOLD", 0.0, {"reason": "insufficient_candles", "n": len(candles)}
+    closes = [float(c.get("close", 0)) for c in candles if c.get("close")]
+    highs = [float(c.get("high", c.get("close", 0))) for c in candles if c.get("close")]
+    lows = [float(c.get("low", c.get("close", 0))) for c in candles if c.get("close")]
+    opens = [float(c.get("open", c.get("close", 0))) for c in candles if c.get("close")]
+    vols = [float(c.get("volume", 0) or 0) for c in candles if c.get("close")]
+    n = len(closes)
+    if n < 22:
+        return "HOLD", 0.0, {"reason": "insufficient_candles", "n": n}
+
+    # --- CVD (cumulative volume delta) ---
+    cvd = [0.0]
+    for i in range(n):
+        o, c, v = opens[i], closes[i], vols[i]
+        if c > o:
+            bid_v, ask_v = v * 0.4, v * 0.6
+        elif c < o:
+            bid_v, ask_v = v * 0.6, v * 0.4
+        else:
+            bid_v, ask_v = v * 0.5, v * 0.5
+        cvd.append(cvd[-1] + (bid_v - ask_v))
+    cvd = cvd[1:]
+
+    # --- A/D (accumulation/distribution) line ---
+    ad = [0.0]
+    for i in range(1, n):
+        hl = closes[i] - closes[i - 1]
+        if hl > 0:
+            mf = vols[i] * hl
+        elif hl < 0:
+            mf = -vols[i] * (closes[i - 1] - closes[i])
+        else:
+            mf = 0.0
+        ad.append(ad[-1] + mf)
+    ad = ad[1:]
+
+    def _trend(vals, k=10):
+        if len(vals) < k:
+            return 0.0
+        r = vals[-k:]
+        return (r[-1] - r[0]) / max(abs(r[0]), 1e-9)
+
+    price_trend = _trend(closes, 10)
+    cvd_trend = _trend(cvd, 10)
+    ad_trend = _trend(ad, 10) if len(ad) >= 10 else 0.0
+
+    detail = {
+        "price_trend": round(price_trend, 4), "cvd_trend": round(cvd_trend, 4),
+        "ad_trend": round(ad_trend, 4), "last": round(closes[-1], 2),
+    }
+
+    # CVD divergence (primary flow signal)
+    if price_trend > 0.01 and cvd_trend < -0.01:
+        strength = min(1.0, abs(price_trend - cvd_trend) * 5.0)
+        return "SELL", round(strength, 3), {**detail, "setup": "cvd_flow"}
+    if price_trend < -0.01 and cvd_trend > 0.01:
+        strength = min(1.0, abs(price_trend - cvd_trend) * 5.0)
+        return "BUY", round(strength, 3), {**detail, "setup": "cvd_flow"}
+
+    # A/D (OBV) divergence (secondary flow signal)
+    if price_trend > 0.01 and ad_trend < -0.01:
+        strength = min(0.6, abs(price_trend - ad_trend) * 3.0)
+        return "SELL", round(strength, 3), {**detail, "setup": "obv_div"}
+    if price_trend < -0.01 and ad_trend > 0.01:
+        strength = min(0.6, abs(price_trend - ad_trend) * 3.0)
+        return "BUY", round(strength, 3), {**detail, "setup": "obv_div"}
+
+    return "HOLD", 0.0, {**detail, "reason": "no_flow_divergence"}
+
+
 if __name__ == "__main__":
     import sys, json
     sys.path.insert(0, ".")
