@@ -175,3 +175,26 @@ def test_collector_binance_snapshot_shape():
     assert snap["rates"][0]["lastFundingRate"] == 0.0001
     n = C.save_records("binance_funding", "premium_index", [snap])
     assert n == 1
+
+
+def test_backtest_from_cache_reads_harvested_parquet():
+    """The backtest loader must read harvested candles from feed_cache and
+    return strategy verdicts without any network call."""
+    import scripts.backtest_from_cache as B
+
+    # Synthesize ~200 bars of a gentle uptrend for BTC-USD at 1h.
+    candles = []
+    t0 = 1_700_000_000
+    price = 100.0
+    for i in range(200):
+        price += 0.2
+        candles.append([float(t0 + i * 3600), price - 0.5, price + 0.5,
+                         price - 1.0, price, 1000.0 + i])
+    save_candles("coinbase_candles", "BTC-USD", 3600, candles)
+
+    summary = B.run(B._args_for(granularity=3600, symbols="BTC-USD",
+                                strategies="ema_cross,rsi_revert", max_bars=5000))
+    assert summary["n_signals"] >= 1
+    assert summary["symbols"] == ["BTC-USD"]
+    first = summary["results"][0]
+    assert "sharpe" in first and "win_rate" in first and "passed" in first

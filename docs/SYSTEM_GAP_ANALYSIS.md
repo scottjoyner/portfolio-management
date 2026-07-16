@@ -83,6 +83,7 @@ These are intentionally out of scope for the trading pipeline and are not blocki
 | E9 | Live `/market/universe` population via running daemon (verify graph scores) | UI | S | OPEN |
 | E10 | Key-free backtest data collector aggregating Coinbase + Yahoo + CoinGecko + Binance into durable `feed_cache` on SSD | Data | M | DONE (`scripts/collect_backtest_data.py`; Coinbase/Yahoo/CoinGecko verified writing to `/media/scott/SSD_4TB/feed_cache`; Binance geo-blocked from this network but code path correct) |
 | E11 | Paper/live trader doubles as a backtest data factory: every candle fetch already persisted to `feed_cache` via `rest_feed._persist_nas`; added `EventTraderV4._record_trade_event` writing labeled entry/exit records to `trade_events/<PRODUCT>.jsonl`. Launch trader with `NAS_FEED_ROOT` pointed at the SSD to harvest live candles + trade outcomes continuously | Data | S | DONE |
+| E12 | Backtest loader reads harvested `feed_cache` parquet and runs all 74 Rust strategies via `strategy_engine.backtest_strategy`, producing a ranked pass/fail report (`scripts/backtest_from_cache.py`). Default = Rust strategies only (fast); `--include-external` adds the 9 Python-path strategies; `--max-bars` caps the trailing window. KNOWN: Rust `impulse_exh` + `liq_vac` panic on backtest (strategies.rs:1078/1216) — caught and skipped by the loader; separate Rust bug to fix. | Data | M | DONE |
 
 ---
 
