@@ -82,6 +82,17 @@ from strategies.cross_asset_2.regime_ensemble import RegimeConditionedEnsembleSt
 from strategies.stat_arb_2.copula_break import CopulaDependenceBreakReversion
 from strategies.stat_arb_2.shape_match import ShapeMatchReversal
 from strategies.stat_arb_2.fractional_cointegration import FractionalCointegrationArb
+from strategies.quality_a.fisher_transform import FisherTransformStochStrategy
+from strategies.quality_a.chaikin_vol import ChaikinVolatilityBreakoutStrategy
+from strategies.quality_a.williams_r import WilliamsPctRStrategy
+from strategies.quality_a.cci_short import CciShortReversalStrategy
+from strategies.quality_a.session_or import SessionOpeningRangeBreakoutStrategy
+from strategies.quality_c.bollinger_double_touch import BollingerDoubleTouchStrategy
+from strategies.quality_c.keltner_reversion import KeltnerReversionStrategy
+from strategies.quality_c.atr_channel_reversion import AtrChannelReversionStrategy
+from strategies.quality_c.stochastic_extreme import StochasticExtremeReversionStrategy
+from strategies.quality_c.price_channel_breakout import PriceChannelBreakoutPullbackStrategy
+from strategies.quality_c.adx_weak_range_fade import AdxWeakRangeFadeStrategy
 
 
 def load_strategies() -> list:
@@ -169,6 +180,17 @@ def load_strategies() -> list:
         CopulaDependenceBreakReversion(),
         ShapeMatchReversal(),
         FractionalCointegrationArb(),
+        FisherTransformStochStrategy(),
+        ChaikinVolatilityBreakoutStrategy(),
+        WilliamsPctRStrategy(),
+        CciShortReversalStrategy(),
+        SessionOpeningRangeBreakoutStrategy(),
+        BollingerDoubleTouchStrategy(),
+        KeltnerReversionStrategy(),
+        AtrChannelReversionStrategy(),
+        StochasticExtremeReversionStrategy(),
+        PriceChannelBreakoutPullbackStrategy(),
+        AdxWeakRangeFadeStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced

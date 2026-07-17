@@ -3090,6 +3090,705 @@ pub fn hp_trend_cycle(closes: &[f64]) -> Option<Signal> {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Ported Python strategies (pure-OHLCV) — high-quality / diversifying.
+// Each mirrors trading_system/strategies/* generate_signal logic.
+// Signed score: > 0 → BUY, < 0 → SELL, |score| <= threshold → None.
+// ══════════════════════════════════════════════════════════════════
+
+/// Collect log-returns over the whole close series (skips non-positive pairs).
+fn log_returns(closes: &[f64]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(closes.len().saturating_sub(1));
+    for i in 1..closes.len() {
+        let (p, c) = (closes[i - 1], closes[i]);
+        if p > 0.0 && c > 0.0 {
+            out.push((c / p).ln());
+        }
+    }
+    out
+}
+
+fn signed_signal(score: f64, threshold: f64, reason: String) -> Option<Signal> {
+    let s = score.clamp(-1.0, 1.0);
+    if s.abs() <= threshold {
+        return None;
+    }
+    let conf = s.abs().min(1.0);
+    if s > 0.0 {
+        Some(Signal { action: "BUY".into(), confidence: conf, reason })
+    } else {
+        Some(Signal { action: "SELL".into(), confidence: conf, reason })
+    }
+}
+
+/// ── Ported 1: GARCH(1,1)-lite vol forecast mean-reversion ─────────
+/// Python: GarchLiteVolForecastStrategy (id "GarchLiteVolForecastStrategy")
+pub fn garch_vol_forecast(closes: &[f64]) -> Option<Signal> {
+    if closes.len() < 41 {
+        return None;
+    }
+    let omega = 1e-6_f64;
+    let alpha = 0.10_f64;
+    let beta = 0.85_f64;
+    let threshold = 0.12_f64;
+
+    // Seed variance from up to last 100 returns (sample variance).
+    let all = log_returns(closes);
+    let take = all.len().min(100);
+    if take < 2 {
+        return None;
+    }
+    let seed = &all[all.len() - take..];
+    let mean: f64 = seed.iter().sum::<f64>() / seed.len() as f64;
+    let mut var: f64 = seed.iter().map(|r| (r - mean).powi(2)).sum::<f64>()
+        / (seed.len() - 1) as f64;
+
+    // The Python state walks with _last_return starting at 0, folding the
+    // seed window; the emitted signal uses only the final bar. Replicate the
+    // final-step forecast: forecast uses prior var + prior return².
+    // We fold across the seed window so `var` and `last_return` reach the
+    // steady values the stateful Python object would hold at the last bar.
+    let mut last_return = 0.0_f64;
+    for &r in seed {
+        let forecast = omega + alpha * last_return * last_return + beta * var;
+        var = forecast.max(1e-9);
+        last_return = r;
+    }
+    // Final observed return = last close pair.
+    let r = *all.last().unwrap();
+    let realized = r * r;
+    let forecast = omega + alpha * last_return * last_return + beta * var;
+    if forecast <= 0.0 {
+        return None;
+    }
+    let ratio = realized / forecast;
+    let mut score = (ratio - 1.0) * 0.5;
+    if r < 0.0 {
+        score = -score;
+    }
+    signed_signal(
+        score,
+        threshold,
+        format!("garch forecast={:.2e} realized={:.2e} ratio={:.2}", forecast, realized, ratio),
+    )
+}
+
+/// lag-1 autocorrelation of a series (matches Python _autocorr_lag1).
+fn autocorr_lag1(x: &[f64]) -> Option<f64> {
+    let n = x.len();
+    if n < 4 {
+        return None;
+    }
+    let mean: f64 = x.iter().sum::<f64>() / n as f64;
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for i in 0..n {
+        let d = x[i] - mean;
+        den += d * d;
+        if i > 0 {
+            num += (x[i] - mean) * (x[i - 1] - mean);
+        }
+    }
+    if den <= 0.0 {
+        return None;
+    }
+    Some(num / den)
+}
+
+/// ── Ported 2: Volatility-clustering breakout / fade ───────────────
+/// Python: VolClusteringBreakoutStrategy (id "VolClusteringBreakoutStrategy")
+pub fn vol_clustering_breakout(closes: &[f64]) -> Option<Signal> {
+    let window = 40usize;
+    let high_ac = 0.35_f64;
+    let low_ac = 0.10_f64;
+    let threshold = 0.10_f64;
+    if closes.len() < window + 1 {
+        return None;
+    }
+    // Absolute log-returns.
+    let absr: Vec<f64> = log_returns(closes).iter().map(|r| r.abs()).collect();
+    if absr.len() < window {
+        return None;
+    }
+    let recent = &absr[absr.len() - window..];
+    let ac = match autocorr_lag1(recent) {
+        Some(a) => a,
+        None => return None,
+    };
+    let (p, c) = (closes[closes.len() - 2], closes[closes.len() - 1]);
+    if !(p > 0.0 && c > 0.0) {
+        return None;
+    }
+    let r = (c / p).ln();
+    let score;
+    let action;
+    if ac >= high_ac {
+        score = r * (ac - low_ac) * 5.0;
+        action = "breakout";
+    } else if ac <= low_ac {
+        score = -r * (high_ac - ac) * 5.0;
+        action = "fade";
+    } else {
+        return None;
+    }
+    signed_signal(score, threshold, format!("absret_autocorr={:.3} ret={:+.4} {}", ac, r, action))
+}
+
+fn median_abs(x: &[f64]) -> f64 {
+    if x.is_empty() {
+        return 0.0;
+    }
+    let mut s: Vec<f64> = x.iter().map(|v| v.abs()).collect();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = s.len();
+    let mid = n / 2;
+    if n % 2 == 1 {
+        s[mid]
+    } else {
+        (s[mid - 1] + s[mid]) / 2.0
+    }
+}
+
+/// ── Ported 3: Regime-persistence (Markov-ish) vol signal ──────────
+/// Python: RegimePersistenceVolStrategy (id "RegimePersistenceVolStrategy")
+/// Note: Python is stateful across bars; here we reconstruct the transition
+/// counts by walking the trailing return window deterministically.
+pub fn regime_persistence_vol(closes: &[f64]) -> Option<Signal> {
+    let window = 40usize;
+    let threshold = 0.15_f64;
+    if closes.len() < window + 1 {
+        return None;
+    }
+    let rets = log_returns(closes);
+    if rets.len() < window {
+        return None;
+    }
+    let recent = &rets[rets.len() - window..];
+    let thr = {
+        let m = median_abs(recent);
+        if m == 0.0 { 1e-4 } else { m }
+    };
+    let regime_for = |r: f64| -> i32 { if r.abs() >= thr { 1 } else { 0 } };
+
+    // Walk transitions across the window (deterministic reconstruction).
+    let (mut high_stay, mut high_total, mut low_stay, mut low_total) = (0i32, 0i32, 0i32, 0i32);
+    let mut last: Option<i32> = None;
+    for &r in recent {
+        let cur = regime_for(r);
+        if let Some(lr) = last {
+            if lr == 1 {
+                high_total += 1;
+                if cur == 1 { high_stay += 1; }
+            } else {
+                low_total += 1;
+                if cur == 0 { low_stay += 1; }
+            }
+        }
+        last = Some(cur);
+    }
+    if high_total < 5 || low_total < 5 {
+        return None;
+    }
+    let p_high = high_stay as f64 / high_total as f64;
+    let p_low = low_stay as f64 / low_total as f64;
+    let cur_regime = regime_for(recent[window - 1]);
+    let r = recent[window - 1];
+    let score;
+    let bias;
+    if cur_regime == 1 && p_high >= 0.6 {
+        score = -r * p_high;
+        bias = "high_persist_fade";
+    } else if cur_regime == 0 && p_low >= 0.6 {
+        score = r * p_low;
+        bias = "low_persist_trend";
+    } else {
+        return None;
+    }
+    signed_signal(score, threshold, format!("p_high={:.2} p_low={:.2} {}", p_high, p_low, bias))
+}
+
+fn mean_slice(xs: &[f64]) -> f64 {
+    if xs.is_empty() { 0.0 } else { xs.iter().sum::<f64>() / xs.len() as f64 }
+}
+
+fn stdev_sample(xs: &[f64]) -> f64 {
+    if xs.len() < 2 {
+        return 0.0;
+    }
+    let m = mean_slice(xs);
+    (xs.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (xs.len() - 1) as f64).sqrt()
+}
+
+fn detrended_rms(segment: &[f64]) -> f64 {
+    let n = segment.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let xs: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let mx = mean_slice(&xs);
+    let my = mean_slice(segment);
+    let den: f64 = xs.iter().map(|x| (x - mx).powi(2)).sum();
+    let (slope, intercept) = if den <= 1e-12 {
+        (0.0, my)
+    } else {
+        let s: f64 = (0..n).map(|i| (xs[i] - mx) * (segment[i] - my)).sum::<f64>() / den;
+        (s, my - s * mx)
+    };
+    let mut sse = 0.0;
+    for i in 0..n {
+        let fit = slope * xs[i] + intercept;
+        sse += (segment[i] - fit).powi(2);
+    }
+    (sse / n as f64).sqrt()
+}
+
+/// Simplified DFA scaling exponent (mirrors Python dfa_alpha).
+fn dfa_alpha(returns: &[f64]) -> Option<f64> {
+    let n = returns.len();
+    if n < 16 {
+        return None;
+    }
+    let mu = mean_slice(returns);
+    let mut profile = Vec::with_capacity(n);
+    let mut acc = 0.0;
+    for &r in returns {
+        acc += r - mu;
+        profile.push(acc);
+    }
+    let mut sizes = Vec::new();
+    let mut s = 4usize;
+    while s <= n / 2 {
+        sizes.push(s);
+        s *= 2;
+    }
+    if sizes.len() < 2 {
+        return None;
+    }
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for &boxs in &sizes {
+        let n_boxes = profile.len() / boxs;
+        if n_boxes < 1 {
+            continue;
+        }
+        let mut rms_vals = Vec::with_capacity(n_boxes);
+        for b in 0..n_boxes {
+            let seg = &profile[b * boxs..(b + 1) * boxs];
+            rms_vals.push(detrended_rms(seg));
+        }
+        let f = mean_slice(&rms_vals);
+        if f > 1e-12 {
+            xs.push((boxs as f64).ln());
+            ys.push(f.ln());
+        }
+    }
+    if xs.len() < 2 {
+        return None;
+    }
+    let mx = mean_slice(&xs);
+    let my = mean_slice(&ys);
+    let den: f64 = xs.iter().map(|x| (x - mx).powi(2)).sum();
+    if den <= 1e-12 {
+        return None;
+    }
+    let alpha: f64 = (0..xs.len()).map(|i| (xs[i] - mx) * (ys[i] - my)).sum::<f64>() / den;
+    Some(alpha.clamp(0.0, 2.0))
+}
+
+/// ── Ported 4: DFA-alpha regime (persistent / anti-persistent) ─────
+/// Python: DFAAlphaRegimeStrategy (id "DFAAlphaRegimeStrategy")
+pub fn dfa_alpha_regime(closes: &[f64]) -> Option<Signal> {
+    let window = 64usize;
+    let threshold = 0.15_f64;
+    if closes.len() < window {
+        return None;
+    }
+    let w = &closes[closes.len() - window..];
+    let returns = log_returns(w);
+    if returns.len() < window - 2 {
+        return None;
+    }
+    let alpha = match dfa_alpha(&returns) {
+        Some(a) => a,
+        None => return None,
+    };
+    let look = 10.min(returns.len());
+    let drift: f64 = returns[returns.len() - look..].iter().sum();
+    let rstd = stdev_sample(&returns) + 1e-12;
+    let norm_drift = drift / (rstd * (look as f64).sqrt());
+    if norm_drift.abs() < 1e-9 {
+        return None;
+    }
+    let regime_strength = ((alpha - 0.5) * 2.0).clamp(-1.0, 1.0);
+    let direction = if norm_drift > 0.0 { 1.0 } else { -1.0 };
+    let score = if regime_strength >= 0.0 {
+        direction * regime_strength.abs() * norm_drift.abs().min(1.0)
+    } else {
+        -direction * regime_strength.abs() * norm_drift.abs().min(1.0)
+    };
+    signed_signal(score, threshold, format!("DFA alpha={:.3} drift={:.3}", alpha, norm_drift))
+}
+
+/// Sample Entropy (SampEn) — mirrors Python sample_entropy.
+fn sample_entropy(series: &[f64], m: usize, r_factor: f64) -> Option<f64> {
+    let n = series.len();
+    if n < m + 2 {
+        return None;
+    }
+    let sd = stdev_sample(series);
+    if sd <= 1e-12 {
+        return Some(0.0);
+    }
+    let r = r_factor * sd;
+    let count = |mm: usize| -> usize {
+        let total = n - mm + 1;
+        let mut c = 0usize;
+        for i in 0..total {
+            for j in (i + 1)..total {
+                let mut dist = 0.0_f64;
+                let mut ok = true;
+                for k in 0..mm {
+                    let d = (series[i + k] - series[j + k]).abs();
+                    if d > dist {
+                        dist = d;
+                    }
+                    if dist > r {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok && dist <= r {
+                    c += 1;
+                }
+            }
+        }
+        c
+    };
+    let b = count(m);
+    let a = count(m + 1);
+    if b == 0 || a == 0 {
+        return None;
+    }
+    Some(-((a as f64) / (b as f64)).ln())
+}
+
+/// ── Ported 5: Sample-entropy complexity regime ────────────────────
+/// Python: SampleEntropyRegimeStrategy (id "SampleEntropyComplexityRegimeStrategy")
+pub fn sample_entropy_regime(closes: &[f64]) -> Option<Signal> {
+    let window = 60usize;
+    let m = 2usize;
+    let r_factor = 0.2_f64;
+    let threshold = 0.15_f64;
+    if closes.len() < window {
+        return None;
+    }
+    let w = &closes[closes.len() - window..];
+    let returns = log_returns(w);
+    if returns.len() < window - 2 {
+        return None;
+    }
+    let entropy = match sample_entropy(&returns, m, r_factor) {
+        Some(e) => e,
+        None => return None,
+    };
+    let regularity = (1.0 - entropy / 1.5).clamp(0.0, 1.0);
+    let look = 10.min(returns.len());
+    let drift: f64 = returns[returns.len() - look..].iter().sum();
+    let rstd = stdev_sample(&returns) + 1e-12;
+    let norm_drift = drift / (rstd * (look as f64).sqrt());
+    if norm_drift.abs() < 1e-9 {
+        return None;
+    }
+    let direction = if norm_drift > 0.0 { 1.0 } else { -1.0 };
+    let score = direction * regularity * norm_drift.abs().min(1.0);
+    signed_signal(
+        score,
+        threshold,
+        format!("SampEn={:.3} regularity={:.3} drift={:.3}", entropy, regularity, norm_drift),
+    )
+}
+
+/// ── Ported 6: EWMA-variance breakout (GARCH-lite) ─────────────────
+/// Python: EwmaVarBreakoutStrategy (id "EwmaVarBreakout")
+pub fn ewma_var_breakout(closes: &[f64]) -> Option<Signal> {
+    let window = 40usize;
+    let lambda = 0.94_f64;
+    let threshold = 0.2_f64;
+    if closes.len() < window {
+        return None;
+    }
+    let win = &closes[closes.len() - window..];
+    let mut log_rets = Vec::with_capacity(window);
+    for i in 1..win.len() {
+        let (p0, p1) = (win[i - 1], win[i]);
+        if p0 > 0.0 {
+            log_rets.push((p1 / p0).ln());
+        }
+    }
+    if log_rets.len() < 3 {
+        return None;
+    }
+    let long_mean = mean_slice(&log_rets);
+    let long_var: f64 =
+        log_rets.iter().map(|r| (r - long_mean).powi(2)).sum::<f64>() / (log_rets.len() - 1) as f64;
+    let mut ewma_var = long_var;
+    for &r in &log_rets {
+        ewma_var = lambda * ewma_var + (1.0 - lambda) * r * r;
+    }
+    let ratio = ewma_var / (long_var + 1e-9);
+    let last_ret = *log_rets.last().unwrap();
+    let score = if ratio > 1.0 && last_ret.abs() > 0.0 {
+        ((ratio - 1.0).min(1.0)).copysign(last_ret) * 2.0
+    } else {
+        0.0
+    };
+    signed_signal(score, threshold, format!("ewma_var_ratio={:.3} last_ret={:.5}", ratio, last_ret))
+}
+
+/// Katz fractal dimension (mirrors Python katz_fractal_dimension).
+fn katz_fractal_dimension(series: &[f64]) -> Option<f64> {
+    let n_pts = series.len();
+    if n_pts < 4 {
+        return None;
+    }
+    let lo = series.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = series.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let rng = hi - lo;
+    if rng <= 1e-12 {
+        return None;
+    }
+    let ys: Vec<f64> = series.iter().map(|v| (v - lo) / rng).collect();
+    let dx = 1.0 / (n_pts - 1) as f64;
+    let mut total_len = 0.0;
+    for i in 1..n_pts {
+        total_len += (dx * dx + (ys[i] - ys[i - 1]).powi(2)).sqrt();
+    }
+    let mut max_dist = 0.0_f64;
+    for i in 1..n_pts {
+        let d = ((i as f64 * dx).powi(2) + (ys[i] - ys[0]).powi(2)).sqrt();
+        if d > max_dist {
+            max_dist = d;
+        }
+    }
+    if total_len <= 1e-12 || max_dist <= 1e-12 {
+        return None;
+    }
+    let mean_step = total_len / (n_pts - 1) as f64;
+    let n = total_len / mean_step;
+    let denom = n.log10() + (max_dist / total_len).log10();
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    Some(n.log10() / denom)
+}
+
+/// ── Ported 7: Katz fractal-dimension breakout ─────────────────────
+/// Python: KatzFractalBreakoutStrategy (id "KatzFractalBreakout")
+pub fn katz_fractal_breakout(closes: &[f64]) -> Option<Signal> {
+    let window = 48usize;
+    let channel = 20usize;
+    let threshold = 0.12_f64;
+    if closes.len() < window {
+        return None;
+    }
+    let w = &closes[closes.len() - window..];
+    let fd = match katz_fractal_dimension(w) {
+        Some(f) => f,
+        None => return None,
+    };
+    let directionality = (2.0 - fd).clamp(0.0, 1.0);
+    if w.len() < channel + 1 {
+        return None;
+    }
+    let chan = &w[w.len() - (channel + 1)..w.len() - 1];
+    if chan.len() < channel {
+        return None;
+    }
+    let upper = chan.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let lower = chan.iter().cloned().fold(f64::INFINITY, f64::min);
+    let price = w[w.len() - 1];
+    let rets: Vec<f64> = (1..w.len()).map(|i| w[i] - w[i - 1]).collect();
+    let vol = stdev_sample(&rets) + 1e-12;
+    let (clear, direction) = if price > upper {
+        ((price - upper) / vol, 1.0)
+    } else if price < lower {
+        ((lower - price) / vol, -1.0)
+    } else {
+        return None;
+    };
+    let drive = (clear / 2.0).min(1.0);
+    let score = (direction * directionality * drive).clamp(-1.0, 1.0);
+    signed_signal(
+        score,
+        threshold,
+        format!("katz FD={:.3} directionality={:.3} clear={:.2}sigma", fd, directionality, clear),
+    )
+}
+
+/// Simple EMA over a slice returning final value (mirrors Python _ema helper).
+fn ema_final(values: &[f64], period: usize) -> Option<f64> {
+    if values.len() < period {
+        return None;
+    }
+    let k = 2.0 / (period as f64 + 1.0);
+    let mut ema = values[..period].iter().sum::<f64>() / period as f64;
+    for &v in &values[period..] {
+        ema = v * k + ema * (1.0 - k);
+    }
+    Some(ema)
+}
+
+fn subsample(closes: &[f64], step: usize) -> Vec<f64> {
+    if step <= 1 {
+        return closes.to_vec();
+    }
+    // Anchor on the latest bar: reverse, take every step, reverse back.
+    let rev: Vec<f64> = closes.iter().rev().cloned().collect();
+    let picked: Vec<f64> = rev.iter().step_by(step).cloned().collect();
+    picked.into_iter().rev().collect()
+}
+
+fn trend_dir(series: &[f64], fast: usize, slow: usize) -> (i32, f64) {
+    let ef = ema_final(series, fast);
+    let es = ema_final(series, slow);
+    match (ef, es) {
+        (Some(ef), Some(es)) if es != 0.0 => {
+            let sep = (ef - es) / es.abs();
+            if sep > 0.0 {
+                (1, (sep.abs() * 20.0).min(1.0))
+            } else if sep < 0.0 {
+                (-1, (sep.abs() * 20.0).min(1.0))
+            } else {
+                (0, 0.0)
+            }
+        }
+        _ => (0, 0.0),
+    }
+}
+
+/// ── Ported 8: Multi-timeframe trend confluence ────────────────────
+/// Python: MultiTFTrendConfluenceStrategy (id "MultiTFTrendConfluenceStrategy")
+pub fn multitf_confluence(closes: &[f64]) -> Option<Signal> {
+    let threshold = 0.15_f64;
+    if closes.len() < 60 {
+        return None;
+    }
+    let tf4 = subsample(closes, 4);
+    let tf12 = subsample(closes, 12);
+    if tf4.len() < 15 || tf12.len() < 8 {
+        return None;
+    }
+    let (d0, s0) = trend_dir(closes, 5, 15);
+    let (d4, s4) = trend_dir(&tf4, 5, 15);
+    let (d12, s12) = trend_dir(&tf12, 3, 8);
+    let dirs = [d0, d4, d12];
+    let agree_up = dirs.iter().filter(|&&d| d > 0).count();
+    let agree_dn = dirs.iter().filter(|&&d| d < 0).count();
+    let (direction, n_agree) = if agree_up > agree_dn {
+        (1.0, agree_up)
+    } else if agree_dn > agree_up {
+        (-1.0, agree_dn)
+    } else {
+        return None;
+    };
+    let avg_strength = (s0 + s4 + s12) / 3.0;
+    let conf_factor = match n_agree {
+        1 => 0.4,
+        2 => 0.7,
+        _ => 1.0,
+    };
+    let score = (direction * conf_factor * (0.4 + 0.6 * avg_strength)).clamp(-1.0, 1.0);
+    signed_signal(
+        score,
+        threshold,
+        format!("{}/3 TF agree (base={} 4x={} 12x={}) str={:.2}", n_agree, d0, d4, d12, avg_strength),
+    )
+}
+
+/// ── Ported 9: Volatility-targeting overlay ────────────────────────
+/// Python: VolTargetOverlayStrategy (id "VolTargetOverlay")
+pub fn vol_target_overlay(closes: &[f64]) -> Option<Signal> {
+    let window = 40usize;
+    let fast_ma = 8usize;
+    let target_vol = 0.02_f64;
+    let threshold = 0.1_f64;
+    if closes.len() < window {
+        return None;
+    }
+    let win = &closes[closes.len() - window..];
+    let mut log_rets = Vec::with_capacity(window);
+    for i in 1..win.len() {
+        let (p0, p1) = (win[i - 1], win[i]);
+        if p0 > 0.0 {
+            log_rets.push((p1 / p0).ln());
+        }
+    }
+    if log_rets.len() < 2 {
+        return None;
+    }
+    let mean = mean_slice(&log_rets);
+    let var: f64 =
+        log_rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (log_rets.len() - 1) as f64;
+    let actual_vol = var.sqrt();
+    let fm = &closes[closes.len() - fast_ma..];
+    let fast_ma_val = mean_slice(fm);
+    let trend = if closes[closes.len() - 1] >= fast_ma_val { 1.0 } else { -1.0 };
+    let vol_gap = target_vol - actual_vol;
+    let norm_gap = if actual_vol > 0.0 {
+        (vol_gap / (actual_vol + 1e-9)).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+    let score = norm_gap * trend;
+    signed_signal(
+        score,
+        threshold,
+        format!("vol_gap={:.5} trend={:+.0} actual_vol={:.5}", vol_gap, trend, actual_vol),
+    )
+}
+
+fn realized_vol(closes: &[f64], window: usize) -> Option<f64> {
+    if closes.len() < window + 1 {
+        return None;
+    }
+    let mut rets = Vec::with_capacity(window);
+    for i in 1..=window {
+        let prev = closes[closes.len() - (i + 1)];
+        let cur = closes[closes.len() - i];
+        if prev > 0.0 && cur > 0.0 {
+            rets.push((cur / prev).ln());
+        }
+    }
+    if rets.len() < 2 {
+        return None;
+    }
+    let mean = mean_slice(&rets);
+    let var: f64 = rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (rets.len() - 1) as f64;
+    Some(var.sqrt())
+}
+
+/// ── Ported 10: Vol-term-structure carry ───────────────────────────
+/// Python: VolTermStructureCarryStrategy (id "VolTermStructureCarryStrategy")
+pub fn vol_term_structure_carry(closes: &[f64]) -> Option<Signal> {
+    let short_window = 10usize;
+    let long_window = 50usize;
+    let threshold = 0.15_f64;
+    let short_vol = realized_vol(closes, short_window);
+    let long_vol = realized_vol(closes, long_window);
+    let (short_vol, long_vol) = match (short_vol, long_vol) {
+        (Some(s), Some(l)) if l > 0.0 => (s, l),
+        _ => return None,
+    };
+    let ratio = short_vol / long_vol;
+    let score = (ratio - 1.0) * 2.0;
+    let direction = if ratio < 1.0 { "compression" } else { "expansion" };
+    signed_signal(
+        score,
+        threshold,
+        format!("short_vol={:.4} long_vol={:.4} ratio={:.2} {}", short_vol, long_vol, ratio, direction),
+    )
+}
+
 /// ── Master Dispatch ───────────────────────────────────────────────
 
 /// Run a single strategy by name.
@@ -3190,6 +3889,17 @@ pub fn evaluate_opens(name: &str, closes: &[f64], opens: &[f64], volumes: &[f64]
         "vw_rsi" => vw_rsi_strategy(closes, volumes),
         "kalman_mr" => kalman_filter_mr(closes),
         "hp_trend" => hp_trend_cycle(closes),
+        // ── 10 ported Python strategies (75-84) ──
+        "GarchLiteVolForecastStrategy" => garch_vol_forecast(closes),
+        "VolClusteringBreakoutStrategy" => vol_clustering_breakout(closes),
+        "RegimePersistenceVolStrategy" => regime_persistence_vol(closes),
+        "DFAAlphaRegimeStrategy" => dfa_alpha_regime(closes),
+        "SampleEntropyComplexityRegimeStrategy" => sample_entropy_regime(closes),
+        "EwmaVarBreakout" => ewma_var_breakout(closes),
+        "KatzFractalBreakout" => katz_fractal_breakout(closes),
+        "MultiTFTrendConfluenceStrategy" => multitf_confluence(closes),
+        "VolTargetOverlay" => vol_target_overlay(closes),
+        "VolTermStructureCarryStrategy" => vol_term_structure_carry(closes),
         _ => None,
     }
 }
@@ -3291,6 +4001,17 @@ pub fn evaluate_all_opens(closes: &[f64], opens: &[f64], volumes: &[f64],
         ("vw_rsi",       |c, _, v, _, _| vw_rsi_strategy(c, v)),
         ("kalman_mr",    |c, _, _, _, _| kalman_filter_mr(c)),
         ("hp_trend",     |c, _, _, _, _| hp_trend_cycle(c)),
+        // ── 10 ported Python strategies (75-84) ──
+        ("GarchLiteVolForecastStrategy",         |c, _, _, _, _| garch_vol_forecast(c)),
+        ("VolClusteringBreakoutStrategy",        |c, _, _, _, _| vol_clustering_breakout(c)),
+        ("RegimePersistenceVolStrategy",         |c, _, _, _, _| regime_persistence_vol(c)),
+        ("DFAAlphaRegimeStrategy",               |c, _, _, _, _| dfa_alpha_regime(c)),
+        ("SampleEntropyComplexityRegimeStrategy",|c, _, _, _, _| sample_entropy_regime(c)),
+        ("EwmaVarBreakout",                      |c, _, _, _, _| ewma_var_breakout(c)),
+        ("KatzFractalBreakout",                  |c, _, _, _, _| katz_fractal_breakout(c)),
+        ("MultiTFTrendConfluenceStrategy",       |c, _, _, _, _| multitf_confluence(c)),
+        ("VolTargetOverlay",                     |c, _, _, _, _| vol_target_overlay(c)),
+        ("VolTermStructureCarryStrategy",        |c, _, _, _, _| vol_term_structure_carry(c)),
     ];
 
     let mut results = Vec::new();
@@ -3377,6 +4098,11 @@ mod coverage_tests {
         "vortex","rvi","coppock","std_channel","vol_ratio","vwap_macd","nvi",
         "de_marker","gap_revert","supertrend","fisher","ultimate_osc","vw_rsi",
         "kalman_mr","hp_trend",
+        "GarchLiteVolForecastStrategy","VolClusteringBreakoutStrategy",
+        "RegimePersistenceVolStrategy","DFAAlphaRegimeStrategy",
+        "SampleEntropyComplexityRegimeStrategy","EwmaVarBreakout",
+        "KatzFractalBreakout","MultiTFTrendConfluenceStrategy",
+        "VolTargetOverlay","VolTermStructureCarryStrategy",
     ];
 
     #[test]

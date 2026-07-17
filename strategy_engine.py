@@ -2930,6 +2930,12 @@ _RUST_STRATEGIES: set = {
     "supertrend", "fisher", "ultimate_osc", "vw_rsi",
     # ── 2 new Rust strategies (73-74) ──
     "kalman_mr", "hp_trend",
+    # ── 10 ported Python strategies (75-84) — Rust id == Python strategy_id ──
+    "GarchLiteVolForecastStrategy", "VolClusteringBreakoutStrategy",
+    "RegimePersistenceVolStrategy", "DFAAlphaRegimeStrategy",
+    "SampleEntropyComplexityRegimeStrategy", "EwmaVarBreakout",
+    "KatzFractalBreakout", "MultiTFTrendConfluenceStrategy",
+    "VolTargetOverlay", "VolTermStructureCarryStrategy",
 }
 
 # ── Rust native: run ALL strategies on ALL products ────────────────
