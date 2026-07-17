@@ -128,7 +128,8 @@ def quote(product_id: str, side: str, quote_size: float | None = None,
 
 def record_signal(product_id: str, side: str, quote_size: float | None = None,
                   base_size: float | None = None, note: str = "",
-                  regime: str = "", setup: str = "", price: float | None = None) -> dict:
+                  regime: str = "", setup: str = "", price: float | None = None,
+                  leverage: float | None = None) -> dict:
     """Simulate a paper fill at the real preview price and log it to the ledger.
     This is the agent 'competing' — a paper position, no money moves.
 
@@ -297,7 +298,8 @@ def close_position(product_id: str, note: str = "close", price: float | None = N
 
 
 def open_short(product_id: str, quote_size: float, note: str = "short",
-               regime: str = "", setup: str = "", price: float | None = None) -> dict:
+               regime: str = "", setup: str = "", price: float | None = None,
+               leverage: float | None = None) -> dict:
     """Open a SIMULATED SHORT (paper). Stores magnitude as a SHORT: keyed position
     with entry_price = current candle mark. No real borrow/sell; no money moves.
     P&L on close = (entry - exit) * magnitude - commission.
@@ -326,7 +328,7 @@ def open_short(product_id: str, quote_size: float, note: str = "short",
     pos["entry_price"] = price  # simple: latest entry price
     pos["entry_ts"] = ts
     pos["exposure"] = pos.get("exposure", 0.0) + (magnitude * price * AGENT_LEVERAGE)
-    pos["leverage"] = AGENT_LEVERAGE
+    pos["leverage"] = leverage if leverage else AGENT_LEVERAGE
     pos["cost_basis"] = pos.get("cost_basis", 0.0) + quote_size  # margin tied up
     pos["entries"] += 1
     led["positions"][key] = pos

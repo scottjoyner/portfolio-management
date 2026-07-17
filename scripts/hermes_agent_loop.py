@@ -127,9 +127,116 @@ ADD_PROFIT_THRESHOLD = 0.020  # add-to-winner only once in profit >= 2%
 MAX_OPEN_POSITIONS = 8        # target diversified book size
 CORR_CAP_FRAC = 0.40          # max BTC-correlated notional = equity * this
 
+# ════════════════════════════════════════════════════════════════════════════
+# PHASE 19 — EDGE PACK (10 same-team / regime / risk refinements, all paper-only)
+# ════════════════════════════════════════════════════════════════════════════
+# 1) Session-aware aggression: deploy bigger during high-liquidity windows.
+SESSION_BOOST = {"us": 1.30, "asia": 1.10, "eu": 1.05, "dead": 0.80}
+def session_bucket(now=None):
+    """UTC hour -> liquidity window. US cash + EU overlap = deepest liquidity."""
+    h = (now or dt.datetime.now(dt.timezone.utc)).hour
+    if 13 <= h < 21:        # 09:00-17:00 ET
+        return "us"
+    if 0 <= h < 9:          # Asia / early EU
+        return "asia"
+    if 9 <= h < 13:         # EU morning
+        return "eu"
+    return "dead"           # 21:00-23:59 UTC = thin
+
+# 2) Regime-adaptive leverage: hotter only when edge aligns, never blind.
+def adaptive_leverage(local: str, vol_bucket: str) -> float:
+    if local in ("TREND_UP", "TREND_DOWN") and vol_bucket in ("LOW", "NORMAL"):
+        return 5.0          # confirmed trend + calm vol -> press
+    if local in ("TREND_UP", "TREND_DOWN") and vol_bucket == "HIGH":
+        return 3.0
+    if vol_bucket == "EXTREME":
+        return 2.0          # stand-down vol -> defensive
+    return 3.0              # default aggressive baseline
+
+# 5) ATR-based stop distance (replaces flat % SL). Per-asset realized vol.
+def atr_from_candles(candles: list, n: int = 20) -> float:
+    if not candles or len(candles) < 3:
+        return 0.0
+    trs = []
+    for i in range(1, min(n, len(candles))):
+        c0, c1 = candles[-i - 1], candles[-i]
+        hi = float(c1.get("high", c1["close"]))
+        lo = float(c1.get("low", c1["close"]))
+        pc = float(c0["close"])
+        tr = max(hi - lo, abs(hi - pc), abs(lo - pc))
+        trs.append(tr / pc if pc > 0 else 0.0)
+    return (sum(trs) / len(trs)) if trs else 0.0
+
+# 7) Bot's HOT strategies right now (same-team meta). Returns {strategy: score}.
+def bot_hot_strategies(min_trades: int = 3) -> dict:
+    out = {}
+    try:
+        import json as _j
+        from pathlib import Path as _p
+        p = _p(__file__).resolve().parent.parent / "data" / "paper_trader_v4_state.json"
+        d = _j.loads(p.read_text())
+        ss = d.get("strategy_stats", {})
+        for s, v in ss.items():
+            n = v.get("trades", 0)
+            if n < min_trades:
+                continue
+            wr = (v.get("wins", 0) / n * 100.0) if n else 0.0
+            pnl = v.get("pnl", 0.0)
+            if wr >= 55 and pnl > 0:
+                out[s] = round(pnl, 2)
+    except Exception:
+        return out
+    return out
+
+# 3) Bot cooldown avoidance: skip entry on assets the bot JUST exited (5m cooldown).
+def bot_recent_closes(minutes: int = 5) -> dict:
+    out = {}
+    try:
+        import json as _j
+        from pathlib import Path as _p
+        p = _p(__file__).resolve().parent.parent / "data" / "paper_trader_v4_state.json"
+        d = _j.loads(p.read_text())
+        cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - minutes * 60.0
+        for t in d.get("paper_trades", []):
+            ts = t.get("ts", 0.0)
+            if ts < cutoff:
+                continue
+            r = str(t.get("reason", "")).lower()
+            if "exit" in r or "tp" in r or "sl" in r or t.get("side") == "SELL":
+                out[t.get("product_id", "")] = ts
+    except Exception:
+        return out
+    return out
+
+# 8) Book-level take-profit: once the session book is up >= BOOK_TP, tighten all
+#    exits to breakeven (bank the snowball before mean-reversion erases it).
+BOOK_TP = 0.05  # +5% session -> flip to capital-preservation mode
+def book_tp_active(equity: float, start: float = 10000.0) -> bool:
+    return (equity - start) / start >= BOOK_TP
+
+# 9) Net BTC-correlated exposure (for cross-hedge decision).
+def net_corr_exposure(led: dict, corr_cache: dict, threshold: float = 0.5) -> float:
+    net = 0.0
+    for pid, pos in led.get("positions", {}).items():
+        if pos.get("base", 0.0) <= 1e-12:
+            continue
+        asset = pid.replace("SHORT:", "")
+        r = abs(corr_cache.get(asset, 0.0))
+        if r < threshold:
+            continue
+        is_short = pid.startswith("SHORT:")
+        notional = (abs(pos.get("entry_price", 0.0) * pos["base"]) if is_short
+                    else abs(pos.get("cost_basis", 0.0)))
+        # long adds to net long exposure, short subtracts
+        net += notional if not is_short else -notional
+    return net
+
+HEDGE_CORR_NET = 1500.0   # if net long-correlated > $1500, open a BTC short hedge
+
 
 def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool,
-                local: str = "", vol_bucket: str = "NORMAL", bot_coholds: bool = False):
+                local: str = "", vol_bucket: str = "NORMAL", bot_coholds: bool = False,
+                atr: float = 0.0, book_tp: bool = False):
     try:
         cur_f = float(cur) if cur is not None else 0.0
     except (TypeError, ValueError):
@@ -157,15 +264,26 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
     if bot_coholds:
         tp_mult *= 1.10
     tp_pnl = (TP_LONG if not is_short else -TP_SHORT) * tp_mult
-    sl_pnl = SL_LONG if not is_short else -SL_SHORT
+    # Phase 19.5: ATR-based stop — replace the flat % SL with the asset's own
+    # realized vol. Tight for low-vol assets (stop churn), wide for high-vol
+    # (don't get chopped). Fallback to the flat constants if ATR is unknown.
+    if atr and atr > 0:
+        sl_pnl = atr * (1.2 if is_short else 1.2)  # 1.2x ATR stop distance
+        if is_short:
+            sl_pnl = -sl_pnl
+    else:
+        sl_pnl = SL_LONG if not is_short else -SL_SHORT
+    # Phase 19.8: book take-profit — once the session book is up >= BOOK_TP,
+    # lock every winner to breakeven (capital preservation over more upside).
+    be_lock = BE_LOCK if not book_tp else 0.0
     # breakeven lock: if in profit >= BE_LOCK, never let it hit SL again
-    eff_sl = 0.0 if pnl >= BE_LOCK else sl_pnl
+    eff_sl = 0.0 if pnl >= be_lock else sl_pnl
     # Phase 18: trailing stop — track peak profit, exit on retrace from peak.
     peak = pos.get("trail_peak", pnl)
     if pnl > peak:
         peak = pnl
         pos["trail_peak"] = round(peak, 6)
-    trail_active = peak >= BE_LOCK
+    trail_active = peak >= be_lock
     if trail_active and pnl <= peak - TRAIL_PCT:
         return True, "trail"
     if pnl >= tp_pnl:
@@ -269,6 +387,8 @@ def run_once(verbose: bool = True) -> dict:
     # (a) widen TP / trail earlier when the bot co-holds our side, and
     # (b) pyramid into winners the bot also endorses.
     bot_fills = bot_recent_fills(minutes=20)
+    # Phase 19.7: bot's HOT strategies right now (same-team meta-endorsement).
+    bot_hot = bot_hot_strategies(min_trades=3)
     for pid, pos in list(led.get("positions", {}).items()):
         if pos.get("base", 0.0) <= 1e-12:
             continue
@@ -280,11 +400,15 @@ def run_once(verbose: bool = True) -> dict:
                 stale = age > HOLD_ITERS * 15  # cron cadence = 15m
             except Exception:
                 stale = False
+        # Phase 19.8: book take-profit flag (tighten all exits to BE once up >=5%)
+        book_tp = book_tp_active(led.get("equity", 10000.0),
+                                  led.get("starting_capital", 10000.0))
         # current price for this position's asset — use the SAME 120h window last
         # close as entry (Phase 9f: consistent mark source, no window mismatch that
-        # distorts PnL between entry and exit). Also reuse it for local-regime.
+        # distorts PnL between entry and exit). Also reuse it for local-regime + ATR.
         true_pid = pid.replace("SHORT:", "")
         is_short_pos = pid.startswith("SHORT:")
+        cd = None
         try:
             cd = _candles(client, true_pid, 120)
             cur = cd[-1]["close"] if cd else None
@@ -296,12 +420,15 @@ def run_once(verbose: bool = True) -> dict:
             local = local_regime(cd) if cd else ""
         except Exception:
             local = ""
+        # Phase 19.5: ATR for this position's asset (ATR-based stop distance).
+        atr = atr_from_candles(cd) if cd else 0.0
         # Phase 18: same-team co-hold check (bot trading same side, last 20m)
         bot_side = bot_fills.get(true_pid, {}).get("side")
         want_side = "SELL" if is_short_pos else "BUY"
         bot_coholds = bot_side is not None and bot_side == want_side
         close_now, reason = _exit_check(pid, pos, cur, regime, stale, local,
-                                        vol_bucket=vol["bucket"], bot_coholds=bot_coholds)
+                                        vol_bucket=vol["bucket"], bot_coholds=bot_coholds,
+                                        atr=atr, book_tp=book_tp)
         if close_now:
             px = float(cur) if cur is not None else None
             if is_short_pos:
@@ -316,6 +443,8 @@ def run_once(verbose: bool = True) -> dict:
         # Phase 18: ADD-TO-WINNER — pyramid into a confirmed winner the bot also
         # endorses. Only when: in profit >= 2%, local regime still favors us,
         # under MAX_ADDS, and we have margin headroom. Scales the snowball legally.
+        # Phase 19.6: also ADD on a FLOW REVERSAL in our favor (CVD/OBV flipped
+        # our way) even if not yet at +2% — catches momentum turning early.
         pos["trail_peak"] = pos.get("trail_peak", 0.0)
         entry_px = (pos.get("entry_price") if is_short_pos else pos.get("cost_basis")) or 0.0
         if entry_px > 0 and cur:
@@ -326,14 +455,52 @@ def run_once(verbose: bool = True) -> dict:
         adds = pos.get("adds", 0)
         same_dir = ((not is_short_pos and local in ("TREND_UP", "RANGE"))
                     or (is_short_pos and local in ("TREND_DOWN", "RANGE")))
-        if (pnl_now >= ADD_PROFIT_THRESHOLD and adds < MAX_ADDS
-                and same_dir and bot_coholds and entry_gate_open):
+        # Phase 19.6: detect a flow reversal favoring our side
+        flow_reversal = False
+        try:
+            f_side, _, _ = flow_signal(cd) if cd else ("HOLD", 0, {})
+            want_f = "BUY" if not is_short_pos else "SELL"
+            flow_reversal = (f_side == want_f)
+        except Exception:
+            flow_reversal = False
+        add_trigger = ((pnl_now >= ADD_PROFIT_THRESHOLD or flow_reversal)
+                       and adds < MAX_ADDS and same_dir and bot_coholds
+                       and entry_gate_open)
+        if add_trigger:
             add_margin = min(MAX_NOTIONAL * 0.40, MAX_NOTIONAL - (pos.get("cost_basis", 0.0)))
             if add_margin >= 20.0:
                 ar = add_to_position(true_pid, add_margin, price=cur,
-                                     note=f"add-to-winner-pnl{pnl_now:.3f}-botcohold")
+                                     note=f"add-{('winner' if pnl_now>=ADD_PROFIT_THRESHOLD else 'flowrev')}-pnl{pnl_now:.3f}-botcohold")
                 if verbose and ar.get("action") == "position_added":
-                    print(f"[add] {true_pid} +${add_margin} (pyramid #{adds+1}, pnl={pnl_now:.3f})")
+                    print(f"[add] {true_pid} +${add_margin} (pyramid #{adds+1}, pnl={pnl_now:.3f}, flowrev={flow_reversal})")
+
+    # Phase 19.9: CROSS-POSITION HEDGE — if the book is net LONG a pile of
+    # BTC-correlated alts (> HEDGE_CORR_NET), open a small BTC short to cap the
+    # single-shock risk we just allowed by widening the correlation cap. Only when
+    # no BTC short is already on and the gate is open (don't hedge into a crash).
+    if entry_gate_open:
+        try:
+            held = [p.replace("SHORT:", "") for p, v in led.get("positions", {}).items()
+                    if v.get("base", 0.0) > 1e-12]
+            hcache = {}
+            for a in set(held):
+                try:
+                    hcache[a] = round(correlation_to_btc(a, client), 2)
+                except Exception:
+                    hcache[a] = 0.0
+            net_long_corr = net_corr_exposure(led, hcache, threshold=0.5)
+            btc_short_open = led["positions"].get(f"SHORT:BTC-USD", {}).get("base", 0.0) > 1e-12
+            if net_long_corr > HEDGE_CORR_NET and not btc_short_open:
+                hedge_margin = min(MAX_NOTIONAL * 0.50, net_long_corr * 0.30)
+                if hedge_margin >= 20.0:
+                    hr = open_short("BTC-USD", hedge_margin,
+                                    note=f"hedge-netlongcorr{net_long_corr:.0f}",
+                                    leverage=adaptive_leverage("TREND_UP", vol["bucket"]))
+                    if verbose and hr.get("action") == "short_opened":
+                        print(f"[hedge] BTC short ${hedge_margin} (net long-corr=${net_long_corr:.0f})")
+        except Exception as exc:
+            if verbose:
+                print(f"[hedge] skipped: {exc}")
 
     if regime == "CRISIS":
         return {"skipped": True, "reason": "crisis_standdown", "regime": regime}
@@ -450,10 +617,33 @@ def run_once(verbose: bool = True) -> dict:
                                "reason": "agent_drop",
                                "agent_pnl": at["agent_pnl"]})
                 continue
+            # Phase 19.4: OWN WINNER TILT — the agent's own positive paper track
+            # record on this asset is the best signal we have. Boost size when the
+            # agent has banked P&L here before (it already knows this asset).
+            agent_boost = 1.0
+            if at and at["tilt"] == "boost":
+                agent_boost = 1.20
+            # Phase 19.3: BOT COOLDOWN AVOIDANCE — if the bot just EXITED this
+            # asset (it's in its 5m paper cooldown), don't fight the exit with a
+            # fresh entry. Skip cleanly.
+            if pair in bot_recent_closes(5):
+                results.append({"pair": pair, "signal": "HOLD", "mom": round(mom, 4),
+                               "reason": "bot_cooldown"})
+                continue
+            # Phase 19.10: SHARPER SENTIMENT — extreme greed = sell-the-news risk.
+            # If F&G is EXTREME_GREED, shrink new LONG size hard (don't buy the top);
+            # shorts are fine (fade the euphoria).
+            fg_bucket = overlay["fear_greed"].get("bucket", "")
+            greed_penalty = 0.5 if (fg_bucket == "EXTREME_GREED" and want_long) else 1.0
 
             # Phase 8: strategy mimicry boost — conf already computed above (asset+setup
             # endorsement). If confirmed, this is validated alpha (gated).
             conf_mult = 1.25 if conf["confirmed"] else 1.0
+            # Phase 19.7: BOT-HOT-STRATEGY MIRROR — if the bot's backtest is
+            # currently HOT on the strategy type the agent just confirmed, that's
+            # a same-team meta-endorsement. Boost size.
+            if setup_type in bot_hot and bot_hot.get(setup_type, 0) > 0:
+                conf_mult *= 1.12
             # Phase 18 (same-team): if the bot just opened the SAME side on this
             # asset in the last 20m, that's a free live confirmation — boost size.
             # The bot is the conservative book; its live fill endorses our alpha.
@@ -461,14 +651,23 @@ def run_once(verbose: bool = True) -> dict:
             if bot_fill and bot_fill.get("side") == ("BUY" if want_long else "SELL"):
                 conf_mult *= 1.15
 
+            # Phase 19.1: SESSION-AWARE AGGRESSION — deploy bigger in liquid windows
+            # (US/EU), stand down size in dead zones. Our fill quality is better when
+            # real liquidity exists.
+            sess = session_bucket(now)
+            sess_mult = SESSION_BOOST.get(sess, 1.0)
+
             # Phase 4+6+7+8 sizing: strength x vol-conviction x sentiment x mimicry.
             # AGGRESSIVE: full $250 cap for confirmed alpha; moonshots get 25% (small
             # but real skin in the game); scale to full cap on strong conviction.
             # Phase 18: EQUITY-COMPOUNDING — scale size by growing book equity so the
             # agent snowballs like the bot did (size off equity/start, capped 1.5x).
+            # Phase 19: stack session + agent-winner + greed-penalty + hot-strategy.
             eq_factor = min(1.5, max(0.5, (led.get("equity", 10000.0)
                                            / led.get("starting_capital", 10000.0))))
-            size_mult = conviction(mom, vol["bucket"]) * overlay["size_mult"] * conf_mult * news["size_mult"]
+            size_mult = (conviction(mom, vol["bucket"]) * overlay["size_mult"]
+                         * conf_mult * news["size_mult"] * agent_boost
+                         * sess_mult * greed_penalty)
             raw = min(size_for(mom), size_for(0.02)) * strength * size_mult * eq_factor
             if verdict == "bot_wins_here":
                 floor = MAX_NOTIONAL * 0.60
@@ -478,6 +677,11 @@ def run_once(verbose: bool = True) -> dict:
                 floor = MAX_NOTIONAL * 0.20
             notional = round(max(raw, floor), 2)
             notional = min(notional, MAX_NOTIONAL)
+
+            # Phase 19.2: REGIME-ADAPTIVE LEVERAGE — press to 5x only when the asset's
+            # own local regime confirms a trend AND vol is calm; defensive 2x in extreme
+            # vol. Never blind — leverage tracks the agent's edge, not a flat 3x.
+            lev = adaptive_leverage(local, vol["bucket"])
 
             # Phase 11: concentration gate — don't let BTC-correlated exposure
             # exceed the cap (a single BTC shock must not wreck the whole book).
@@ -512,21 +716,23 @@ def run_once(verbose: bool = True) -> dict:
             if want_long:
                 rec = record_signal(pair, "BUY", quote_size=notional,
                                     note=f"regime-{regime}-LONG-{setup}-mom{mom:.3f}"
-                                         f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}",
+                                         f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}-lev{lev}",
                                     regime=regime, setup=setup,
-                                    price=last if last and last > 0 else None)
+                                    price=last if last and last > 0 else None,
+                                    leverage=lev)
                 results.append({"pair": pair, "signal": "BUY", "mom": round(mom, 4),
-                               "size": notional, "bot_edge": ed["edge"],
+                               "size": notional, "lev": lev, "bot_edge": ed["edge"],
                                "confirmed": conf["confirmed"],
                                "result": rec.get("action", "?")})
             else:  # short
                 rec = open_short(pair, notional,
                                note=f"regime-{regime}-SHORT-{setup}-mom{mom:.3f}"
-                                    f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}",
+                                    f"-bot:{ed['verdict']}-conf:{conf['confirmed']}-sz{notional}-lev{lev}",
                                regime=regime, setup=setup,
-                               price=last if last and last > 0 else None)
+                               price=last if last and last > 0 else None,
+                               leverage=lev)
                 results.append({"pair": pair, "signal": "SHORT", "mom": round(mom, 4),
-                               "size": notional, "bot_edge": ed["edge"],
+                               "size": notional, "lev": lev, "bot_edge": ed["edge"],
                                "confirmed": conf["confirmed"],
                                "result": rec.get("action", "?")})
         except Exception as exc:
