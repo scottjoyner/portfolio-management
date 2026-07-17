@@ -131,6 +131,25 @@
   .tag.pending{background:rgba(240,185,11,.15);color:var(--amber)}
 
   .empty{padding:18px;color:var(--dim);text-align:center;font-size:11px}
+
+  /* Bot vs Hermes duel */
+  .duel{display:flex;align-items:stretch;gap:8px;padding:10px 12px 4px}
+  .duel-side{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}
+  .duel-vs{display:flex;align-items:center;color:var(--dim);font-size:11px;text-transform:uppercase}
+  .ds-label{font-size:11px;font-weight:600;letter-spacing:.3px}
+  .ds-label.bot{color:var(--green)} .ds-label.hermes{color:var(--amber)}
+  .ds-ret{font-size:22px;font-weight:700;margin:4px 0 2px}
+  .ds-sub{font-size:10px;color:var(--dim)}
+  .duel-leader{padding:6px 12px 12px;display:flex;flex-direction:column;gap:3px}
+  .dl-row{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;
+    font-size:11px;padding:3px 6px;border-radius:6px;background:var(--panel2)}
+  .dl-sym{font-weight:600;text-align:left}
+  .dl-sym.up{color:var(--green)} .dl-sym.down{color:var(--red)} .dl-sym.dim{color:var(--dim)}
+  .dl-bot{color:var(--green)} .dl-her{text-align:right}
+  .dl-edge{font-size:9px;text-transform:uppercase;font-weight:700;padding:1px 6px;border-radius:8px}
+  .dl-edge.up{background:rgba(22,199,132,.15);color:var(--green)}
+  .dl-edge.down{background:rgba(240,185,11,.15);color:var(--amber)}
+  .dl-edge.dim{background:rgba(255,255,255,.05);color:var(--dim)}
 </style>
 </head>
 <body>
@@ -205,6 +224,24 @@
         </table>
         <div class="empty" id="bl-empty">No open positions</div>
       </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Bot vs Hermes — Paper Duel</span><span id="duel-age" class="dim">—</span></div>
+      <div class="duel">
+        <div class="duel-side">
+          <div class="ds-label bot">Trading Bot</div>
+          <div class="ds-ret mono up" id="bot-ret">--</div>
+          <div class="ds-sub mono">wr <span id="bot-wr">--</span> · <span id="bot-trades">0</span> trades</div>
+        </div>
+        <div class="duel-vs">vs</div>
+        <div class="duel-side">
+          <div class="ds-label hermes">Hermes Agent</div>
+          <div class="ds-ret mono" id="hermes-ret">--</div>
+          <div class="ds-sub mono">wr <span id="hermes-wr">--</span> · <span id="hermes-trades">0</span> trades</div>
+        </div>
+      </div>
+      <div class="duel-leader" id="duel-leader"></div>
     </div>
   </div>
 
@@ -394,12 +431,40 @@ function fmt(n){
   return n.toPrecision(3);
 }
 
+async function loadCompetition(){
+  const d=await api("/competition"); if(!d||!d.bot) return;
+  const b=d.bot,h=d.hermes;
+  const set=(id,v,cls)=>{ const e=$("#"+id); if(!e) return; e.textContent=v; if(cls!==undefined) e.className=cls; };
+  set("bot-ret", (b.return_pct>=0?"+":"")+b.return_pct.toFixed(1)+"%", "ds-ret mono "+(b.return_pct>=0?"up":"down"));
+  set("hermes-ret", (h.return_pct>=0?"+":"")+h.return_pct.toFixed(1)+"%", "ds-ret mono "+(h.return_pct>=0?"up":"down"));
+  set("bot-wr", b.win_rate.toFixed(1)+"%");
+  set("hermes-wr", h.win_rate.toFixed(1)+"%");
+  set("bot-trades", b.trade_count);
+  set("hermes-trades", h.trade_count);
+  $("#duel-age").textContent = d.updated_at ? ("@ "+d.updated_at.slice(11,19)+"Z") : "";
+  const lb=d.leaderboard||[];
+  const box=$("#duel-leader"); if(!box) return; box.innerHTML="";
+  lb.slice(0,10).forEach(r=>{
+    const edge=r.edge==="bot"?"up":(r.edge==="hermes"?"down":"dim");
+    const pnl=r.bot_pnl>=0?("+"+r.bot_pnl.toFixed(0)):r.bot_pnl.toFixed(0);
+    const row=document.createElement("div");
+    row.className="dl-row";
+    row.innerHTML=`<span class="dl-sym ${edge}">${r.strategy}</span>
+      <span class="dl-bot mono">$${fmt(r.bot_pnl)}</span>
+      <span class="dl-her mono dim">${r.hermes_trades} act</span>
+      <span class="dl-edge ${edge}">${r.edge==="bot"?"BOT":(r.edge==="hermes"?"HER":"tie")}</span>`;
+    box.appendChild(row);
+  });
+  if(!lb.length) box.innerHTML='<div class="empty">No per-strategy data yet</div>';
+}
+
 // ── loop ──
 let lastRefresh=Date.now();
 async function tick(){
   await loadHealth();
   await loadPositions();
   await loadWatchlist();
+  await loadCompetition();
   lastRefresh=Date.now();
 }
 function ageLoop(){

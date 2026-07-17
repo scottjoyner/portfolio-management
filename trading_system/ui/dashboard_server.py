@@ -2258,6 +2258,102 @@ def api_paper_trades():
     return {"trades": trades[:100], "total": len(trades), "settlement_summary": settlement_summary}
 
 
+def _competition_side(state: dict, is_bot: bool) -> dict:
+    """Normalize one paper book to the shared $10k start for a fair head-to-head."""
+    if is_bot:
+        start = float(state.get("paper_starting_capital", 10000.0) or 10000.0)
+        equity_curve = state.get("paper_equity_curve") or []
+        wins = int(state.get("paper_wins", 0) or 0)
+        losses = int(state.get("paper_losses", 0) or 0)
+    else:
+        start = float(state.get("starting_capital", 10000.0) or 10000.0)
+        equity_curve = state.get("equity_curve") or []
+        wins = int(state.get("wins", 0) or 0)
+        losses = int(state.get("losses", 0) or 0)
+    equity = float(equity_curve[-1]) if equity_curve else float(
+        state.get("equity", start)
+    )
+    n = wins + losses
+    win_rate = (wins / n * 100.0) if n else 0.0
+    ret_pct = (equity / start - 1.0) * 100.0 if start else 0.0
+    return {
+        "role": "bot" if is_bot else "hermes",
+        "label": "Trading Bot" if is_bot else "Hermes Agent",
+        "starting_capital": round(start, 2),
+        "equity": round(equity, 2),
+        "return_pct": round(ret_pct, 2),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 2),
+        "trade_count": n,
+        "equity_curve": [round(float(x), 2) for x in equity_curve[-120:]],
+    }
+
+
+def api_competition():
+    """Head-to-head: the live trading bot vs the competing Hermes agent.
+
+    Both run PAPER from a flat $10k start (hermes_agent_loop.py:794). Reads the
+    bot's book (paper_trader_v4_state.json) and the Hermes agent's book
+    (hermes_agent_ledger.json), normalizes both to the shared start, and returns
+    a side-by-side plus a per-strategy leaderboard.
+
+    Bot per-strategy edge comes from its ``paper_trades`` list (each trade carries
+    ``strategy`` + realized ``pnl``). Hermes' ledger stores trades by ``setup``
+    without per-trade pnl, so its column is activity (trade count), not wins.
+    """
+    bot_state = _load_json(ROOT / "data" / "paper_trader_v4_state.json", {})
+    hermes_state = _load_json(ROOT / "data" / "hermes_agent_ledger.json", {})
+
+    bot = _competition_side(bot_state, is_bot=True)
+    hermes = _competition_side(hermes_state, is_bot=False)
+
+    # Bot per-strategy edge from its trade ledger.
+    bot_strat = {}
+    for t in bot_state.get("paper_trades", []) or []:
+        strat = t.get("strategy")
+        if not strat:
+            continue
+        pnl = float(t.get("pnl", 0.0) or 0.0)
+        d = bot_strat.setdefault(strat, {"wins": 0, "trades": 0, "pnl": 0.0})
+        d["trades"] += 1
+        d["pnl"] += pnl
+        if pnl > 0:
+            d["wins"] += 1
+
+    # Hermes per-setup activity (no per-trade pnl in its ledger).
+    hermes_strat = {}
+    for t in hermes_state.get("trades", []) or []:
+        strat = t.get("setup") or t.get("strategy") or "?"
+        d = hermes_strat.setdefault(strat, {"trades": 0})
+        d["trades"] += 1
+
+    leaderboard = []
+    for strat in sorted(set(bot_strat) | set(hermes_strat)):
+        bw = bot_strat.get(strat, {}).get("wins", 0)
+        bsum = round(bot_strat.get(strat, {}).get("pnl", 0.0), 4)
+        bcount = bot_strat.get(strat, {}).get("trades", 0)
+        hcount = hermes_strat.get(strat, {}).get("trades", 0)
+        edge = "bot" if bsum > 0 else ("hermes" if hcount > bcount and bsum <= 0 else "tie")
+        leaderboard.append({
+            "strategy": strat,
+            "bot_wins": bw,
+            "bot_trades": bcount,
+            "bot_pnl": bsum,
+            "hermes_trades": hcount,
+            "edge": edge,
+        })
+    leaderboard.sort(key=lambda r: (r["bot_pnl"], r["bot_wins"]), reverse=True)
+
+    return {
+        "bot": bot,
+        "hermes": hermes,
+        "leaderboard": leaderboard,
+        "normalized_start": 10000.0,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 _LAST_SETTLE_TS = 0.0
 
 
@@ -2742,6 +2838,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/signals/opportunities": lambda: api_opportunities(),
             "/signals/feed": lambda: api_signal_feed(),
             "/signals/diversification": lambda: api_diversification_signals(),
+            "/competition": lambda: api_competition(),
             "/strategies/performance": lambda: api_strategies_performance(),
             "/strategies/rebalance": lambda: api_rebalance(),
             "/strategies/rebalance/presets": lambda: api_rebalance_presets(),
