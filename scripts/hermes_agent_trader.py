@@ -92,10 +92,29 @@ def _current_price(product_id: str) -> float:
     return 0.0
 
 
+def _heal_ledger_schema(led: dict) -> dict:
+    """Normalize positions written under older schemas so downstream += / reads
+    never KeyError. Adds missing numeric position keys with safe defaults.
+    Idempotent — safe to call on every load."""
+    for pid, pos in list(led.get("positions", {}).items()):
+        if not isinstance(pos, dict):
+            continue
+        pos.setdefault("base", 0.0)
+        pos.setdefault("cost_basis", 0.0)
+        pos.setdefault("exposure", 0.0)
+        pos.setdefault("entries", 0)
+    # Top-level fields some older ledgers lacked.
+    led.setdefault("cash", led.get("starting_capital", 10000.0))
+    led.setdefault("equity", led.get("cash", 10000.0))
+    led.setdefault("peak_equity", led.get("equity", 10000.0))
+    led.setdefault("starting_capital", 10000.0)
+    return led
+
+
 def load_ledger() -> dict:
     if LEDGER.exists():
         try:
-            return json.loads(LEDGER.read_text() or "{}")
+            return _heal_ledger_schema(json.loads(LEDGER.read_text() or "{}"))
         except Exception:
             pass
     return {"positions": {}, "trades": [], "realized_pnl": 0.0,
@@ -164,6 +183,12 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
         led["trades"].append(trade)
         pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0,
                                                 "exposure": 0.0, "entries": 0})
+        # Heal legacy positions written under an older schema that lacked these
+        # keys (pre-exposure ledgers), so += below never KeyErrors.
+        pos.setdefault("base", 0.0)
+        pos.setdefault("cost_basis", 0.0)
+        pos.setdefault("exposure", 0.0)
+        pos.setdefault("entries", 0)
         if side.upper() == "BUY":
             if pos.get("base", 0.0) <= 1e-12:
                 pos["entry_ts"] = ts
@@ -507,18 +532,60 @@ def size_for(mom: float, cap: float | None = None) -> float:
     return round(cap * frac * 0.99, 2)  # 99% of cap to avoid notional breach
 
 
+def equity_drawdown_pct(led: dict | None = None) -> float:
+    """Peak-to-current equity drawdown as a NEGATIVE percent (e.g. -5.3 == -5.3%).
+    Uses the ledger's live equity vs peak_equity (both mark-to-market)."""
+    if led is None:
+        led = load_ledger()
+    eq = led.get("equity")
+    peak = led.get("peak_equity")
+    if not eq or not peak or peak <= 0:
+        return 0.0
+    return round((eq - peak) / peak * 100.0, 4)
+
+
 def drawdown_circuit(led: dict | None = None, n: int = 10,
-                     min_win_rate: float = 40.0,
-                     max_dd: float = -5.0) -> dict:
+                     min_win_rate: float = 33.0,
+                     max_dd_pct: float = -9.0) -> dict:
     """Return whether NEW entries should be blocked (circuit open) + reason.
-    Opens when recent win-rate < min_win_rate OR max_drawdown < max_dd."""
+
+    Circuit TRIPS (open=False -> block new entries) when EITHER:
+      * peak-to-current EQUITY drawdown breaches max_dd_pct (percent, e.g. -9%), OR
+      * recent closed-trade win-rate < min_win_rate AND we've taken a real hit
+        (equity DD worse than half the threshold — win-rate alone shouldn't gate
+        a book that's flat-to-green).
+
+    NOTE (2026-07-17 fix): the prior version compared a DOLLAR realized-P&L
+    drawdown against -5.0, i.e. it tripped after just $5 of peak-to-trough
+    realized loss on a $10k book — far too aggressive. Now percent-of-equity
+    based and softened to -9% so normal volatility no longer locks the book out.
+    Managing existing positions is never gated; only NEW entries are.
+    """
+    if led is None:
+        led = load_ledger()
     s = recent_stats(led, n)
+    eq_dd = equity_drawdown_pct(led)
+    s = {**s, "equity_dd_pct": eq_dd}
+
     if s["n"] < 4:
-        return {"open": True, "reason": "insufficient_samples", "stats": s}
-    if s["win_rate"] < min_win_rate:
-        return {"open": False, "reason": f"win_rate {s['win_rate']}% < {min_win_rate}%", "stats": s}
-    if s["max_drawdown"] < max_dd:
-        return {"open": False, "reason": f"drawdown {s['max_drawdown']} < {max_dd}", "stats": s}
+        # Not enough closed trades to judge win-rate, but still honor a hard
+        # equity drawdown so a bad open book can't keep adding risk.
+        if eq_dd < max_dd_pct:
+            return {"open": False,
+                    "reason": f"equity_dd {eq_dd}% < {max_dd_pct}%", "stats": s}
+        return {"open": True, "reason": "warming_up", "stats": s}
+
+    # Hard equity drawdown gate (the real risk stop).
+    if eq_dd < max_dd_pct:
+        return {"open": False,
+                "reason": f"equity_dd {eq_dd}% < {max_dd_pct}%", "stats": s}
+
+    # Soft win-rate gate: only bites if we're ALSO drawing down meaningfully.
+    if s["win_rate"] < min_win_rate and eq_dd < (max_dd_pct / 2.0):
+        return {"open": False,
+                "reason": f"win_rate {s['win_rate']}% < {min_win_rate}% "
+                          f"while dd {eq_dd}%", "stats": s}
+
     return {"open": True, "reason": "ok", "stats": s}
 
 

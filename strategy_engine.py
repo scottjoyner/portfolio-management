@@ -3269,6 +3269,28 @@ def tick_signals(products, currencies, candles_map, pass_cache_keys, opens_map=N
         return None
 
 
+def tick_candidates(products, currencies, candles_map, pass_cache_keys, opens_map=None):
+    """Fast-path per-tick candidate builder.
+
+    Returns the full candidate shape
+    ``(pid, currency, closes, volumes, highs, lows, [(name, action), ...])``
+    per product directly from Rust (OHLCV parse + all-strategy eval + bt-cache
+    gate + regime group filter). Equivalent to the legacy Python fast path in
+    ``portfolio_optimizer._detect_strategy_signals``. Returns ``None`` on any
+    error / missing binding so callers can fall back to the legacy path.
+    """
+    if not _HAS_RUST or not hasattr(_rust_core, "tick_candidates_py"):
+        return None
+    try:
+        return _rust_core.tick_candidates_py(
+            list(products), list(currencies), candles_map, list(pass_cache_keys),
+            opens_map,
+        )
+    except Exception as e:
+        logger.debug("tick_candidates failed, fallback: %s", e)
+        return None
+
+
 def _batch_signals_from_candles_parse(
     products: List[Tuple[str, str]],
     candles_map: Dict[str, list],

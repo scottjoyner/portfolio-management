@@ -47,6 +47,7 @@ from strategy_engine import batch_signals_universe as _batch_signals_universe
 from strategy_engine import batch_signals_from_candles as _batch_signals_from_candles
 from strategy_engine import batch_signals_cached as _batch_signals_cached
 from strategy_engine import tick_signals as _tick_signals
+from strategy_engine import tick_candidates as _tick_candidates
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
@@ -4527,6 +4528,7 @@ class PortfolioOptimizer:
         # the legacy per-product assembly below.
         candidates_with_sigs: List[Tuple[dict, str, List[float], List[float], List[float], List[float], List]] = []
         _fast_tuples = None
+        _fast_candidates = None
         if raw_batched:
             try:
                 from strategy_engine import _RUST_STRATEGIES as _RUST_NAMES
@@ -4541,54 +4543,49 @@ class PortfolioOptimizer:
                         _cached = self._bt_cache.get(_key)
                         if _cached is None or getattr(_cached, "passed", False):
                             _pass_keys.append(_key)
-                _fast_tuples = _tick_signals(
+                # New all-in-one fast path: produces the full candidate shape
+                # directly inside Rust (OHLCV parse + eval + bt-gate + regime
+                # filter). Falls back to legacy assembly on None.
+                _fast_candidates = _tick_candidates(
                     [pid for _, pid, _, _, _, _ in parsed_data],
                     _all_currencies,
                     raw_batched,
                     _pass_keys,
                 )
+                if _fast_candidates is None:
+                    _fast_tuples = _tick_signals(
+                        [pid for _, pid, _, _, _, _ in parsed_data],
+                        _all_currencies,
+                        raw_batched,
+                        _pass_keys,
+                    )
             except Exception as e:
-                logger.debug("tick_signals fast-path failed (%s); using legacy path", e)
+                logger.debug("tick_candidates fast-path failed (%s); using legacy path", e)
+                _fast_candidates = None
                 _fast_tuples = None
 
-        if _fast_tuples is not None:
-            # Group returned (pid, name, action, conf) tuples by pid.
+        if _fast_candidates is not None:
+            # Build candidates_with_sigs directly from the all-in-one Rust path.
             _by_pid: Dict[str, List] = {}
-            for _pid, _name, _action, _conf in _fast_tuples:
-                _by_pid.setdefault(_pid, []).append((_name, _action))
+            for _pid, _cur, _cl, _vo, _hi, _lo, _sigs in _fast_candidates:
+                _by_pid.setdefault(_pid, (_cur, _cl, _vo, _hi, _lo, _sigs))
             for h, pid, closes, volumes, highs, lows in parsed_data:
-                currency = h["currency"]
-                _tuples = _by_pid.get(pid)
-                if not _tuples:
+                _entry = _by_pid.get(pid)
+                if not _entry:
                     continue
+                _cur, _cl, _vo, _hi, _lo, _sigs = _entry
+                if not _sigs:
+                    continue
+                # NOTE: the Rust fast path (tick_candidates_py) already applied the
+                # identical regime filter + HOLD drop, so no Python re-filter is needed
+                # here — this branch is a pure assembly of pre-filtered signals.
                 signals = [
                     StrategySignal(
                         strategy=_n, action=_a, confidence=0.5,
                         reason=f"batch:{_n}",
                     )
-                    for _n, _a in _tuples
-                    if _a != "HOLD"
+                    for _n, _a in _sigs
                 ]
-                # ── Regime filtering: skip strategies unsuited for current market regime ──
-                if signals and highs and lows and len(closes) >= 30:
-                    regime = _detect_market_regime(highs, lows, closes)
-                    filtered_signals = []
-                    for sig in signals:
-                        strat = sig.strategy
-                        # Skip trend strategies in ranging markets
-                        if regime == "ranging" and strat in TREND_STRATEGIES:
-                            logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
-                            continue
-                        # Skip mean-reversion in trending markets
-                        if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
-                            logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
-                            continue
-                        # Skip volatility strategies in quiet markets
-                        if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
-                            logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
-                            continue
-                        filtered_signals.append(sig)
-                    signals = filtered_signals
                 if signals:
                     candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
         else:
