@@ -3249,6 +3249,26 @@ def batch_signals_cached(products, candles_map, opens_map=None, max_len=100):
 candle_store_clear = None
 
 
+def tick_signals(products, currencies, candles_map, pass_cache_keys, opens_map=None):
+    """Fast-path per-tick signal + bt-cache gate.
+
+    Ingests raw candles, evaluates all strategies in Rust, and returns only the
+    ``(pid, name, action, conf)`` tuples whose ``f"{name}/{currency}"`` key is in
+    ``pass_cache_keys``. Falls back to ``None`` on any error / missing binding so
+    callers can use the legacy path.
+    """
+    if not _HAS_RUST or not hasattr(_rust_core, "tick_signals_py"):
+        return None
+    try:
+        return _rust_core.tick_signals_py(
+            list(products), list(currencies), candles_map, list(pass_cache_keys),
+            opens_map,
+        )
+    except Exception as e:
+        logger.debug("tick_signals failed, fallback: %s", e)
+        return None
+
+
 def _batch_signals_from_candles_parse(
     products: List[Tuple[str, str]],
     candles_map: Dict[str, list],

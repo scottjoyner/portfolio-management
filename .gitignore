@@ -22,6 +22,14 @@ coverage.xml
 .env
 .env.local
 .env.production
+
+# --- Rust build artifacts ---
+rust_core/target/
+target/
+
+# --- State backups ---
+*.bak
+*.bak[0-9]
 .venv/
 venv/
 .env/

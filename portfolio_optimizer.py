@@ -46,6 +46,7 @@ from strategy_engine import batch_signals_fast as _batch_signals_fast
 from strategy_engine import batch_signals_universe as _batch_signals_universe
 from strategy_engine import batch_signals_from_candles as _batch_signals_from_candles
 from strategy_engine import batch_signals_cached as _batch_signals_cached
+from strategy_engine import tick_signals as _tick_signals
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
@@ -4516,49 +4517,122 @@ class PortfolioOptimizer:
             logger.debug("Batch signal generation failed: %s", e)
             batch_results = {}
 
-        # Phase 1: collect signals for all products (batch or fallback)
+        # Phase 1: collect signals for all products (batch or fallback).
+        # OPTIONAL FAST PATH: pre-compute the backtest-verdict gate in Rust so
+        # Python never loops products×strategies checking self._bt_cache. We pass
+        # the set of (strategy/currency) keys that are ALLOWED to pass the gate:
+        # cached PASS verdicts, plus not-yet-cached combos (backtested downstream
+        # in Phase 2 exactly as the legacy path). Only cached-FAIL combos are
+        # excluded, which is behaviour-preserving. On any failure we fall back to
+        # the legacy per-product assembly below.
         candidates_with_sigs: List[Tuple[dict, str, List[float], List[float], List[float], List[float], List]] = []
-        for h, pid, closes, volumes, highs, lows in parsed_data:
-            currency = h["currency"]
-            pid_results = batch_results.get(pid) if batch_results else None
-            if pid_results:
-                signals = []
-                for s_name, action in pid_results.items():
-                    if action != "HOLD":
-                        signals.append(StrategySignal(
-                            strategy=s_name, action=action, confidence=0.5,
-                            reason=f"batch:{s_name}",
-                        ))
-            else:
-                signals = _run_strategies(
-                    currency=currency, asset_class=h["classification"],
-                    closes=closes, volumes=volumes, current_price=h["price"],
-                    highs=highs if highs else None, lows=lows if lows else None,
+        _fast_tuples = None
+        if raw_batched:
+            try:
+                from strategy_engine import _RUST_STRATEGIES as _RUST_NAMES
+                _all_currencies = [h["currency"] for h, _, _, _, _, _ in parsed_data]
+                _pass_keys: List[str] = []
+                for _ck, _v in self._bt_cache.items():
+                    if getattr(_v, "passed", False):
+                        _pass_keys.append(_ck)
+                for _cur in _all_currencies:
+                    for _s in _RUST_NAMES:
+                        _key = f"{_s}/{_cur}"
+                        _cached = self._bt_cache.get(_key)
+                        if _cached is None or getattr(_cached, "passed", False):
+                            _pass_keys.append(_key)
+                _fast_tuples = _tick_signals(
+                    [pid for _, pid, _, _, _, _ in parsed_data],
+                    _all_currencies,
+                    raw_batched,
+                    _pass_keys,
                 )
-            
-            # ── Regime filtering: skip strategies unsuited for current market regime ──
-            if signals and highs and lows and len(closes) >= 30:
-                regime = _detect_market_regime(highs, lows, closes)
-                filtered_signals = []
-                for sig in signals:
-                    strat = sig.strategy
-                    # Skip trend strategies in ranging markets
-                    if regime == "ranging" and strat in TREND_STRATEGIES:
-                        logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
-                        continue
-                    # Skip mean-reversion in trending markets
-                    if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
-                        logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
-                        continue
-                    # Skip volatility strategies in quiet markets
-                    if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
-                        logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
-                        continue
-                    filtered_signals.append(sig)
-                signals = filtered_signals
-            
-            if signals:
-                candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
+            except Exception as e:
+                logger.debug("tick_signals fast-path failed (%s); using legacy path", e)
+                _fast_tuples = None
+
+        if _fast_tuples is not None:
+            # Group returned (pid, name, action, conf) tuples by pid.
+            _by_pid: Dict[str, List] = {}
+            for _pid, _name, _action, _conf in _fast_tuples:
+                _by_pid.setdefault(_pid, []).append((_name, _action))
+            for h, pid, closes, volumes, highs, lows in parsed_data:
+                currency = h["currency"]
+                _tuples = _by_pid.get(pid)
+                if not _tuples:
+                    continue
+                signals = [
+                    StrategySignal(
+                        strategy=_n, action=_a, confidence=0.5,
+                        reason=f"batch:{_n}",
+                    )
+                    for _n, _a in _tuples
+                    if _a != "HOLD"
+                ]
+                # ── Regime filtering: skip strategies unsuited for current market regime ──
+                if signals and highs and lows and len(closes) >= 30:
+                    regime = _detect_market_regime(highs, lows, closes)
+                    filtered_signals = []
+                    for sig in signals:
+                        strat = sig.strategy
+                        # Skip trend strategies in ranging markets
+                        if regime == "ranging" and strat in TREND_STRATEGIES:
+                            logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
+                            continue
+                        # Skip mean-reversion in trending markets
+                        if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
+                            logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
+                            continue
+                        # Skip volatility strategies in quiet markets
+                        if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
+                            logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
+                            continue
+                        filtered_signals.append(sig)
+                    signals = filtered_signals
+                if signals:
+                    candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
+        else:
+            for h, pid, closes, volumes, highs, lows in parsed_data:
+                currency = h["currency"]
+                pid_results = batch_results.get(pid) if batch_results else None
+                if pid_results:
+                    signals = []
+                    for s_name, action in pid_results.items():
+                        if action != "HOLD":
+                            signals.append(StrategySignal(
+                                strategy=s_name, action=action, confidence=0.5,
+                                reason=f"batch:{s_name}",
+                            ))
+                else:
+                    signals = _run_strategies(
+                        currency=currency, asset_class=h["classification"],
+                        closes=closes, volumes=volumes, current_price=h["price"],
+                        highs=highs if highs else None, lows=lows if lows else None,
+                    )
+
+                # ── Regime filtering: skip strategies unsuited for current market regime ──
+                if signals and highs and lows and len(closes) >= 30:
+                    regime = _detect_market_regime(highs, lows, closes)
+                    filtered_signals = []
+                    for sig in signals:
+                        strat = sig.strategy
+                        # Skip trend strategies in ranging markets
+                        if regime == "ranging" and strat in TREND_STRATEGIES:
+                            logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
+                            continue
+                        # Skip mean-reversion in trending markets
+                        if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
+                            logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
+                            continue
+                        # Skip volatility strategies in quiet markets
+                        if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
+                            logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
+                            continue
+                        filtered_signals.append(sig)
+                    signals = filtered_signals
+
+                if signals:
+                    candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
 
         # Phase 2: batch-backtest all un-cached strategy×product pairs in parallel
         self._batch_uncached_backtests(candidates_with_sigs)

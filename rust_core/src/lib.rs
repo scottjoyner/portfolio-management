@@ -8,6 +8,7 @@ pub mod tcost;
 pub mod fee;
 pub mod rebalance;
 pub mod candle_store;
+pub mod tick;
 
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -1038,6 +1039,7 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(candle_store::candle_store_clear_py, m)?)?;
     m.add_function(wrap_pyfunction!(candle_store::candle_store_get_py, m)?)?;
     m.add_function(wrap_pyfunction!(candle_store::candle_store_eval_py, m)?)?;
+    m.add_function(wrap_pyfunction!(tick::tick_signals_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_aggregate_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_weight_from_bt_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_default_weight_py, m)?)?;

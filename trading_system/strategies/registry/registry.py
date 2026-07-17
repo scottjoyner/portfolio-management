@@ -76,6 +76,12 @@ from strategies.regime_adaptive_2.hurst_adaptive_lookback import HurstAdaptiveLo
 from strategies.crypto.funding_contrarian_proxy import FundingRateContrarianProxyStrategy
 from strategies.crypto.liquidation_cascade_proxy import LiquidationCascadeProxyStrategy
 from strategies.crypto.ob_imbalance_extreme import OBImbalanceExtremeReversionStrategy
+from strategies.cross_asset_2.etf_equity_stat_arb import EtfEquityStatArbProxyStrategy
+from strategies.cross_asset_2.sentiment_news_fusion import SentimentNewsFusionStrategy
+from strategies.cross_asset_2.regime_ensemble import RegimeConditionedEnsembleStrategy
+from strategies.stat_arb_2.copula_break import CopulaDependenceBreakReversion
+from strategies.stat_arb_2.shape_match import ShapeMatchReversal
+from strategies.stat_arb_2.fractional_cointegration import FractionalCointegrationArb
 
 
 def load_strategies() -> list:
@@ -157,6 +163,12 @@ def load_strategies() -> list:
         OptionsGreeksProxyStrategy(),
         CrossExchangeBasisProxyStrategy(),
         OnchainFlowProxyStrategy(),
+        EtfEquityStatArbProxyStrategy(),
+        SentimentNewsFusionStrategy(),
+        RegimeConditionedEnsembleStrategy(),
+        CopulaDependenceBreakReversion(),
+        ShapeMatchReversal(),
+        FractionalCointegrationArb(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced
