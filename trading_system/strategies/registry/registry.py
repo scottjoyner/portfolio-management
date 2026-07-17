@@ -64,6 +64,12 @@ from strategies.trend.volatility_cycle_align import VolatilityCycleAlignStrategy
 from strategies.volatility.garch_vol_forecast import GarchLiteVolForecastStrategy
 from strategies.volatility.vol_clustering_breakout import VolClusteringBreakoutStrategy
 from strategies.volatility.regime_persistence_vol import RegimePersistenceVolStrategy
+from strategies.adaptive_exec.session_decay_vwap import SessionDecayVwapStrategy
+from strategies.adaptive_exec.orderflow_turbulence import OrderFlowTurbulenceStrategy
+from strategies.adaptive_exec.inventory_skew import InventorySkewSignalStrategy
+from strategies.regime_adaptive_2.vol_kalman_switch import VolRegimeKalmanSwitchStrategy
+from strategies.regime_adaptive_2.fractal_breakout import KatzFractalBreakoutStrategy
+from strategies.regime_adaptive_2.hurst_adaptive_lookback import HurstAdaptiveLookbackStrategy
 from strategies.crypto.funding_contrarian_proxy import FundingRateContrarianProxyStrategy
 from strategies.crypto.liquidation_cascade_proxy import LiquidationCascadeProxyStrategy
 from strategies.crypto.ob_imbalance_extreme import OBImbalanceExtremeReversionStrategy
@@ -139,6 +145,12 @@ def load_strategies() -> list:
         FundingRateContrarianProxyStrategy(),
         LiquidationCascadeProxyStrategy(),
         OBImbalanceExtremeReversionStrategy(),
+        SessionDecayVwapStrategy(),
+        OrderFlowTurbulenceStrategy(),
+        InventorySkewSignalStrategy(),
+        VolRegimeKalmanSwitchStrategy(),
+        KatzFractalBreakoutStrategy(),
+        HurstAdaptiveLookbackStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced

@@ -44,6 +44,7 @@ _BT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="opt_bt")
 from strategy_engine import run_strategies as _run_strategies
 from strategy_engine import batch_signals_fast as _batch_signals_fast
 from strategy_engine import batch_signals_universe as _batch_signals_universe
+from strategy_engine import batch_signals_from_candles as _batch_signals_from_candles
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
@@ -4431,6 +4432,8 @@ class PortfolioOptimizer:
         parsed_data: List[Tuple[dict, str, List[float], List[float], List[float], List[float]]] = []
         candidate_pids = [(h, h.get("product_id", f"{h['currency']}-USD")) for h in candidates]
 
+        # Raw batched candles (oldest-first) for the all-in-one Rust path.
+        raw_batched: Dict[str, list] = {}
         if self._feed_mgr:
             all_pids = [pid for _, pid in candidate_pids]
             batched = self._feed_mgr.get_candles_batch(all_pids, granularity=3600, limit=100)
@@ -4438,6 +4441,7 @@ class PortfolioOptimizer:
                 candles = batched.get(pid)
                 if not candles or len(candles) < 30:
                     continue
+                raw_batched[pid] = candles
                 closes, volumes, highs, lows = [], [], [], []
                 for c in reversed(candles):
                     if isinstance(c, dict):
@@ -4494,10 +4498,16 @@ class PortfolioOptimizer:
             # products (single Python<->Rust round-trip) instead of N serial
             # per-product calls. Falls back to the legacy per-product path.
             try:
-                batch_results = _batch_signals_universe(
-                    [p for p, _ in products_list],
-                    closes_dict, volumes_dict, highs_dict, lows_dict,
-                )
+                if raw_batched:
+                    batch_results = _batch_signals_from_candles(
+                        [(pid, h["classification"]) for h, pid, _, _, _, _ in parsed_data],
+                        raw_batched, None,
+                    )
+                else:
+                    batch_results = _batch_signals_universe(
+                        [p for p, _ in products_list],
+                        closes_dict, volumes_dict, highs_dict, lows_dict,
+                    )
             except Exception as e:
                 logger.debug("Universe batch signal generation failed (%s); falling back", e)
                 batch_results = _batch_signals_fast(products_list, closes_dict, volumes_dict, highs_dict, lows_dict)

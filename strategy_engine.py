@@ -3184,6 +3184,83 @@ def batch_signals_universe(
                                   highs_dict or {}, lows_dict or {})
 
 
+def batch_signals_from_candles(
+    products: List[Tuple[str, str]],
+    candles_map: Dict[str, list],
+    opens_map: Optional[Dict[str, List[float]]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Run ALL strategies on raw candle dicts in ONE Rust call.
+
+    ``candles_map`` is the raw ``Dict[str, list]`` returned by the feed manager:
+    each value is a list of candles, each candle EITHER a dict with keys
+    ``open/high/low/close/volume`` OR a normalized tuple/list
+    ``[ts, low, high, open, close, volume]`` (index 1=low, 2=high, 3=open,
+    4=close, 5=volume). OHLCV extraction + all-strategy eval happen inside Rust.
+
+    Returns pid -> {strategy_name: action}, identical in shape to
+    :func:`batch_signals_universe`.
+
+    Falls back to the legacy parse loop + :func:`batch_signals_universe` if Rust
+    is unavailable, the new binding is missing, or the call raises.
+    """
+    if not _HAS_RUST or not hasattr(_rust_core, "batch_signals_from_candles_py"):
+        return _batch_signals_from_candles_parse(products, candles_map, opens_map)
+    try:
+        pids = [pid for pid, _ in products]
+        if not pids:
+            return {}
+        raw = _rust_core.batch_signals_from_candles_py(
+            [p for p, _ in products], candles_map, opens_map,
+        )
+        results: Dict[str, Dict[str, str]] = {}
+        for pid in pids:
+            pid_sigs: Dict[str, str] = {}
+            for s_name, action, confidence, reason in raw.get(pid, []):
+                pid_sigs[s_name] = action
+            results[pid] = pid_sigs
+        return results
+    except Exception as e:
+        logger.debug("batch_signals_from_candles failed, fallback: %s", e)
+        return _batch_signals_from_candles_parse(products, candles_map, opens_map)
+
+
+def _batch_signals_from_candles_parse(
+    products: List[Tuple[str, str]],
+    candles_map: Dict[str, list],
+    opens_map: Optional[Dict[str, List[float]]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Legacy fallback: replicate the optimizer parse loop then batch_universe."""
+    pids = [pid for pid, _ in products]
+    if not pids:
+        return {}
+    closes_dict: Dict[str, List[float]] = {}
+    volumes_dict: Dict[str, List[float]] = {}
+    highs_dict: Dict[str, List[float]] = {}
+    lows_dict: Dict[str, List[float]] = {}
+    for pid in pids:
+        candles = candles_map.get(pid) or []
+        cl, vo, hi, lo = [], [], [], []
+        for c in candles[-100:]:
+            if isinstance(c, dict):
+                cl.append(float(c.get("close", 0.0)))
+                vo.append(float(c.get("volume", 0.0)))
+                hi.append(float(c.get("high", 0.0)))
+                lo.append(float(c.get("low", 0.0)))
+            else:
+                # tuple form [ts, low, high, open, close, volume]
+                cl.append(float(c[4]))
+                vo.append(float(c[5]))
+                hi.append(float(c[2]))
+                lo.append(float(c[1]))
+        closes_dict[pid] = cl
+        volumes_dict[pid] = vo
+        highs_dict[pid] = hi
+        lows_dict[pid] = lo
+    return batch_signals_universe(
+        products, closes_dict, volumes_dict, highs_dict, lows_dict, opens_map,
+    )
+
+
 def batch_backtest_universe(
     strategies: List[Tuple[str, str, List[float], List[float], Optional[List[float]], Optional[List[float]]]],
     warmup: int = 30,

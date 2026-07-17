@@ -763,6 +763,77 @@ fn evaluate_universe_py(
     }).collect()
 }
 
+/// Python wrapper: evaluate ALL strategies for a UNIVERSE of products directly
+/// from RAW candle objects (dict or tuple form), extracting OHLCV inside Rust.
+/// One Python↔Rust call eliminates the per-tick Python parse loop.
+#[pyfunction]
+#[pyo3(signature = (products, candles_map, opens_map=None))]
+fn batch_signals_from_candles_py(
+    products: Vec<String>,
+    candles_map: HashMap<String, Vec<PyObject>>,
+    opens_map: Option<HashMap<String, Vec<f64>>>,
+) -> HashMap<String, Vec<(String, String, f64, String)>> {
+    use rayon::prelude::*;
+    // Extract OHLCV from raw candle objects while holding the GIL once, building
+    // owned f64 vectors (no GIL needed afterwards). The rayon parallel compute
+    // below is pure Rust and must NOT re-acquire the GIL (the calling thread
+    // holds it, causing a deadlock if workers wait for it).
+    let pid_ohlcv: Vec<(String, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)> = Python::with_gil(|py| {
+        products.iter().map(|pid| {
+            let candles = candles_map.get(pid)
+                .map(|v| v.iter().map(|c| c.clone_ref(py)).collect::<Vec<PyObject>>())
+                .unwrap_or_default();
+            let mut closes: Vec<f64> = Vec::with_capacity(candles.len());
+            let mut volumes: Vec<f64> = Vec::with_capacity(candles.len());
+            let mut highs: Vec<f64> = Vec::with_capacity(candles.len());
+            let mut lows: Vec<f64> = Vec::with_capacity(candles.len());
+            for candle in &candles {
+                let candle = candle.bind(py);
+                // Try dict form first; fall back to tuple/list form.
+                let (o, h, l, c, v): (f64, f64, f64, f64, f64) = match candle.get_item("close") {
+                    Ok(_) => {
+                        let get = |key: &str| -> f64 {
+                            candle.get_item(key)
+                                .and_then(|v| v.extract::<f64>())
+                                .unwrap_or(0.0)
+                        };
+                        (get("open"), get("high"), get("low"), get("close"), get("volume"))
+                    }
+                    Err(_) => {
+                        let get_idx = |idx: usize| -> f64 {
+                            candle.get_item(idx)
+                                .and_then(|v| v.extract::<f64>())
+                                .unwrap_or(0.0)
+                        };
+                        // tuple form: [ts, low, high, open, close, volume]
+                        (get_idx(3), get_idx(2), get_idx(1), get_idx(4), get_idx(5))
+                    }
+                };
+                let _ = o;
+                closes.push(c);
+                volumes.push(v);
+                highs.push(h);
+                lows.push(l);
+            }
+            (pid.clone(), closes, volumes, highs, lows)
+        }).collect()
+    });
+    pid_ohlcv.into_par_iter().map(|(pid, closes, volumes, highs, lows)| {
+        let opens = opens_map.as_ref().and_then(|m| m.get(&pid).cloned());
+        let results = match &opens {
+            Some(o) => strategies::evaluate_all_opens(
+                &closes, o, &volumes, &highs, &lows,
+            ),
+            None => strategies::evaluate_all(&closes, &volumes, &highs, &lows),
+        };
+        let mapped: Vec<(String, String, f64, String)> = results
+            .into_iter()
+            .map(|(n, s)| (n, s.action, s.confidence, s.reason))
+            .collect();
+        (pid, mapped)
+    }).collect()
+}
+
 /// Python wrapper: backtest a SET of strategies for EACH product in parallel
 /// (rayon over products; within each product the strategy set is backtested
 /// sequentially). Returns a dict product_id -> Vec<(strategy_name, verdict_vec)>.
@@ -961,6 +1032,7 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(backtest_multi_py, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_universe_py, m)?)?;
     m.add_function(wrap_pyfunction!(backtest_universe_py, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_signals_from_candles_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_aggregate_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_weight_from_bt_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_default_weight_py, m)?)?;
