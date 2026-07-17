@@ -45,6 +45,7 @@ from strategy_engine import run_strategies as _run_strategies
 from strategy_engine import batch_signals_fast as _batch_signals_fast
 from strategy_engine import batch_signals_universe as _batch_signals_universe
 from strategy_engine import batch_signals_from_candles as _batch_signals_from_candles
+from strategy_engine import batch_signals_cached as _batch_signals_cached
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
@@ -4499,7 +4500,7 @@ class PortfolioOptimizer:
             # per-product calls. Falls back to the legacy per-product path.
             try:
                 if raw_batched:
-                    batch_results = _batch_signals_from_candles(
+                    batch_results = _batch_signals_cached(
                         [(pid, h["classification"]) for h, pid, _, _, _, _ in parsed_data],
                         raw_batched, None,
                     )

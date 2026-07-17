@@ -68,6 +68,9 @@ from strategies.adaptive_exec.session_decay_vwap import SessionDecayVwapStrategy
 from strategies.adaptive_exec.orderflow_turbulence import OrderFlowTurbulenceStrategy
 from strategies.adaptive_exec.inventory_skew import InventorySkewSignalStrategy
 from strategies.regime_adaptive_2.vol_kalman_switch import VolRegimeKalmanSwitchStrategy
+from strategies.derivatives_proxy.options_greeks_proxy import OptionsGreeksProxyStrategy
+from strategies.derivatives_proxy.cross_exchange_basis_proxy import CrossExchangeBasisProxyStrategy
+from strategies.derivatives_proxy.onchain_flow_proxy import OnchainFlowProxyStrategy
 from strategies.regime_adaptive_2.fractal_breakout import KatzFractalBreakoutStrategy
 from strategies.regime_adaptive_2.hurst_adaptive_lookback import HurstAdaptiveLookbackStrategy
 from strategies.crypto.funding_contrarian_proxy import FundingRateContrarianProxyStrategy
@@ -151,6 +154,9 @@ def load_strategies() -> list:
         VolRegimeKalmanSwitchStrategy(),
         KatzFractalBreakoutStrategy(),
         HurstAdaptiveLookbackStrategy(),
+        OptionsGreeksProxyStrategy(),
+        CrossExchangeBasisProxyStrategy(),
+        OnchainFlowProxyStrategy(),
     ]
     advanced = [GenericSpecStrategy(spec) for spec in advanced_specs()]
     strategies = base + advanced

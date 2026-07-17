@@ -3224,6 +3224,31 @@ def batch_signals_from_candles(
         return _batch_signals_from_candles_parse(products, candles_map, opens_map)
 
 
+def batch_signals_cached(products, candles_map, opens_map=None, max_len=100):
+    """Ingest raw candles into the persistent Rust buffer, then evaluate from cached Vecs.
+
+    Falls back to batch_signals_from_candles on any error / missing binding.
+    """
+    if not _HAS_RUST or not hasattr(_rust_core, "candle_store_eval_py"):
+        return batch_signals_from_candles(products, candles_map, opens_map)
+    try:
+        pids = [p for p, _ in products]
+        for pid in pids:
+            cands = candles_map.get(pid) or []
+            if cands:
+                _rust_core.candle_store_ingest_py(pid, cands)
+        raw = _rust_core.candle_store_eval_py(pids)
+        return {pid: {name: action for (name, action, conf, reason) in sigs} for pid, sigs in raw.items()}
+    except Exception as e:
+        logger.debug("batch_signals_cached failed, fallback: %s", e)
+        return batch_signals_from_candles(products, candles_map, opens_map)
+
+
+# Expose the persistent-buffer clear helper (None if the binding is absent).
+# NB: bound lazily at end of module (after _rust_core is imported).
+candle_store_clear = None
+
+
 def _batch_signals_from_candles_parse(
     products: List[Tuple[str, str]],
     candles_map: Dict[str, list],
@@ -3363,6 +3388,9 @@ except ImportError:  # pragma: no cover
     _HAS_RUST = False
     logger.info("Rust core not available — using pure Python")
     _rust_core = None  # type: ignore
+
+# Now that _rust_core is imported, bind the persistent-buffer clear helper.
+candle_store_clear = getattr(_rust_core, "candle_store_clear_py", None) if _HAS_RUST else None
 
 
 def _rust_backtest_strategy(
