@@ -3789,6 +3789,405 @@ pub fn vol_term_structure_carry(closes: &[f64]) -> Option<Signal> {
     )
 }
 
+// Python-style (un-smoothed) ADX: returns the raw DX value at the last bar,
+// exactly mirroring quality_c/indicators.adx() which returns `dx`.
+fn python_adx(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Option<f64> {
+    let n = closes.len();
+    if n < 2 * period + 1 {
+        return None;
+    }
+    let mut plus_dm = vec![0.0_f64; n];
+    let mut minus_dm = vec![0.0_f64; n];
+    let mut tr = vec![0.0_f64; n];
+    for i in 1..n {
+        let up = highs[i] - highs[i - 1];
+        let down = lows[i - 1] - lows[i];
+        plus_dm[i] = if up > down && up > 0.0 { up } else { 0.0 };
+        minus_dm[i] = if down > up && down > 0.0 { down } else { 0.0 };
+        tr[i] = (highs[i] - lows[i])
+            .max((highs[i] - closes[i - 1]).abs())
+            .max((lows[i] - closes[i - 1]).abs());
+    }
+    let smooth = |arr: &[f64], p: usize| -> f64 {
+        let out = arr[1..p + 1].iter().sum::<f64>() / p as f64;
+        let mut acc = out;
+        for i in p + 1..n {
+            acc = (acc * (p as f64 - 1.0) + arr[i]) / p as f64;
+        }
+        acc
+    };
+    let atr_s = smooth(&tr, period);
+    let pdm_s = smooth(&plus_dm, period);
+    let mdm_s = smooth(&minus_dm, period);
+    if atr_s <= 0.0 {
+        return None;
+    }
+    let pdi = 100.0 * pdm_s / atr_s;
+    let mdi = 100.0 * mdm_s / atr_s;
+    Some(100.0 * (pdi - mdi).abs() / (pdi + mdi + 1e-9))
+}
+
+/// ── Ported Q-A1: Fisher Transform on de-noised stochastic ──────────
+/// Python: FisherTransformStochStrategy (id "FisherTransformStochStrategy")
+/// Stateless reconstruction: trailing `smooth` stochastics over the last
+/// `smooth` bars (the buffer is rebuilt deterministically each call).
+pub fn fisher_transform_stoch(closes: &[f64]) -> Option<Signal> {
+    let period = 10usize;
+    let smooth = 4usize;
+    let trigger = 1.2_f64;
+    let min_score = 0.6_f64;
+    let threshold = 0.05_f64;
+    if closes.len() < period + smooth + 2 {
+        return None;
+    }
+    let n = closes.len();
+    let mut buf: Vec<f64> = Vec::with_capacity(smooth);
+    for b in 0..smooth {
+        let i = n - smooth + b;
+        let lo = indicators::lowest(closes, period);
+        let hi = indicators::highest(closes, period);
+        // Python window is closes[i-period:i+1]; replicate via a temp slice.
+        let start = i.saturating_sub(period);
+        let w = &closes[start..=i];
+        let l = w.iter().cloned().fold(f64::INFINITY, f64::min);
+        let h = w.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let raw = if h - l <= 1e-12 { 0.5 } else { (closes[i] - l) / (h - l) };
+        let _ = (lo, hi);
+        buf.push(raw);
+    }
+    let avg = buf.iter().sum::<f64>() / buf.len() as f64;
+    let x = (avg * 2.0 - 1.0).clamp(-0.999, 0.999);
+    let fish = 0.5 * ((1.0 + x).ln() - (1.0 - x).ln());
+    let score = if fish <= -trigger {
+        ((fish.abs() - trigger) / 2.0 + 0.2).min(1.0)
+    } else if fish >= trigger {
+        -((fish.abs() - trigger) / 2.0 + 0.2).min(1.0)
+    } else {
+        return None;
+    };
+    if score.abs() < min_score || score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("fisher={:.3}", fish))
+}
+
+/// ── Ported Q-A2: Chaikin Volatility contraction-breakout ──────────
+/// Python: ChaikinVolatilityBreakoutStrategy (id "ChaikinVolatilityBreakoutStrategy")
+pub fn chaikin_volatility_breakout(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let ema_period = 10usize;
+    let roc_period = 10usize;
+    let contraction = -0.3_f64;
+    let threshold = 0.05_f64;
+    let warmup = ema_period + roc_period + 2;
+    let n = closes.len();
+    if n < warmup + 1 || highs.len() < n || lows.len() < n {
+        return None;
+    }
+    let ranges: Vec<f64> = (0..n).map(|j| highs[j] - lows[j]).collect();
+    if ranges[n - 1] <= 0.0 || ranges[n - 1 - roc_period] <= 0.0 {
+        return None;
+    }
+    let roc = (ranges[n - 1] - ranges[n - 1 - roc_period]) / ranges[n - 1 - roc_period];
+    let base_start = n.saturating_sub(ema_period + roc_period + 5);
+    let base_slice = &ranges[base_start..];
+    let base = indicators::ema(base_slice, ema_period);
+    if !base.is_finite() || base <= 0.0 {
+        return None;
+    }
+    let baseline_roc = (ranges[n - 1] - base) / base;
+    let excess = roc - baseline_roc;
+    let ret = if closes[n - 2] > 0.0 { (closes[n - 1] - closes[n - 2]) / closes[n - 2] } else { 0.0 };
+    if excess >= contraction || ret == 0.0 {
+        return None;
+    }
+    let direction = if ret >= 0.0 { 1.0 } else { -1.0 };
+    let score = direction * (ret.abs() * 5.0 + 0.2).min(1.0);
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("vol_roc={:.3} excess={:.3} ret={:+.4}", roc, excess, ret))
+}
+
+/// ── Ported Q-A3: Williams %R momentum reversal ────────────────────
+/// Python: WilliamsPctRStrategy (id "WilliamsPctRStrategy")
+pub fn williams_pct_r(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let period = 14usize;
+    let oversold = -80.0_f64;
+    let overbought = -20.0_f64;
+    let threshold = 0.05_f64;
+    let n = closes.len();
+    if n < period + 2 || highs.len() < n || lows.len() < n {
+        return None;
+    }
+    let hi = indicators::highest(&highs[n - period - 1..], period + 1);
+    let lo = indicators::lowest(&lows[n - period - 1..], period + 1);
+    let wr = if hi - lo <= 1e-12 {
+        -50.0
+    } else {
+        (hi - closes[n - 1]) / (hi - lo) * -100.0
+    };
+    let score = if wr <= oversold {
+        -((oversold - wr) / 40.0 + 0.2).min(1.0)
+    } else if wr >= overbought {
+        ((wr - overbought) / 40.0 + 0.2).min(1.0)
+    } else {
+        return None;
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("%R={:.1}", wr))
+}
+
+/// ── Ported Q-A4: Short-period CCI reversal ───────────────────────
+/// Python: CciShortReversalStrategy (id "CciShortReversalStrategy")
+pub fn cci_short_reversal(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let period = 10usize;
+    let band = 80.0_f64;
+    let threshold = 0.05_f64;
+    let n = closes.len();
+    if n < period + 2 || highs.len() < n || lows.len() < n {
+        return None;
+    }
+    let start = n - period;
+    let tp: Vec<f64> = (start..n).map(|j| (highs[j] + lows[j] + closes[j]) / 3.0).collect();
+    let ma = tp.iter().sum::<f64>() / tp.len() as f64;
+    let md = tp.iter().map(|t| (t - ma).abs()).sum::<f64>() / tp.len() as f64;
+    if md <= 1e-12 {
+        return None;
+    }
+    let cci = (tp[tp.len() - 1] - ma) / (0.015 * md);
+    let score = if cci <= -band {
+        (-band - cci) / 100.0 + 0.2
+    } else if cci >= band {
+        -(-(cci - band) / 100.0 + 0.2)
+    } else {
+        return None;
+    };
+    let score = score.clamp(-1.0, 1.0);
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("cci={:.1}", cci))
+}
+
+/// ── Ported Q-A5: Session opening-range breakout ──────────────────
+/// Python: SessionOpeningRangeBreakoutStrategy (id "SessionOpeningRangeBreakoutStrategy")
+pub fn session_opening_range_breakout(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let open_bars = 12usize;
+    let lookback = 10usize;
+    let threshold = 0.05_f64;
+    let n = closes.len();
+    let warmup = open_bars + 2;
+    if n < warmup + 1 || highs.len() < n || lows.len() < n {
+        return None;
+    }
+    let start = n.saturating_sub(open_bars + lookback);
+    if n - start < open_bars + 1 {
+        return None;
+    }
+    let rng_hi = indicators::highest(&highs[start..start + open_bars], open_bars);
+    let rng_lo = indicators::lowest(&lows[start..start + open_bars], open_bars);
+    let rng = rng_hi - rng_lo;
+    if rng <= 1e-9 {
+        return None;
+    }
+    let price = closes[n - 1];
+    let score = if price > rng_hi {
+        ((price - rng_hi) / rng + 0.1).min(1.0)
+    } else if price < rng_lo {
+        -((rng_lo - price) / rng + 0.1).min(1.0)
+    } else {
+        return None;
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("price={:.2} range=[{:.2},{:.2}]", price, rng_lo, rng_hi))
+}
+
+/// ── Ported Q-C1: Bollinger double-touch reversion ─────────────────
+/// Python: BollingerDoubleTouchStrategy (id "BollingerDoubleTouchStrategy")
+pub fn bollinger_double_touch(closes: &[f64]) -> Option<Signal> {
+    let period = 20usize;
+    let num_std = 2.0_f64;
+    let min_pen = 0.002_f64;
+    let threshold = 0.05_f64;
+    if closes.len() < period + 2 {
+        return None;
+    }
+    let (lower, mean, upper, _) = indicators::bollinger(closes, period, num_std);
+    if !lower.is_finite() || !upper.is_finite() || !mean.is_finite() || mean <= 0.0 {
+        return None;
+    }
+    let price = closes[closes.len() - 1];
+    let score = if price < lower {
+        let pen = (lower - price) / (lower + 1e-9);
+        if pen >= min_pen { (0.4 + pen * 6.0).min(1.0) } else { 0.0 }
+    } else if price > upper {
+        let pen = (price - upper) / (upper + 1e-9);
+        if pen >= min_pen { -(0.4 + pen * 6.0).min(1.0) } else { 0.0 }
+    } else {
+        0.0
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("price={:.2} band reversion", price))
+}
+
+/// ── Ported Q-C2: Keltner-band reversion ──────────────────────────
+/// Python: KeltnerReversionStrategy (id "KeltnerReversionStrategy")
+pub fn keltner_reversion(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let period = 20usize;
+    let mult = 1.5_f64;
+    let threshold = 0.05_f64;
+    if closes.len() < period + 2 || highs.len() < period + 2 || lows.len() < period + 2 {
+        return None;
+    }
+    let mid = indicators::ema(closes, period);
+    let a = indicators::atr(highs, lows, closes, period);
+    if !mid.is_finite() || !a.is_finite() || a <= 0.0 {
+        return None;
+    }
+    let upper = mid + mult * a;
+    let lower = mid - mult * a;
+    let price = closes[closes.len() - 1];
+    let score = if price > upper {
+        -(0.3 + (price - upper) / (a + 1e-9) * 0.4).min(1.0)
+    } else if price < lower {
+        (0.3 + (lower - price) / (a + 1e-9) * 0.4).min(1.0)
+    } else {
+        0.0
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("price={:.2} < Keltner reversion", price))
+}
+
+/// ── Ported Q-C3: ATR-channel mean reversion ──────────────────────
+/// Python: AtrChannelReversionStrategy (id "AtrChannelReversionStrategy")
+pub fn atr_channel_reversion(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let period = 15usize;
+    let mult = 1.5_f64;
+    let threshold = 0.05_f64;
+    if closes.len() < period + 2 || highs.len() < period + 2 || lows.len() < period + 2 {
+        return None;
+    }
+    let window = &closes[closes.len() - period..];
+    let mid = window.iter().sum::<f64>() / window.len() as f64;
+    let a = indicators::atr(highs, lows, closes, period);
+    if !a.is_finite() || a <= 0.0 {
+        return None;
+    }
+    let upper = mid + mult * a;
+    let lower = mid - mult * a;
+    if upper <= lower {
+        return None;
+    }
+    let price = closes[closes.len() - 1];
+    let score = if price > upper {
+        -(0.3 + (price - upper) / (a + 1e-9) * 0.4).min(1.0)
+    } else if price < lower {
+        (0.3 + (lower - price) / (a + 1e-9) * 0.4).min(1.0)
+    } else {
+        0.0
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("price={:.2} < ATR-channel reversion", price))
+}
+
+/// ── Ported Q-C4: Stochastic(14,3) extreme reversion ──────────────
+/// Python: StochasticExtremeReversionStrategy (id "StochasticExtremeReversionStrategy")
+pub fn stochastic_extreme_reversion(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let k_period = 5usize;
+    let d_period = 3usize;
+    let buy_level = 15.0_f64;
+    let sell_level = 85.0_f64;
+    let threshold = 0.05_f64;
+    if closes.len() < k_period + d_period || highs.len() < closes.len() || lows.len() < closes.len() {
+        return None;
+    }
+    let (k, d) = indicators::stochastic_kd(closes, highs, lows, k_period, d_period);
+    if !k.is_finite() || !d.is_finite() {
+        return None;
+    }
+    let score = if d < buy_level {
+        ((buy_level - d) / buy_level + 0.3).min(1.0)
+    } else if d > sell_level {
+        -((d - sell_level) / (100.0 - sell_level) + 0.3).min(1.0)
+    } else {
+        0.0
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("slow%D={:.1}", d))
+}
+
+/// ── Ported Q-C5: Price-channel breakout-pullback fade ────────────
+/// Python: PriceChannelBreakoutPullbackStrategy (id "PriceChannelBreakoutPullbackStrategy")
+pub fn price_channel_breakout_pullback(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let period = 20usize;
+    let threshold = 0.05_f64;
+    let n = closes.len();
+    if n < period + 3 || highs.len() < period + 3 || lows.len() < period + 3 {
+        return None;
+    }
+    let ch_high = indicators::highest(&highs[n - (period + 2)..n - 2], period);
+    let ch_low = indicators::lowest(&lows[n - (period + 2)..n - 2], period);
+    let price = closes[n - 1];
+    let prev = closes[n - 2];
+    let score = if prev > ch_high && price <= ch_high {
+        -(0.4 + (prev - ch_high) / (ch_high + 1e-9) * 5.0).min(1.0)
+    } else if prev < ch_low && price >= ch_low {
+        (0.4 + (ch_low - prev) / (ch_low + 1e-9) * 5.0).min(1.0)
+    } else {
+        0.0
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("price={:.2} channel pullback", price))
+}
+
+/// ── Ported Q-C6: ADX-weak-range Bollinger fade ───────────────────
+/// Python: AdxWeakRangeFadeStrategy (id "AdxWeakRangeFadeStrategy")
+pub fn adx_weak_range_fade(closes: &[f64], highs: &[f64], lows: &[f64]) -> Option<Signal> {
+    let period = 20usize;
+    let num_std = 2.5_f64;
+    let adx_period = 14usize;
+    let adx_thr = 25.0_f64;
+    let threshold = 0.05_f64;
+    let need = period + adx_period + 1;
+    if closes.len() < need || highs.len() < need || lows.len() < need {
+        return None;
+    }
+    let a = python_adx(highs, lows, closes, adx_period);
+    if a.is_none() || a.unwrap() >= adx_thr {
+        return None;
+    }
+    let (lower, _mean, upper, _) = indicators::bollinger(closes, period, num_std);
+    if !lower.is_finite() || !upper.is_finite() || _mean.is_finite() == false || _mean <= 0.0 {
+        return None;
+    }
+    let price = closes[closes.len() - 1];
+    let score = if price < lower {
+        (0.4 + (lower - price) / (lower + 1e-9) * 4.0).min(1.0)
+    } else if price > upper {
+        -(0.4 + (price - upper) / (upper + 1e-9) * 4.0).min(1.0)
+    } else {
+        0.0
+    };
+    if score.abs() <= threshold {
+        return None;
+    }
+    signed_signal(score, threshold, format!("ADX<{} range fade price={:.2}", adx_thr, price))
+}
+
 /// ── Master Dispatch ───────────────────────────────────────────────
 
 /// Run a single strategy by name.
@@ -3900,6 +4299,18 @@ pub fn evaluate_opens(name: &str, closes: &[f64], opens: &[f64], volumes: &[f64]
         "MultiTFTrendConfluenceStrategy" => multitf_confluence(closes),
         "VolTargetOverlay" => vol_target_overlay(closes),
         "VolTermStructureCarryStrategy" => vol_term_structure_carry(closes),
+        // ── 11 quality (registry) strategies ──
+        "FisherTransformStochStrategy" => fisher_transform_stoch(closes),
+        "ChaikinVolatilityBreakoutStrategy" => chaikin_volatility_breakout(closes, highs, lows),
+        "WilliamsPctRStrategy" => williams_pct_r(closes, highs, lows),
+        "CciShortReversalStrategy" => cci_short_reversal(closes, highs, lows),
+        "SessionOpeningRangeBreakoutStrategy" => session_opening_range_breakout(closes, highs, lows),
+        "BollingerDoubleTouchStrategy" => bollinger_double_touch(closes),
+        "KeltnerReversionStrategy" => keltner_reversion(closes, highs, lows),
+        "AtrChannelReversionStrategy" => atr_channel_reversion(closes, highs, lows),
+        "StochasticExtremeReversionStrategy" => stochastic_extreme_reversion(closes, highs, lows),
+        "PriceChannelBreakoutPullbackStrategy" => price_channel_breakout_pullback(closes, highs, lows),
+        "AdxWeakRangeFadeStrategy" => adx_weak_range_fade(closes, highs, lows),
         _ => None,
     }
 }
@@ -4012,6 +4423,18 @@ pub fn evaluate_all_opens(closes: &[f64], opens: &[f64], volumes: &[f64],
         ("MultiTFTrendConfluenceStrategy",       |c, _, _, _, _| multitf_confluence(c)),
         ("VolTargetOverlay",                     |c, _, _, _, _| vol_target_overlay(c)),
         ("VolTermStructureCarryStrategy",        |c, _, _, _, _| vol_term_structure_carry(c)),
+        // ── 11 quality (registry) strategies ──
+        ("FisherTransformStochStrategy",         |c, _, _, _, _| fisher_transform_stoch(c)),
+        ("ChaikinVolatilityBreakoutStrategy",    |c, _, _, h, l| chaikin_volatility_breakout(c, h, l)),
+        ("WilliamsPctRStrategy",                 |c, _, _, h, l| williams_pct_r(c, h, l)),
+        ("CciShortReversalStrategy",             |c, _, _, h, l| cci_short_reversal(c, h, l)),
+        ("SessionOpeningRangeBreakoutStrategy",  |c, _, _, h, l| session_opening_range_breakout(c, h, l)),
+        ("BollingerDoubleTouchStrategy",         |c, _, _, _, _| bollinger_double_touch(c)),
+        ("KeltnerReversionStrategy",             |c, _, _, h, l| keltner_reversion(c, h, l)),
+        ("AtrChannelReversionStrategy",          |c, _, _, h, l| atr_channel_reversion(c, h, l)),
+        ("StochasticExtremeReversionStrategy",   |c, _, _, h, l| stochastic_extreme_reversion(c, h, l)),
+        ("PriceChannelBreakoutPullbackStrategy", |c, _, _, h, l| price_channel_breakout_pullback(c, h, l)),
+        ("AdxWeakRangeFadeStrategy",             |c, _, _, h, l| adx_weak_range_fade(c, h, l)),
     ];
 
     let mut results = Vec::new();
@@ -4103,6 +4526,12 @@ mod coverage_tests {
         "SampleEntropyComplexityRegimeStrategy","EwmaVarBreakout",
         "KatzFractalBreakout","MultiTFTrendConfluenceStrategy",
         "VolTargetOverlay","VolTermStructureCarryStrategy",
+        "FisherTransformStochStrategy","ChaikinVolatilityBreakoutStrategy",
+        "WilliamsPctRStrategy","CciShortReversalStrategy",
+        "SessionOpeningRangeBreakoutStrategy","BollingerDoubleTouchStrategy",
+        "KeltnerReversionStrategy","AtrChannelReversionStrategy",
+        "StochasticExtremeReversionStrategy","PriceChannelBreakoutPullbackStrategy",
+        "AdxWeakRangeFadeStrategy",
     ];
 
     #[test]

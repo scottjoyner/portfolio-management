@@ -2936,6 +2936,13 @@ _RUST_STRATEGIES: set = {
     "SampleEntropyComplexityRegimeStrategy", "EwmaVarBreakout",
     "KatzFractalBreakout", "MultiTFTrendConfluenceStrategy",
     "VolTargetOverlay", "VolTermStructureCarryStrategy",
+    # ── 11 ported quality (registry) strategies ──
+    "FisherTransformStochStrategy", "ChaikinVolatilityBreakoutStrategy",
+    "WilliamsPctRStrategy", "CciShortReversalStrategy",
+    "SessionOpeningRangeBreakoutStrategy", "BollingerDoubleTouchStrategy",
+    "KeltnerReversionStrategy", "AtrChannelReversionStrategy",
+    "StochasticExtremeReversionStrategy", "PriceChannelBreakoutPullbackStrategy",
+    "AdxWeakRangeFadeStrategy",
 }
 
 # ── Rust native: run ALL strategies on ALL products ────────────────

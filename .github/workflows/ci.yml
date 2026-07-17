@@ -25,7 +25,7 @@ jobs:
 
     - name: Run unit tests
       run: |
-        pytest tests/ --cov=trading_system --cov-report=xml
+        pytest tests/ trading_system/tests/unit/ --cov=trading_system --cov-report=xml
 
     - name: Upload coverage
       uses: codecov/codecov-action@v3
@@ -57,7 +57,7 @@ jobs:
 
     - name: Produce coverage data for the gate
       run: |
-        .venv/bin/coverage run --source=. -m pytest tests/ -q || pytest tests/ --cov=. --cov-report= -q
+        .venv/bin/coverage run --source=. -m pytest tests/ trading_system/tests/unit/ -q || pytest tests/ trading_system/tests/unit/ --cov=. --cov-report= -q
 
     - name: Run coverage gate (90% per-module)
       run: |
