@@ -62,6 +62,8 @@ APPROVALS_INBOX = ROOT / 'data' / 'approvals_inbox'
 STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
 CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
 EQUITY_SUMMARY_PATH = str(ROOT / 'data' / 'equity_summary.json')
+PAPER_TRADER_PATH = str(ROOT / 'data' / 'paper_trader_v4_state.json')
+HERMES_LEDGER_PATH = str(ROOT / 'data' / 'hermes_agent_ledger.json')
 OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data' / 'operator-actions.json'))
 OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
@@ -2241,21 +2243,144 @@ def api_crypto_divergence():
 
 
 def api_paper_trades():
-    PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
-    if not PAPER_TRADES_PATH.exists():
-        return {"trades": [], "total": 0, "settlement_summary": {}}
-    try:
-        trades = json.loads(PAPER_TRADES_PATH.read_text())
-    except (json.JSONDecodeError, OSError):
-        return {"trades": [], "total": 0, "settlement_summary": {}}
-    trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
-    settlement_summary = {}
-    try:
-        from event_markets.settlement import SettlementTracker
-        settlement_summary = SettlementTracker(trades_path=PAPER_TRADES_PATH).summary()
-    except Exception as e:
-        logger.debug("settlement summary failed: %s", e)
-    return {"trades": trades[:100], "total": len(trades), "settlement_summary": settlement_summary}
+    """Return recent paper trades from the bot's paper trader state."""
+    state = _load_json(PAPER_TRADER_PATH, {})
+    trades = state.get("paper_trades", []) or []
+    trades.sort(key=lambda t: t.get("ts", t.get("timestamp", "")), reverse=True)
+    return {"trades": trades[:100], "total": len(trades)}
+
+
+def api_paper_performance():
+    """Compute performance metrics from the paper trader's equity curve."""
+    state = _load_json(PAPER_TRADER_PATH, {})
+    equity_curve = state.get("paper_equity_curve", []) or []
+    starting = float(state.get("paper_starting_capital", 10000.0) or 10000.0)
+    equity = float(equity_curve[-1]) if equity_curve else float(state.get("equity", starting))
+    total_return = ((equity / starting) - 1.0) * 100.0 if starting else 0.0
+    wins = int(state.get("paper_wins", 0) or 0)
+    losses = int(state.get("paper_losses", 0) or 0)
+    total = wins + losses
+    win_rate = (wins / total * 100.0) if total else 0.0
+    max_dd = 0.0
+    peak = starting
+    for v in equity_curve:
+        v = float(v)
+        if v > peak:
+            peak = v
+        dd = (peak - v) / peak * 100.0 if peak else 0.0
+        if dd > max_dd:
+            max_dd = dd
+    sharpe = 0.0
+    if len(equity_curve) > 2:
+        rets = []
+        for i in range(1, len(equity_curve)):
+            prev = float(equity_curve[i-1])
+            cur = float(equity_curve[i])
+            if prev:
+                rets.append((cur - prev) / prev)
+        if rets:
+            import statistics
+            mu = statistics.mean(rets)
+            sd = statistics.stdev(rets) if len(rets) > 1 else 1e-9
+            sharpe = (mu / sd) * (252 ** 0.5) if sd else 0.0
+    return {
+        "starting_capital": round(starting, 2),
+        "equity": round(equity, 2),
+        "total_return_pct": round(total_return, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "sharpe": round(sharpe, 2),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 2),
+        "total_trades": total,
+        "equity_curve": [round(float(x), 2) for x in equity_curve[-500:]],
+    }
+
+
+def api_paper_positions():
+    """Return open paper positions with bracket info (stop/target/trail)."""
+    state = _load_json(PAPER_TRADER_PATH, {})
+    positions = state.get("paper_positions", []) or []
+    out = []
+    for pos in positions:
+        if isinstance(pos, dict):
+            qty = float(pos.get("qty", pos.get("quantity", 0)) or 0)
+            if abs(qty) < 1e-9:
+                continue
+            side = pos.get("side", "LONG" if qty > 0 else "SHORT")
+            entry = float(pos.get("entry_price", pos.get("avg_entry", pos.get("price", 0))) or 0)
+            mark = float(pos.get("mark_price", pos.get("current_price", entry)) or entry)
+            unreal = (mark - entry) * qty if side == "LONG" else (entry - mark) * qty
+            stop = pos.get("stop_price") or pos.get("stop_loss")
+            target = pos.get("take_profit")
+            trail = pos.get("trailing_stop")
+            sym = pos.get("product_id") or pos.get("symbol")
+            out.append({
+                "symbol": sym,
+                "side": side,
+                "quantity": round(qty, 6),
+                "entry_price": round(entry, 2),
+                "mark_price": round(mark, 2),
+                "unrealized_pnl": round(unreal, 2),
+                "unrealized_pnl_pct": round((unreal / (entry * abs(qty)) * 100) if entry and qty else 0, 2),
+                "stop_loss": round(float(stop), 2) if stop else None,
+                "take_profit": round(float(target), 2) if target else None,
+                "trailing_stop": round(float(trail), 2) if trail else None,
+                "strategy": pos.get("strategy"),
+            })
+    return {"positions": out, "count": len(out)}
+
+
+def api_brackets():
+    """Return bracket orders from paper positions (stop/target/trail)."""
+    paper_pos = _load_json(PAPER_TRADER_PATH, {}).get("paper_positions", []) or []
+    out = {}
+    for pos in paper_pos:
+        if isinstance(pos, dict) and (pos.get("stop_price") or pos.get("stop_loss") or pos.get("take_profit")):
+            sym = pos.get("product_id") or pos.get("symbol")
+            out[sym] = {
+                "stop_loss": pos.get("stop_price") or pos.get("stop_loss"),
+                "take_profit": pos.get("take_profit"),
+                "trailing_stop": pos.get("trailing_stop"),
+                "entry_price": pos.get("entry_price"),
+                "quantity": pos.get("qty"),
+                "side": pos.get("side"),
+            }
+    return {"brackets": out}
+
+
+def api_paper_hermes():
+    """Hermes agent paper performance for comparison."""
+    state = _load_json(HERMES_LEDGER_PATH, {})
+    equity_curve = state.get("equity_curve", []) or []
+    starting = float(state.get("starting_capital", 10000.0) or 10000.0)
+    equity = float(equity_curve[-1]) if equity_curve else float(state.get("equity", starting))
+    total_return = ((equity / starting) - 1.0) * 100.0 if starting else 0.0
+    trades = state.get("trades", []) or []
+    wins = sum(1 for t in trades if float(t.get("realized_pnl", 0) or 0) > 0)
+    losses = sum(1 for t in trades if float(t.get("realized_pnl", 0) or 0) < 0)
+    total = wins + losses
+    win_rate = (wins / total * 100.0) if total else 0.0
+    max_dd = 0.0
+    peak = starting
+    for v in equity_curve:
+        v = float(v)
+        if v > peak:
+            peak = v
+        dd = (peak - v) / peak * 100.0 if peak else 0.0
+        if dd > max_dd:
+            max_dd = dd
+    return {
+        "starting_capital": round(starting, 2),
+        "equity": round(equity, 2),
+        "total_return_pct": round(total_return, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 2),
+        "total_trades": total,
+        "equity_curve": [round(float(x), 2) for x in equity_curve[-500:]],
+    }
 
 
 def _competition_side(state: dict, is_bot: bool) -> dict:
@@ -2830,6 +2955,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/arbitrage/execution-status": lambda: api_execution_status(),
             "/crypto-divergence": lambda: api_crypto_divergence(),
             "/paper-trades": lambda: api_paper_trades(),
+            "/paper-performance": lambda: api_paper_performance(),
+            "/paper-positions": lambda: api_paper_positions(),
+            "/brackets": lambda: api_brackets(),
+            "/paper-hermes": lambda: api_paper_hermes(),
             "/trade-plans": lambda: api_trade_plans(),
             "/capital/bucket-presets": lambda: api_bucket_presets(),
             "/capital/buckets": lambda: _load_json(CAPITAL_BUCKETS_PATH, {"buckets": []}),

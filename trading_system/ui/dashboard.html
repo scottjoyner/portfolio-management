@@ -150,6 +150,18 @@
   .dl-edge.up{background:rgba(22,199,132,.15);color:var(--green)}
   .dl-edge.down{background:rgba(240,185,11,.15);color:var(--amber)}
   .dl-edge.dim{background:rgba(255,255,255,.05);color:var(--dim)}
+
+  /* Paper trading panels */
+  .pt table,.pp table{width:100%;border-collapse:collapse;font-size:11px}
+  .pt th,.pt td,.pp th,.pp td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left}
+  .pt th,.pp th{color:var(--dim);font-weight:600}
+  .pt td.up,.pp td.up{color:var(--green)} .pt td.down,.pp td.down{color:var(--red)}
+  .perf{display:flex;flex-direction:column;gap:8px;padding:10px}
+  .perf-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+  .perf-stats .stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center}
+  .perf-stats .k{display:block;font-size:9px;color:var(--dim);margin-bottom:2px}
+  .perf-stats .v{font-size:13px;font-weight:600}
+  #perf-chart{width:100%;height:100px;background:var(--bg);border:1px solid var(--line);border-radius:6px}
 </style>
 </head>
 <body>
@@ -242,6 +254,49 @@
         </div>
       </div>
       <div class="duel-leader" id="duel-leader"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Paper Trade History</span><span id="pt-count" class="dim">0</span></div>
+      <div class="pt">
+        <table>
+          <thead><tr>
+            <th class="l">Time</th><th class="l">Symbol</th><th class="l">Side</th>
+            <th>Qty</th><th>Price</th><th>P&L</th><th class="l">Strategy</th>
+          </tr></thead>
+          <tbody id="pt-body"></tbody>
+        </table>
+        <div class="empty" id="pt-empty">No paper trades</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Paper Performance</span></div>
+      <div class="perf">
+        <div class="perf-stats">
+          <div class="stat"><span class="k">Return</span><span class="v mono" id="perf-ret">--</span></div>
+          <div class="stat"><span class="k">Max DD</span><span class="v mono" id="perf-dd">--</span></div>
+          <div class="stat"><span class="k">Sharpe</span><span class="v mono" id="perf-sharpe">--</span></div>
+          <div class="stat"><span class="k">Win Rate</span><span class="v mono" id="perf-wr">--</span></div>
+          <div class="stat"><span class="k">Trades</span><span class="v mono" id="perf-trades">0</span></div>
+        </div>
+        <canvas id="perf-chart" width="400" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Paper Positions + Brackets</span><span id="pp-count" class="dim">0</span></div>
+      <div class="pp">
+        <table>
+          <thead><tr>
+            <th class="l">Symbol</th><th class="l">Side</th><th>Qty</th>
+            <th>Entry</th><th>Mark</th><th>Unreal P&L</th>
+            <th>Stop</th><th>Target</th><th class="l">Strat</th>
+          </tr></thead>
+          <tbody id="pp-body"></tbody>
+        </table>
+        <div class="empty" id="pp-empty">No open paper positions</div>
+      </div>
     </div>
   </div>
 
@@ -431,6 +486,70 @@ function fmt(n){
   return n.toPrecision(3);
 }
 
+async function loadPaperTrades(){
+  const d=await api("/paper-trades"); if(!d||!d.trades) return;
+  const t=d.trades; $("#pt-count").textContent = t.length;
+  const b=$("#pt-body"); b.innerHTML="";
+  $("#pt-empty").style.display = t.length ? "none" : "block";
+  t.slice(0,50).forEach(tr=>{
+    const ts = tr.ts ? new Date(tr.ts*1000).toLocaleTimeString() : "--";
+    const pnl = tr.pnl ? (tr.pnl>=0?"+":"")+fmt(tr.pnl) : "--";
+    const pnlCls = tr.pnl ? (tr.pnl>=0?"up":"down") : "";
+    const row=document.createElement("tr");
+    row.innerHTML=`<td class="l mono">${ts}</td>
+      <td class="l">${tr.product_id||"--"}</td>
+      <td class="l"><span class="tag ${tr.side==='SELL'?'pending':'long'}">${tr.side||"--"}</span></td>
+      <td class="mono">${fmt(tr.qty||tr.quantity)}</td>
+      <td class="mono">${tr.price?("$"+fmt(tr.price)):"--"}</td>
+      <td class="mono ${pnlCls}">${pnl}</td>
+      <td class="l mono">${tr.strategy||"--"}</td>
+      <td class="l">${(tr.reason||"").replace("entry:","")}</td>`;
+    b.appendChild(row);
+  });
+}
+
+async function loadPaperPerformance(){
+  const d=await api("/paper-performance"); if(!d) return;
+  const set=(id,v)=>{ const e=$("#"+id); if(e) e.textContent=v; };
+  set("perf-ret", (d.total_return_pct>=0?"+":"")+d.total_return_pct.toFixed(1)+"%");
+  set("perf-dd", d.max_drawdown_pct.toFixed(2)+"%");
+  set("perf-sharpe", d.sharpe.toFixed(2));
+  set("perf-wr", d.win_rate.toFixed(1)+"%");
+  set("perf-trades", d.total_trades);
+  const cv=document.getElementById("perf-chart"); if(!cv) return;
+  const ctx=cv.getContext("2d");
+  const ec=d.equity_curve||[];
+  if(!ec.length) return;
+  const w=cv.width,h=cv.height;
+  const min=Math.min(...ec), max=Math.max(...ec), rng=(max-min)||1;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle="#16c784"; ctx.lineWidth=1.2; ctx.beginPath();
+  ec.forEach((v,i)=>{ const px=i/(ec.length-1)*w, py=h-2-((v-min)/rng)*(h-4);
+    i?ctx.lineTo(px,py):ctx.moveTo(px,py); });
+  ctx.stroke();
+}
+
+async function loadPaperPositions(){
+  const d=await api("/paper-positions"); if(!d||!d.positions) return;
+  const p=d.positions; $("#pp-count").textContent = p.length;
+  const b=$("#pp-body"); b.innerHTML="";
+  $("#pp-empty").style.display = p.length ? "none" : "block";
+  p.forEach(pos=>{
+    const pnl = pos.unrealized_pnl; const pnlCls = pnl>=0?"up":"down";
+    const row=document.createElement("tr");
+    row.innerHTML=`<td class="l">${pos.symbol||"--"}</td>
+      <td class="l"><span class="tag ${pos.side==='SHORT'?'pending':'long'}">${pos.side||"--"}</span></td>
+      <td class="mono">${fmt(pos.quantity)}</td>
+      <td class="mono">${fmt(pos.entry_price)}</td>
+      <td class="mono">${fmt(pos.mark_price)}</td>
+      <td class="mono ${pnlCls}">${pnl>=0?"+":""}${fmt(pnl)}</td>
+      <td class="mono">${pos.stop_loss?fmt(pos.stop_loss):"--"}</td>
+      <td class="mono">${pos.take_profit?fmt(pos.take_profit):"--"}</td>
+      <td class="l mono">${pos.strategy||"--"}</td>`;
+    b.appendChild(row);
+  });
+}
+
 async function loadCompetition(){
   const d=await api("/competition"); if(!d||!d.bot) return;
   const b=d.bot,h=d.hermes;
@@ -465,6 +584,9 @@ async function tick(){
   await loadPositions();
   await loadWatchlist();
   await loadCompetition();
+  await loadPaperTrades();
+  await loadPaperPerformance();
+  await loadPaperPositions();
   lastRefresh=Date.now();
 }
 function ageLoop(){
