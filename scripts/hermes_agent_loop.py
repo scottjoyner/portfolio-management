@@ -46,6 +46,10 @@ HOURS = 5
 # momentum thresholds: smaller in RANGE (fade extremes), larger in TREND (confirm)
 MOM_TREND = 0.004   # 0.4%
 MOM_RANGE = 0.007   # 0.7% (stronger extreme to fade in range)
+# BTC entry bar (2026-07-17): BTC must show >= this |momentum| over the 120h
+# window before we commit capital. Higher than the generic MOM_TREND floor to
+# stop marginal-drift longs that immediately stop out and grind P&L.
+BTC_MIN_MOM = 0.015   # 1.5%
 # Trade at the full cap (fees are ~0.24% round-trip; larger notional dilutes
 # fee drag — profit mandate). MAX_NOTIONAL is the inherited safety cap.
 NOTIONAL_PER_SIGNAL = round(MAX_NOTIONAL, 2)
@@ -109,13 +113,21 @@ TP_LONG = 0.040    # +4.0% take-profit on longs (let winners run, bot-style)
 SL_LONG = -0.010   # -1.0% stop-loss on longs (cut losers small)
 TP_SHORT = -0.040  # -4.0% take-profit on shorts
 SL_SHORT = 0.010   # +1.0% stop-loss on shorts
-TIMEOUT_RANGE = 8  # cycles (~2h) before giving up in range
-TIMEOUT_TREND = 12  # cycles (~3h) in trend
-# Breakeven lock: once price moves >=1.2% in our favor, tighten SL to entry.
-BE_LOCK = 0.012
+# CATASTROPHIC hard stop (2026-07-17): fires REGARDLESS of breakeven/trail state.
+# Because exits are only evaluated every ~15 min, price can gap between checks;
+# this is the backstop that guarantees a bounded loss per position even if the
+# breakeven lock or trailing logic would otherwise hold. Expressed in pnl-space
+# (negative = loss). Aggressive book => a hard -2.5% floor on any single trade.
+HARD_STOP = -0.025
+TIMEOUT_RANGE = 6  # cycles (~1.5h) before giving up in range (was 8 — cut dead trades faster)
+TIMEOUT_TREND = 10  # cycles (~2.5h) in trend (was 12)
+# Breakeven lock: once price moves >=0.8% in our favor, tighten SL to entry.
+# Tightened 1.2% -> 0.8% (2026-07-17): with only 15-min checks we can't react
+# intraday, so bank the "can't lose" state earlier.
+BE_LOCK = 0.008
 # Phase 18 (edge): trailing stop — once a winner is in profit, lock in gains by
 # closing if it retraces TRAIL_PCT from its peak profit. Only active after BE_LOCK.
-TRAIL_PCT = 0.018   # 1.8% drawdown from peak profit triggers exit (winners)
+TRAIL_PCT = 0.012   # 1.2% retrace from peak profit triggers exit (was 1.8%)
 MAX_ADDS = 2       # pyramid at most twice into a single winner
 # Vol-scaled TP multiplier: in low-vol/trending regimes let winners run further;
 # in choppy/extreme-vol regimes take profits sooner.
@@ -244,8 +256,16 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
     if cur_f <= 0:
         return False, ""
     is_short = pid.startswith("SHORT:")
-    # longs store cost_basis (notional); shorts store entry_price (mark)
-    entry = (pos.get("entry_price") if is_short else pos.get("cost_basis")) or 0.0
+    # Both longs and shorts store the fill PRICE in entry_price. (Bug fix
+    # 2026-07-17: longs previously read cost_basis here — the total NOTIONAL in
+    # dollars, not a price — so pnl=(cur-250)/250 computed a ~255x fake profit
+    # and instantly tripped TP on every long, every tick. Now both sides use the
+    # real entry price. Fall back to cost_basis/base as a last resort.)
+    entry = pos.get("entry_price") or 0.0
+    if entry <= 0:
+        base = pos.get("base", 0.0)
+        cb = pos.get("cost_basis", 0.0)
+        entry = (cb / base) if base > 1e-12 and cb > 0 else 0.0
     if entry <= 0:
         return False, ""
     # P&L fraction (long: (cur-entry)/entry; short: (entry-cur)/entry) — both in
@@ -283,6 +303,12 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
     if pnl > peak:
         peak = pnl
         pos["trail_peak"] = round(peak, 6)
+    # CATASTROPHIC hard stop — checked FIRST and unconditionally. Because exits
+    # are only evaluated every ~15 min, a position can gap far past its normal SL
+    # (or past a breakeven lock) between checks. This floor guarantees a bounded
+    # loss regardless of breakeven/trail state. Never suppressed.
+    if pnl <= HARD_STOP:
+        return True, "hardstop"
     trail_active = peak >= be_lock
     if trail_active and pnl <= peak - TRAIL_PCT:
         return True, "trail"
@@ -389,6 +415,11 @@ def run_once(verbose: bool = True) -> dict:
     bot_fills = bot_recent_fills(minutes=20)
     # Phase 19.7: bot's HOT strategies right now (same-team meta-endorsement).
     bot_hot = bot_hot_strategies(min_trades=3)
+    # Anti-churn (2026-07-17): assets whose position we CLOSE this tick must not
+    # be re-opened by the entry scan in the SAME tick — otherwise a still-valid
+    # momentum signal round-trips the position (close+reopen) and pays double fees
+    # for no net change. One-tick cooldown; the asset is eligible again next run.
+    closed_this_tick: set[str] = set()
     for pid, pos in list(led.get("positions", {}).items()):
         if pos.get("base", 0.0) <= 1e-12:
             continue
@@ -439,6 +470,7 @@ def run_once(verbose: bool = True) -> dict:
                 res = close_position(pid, note=f"exit-{regime}-{reason}", price=px)
                 if verbose and res.get("action") == "closed":
                     print(f"[close] {pid} {reason} -> pnl={res.get('realized_pnl')}")
+            closed_this_tick.add(true_pid)  # anti-churn: block same-tick re-entry
             continue
         # Phase 18: ADD-TO-WINNER — pyramid into a confirmed winner the bot also
         # endorses. Only when: in profit >= 2%, local regime still favors us,
@@ -446,7 +478,8 @@ def run_once(verbose: bool = True) -> dict:
         # Phase 19.6: also ADD on a FLOW REVERSAL in our favor (CVD/OBV flipped
         # our way) even if not yet at +2% — catches momentum turning early.
         pos["trail_peak"] = pos.get("trail_peak", 0.0)
-        entry_px = (pos.get("entry_price") if is_short_pos else pos.get("cost_basis")) or 0.0
+        # entry PRICE (both sides store it in entry_price; cost_basis is dollars).
+        entry_px = pos.get("entry_price") or 0.0
         if entry_px > 0 and cur:
             pnl_now = ((cur - entry_px) / entry_px if not is_short_pos
                        else (entry_px - cur) / entry_px)
@@ -512,22 +545,35 @@ def run_once(verbose: bool = True) -> dict:
     # TREND_DOWN. Skip in RANGE/CRISIS. This stops whipsaw longs in a downtrend. ---
     btc_candles = _candles(client, BTC, 120)
     btc_local = local_regime(btc_candles)
-    if btc_local == "TREND_UP":
+    if BTC in closed_this_tick:
+        # Anti-churn: BTC was closed this tick — don't round-trip it back on.
+        results.append({"pair": BTC, "signal": "HOLD", "reason": "closed_this_tick"})
+    elif btc_local == "TREND_UP":
         side, mom, last = momentum_signal(btc_candles)
-        if side == "BUY":
+        # BTC entry bar (2026-07-17): require momentum >= BTC_MIN_MOM, not just the
+        # generic MOM_TREND floor. A marginal +0.4% drift kept opening a BTC long
+        # that immediately stopped out at -1% every few ticks, grinding P&L. Demand
+        # a real move before committing capital to BTC.
+        if side == "BUY" and abs(mom) >= BTC_MIN_MOM:
             rec = record_signal(BTC, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
                                 note=f"btc-localUP-mom{mom:.4f}",
                                 price=last if last and last > 0 else None)
             results.append({"pair": BTC, "signal": "BUY", "mom": round(mom, 5),
                            "result": rec.get("action", "?")})
+        else:
+            results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
+                           "reason": f"mom<{BTC_MIN_MOM}"})
     elif btc_local == "TREND_DOWN":
         side, mom, last = momentum_signal(btc_candles)
-        if side == "SELL":
+        if side == "SELL" and abs(mom) >= BTC_MIN_MOM:
             rec = open_short(BTC, NOTIONAL_PER_SIGNAL,
                              note=f"btc-localDOWN-mom{mom:.4f}",
                              price=last if last and last > 0 else None)
             results.append({"pair": BTC, "signal": "SHORT", "mom": round(mom, 5),
                            "result": rec.get("action", "?")})
+        else:
+            results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
+                           "reason": f"mom<{BTC_MIN_MOM}"})
     else:
         results.append({"pair": BTC, "signal": "HOLD", "reason": f"range:{btc_local}"})
 
@@ -539,6 +585,9 @@ def run_once(verbose: bool = True) -> dict:
     # Phase 8 boost: if the BOT provably wins on this asset with the SAME
     #   setup type the agent's indicator just confirmed -> boost conviction.
     for pair in ALTS:
+        # Anti-churn: skip any asset we just closed this tick (see closed_this_tick).
+        if pair in closed_this_tick:
+            continue
         try:
             ed = asset_edge(pair, bot_edge)
             # Wider window (120h @1h = 120 bars) so indicators have enough
