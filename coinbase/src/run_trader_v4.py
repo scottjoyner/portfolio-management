@@ -641,7 +641,13 @@ class EventTraderV4:
         self.paper_max_new_positions: int = 12
         self.paper_min_trade_usd: float = 100.0
         self.paper_min_edge_bps: float = 15.0
-        self._paper_state_path = Path("data/paper_trader_v4_state.json")
+        # Mode-aware state file: paper and live/approval books NEVER share a
+        # ledger. This prevents a paper state from being loaded into a live run
+        # (or vice versa) — a real money hazard at go-live.
+        _state_name = ("live_trader_v4_state.json"
+                       if self.mode in ("live", "approval")
+                       else "paper_trader_v4_state.json")
+        self._paper_state_path = Path("data") / _state_name
 
         # ── Per-strategy analytics ──────────────────────────────
         self.strategy_stats: Dict[str, Dict[str, float]] = {}
@@ -981,6 +987,18 @@ class EventTraderV4:
                                 f"-open_fees={_open_fees:.2f}). "
                                 f"State file is corrupt — fix before trading."
                             )
+                            # Drop a sentinel so the autostart watchdog will NOT
+                            # thrash-relaunch on this corrupt ledger.
+                            try:
+                                Path("data/trader_state_corrupt").write_text(
+                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode={self.mode} "
+                                    f"path={self._paper_state_path.name}\n"
+                                    f"cash ledger integrity fail: cash={_cash:.2f} "
+                                    f"expected={_expected:.2f}\n"
+                                )
+                                log.error("Wrote corruption sentinel (cash ledger).")
+                            except OSError as _se:
+                                log.warning("Could not write sentinel: %s", _se)
                     except (TypeError, ValueError) as _e:
                         validate_issues.append(f"Paper ledger integrity check error: {_e}")
             except (json.JSONDecodeError, OSError) as e:
@@ -1786,6 +1804,12 @@ class EventTraderV4:
                 }
                 for h in self._core_holdings.values()
             ],
+            # Schema-version + mode tag: lets _load_paper_state detect an
+            # old/incompatible state file (e.g. from a previous bot schema) or a
+            # mode mismatch (paper state loaded into a live run). Bump
+            # STATE_SCHEMA_VERSION if the saved structure changes incompatibly.
+            "state_schema_version": 2,
+            "mode": self.mode,
         }
 
     def _save_core_holdings_state(self) -> None:
@@ -1879,6 +1903,78 @@ class EventTraderV4:
         except Exception as e:
             log.debug("Failed to save paper state: %s", e)
 
+    def _state_structural_issues(self, state: dict) -> str:
+        """Return a reason string if the loaded state is structurally corrupt.
+
+        Catches the classes of corruption that slipped past the cash-ledger
+        check: old-schema files, mode mismatch (paper state into a live run),
+        and positions/trades that are missing required fields. Returns '' if OK.
+        """
+        # Mode mismatch — never load a paper book into a live run or vice versa.
+        _stored_mode = state.get("mode")
+        if _stored_mode and _stored_mode != self.mode:
+            return (f"mode mismatch: state file is '{_stored_mode}' but bot is "
+                    f"running '{self.mode}'")
+        # Old schema (pre-version-2) without a version tag AND structurally
+        # broken → treat as corrupt. A versioned file is trusted if it passes
+        # the field checks below.
+        _ver = state.get("state_schema_version", 0)
+        # Required scalar fields must be present and numeric.
+        for _k in ("paper_cash", "paper_starting_capital", "paper_realized_pnl"):
+            _v = state.get(_k)
+            if _v is None or (isinstance(_v, str) and _v.strip() == ""):
+                return f"missing/invalid field '{_k}'"
+            try:
+                float(_v)
+            except (TypeError, ValueError):
+                return f"non-numeric field '{_k}': {_v!r}"
+        # Positions must have a symbol and a usable mark/entry.
+        for _p in (state.get("paper_positions") or []):
+            if not isinstance(_p, dict):
+                return "non-dict position entry"
+            _sym = _p.get("product_id") or _p.get("symbol")
+            if not _sym:
+                return "position with null/empty symbol"
+            _mark = _p.get("mark_price")
+            _entry = _p.get("entry_price")
+            if _mark is None and _entry is None:
+                return f"position {_sym} has neither mark nor entry price"
+            try:
+                if _mark is not None:
+                    float(_mark)
+                if _entry is not None:
+                    float(_entry)
+            except (TypeError, ValueError):
+                return f"position {_sym} has non-numeric price"
+        # Trades list must be a list; entries must be dicts with a product_id.
+        _trades = state.get("paper_trades") or []
+        if not isinstance(_trades, list):
+            return "paper_trades is not a list"
+        for _t in _trades:
+            if not isinstance(_t, dict):
+                return "non-dict trade entry"
+            if not (_t.get("product_id") or _t.get("symbol")):
+                return "trade entry with null/empty symbol"
+        return ""
+
+    def _write_corrupt_sentinel(self, reason: str) -> None:
+        """Write a sentinel so the autostart watchdog will NOT thrash-relaunch.
+
+        The bot refuses to trade on a corrupt ledger and exits. Without this,
+        the every-5-min autostart would relaunch it, it would fail again, and
+        loop forever — overwriting the corrupt file each time. The sentinel
+        blocks relaunch until the operator removes it (and fixes the state).
+        """
+        try:
+            _sentinel = Path("data/trader_state_corrupt")
+            _sentinel.write_text(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode={self.mode} "
+                f"path={self._paper_state_path.name}\n{reason}\n"
+            )
+            log.error("Wrote corruption sentinel: %s", _sentinel)
+        except OSError as e:
+            log.warning("Could not write corruption sentinel: %s", e)
+
     def _load_paper_state(self) -> None:
         state = None
         for path in [self._paper_state_path,
@@ -1902,6 +1998,18 @@ class EventTraderV4:
 
         if state is None:
             log.warning("Paper state corrupt or missing — starting fresh")
+            return
+
+        # ── STRUCTURAL CORRUPTION GUARDS ────────────────────────────────
+        # We were bitten by an old-schema state file (positions with null
+        # symbols/marks, trades with no realized pnl) that the cash-ledger
+        # check passed but was structurally unusable. Refuse to trade on it.
+        _corrupt_reason = self._state_structural_issues(state)
+        if _corrupt_reason:
+            self._write_corrupt_sentinel(_corrupt_reason)
+            log.error("REFUSING to load paper state: %s — starting FRESH. "
+                      "Fix the state file (or remove it) before relaunching.",
+                      _corrupt_reason)
             return
 
         try:

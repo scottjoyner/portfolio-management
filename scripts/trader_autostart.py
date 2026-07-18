@@ -31,6 +31,12 @@ LOG = os.path.join(REPO, "logs", "trader_autostart.log")
 PROC_MATCH = "coinbase/src/run_trader_v4.py"
 # Kill-switch file — if present, do NOT relaunch (operator wants it stopped).
 KILL_FILE = os.path.join(REPO, "data", "trading_kill_switch")
+# Corruption sentinel: the bot writes this when it refuses to trade on a
+# corrupt/unrecoverable state file. While it exists we must NOT relaunch —
+# doing so would loop forever (bot fails → exits → we relaunch → fails again),
+# each time potentially clobbering the only copy of the state. The operator
+# must remove this file AND fix/replace the state before the bot will run.
+CORRUPT_SENTINEL = os.path.join(REPO, "data", "trader_state_corrupt")
 # Launch command. Start in PAPER by default for safety; flip --mode live only
 # after the API key is scoped and trivial-capital proof is done.
 #
@@ -87,6 +93,16 @@ def _trader_running() -> bool:
 def main() -> int:
     if os.path.exists(KILL_FILE):
         _log("Kill-switch file present — NOT relaunching trader.")
+        return 0
+    if os.path.exists(CORRUPT_SENTINEL):
+        reason = ""
+        try:
+            reason = open(CORRUPT_SENTINEL).read().strip().splitlines()
+            reason = reason[-1] if reason else ""
+        except OSError:
+            pass
+        _log("CORRUPTION SENTINEL present — NOT relaunching. Fix the state "
+             "file, then `rm %s`. Last reason: %s" % (CORRUPT_SENTINEL, reason))
         return 0
     if _trader_running():
         return 0  # already up, nothing to do
