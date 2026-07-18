@@ -18,11 +18,12 @@
     :root { --bg:#f8fafc; --panel:#fff; --panel2:#f1f5f9; --line:#e2e8f0; --txt:#1e293b; --dim:#64748b; --grid:#e2e8f0; --border:#cbd5e1; }
   }
   *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
+  html,body{margin:0}
   body{
     background:var(--bg);color:var(--txt);
     font:13px/1.5 var(--font-sans);
-    overflow:hidden;
+    /* Page scrolls as a whole — every panel shows its full data; no hidden rows. */
+    min-height:100vh;
   }
   .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
   .up{color:var(--green)} .down{color:var(--red)} .dim{color:var(--dim)}
@@ -33,7 +34,7 @@
     display:flex;align-items:center;gap:12px;padding:0 16px;
     background:linear-gradient(180deg,#101822 0%,#0c121b 100%);
     border-bottom:1px solid var(--line);height:52px;
-    position:relative;z-index:100;
+    position:sticky;top:0;z-index:100;
     flex-shrink:0;
   }
   .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.3px;font-size:14px}
@@ -58,42 +59,35 @@
   .stat .v{font-size:14px;font-weight:600;font-family:var(--font-mono)}
 
   /* ── Main Layout ── */
+  /* 3 columns; columns grow to fit content; the page scrolls, not individual
+     panels fighting for 1/N of a fixed viewport. */
   .grid{
     display:grid;
-    grid-template-columns:300px 1fr 380px;
-    grid-template-rows:1fr;
-    grid-template-areas:"left center right";
-    height:calc(100vh - 52px);
-    min-height:0;
+    grid-template-columns:320px minmax(0,1fr) 440px;
+    gap:10px;
+    padding:10px;
+    align-items:start;
   }
-  @media (max-width: 1500px) {
-    .grid{grid-template-columns:280px 1fr 340px}
-  }
-  @media (max-width: 1300px) {
-    .grid{grid-template-columns:1fr;grid-template-areas:"center""left""right"}
-  }
-  @media (max-width: 900px) {
-    .topbar{flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
-    .stat{min-width:60px}
+  @media (max-width: 1400px) { .grid{grid-template-columns:280px minmax(0,1fr) 380px} }
+  @media (max-width: 1100px) {
+    .grid{grid-template-columns:1fr}
   }
 
   .col{
-    display:flex;flex-direction:column;
-    min-height:0;min-width:0;
-    background:var(--panel);
+    display:flex;flex-direction:column;gap:10px;
+    min-width:0;
   }
-  .col.left{grid-area:left;border-right:1px solid var(--line)}
-  .col.center{grid-area:center;background:var(--bg)}
-  .col.right{grid-area:right;border-left:1px solid var(--line)}
 
   /* ── Panels ── */
   .panel{
     display:flex;flex-direction:column;
-    flex:1 1 auto;
-    min-height:0;
-    border-bottom:1px solid var(--line);
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:10px;
+    overflow:hidden;
+    /* Natural height: show all content; the page scrolls if needed. */
+    flex:0 0 auto;
   }
-  .panel:last-child{border-bottom:none}
   .panel-h{
     display:flex;align-items:center;justify-content:space-between;
     padding:8px 12px;border-bottom:1px solid var(--line);
@@ -108,8 +102,6 @@
   }
   .panel-h button:hover{border-color:var(--accent);color:var(--accent)}
   .panel-content{
-    flex:1 1 auto;
-    overflow:auto;
     padding:8px;
     min-height:0;
   }
@@ -149,7 +141,7 @@
   }
   .tf button:hover{border-color:var(--accent);color:var(--accent)}
   .tf button.on{background:var(--accent);color:#04121f;border-color:var(--accent)}
-  .chart-wrap{position:relative;flex:1;min-height:0;background:var(--bg)}
+  .chart-wrap{position:relative;height:56vh;min-height:320px;background:var(--bg)}
   #chart{width:100%;height:100%;display:block}
   .xhair{
     position:absolute;pointer-events:none;background:rgba(10,14,20,.96);
@@ -159,7 +151,7 @@
   .xhair b{color:var(--accent)}
 
   /* ── Order Entry ── */
-  .oe{padding:12px;border-bottom:1px solid var(--line);flex-shrink:0}
+  .oe{padding:12px;flex-shrink:0}
   .oe label{display:block;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin:8px 0 3px;font-weight:500}
   .oe input,.oe select{
     width:100%;background:var(--bg);border:1px solid var(--line);color:var(--txt);
@@ -186,12 +178,14 @@
   .btn:disabled{opacity:.5;cursor:not-allowed}
   .oe-msg{margin-top:9px;font-size:11px;min-height:16px;font-family:var(--font-mono)}
   .oe-msg.ok{color:var(--green)} .oe-msg.err{color:var(--red)} .oe-msg.warn{color:var(--amber)}
-
   .oe-preview{margin-top:8px;padding:8px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;font-size:11px}
   .oe-preview-row{display:flex;justify-content:space-between;padding:2px 0;font-family:var(--font-mono)}
   .oe-preview-row.total{font-weight:600;border-top:1px solid var(--line);margin-top:4px;padding-top:6px}
 
   /* ── Tables ── */
+  .table-scroll{
+    max-height:300px;overflow:auto;margin:0 8px 8px;
+  }
   table{width:100%;border-collapse:collapse;font-size:11px}
   th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--grid);vertical-align:middle}
   th{color:var(--dim);text-transform:uppercase;font-size:9px;letter-spacing:.4px;font-weight:600;position:sticky;top:0;background:var(--panel2);z-index:1}
@@ -201,6 +195,7 @@
   .tag.short{background:rgba(234,57,67,.15);color:var(--red)}
   .tag.pending{background:rgba(240,185,11,.15);color:var(--amber)}
   .tag.closed{background:rgba(78,161,255,.15);color:var(--accent)}
+  .panel .table-scroll table th{background:var(--panel2)}
 
   .empty{padding:24px;color:var(--dim);text-align:center;font-size:11px}
   .panel-warn{padding:8px 12px;margin:8px;font-size:10px;color:var(--amber);background:rgba(240,185,11,.08);border:1px solid rgba(240,185,11,.25);border-radius:6px}
@@ -295,7 +290,7 @@
 
 <div class="grid">
   <!-- LEFT: Watchlist + Strategies + Risk -->
-  <div class="col left">
+  <div class="col">
     <div class="panel">
       <div class="panel-h"><span class="ttl">Watchlist</span><span id="wl-count" class="dim">0</span></div>
       <div class="panel-content" id="watchlist"></div>
@@ -310,25 +305,71 @@
     </div>
   </div>
 
-  <!-- CENTER: Chart -->
-  <div class="col center">
-    <div class="chart-h">
-      <span class="sym" id="chart-sym">BTC-USD</span>
-      <span class="px mono" id="chart-px">--</span>
-      <span class="chg mono" id="chart-chg">--</span>
-      <div class="tf" id="tf">
-        <button data-g="60">1m</button><button data-g="300">5m</button><button data-g="900">15m</button>
-        <button data-g="3600" class="on">1H</button><button data-g="21600">6H</button><button data-g="86400">1D</button>
+  <!-- CENTER: Chart + Competition + open positions -->
+  <div class="col">
+    <div class="panel">
+      <div class="chart-h">
+        <span class="sym" id="chart-sym">BTC-USD</span>
+        <span class="px mono" id="chart-px">--</span>
+        <span class="chg mono" id="chart-chg">--</span>
+        <div class="tf" id="tf">
+          <button data-g="60">1m</button><button data-g="300">5m</button><button data-g="900">15m</button>
+          <button data-g="3600" class="on">1H</button><button data-g="21600">6H</button><button data-g="86400">1D</button>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+        <div class="xhair" id="xhair"></div>
       </div>
     </div>
-    <div class="chart-wrap">
-      <canvas id="chart"></canvas>
-      <div class="xhair" id="xhair"></div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Bot vs Hermes</span><span id="duel-age" class="dim">—</span></div>
+      <div class="panel-content">
+        <div class="duel">
+        <div class="duel-side" id="duel-bot-side">
+          <div class="ds-label bot">Trading Bot</div>
+          <div class="ds-ret mono up" id="bot-ret">--</div>
+          <div class="ds-sub mono">wr <span id="bot-wr">--</span> · <span id="bot-trades">0</span> trades</div>
+          <div class="ds-pnl mono">P&amp;L <span id="bot-pnl">--</span></div>
+        </div>
+        <div class="duel-vs">vs</div>
+        <div class="duel-side" id="duel-hermes-side">
+          <div class="ds-label hermes">Hermes Agent</div>
+          <div class="ds-ret mono" id="hermes-ret">--</div>
+          <div class="ds-sub mono">wr <span id="hermes-wr">--</span> · <span id="hermes-trades">0</span> trades</div>
+          <div class="ds-pnl mono">P&amp;L <span id="hermes-pnl">--</span></div>
+        </div>
+      </div>
+      <div class="duel-leader" id="duel-leader"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Open Positions — Bot</span><span id="bot-pos-count" class="dim">0</span></div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uP&amp;L</th></tr></thead>
+          <tbody id="bot-pos-body"></tbody>
+        </table>
+        <div class="empty" id="bot-pos-empty">No open positions</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Open Positions — Hermes</span><span id="hermes-pos-count" class="dim">0</span></div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uP&amp;L</th><th>Lev</th></tr></thead>
+          <tbody id="hermes-pos-body"></tbody>
+        </table>
+        <div class="empty" id="hermes-pos-empty">No open positions</div>
+      </div>
     </div>
   </div>
 
-  <!-- RIGHT: Order Entry + Positions + Paper Panels -->
-  <div class="col right">
+  <!-- RIGHT: Order Entry + paper book panels -->
+  <div class="col">
     <div class="panel">
       <div class="panel-h"><span class="ttl">Order Ticket</span></div>
       <div class="panel-content">
@@ -351,9 +392,10 @@
         </div>
       </div>
     </div>
+
     <div class="panel">
       <div class="panel-h"><span class="ttl">Positions</span><span id="bl-count" class="dim">0</span></div>
-      <div class="panel-content">
+      <div class="table-scroll">
         <table>
           <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>P&L%</th></tr></thead>
           <tbody id="bl-body"></tbody>
@@ -361,51 +403,10 @@
         <div class="empty" id="bl-empty">No open positions</div>
       </div>
     </div>
-    <div class="panel">
-      <div class="panel-h"><span class="ttl">Bot vs Hermes</span><span id="duel-age" class="dim">—</span></div>
-      <div class="panel-content">
-        <div class="duel">
-        <div class="duel-side" id="duel-bot-side">
-          <div class="ds-label bot">Trading Bot</div>
-          <div class="ds-ret mono up" id="bot-ret">--</div>
-          <div class="ds-sub mono">wr <span id="bot-wr">--</span> · <span id="bot-trades">0</span> trades</div>
-          <div class="ds-pnl mono">P&amp;L <span id="bot-pnl">--</span></div>
-        </div>
-        <div class="duel-vs">vs</div>
-        <div class="duel-side" id="duel-hermes-side">
-          <div class="ds-label hermes">Hermes Agent</div>
-          <div class="ds-ret mono" id="hermes-ret">--</div>
-          <div class="ds-sub mono">wr <span id="hermes-wr">--</span> · <span id="hermes-trades">0</span> trades</div>
-          <div class="ds-pnl mono">P&amp;L <span id="hermes-pnl">--</span></div>
-        </div>
-      </div>
-<div class="duel-leader" id="duel-leader"></div>
-        </div>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-h"><span class="ttl">Open Positions — Bot</span><span id="bot-pos-count" class="dim">0</span></div>
-      <div class="panel-content">
-        <table>
-          <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uP&amp;L</th></tr></thead>
-          <tbody id="bot-pos-body"></tbody>
-        </table>
-        <div class="empty" id="bot-pos-empty">No open positions</div>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-h"><span class="ttl">Open Positions — Hermes</span><span id="hermes-pos-count" class="dim">0</span></div>
-      <div class="panel-content">
-        <table>
-          <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uP&amp;L</th><th>Lev</th></tr></thead>
-          <tbody id="hermes-pos-body"></tbody>
-        </table>
-        <div class="empty" id="hermes-pos-empty">No open positions</div>
-      </div>
-    </div>
+
     <div class="panel">
       <div class="panel-h"><span class="ttl">Paper Trades</span><span id="pt-count" class="dim">0</span></div>
-      <div class="panel-content">
+      <div class="table-scroll">
         <table>
           <thead><tr><th class="l">Time</th><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Price</th><th>P&L</th><th class="l">Strategy</th></tr></thead>
           <tbody id="pt-body"></tbody>
@@ -413,6 +414,7 @@
         <div class="empty" id="pt-empty">No paper trades</div>
       </div>
     </div>
+
     <div class="panel">
       <div class="panel-h"><span class="ttl">Paper Performance</span></div>
       <div class="panel-content">
@@ -428,9 +430,10 @@
         </div>
       </div>
     </div>
+
     <div class="panel">
       <div class="panel-h"><span class="ttl">Paper Positions + Brackets</span><span id="pp-count" class="dim">0</span></div>
-      <div class="panel-content">
+      <div class="table-scroll">
         <table>
           <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>Unreal P&L</th><th>Stop</th><th>Target</th><th class="l">Strat</th></tr></thead>
           <tbody id="pp-body"></tbody>
@@ -929,7 +932,7 @@ async function loadCompetition() {
     row.className = "dl-row";
     row.innerHTML = `
       <span class="dl-sym ${edge==="bot"?"up":(edge==="hermes"?"down":"dim")}">${r.strategy}</span>
-      <span class="dl-bot mono">${r.bot_pnl>=0?"+":"-"}${fmt(Math.abs(r.bot_pnl))}</span>
+      <span class="dl-bot mono">${r.bot_pnl>=0?"+":"-"}</span>
       <span class="dl-her mono">${r.hermes_pnl!=null?(r.hermes_pnl>=0?"+":"-")+fmt(Math.abs(r.hermes_pnl)):"·"}</span>
       <span class="dl-edge ${edge}">${edge==="bot"?"BOT":(edge==="hermes"?"HER":"TIE")}</span>
     `;

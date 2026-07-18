@@ -33,11 +33,27 @@ PROC_MATCH = "coinbase/src/run_trader_v4.py"
 KILL_FILE = os.path.join(REPO, "data", "trading_kill_switch")
 # Launch command. Start in PAPER by default for safety; flip --mode live only
 # after the API key is scoped and trivial-capital proof is done.
+#
+# ── GO-LIVE FLIP (manual, do NOT auto-flip) ──
+# When Scott has (1) scoped the Coinbase key trade-only + IP allowlist +
+# withdrawals OFF, and (2) proven trivial real capital executes as paper does:
+#   - Replace LAUNCH below with LAUNCH_LIVE (or just change "paper"->"live" and
+#     the log path to logs/run_trader_v4_live.log), then
+#   - touch data/trading_kill_switch; wait for the running paper bot to exit;
+#     the next autostart tick relaunches in LIVE mode.
+# The cronjob (every 5 min + @reboot) then keeps the LIVE bot self-healing.
 LAUNCH = [
     sys.executable, "coinbase/src/run_trader_v4.py",
     "--mode", "paper",
     "--log-file", "logs/run_trader_v4_paper.log",
 ]
+# LIVE variant — commented out until go-live. Same hardened posture; just real
+# money + a dedicated live log so paper/live state never collide.
+# LAUNCH_LIVE = [
+#     sys.executable, "coinbase/src/run_trader_v4.py",
+#     "--mode", "live",
+#     "--log-file", "logs/run_trader_v4_live.log",
+# ]
 
 
 def _log(msg: str) -> None:
