@@ -8,7 +8,7 @@
 set -u
 cd /home/scott/git/portfolio-management || exit 1
 export AGENT_LEVERAGE="${AGENT_LEVERAGE:-3.0}"
-export MAX_NOTIONAL_PER_TRADE_USD="${MAX_NOTIONAL_PER_TRADE_USD:-250}"
+export MAX_NOTIONAL_PER_TRADE_USD="${MAX_NOTIONAL_PER_TRADE_USD:-1000}"
 OUT=$(.venv/bin/python scripts/hermes_agent_loop.py --quiet 2>&1)
 # Print only if a paper fill was recorded this iteration
 if echo "$OUT" | grep -qE "signal_recorded|short_opened"; then

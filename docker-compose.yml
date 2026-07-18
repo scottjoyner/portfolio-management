@@ -41,6 +41,10 @@ services:
     volumes:
       - ./data:/app/data
       - ./state:/app/state
+      # Bind-mount the live dashboard source so host edits are picked up on
+      # container restart (otherwise source is baked into the image at build time).
+      - ./trading_system/ui/dashboard_server.py:/app/trading_system/ui/dashboard_server.py:ro
+      - ./trading_system/ui/dashboard.html:/app/trading_system/ui/dashboard.html:ro
     environment:
       - PYTHONUNBUFFERED=1
       - OPERATOR_ACTIONS_PATH=/app/data/operator-actions.json

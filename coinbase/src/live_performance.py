@@ -188,12 +188,15 @@ class LivePerformanceTracker:
         return rec.disabled
 
     def auto_disable(self, min_trades: int = 10, max_loss_streak: int = 5,
-                     min_win_rate: float = 0.25) -> int:
+                     min_win_rate: float = 0.25, max_loss_pnl: float = -500.0) -> int:
         """Auto-disable strategies that are clearly failing.
 
-        Disable if:
+        Disable if ANY of:
         - Enough trades AND win rate below threshold
         - OR consecutive losses exceed max streak
+        - OR absolute realized loss exceeds max_loss_pnl (regardless of trade
+          count) — a single strategy bleeding -$500+ must halt immediately,
+          not wait for 10 trades to accumulate.
         """
         count = 0
         with self._lock:
@@ -205,6 +208,14 @@ class LivePerformanceTracker:
                     count += 1
                 elif abs(rec.worst_streak) >= max_loss_streak:
                     rec.disable(f"worst_streak={rec.worst_streak} >= {max_loss_streak}")
+                    count += 1
+                elif rec.total_pnl < max_loss_pnl:
+                    # Absolute-loss guard: a strategy that has lost more than
+                    # max_loss_pnl (e.g. -$500) must be stopped NOW, even with
+                    # few trades. Without this, a pair like vwap_revert/FIS-USD
+                    # can bleed -$2,894 across 5 trades and keep trading because
+                    # it never reached the min_trades=10 disable threshold.
+                    rec.disable(f"total_pnl={rec.total_pnl:.2f} < {max_loss_pnl:.2f} (absolute loss cap)")
                     count += 1
         return count
 
@@ -255,6 +266,19 @@ class LivePerformanceTracker:
                     pnl += rec.total_pnl
         win_rate = (wins / trades) if trades else 0.0
         return {"trades": trades, "wins": wins, "win_rate": win_rate, "total_pnl": pnl}
+
+    def strategy_total_pnl(self, strategy: str) -> float:
+        """Sum of live realized PnL for a strategy across ALL its product pairs.
+
+        Used by the trader's concentration guard to cap how much of the book a
+        single strategy may carry (anti-fragility against lucky low-sample runs).
+        """
+        total = 0.0
+        with self._lock:
+            for rec in self._records.values():
+                if rec.strategy == strategy:
+                    total += rec.total_pnl
+        return total
 
     def is_strategy_disabled(self, strategy: str) -> bool:
         with self._lock:

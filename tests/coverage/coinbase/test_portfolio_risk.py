@@ -113,9 +113,15 @@ class TestCheckPreTrade(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_cluster_scale(self):
+        # Fresh BTC-USD, $3,500 requested on $10k equity.
+        # Independent limits: cluster 30%=$3,000, single-asset 10%=$1,000,
+        # gross 1.5x=$15,000. The tightest (single-asset) binds -> scaled to $1,000.
+        # NOTE: prior code early-returned at the cluster scale-down and NEVER
+        # evaluated the single-asset limit, so it wrongly returned $3,000. The
+        # corrected check_pre_trade evaluates every limit and takes the minimum.
         ok, reason, adj = self.mgr.check_pre_trade("BTC-USD", "LONG", 3500.0, 50.0, 10000.0)
         self.assertTrue(ok)
-        self.assertEqual(adj, 3000.0)
+        self.assertEqual(adj, 1000.0)
         self.assertIn("scaled", reason)
 
     def test_cluster_reject(self):

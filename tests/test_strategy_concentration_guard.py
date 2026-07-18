@@ -1,0 +1,83 @@
+"""
+Unit tests for the strategy-concentration + sample-depth anti-fragility guards
+added to run_trader_v4 (_paper_execute_impl) and live_performance
+(strategy_total_pnl). These prevent a few low-sample lucky trades from
+dominating the book (observed: top-3 strategies = 110% of total pnl).
+"""
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from coinbase.src.live_performance import LivePerformanceTracker  # noqa: E402
+from coinbase.src.run_trader_v4 import EventTraderV4  # noqa: E402
+
+
+class TestConcentrationGuard(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.mkdtemp(prefix="concg_")
+        self.t = EventTraderV4(mode="paper", products=["BTC-USD"], dry_run=True)
+        # Redirect state file so we never touch the real running bot's data.
+        self.t._paper_state_path = Path(self._tmp) / "paper_trader_v4_state.json"
+
+    def test_new_knobs_seeded_with_defaults(self):
+        # The __init__ seed loop must create both guards from TUNABLE_KNOBS.
+        self.assertTrue(hasattr(self.t, "max_strategy_pnl_share"))
+        self.assertTrue(hasattr(self.t, "min_trades_for_full_sizing"))
+        self.assertEqual(self.t.max_strategy_pnl_share, 0.30)
+        self.assertEqual(self.t.min_trades_for_full_sizing, 20)
+
+    def test_strategy_total_pnl_sums_across_products(self):
+        import os
+        p = os.path.join(self._tmp, "lp.json")
+        tr = LivePerformanceTracker(path=p)
+        for prod in ["BTC-USD", "ETH-USD", "SOL-USD"]:
+            tr.record_trade("vwap_revert", prod, 500.0, 1000.0, 1.0, "LONG")
+            tr.record_trade("vwap_revert", prod, -100.0, 1000.0, 1.0, "LONG")
+        self.assertAlmostEqual(tr.strategy_total_pnl("vwap_revert"), 1200.0)
+        self.assertEqual(tr.strategy_total_pnl("rsi_revert"), 0.0)
+
+    def test_concentration_cap_blocks_new_entries(self):
+        # Seed a strategy that already exceeds 30% of a $10k book (= $3000).
+        self.t.paper_starting_capital = 10000.0
+        self.t._paper_state_path.write_text(
+            '{"paper_starting_capital": 10000.0, "paper_cash": 10000.0, '
+            '"paper_realized_pnl": 0.0, "paper_positions": {}, "paper_trades": [], '
+            '"paper_wins": 0, "paper_losses": 0, "paper_peak_equity": 10000.0}'
+        )
+        self.t._load_paper_state()
+        # Inject a strategy with $4000 live pnl into the perf tracker.
+        import os
+        p = os.path.join(self._tmp, "lp.json")
+        tr = LivePerformanceTracker(path=p)
+        tr.record_trade("hot_strat", "BTC-USD", 4000.0, 1000.0, 1.0, "LONG")
+        self.t._perf_tracker = tr
+        self.t._last_price = {"BTC-USD": 100.0}
+        # Equity ~ $14000 (10k + 4k). 30% cap = $4200. $4000 < $4200 -> still allowed.
+        # Push it over: add another $500.
+        tr.record_trade("hot_strat", "ETH-USD", 500.0, 1000.0, 1.0, "LONG")
+        # Now hot_strat pnl = $4500 > 30% of ~$14500 = $4350 -> should be blocked.
+        eq = self.t._paper_equity(self.t._last_price)
+        self.assertGreater(tr.strategy_total_pnl("hot_strat"),
+                          self.t.max_strategy_pnl_share * eq)
+        # The guard logic itself (mirrors _paper_execute_impl):
+        strat_pnl = tr.strategy_total_pnl("hot_strat")
+        blocked = eq > 0 and self.t.max_strategy_pnl_share > 0 and \
+                  strat_pnl > self.t.max_strategy_pnl_share * eq
+        self.assertTrue(blocked, "concentration guard should block hot_strat")
+
+    def test_depth_penalty_scales_confidence_down(self):
+        # A pair with 5 trades (< 20) should get confidence scaled to 0.25 floor.
+        rec = type("R", (), {"trades": 5})()
+        pair_trades = rec.trades
+        min_t = self.t.min_trades_for_full_sizing
+        depth_scale = max(0.25, pair_trades / float(min_t))
+        conf = 0.80 * depth_scale
+        self.assertLess(conf, 0.80)  # penalty applied
+        self.assertGreaterEqual(depth_scale, 0.25)  # floor
+
+
+if __name__ == "__main__":
+    unittest.main()

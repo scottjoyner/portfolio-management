@@ -346,9 +346,14 @@ def fetch_candles_rest_sync(
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    return loop.run_until_complete(
-        fetch_candles_rest(product_id, granularity, limit, timeout=timeout)
-    )
+    try:
+        return loop.run_until_complete(
+            fetch_candles_rest(product_id, granularity, limit, timeout=timeout)
+        )
+    finally:
+        # Don't try to close session here - it causes segfaults in thread pools
+        # The session is thread-local and will be cleaned up when thread exits
+        pass
 
 
 def fetch_candles_batch_sync(
@@ -363,6 +368,11 @@ def fetch_candles_batch_sync(
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    return loop.run_until_complete(
-        fetch_candles_batch(products, granularity, limit, max_concurrent=max_workers)
-    )
+    try:
+        return loop.run_until_complete(
+            fetch_candles_batch(products, granularity, limit, max_concurrent=max_workers)
+        )
+    finally:
+        # Don't try to close session here - it causes segfaults in thread pools
+        # The session is thread-local and will be cleaned up when thread exits
+        pass

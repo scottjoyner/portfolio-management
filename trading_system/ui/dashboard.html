@@ -203,6 +203,7 @@
   .tag.closed{background:rgba(78,161,255,.15);color:var(--accent)}
 
   .empty{padding:24px;color:var(--dim);text-align:center;font-size:11px}
+  .panel-warn{padding:8px 12px;margin:8px;font-size:10px;color:var(--amber);background:rgba(240,185,11,.08);border:1px solid rgba(240,185,11,.25);border-radius:6px}
 
   /* ── Duel Panel ── */
   .duel{display:flex;align-items:stretch;gap:8px;padding:10px 12px 4px}
@@ -213,6 +214,8 @@
   .ds-label.bot{color:var(--green)} .ds-label.hermes{color:var(--purple)}
   .ds-ret{font-size:24px;font-weight:700;margin:2px 0 4px;font-family:var(--font-mono)}
   .ds-sub{font-size:10px;color:var(--dim);font-family:var(--font-mono)}
+  .ds-pnl{font-size:11px;font-family:var(--font-mono);color:var(--dim);margin-top:3px}
+
   .duel-leader{padding:0 12px 12px}
   .dl-row{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;
     font-size:10px;padding:4px 6px;border-radius:6px;background:var(--panel2);margin-bottom:4px;border:1px solid var(--grid)}
@@ -366,16 +369,38 @@
           <div class="ds-label bot">Trading Bot</div>
           <div class="ds-ret mono up" id="bot-ret">--</div>
           <div class="ds-sub mono">wr <span id="bot-wr">--</span> · <span id="bot-trades">0</span> trades</div>
+          <div class="ds-pnl mono">P&amp;L <span id="bot-pnl">--</span></div>
         </div>
         <div class="duel-vs">vs</div>
         <div class="duel-side" id="duel-hermes-side">
           <div class="ds-label hermes">Hermes Agent</div>
           <div class="ds-ret mono" id="hermes-ret">--</div>
           <div class="ds-sub mono">wr <span id="hermes-wr">--</span> · <span id="hermes-trades">0</span> trades</div>
+          <div class="ds-pnl mono">P&amp;L <span id="hermes-pnl">--</span></div>
         </div>
       </div>
 <div class="duel-leader" id="duel-leader"></div>
         </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Open Positions — Bot</span><span id="bot-pos-count" class="dim">0</span></div>
+      <div class="panel-content">
+        <table>
+          <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uP&amp;L</th></tr></thead>
+          <tbody id="bot-pos-body"></tbody>
+        </table>
+        <div class="empty" id="bot-pos-empty">No open positions</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-h"><span class="ttl">Open Positions — Hermes</span><span id="hermes-pos-count" class="dim">0</span></div>
+      <div class="panel-content">
+        <table>
+          <thead><tr><th class="l">Symbol</th><th class="l">Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uP&amp;L</th><th>Lev</th></tr></thead>
+          <tbody id="hermes-pos-body"></tbody>
+        </table>
+        <div class="empty" id="hermes-pos-empty">No open positions</div>
       </div>
     </div>
     <div class="panel">
@@ -461,7 +486,25 @@ let state = {
 const GMAP = {60:"1m",300:"5m",900:"15m",3600:"1H",21600:"6H",86400:"1D"};
 const TF_KEYS = ["60","300","900","3600","21600","86400"];
 
-const api = (p, opts) => fetch(p, opts).then(r => r.ok?r.json():{}).catch(() => ({}));
+const api = (p, opts) => fetch(p, opts)
+  .then(r => r.ok ? r.json() : { _error: true, _status: r.status })
+  .catch(() => ({ _error: true }));
+
+function panelWarn(elId, msg) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (msg) {
+    if (!el.querySelector(".panel-warn")) {
+      const d = document.createElement("div");
+      d.className = "panel-warn";
+      d.textContent = msg;
+      el.appendChild(d);
+    }
+  } else {
+    const w = el.querySelector(".panel-warn");
+    if (w) w.remove();
+  }
+}
 
 function toast(msg, type="info") {
   const c = $("#toasts");
@@ -690,30 +733,36 @@ async function loadChart() {
 // ── Health / Top Bar ──
 async function loadHealth() {
   const h = await api("/health");
-  const ok = h && h.status === "healthy";
-  $("#live-dot").className = "dot " + (ok ? "live" : "bad");
-  $("#status-text").textContent = ok ? "live" : (h.status||"down");
+  // "degraded" (e.g. optimizer daemon heartbeat missing) still means the
+  // dashboard and its read-only feeds are live — only treat hard-down as bad.
+  const live = h && h.status !== "down" && h.status !== "error" && h.status !== "unavailable";
+  $("#live-dot").className = "dot " + (live ? "live" : "bad");
+  $("#status-text").textContent = live ? "live" : (h.status||"down");
 
+  let equity = null;
   const eq = await api("/equity-summary");
-  if (eq && (eq.total_value||eq.equity)) {
-    $("#h-equity").textContent = fmtUsd(eq.total_value||eq.equity);
+  if (eq && (eq.total_value||eq.equity)) equity = eq.total_value||eq.equity;
+
+  const acc = await api("/accounts");
+  if (equity==null && acc && acc.accounts && acc.accounts.length) {
+    equity = acc.accounts.reduce((s,a)=>s+(a.current_balance_usd||a.nav||0),0);
   }
+  if (equity!=null) $("#h-equity").textContent = fmtUsd(equity);
 
   const pos = await api("/positions");
   if (pos) {
     $("#h-pos").textContent = pos.total_positions ?? "--";
     const pnl = pos.total_unrealized_pnl_usd;
-    if (pnl!==undefined) {
+    if (pnl!==undefined && pnl!==null) {
       const e = $("#h-pnl");
       e.textContent = (pnl>=0?"+":"")+fmtUsd(pnl);
       e.className = "v mono " + (pnl>=0?"up":"down");
     }
   }
 
-  const acc = await api("/accounts");
   if (acc && acc.accounts && acc.accounts[0]) {
     const nav = acc.accounts.reduce((s,a)=>s+(a.nav||0),0);
-    $("#h-risk").textContent = fmtUsd(nav * 0.2);
+    if (nav>0) $("#h-risk").textContent = fmtUsd(nav * 0.2);
     $("#mode-sub").textContent = acc.accounts[0].mode || "paper";
   }
 }
@@ -721,12 +770,22 @@ async function loadHealth() {
 // ── Watchlist ──
 async function loadWatchlist() {
   const d = await api("/market/watchlist?limit=30");
+  if (d._error) {
+    panelWarn("watchlist", "⚠ live feed unreachable — showing last cached data");
+    return;
+  }
+  panelWarn("watchlist", null);
+  if (d.offline) {
+    panelWarn("watchlist", "⚠ offline — showing cached/mock candles");
+  }
   renderWatchlist(d.watchlist || []);
 }
 
 // ── Positions ──
 async function loadPositions() {
   const d = await api("/positions");
+  if (d._error) { panelWarn("bl-body", "⚠ feed error"); return; }
+  panelWarn("bl-body", null);
   const rows = d.positions || [];
   $("#bl-count").textContent = rows.length;
   const b = $("#bl-body");
@@ -750,6 +809,8 @@ async function loadPositions() {
 // ── Paper Trades ──
 async function loadPaperTrades() {
   const d = await api("/paper-trades");
+  if (d._error) { panelWarn("pt-body", "⚠ feed error"); return; }
+  panelWarn("pt-body", null);
   if (!d || !d.trades) return;
   const t = d.trades;
   $("#pt-count").textContent = t.length;
@@ -777,6 +838,7 @@ async function loadPaperTrades() {
 // ── Paper Performance ──
 async function loadPaperPerformance() {
   const d = await api("/paper-performance");
+  if (d._error) return;
   if (!d) return;
   const set = (id, v, cls) => { const e = $("#"+id); if (e) { e.textContent = v; if (cls) e.className = cls; } };
   set("perf-ret", fmtPct(d.total_return_pct));
@@ -807,6 +869,8 @@ async function loadPaperPerformance() {
 // ── Paper Positions ──
 async function loadPaperPositions() {
   const d = await api("/paper-positions");
+  if (d._error) { panelWarn("pp-body", "⚠ feed error"); return; }
+  panelWarn("pp-body", null);
   if (!d || !d.positions) return;
   const p = d.positions;
   $("#pp-count").textContent = p.length;
@@ -835,6 +899,8 @@ async function loadPaperPositions() {
 // ── Competition ──
 async function loadCompetition() {
   const d = await api("/competition");
+  if (d._error) { panelWarn("duel-leader", "⚠ feed error"); return; }
+  panelWarn("duel-leader", null);
   if (!d || !d.bot) return;
   const b = d.bot, h = d.hermes;
   const set = (id, v, cls) => { const e = $("#"+id); if (!e) return; e.textContent = v; if (cls) e.className = cls; };
@@ -844,7 +910,14 @@ async function loadCompetition() {
   set("hermes-wr", fmtPct(h.win_rate));
   set("bot-trades", b.trade_count);
   set("hermes-trades", h.trade_count);
+  set("bot-pnl", (b.realized_pnl>=0?"+$":"-$") + fmt(Math.abs(b.realized_pnl||0)));
+  set("hermes-pnl", (h.realized_pnl>=0?"+$":"-$") + fmt(Math.abs(h.realized_pnl||0)));
   $("#duel-age").textContent = d.updated_at ? ("@ "+d.updated_at.slice(11,19)+"Z") : "";
+
+  // Open positions — Bot
+  _renderPositions("bot-pos-body", "bot-pos-empty", "bot-pos-count", b.open_positions);
+  // Open positions — Hermes
+  _renderPositions("hermes-pos-body", "hermes-pos-empty", "hermes-pos-count", h.open_positions);
 
   const lb = d.leaderboard || [];
   const box = $("#duel-leader");
@@ -856,8 +929,8 @@ async function loadCompetition() {
     row.className = "dl-row";
     row.innerHTML = `
       <span class="dl-sym ${edge==="bot"?"up":(edge==="hermes"?"down":"dim")}">${r.strategy}</span>
-      <span class="dl-bot mono">${r.bot_pnl>=0?"+":""}${fmt(r.bot_pnl)}</span>
-      <span class="dl-her mono">${r.hermes_pnl>=0?"+":""}${fmt(r.hermes_pnl)}</span>
+      <span class="dl-bot mono">${r.bot_pnl>=0?"+":"-"}${fmt(Math.abs(r.bot_pnl))}</span>
+      <span class="dl-her mono">${r.hermes_pnl!=null?(r.hermes_pnl>=0?"+":"-")+fmt(Math.abs(r.hermes_pnl)):"·"}</span>
       <span class="dl-edge ${edge}">${edge==="bot"?"BOT":(edge==="hermes"?"HER":"TIE")}</span>
     `;
     box.appendChild(row);
@@ -869,9 +942,41 @@ async function loadCompetition() {
   $("#duel-hermes-side").classList.toggle("winner", h.return_pct > b.return_pct);
 }
 
+function _renderPositions(bodyId, emptyId, countId, positions) {
+  const body = $("#"+bodyId), empty = $("#"+emptyId), count = $("#"+countId);
+  if (!body) return;
+  body.innerHTML = "";
+  const pos = positions || [];
+  if (count) count.textContent = pos.length;
+  if (!pos.length) {
+    if (empty) empty.style.display = "";
+    return;
+  }
+  if (empty) empty.style.display = "none";
+  pos.forEach(p => {
+    const upl = p.unrealized_pnl;
+    const uplCls = upl==null ? "dim" : (upl>=0 ? "up" : "down");
+    const uplTxt = upl==null ? "·" : (upl>=0?"+":"-") + fmt(Math.abs(upl));
+    const levTxt = p.leverage ? p.leverage.toFixed(1) : "·";
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td class="l">${p.symbol}</td>
+      <td class="l">${p.side}</td>
+      <td>${fmt(p.qty)}</td>
+      <td>${fmt(p.entry)}</td>
+      <td>${p.mark?fmt(p.mark):"·"}</td>
+      <td class="mono ${uplCls}">${uplTxt}</td>
+      ${levTxt!=="·"?`<td class="mono">${levTxt}</td>`:""}
+    `;
+    body.appendChild(row);
+  });
+}
+
 // ── Strategies ──
 async function loadStrategies() {
   const d = await api("/strategies/performance");
+  if (d._error) { panelWarn("strategies", "⚠ feed error"); return; }
+  panelWarn("strategies", null);
   if (!d || !d.strategies) return;
   const box = $("#strategies");
   box.innerHTML = "";

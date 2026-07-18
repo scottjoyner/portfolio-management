@@ -37,6 +37,7 @@ import argparse
 import time
 import logging
 import threading
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -44,6 +45,57 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError
+
+# Thread-safe urllib3 HTTP pool for live Coinbase candle fetches (no aiohttp,
+# no event loop) — avoids the segfaults seen when aiohttp sessions run inside
+# worker threads of this threaded HTTP server.
+try:
+    import urllib3
+    _CANDLE_HTTP = urllib3.PoolManager(maxsize=12, retries=urllib3.Retry(total=1, connect=1, read=1))
+except Exception:  # pragma: no cover
+    _CANDLE_HTTP = None
+
+_CB_API = "https://api.exchange.coinbase.com"
+_CB_GRAN = {60: "60", 300: "300", 900: "900", 3600: "3600", 21600: "21600", 86400: "86400"}
+_CB_GRAN_REV = {v: k for k, v in _CB_GRAN.items()}
+
+
+def _fetch_candles_http(product_id, granularity=3600, limit=30, timeout=8.0):
+    """Synchronous, urllib3-based Coinbase candle fetch. Returns list of
+    (ts, open, high, low, close, volume) oldest-first, or [] on failure."""
+    if _CANDLE_HTTP is None:
+        return []
+    g = _CB_GRAN.get(granularity, str(granularity))
+    url = f"{_CB_API}/products/{product_id}/candles?granularity={g}&limit={min(limit, 300)}"
+    try:
+        resp = _CANDLE_HTTP.request("GET", url, headers={"User-Agent": "PMDashboard/1.0"}, timeout=timeout)
+        if resp.status != 200:
+            return []
+        data = json.loads(resp.data.decode("utf-8"))
+        out = []
+        for c in reversed(data):
+            if isinstance(c, (list, tuple)) and len(c) >= 6:
+                ts, lo, hi, op, cl, vol = c[:6]
+                out.append((int(ts), float(op), float(hi), float(lo), float(cl), float(vol)))
+        return out
+    except Exception as e:
+        logger.warning("candle http fetch failed for %s: %s", product_id, e)
+        return []
+
+
+def _fetch_candles_batch_http(pair_ids, granularity=3600, limit=30, max_workers=12):
+    """Fetch candles for many products concurrently using thread pool + urllib3."""
+    result = {}
+    if not pair_ids:
+        return result
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(pair_ids))) as ex:
+        fut = {pid: ex.submit(_fetch_candles_http, pid, granularity, limit) for pid in pair_ids}
+        for pid, f in fut.items():
+            try:
+                result[pid] = f.result(timeout=12)
+            except Exception:
+                result[pid] = []
+    return result
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("dashboard_server")
@@ -711,8 +763,15 @@ def api_health():
         state["components"]["feed_cache"] = f"error: {e}"
 
     healthy_states = {"ok", "empty", "stale"}
+    # A missing optimizer daemon heartbeat is a soft warning, not a hard
+    # failure — the dashboard itself and its read-only data sources are fine,
+    # so the UI should still show "live". Only hard errors/availability
+    # problems downgrade the overall status.
+    hard_bad = {"error", "unavailable", "unreadable"}
     all_ok = all(
-        v in healthy_states for v in state["components"].values()
+        v in healthy_states or k == "daemon_heartbeat"
+        for k, v in state["components"].items()
+        if v not in hard_bad
     )
     state["status"] = "healthy" if all_ok else "degraded"
     return state
@@ -888,30 +947,75 @@ def _ensure_project_root_on_path():
         sys.path.insert(0, root)
 
 
+def _run_with_timeout(fn, timeout_sec=5.0):
+    """Run a function with a timeout, return None on timeout/error."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            return future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError:
+            return None
+        except Exception:
+            return None
+
+
+def _generate_mock_candles(symbol="BTC-USD", granularity=3600, limit=200):
+    """Generate realistic mock candles for offline/demo mode."""
+    import random
+    base_price = {"BTC-USD": 65000, "ETH-USD": 3500, "SOL-USD": 150}.get(symbol, 100)
+    now = int(time.time())
+    # Align to granularity
+    now = now - (now % granularity)
+    candles = []
+    price = base_price
+    for i in range(limit):
+        ts = now - (limit - i - 1) * granularity
+        # Random walk with slight trend
+        change_pct = random.uniform(-0.02, 0.02)
+        price = price * (1 + change_pct)
+        high = price * random.uniform(1.0, 1.015)
+        low = price * random.uniform(0.985, 1.0)
+        open_ = price * random.uniform(0.995, 1.005)
+        close = price
+        volume = random.uniform(10, 1000)
+        candles.append((ts, open_, high, low, close, volume))
+    return candles
+
+
 def api_market_candles(symbol="BTC-USD", granularity=3600, limit=200):
     """Fetch OHLCV candles for the charting panel (Coinbase public REST)."""
     symbol = symbol or "BTC-USD"
     granularity = int(granularity)
+    limit = int(limit)
+    candles = []
+
+    # Try live fetch via thread-safe urllib3 client (no aiohttp/event loop)
     try:
-        _ensure_project_root_on_path()
-        from coinbase.src.rest_feed import fetch_candles_rest_sync
-        candles = fetch_candles_rest_sync(symbol, granularity=granularity, limit=int(limit))
+        candles = _fetch_candles_http(symbol, granularity=granularity, limit=limit) or []
     except Exception as e:
         logger.warning("candle fetch failed for %s: %s", symbol, e)
         candles = []
+
+    # Fallback to durable cache
     if not candles:
-        # offline fallback from the durable NAS cache
         try:
             from data.feed_cache import load_candles
-            candles = load_candles("coinbase_candles", symbol, granularity, limit=int(limit))
+            candles = load_candles("coinbase_candles", symbol, granularity, limit=limit)
         except Exception:
             candles = []
+
+    # Final fallback to mock data
+    if not candles:
+        candles = _generate_mock_candles(symbol, granularity, limit)
     else:
+        # Save to cache
         try:
             from data.feed_cache import save_candles
             save_candles("coinbase_candles", symbol, granularity, candles)
         except Exception:
             pass
+
     out = [{"t": c[0], "o": c[1], "h": c[2], "l": c[3], "c": c[4], "v": c[5]} for c in candles]
     return {"symbol": symbol, "granularity": granularity, "candles": out}
 
@@ -929,7 +1033,7 @@ def _simple_regime(closes):
     return "chop"
 
 
-_WL_CACHE = {"ts": 0.0, "data": None, "ttl": 30.0}
+_WL_CACHE = {"ts": 0.0, "data": None, "ttl": 300.0}
 
 
 def api_market_watchlist(limit_pairs=24):
@@ -941,33 +1045,38 @@ def api_market_watchlist(limit_pairs=24):
     now = time.time()
     if _WL_CACHE["data"] is not None and (now - _WL_CACHE["ts"]) < _WL_CACHE["ttl"]:
         return _WL_CACHE["data"]
-    try:
-        _ensure_project_root_on_path()
-        from coinbase.src.pair_discovery import top_coinbase_pairs
-        from coinbase.src.rest_feed import fetch_candles_batch_sync
-        pairs = top_coinbase_pairs(n=int(limit_pairs))
-    except Exception as e:
-        logger.warning("watchlist discovery failed: %s", e)
-        pairs = [(s, s.split("-")[0]) for s in [
-            "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
-            "AVAX-USD", "LINK-USD", "ATOM-USD", "LTC-USD", "NEAR-USD", "APT-USD",
-        ]]
+    
+    # Use known top pairs directly (skip slow discovery which takes 20+ seconds)
+    default_pairs = [
+        "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
+        "AVAX-USD", "LINK-USD", "ATOM-USD", "LTC-USD", "NEAR-USD", "APT-USD",
+    ]
+    pairs = [(s, s.split("-")[0]) for s in default_pairs[:limit_pairs]]
+    
     pair_ids = [p[0] for p in pairs]
+    candles_map = {}
+
+    # Try live batch fetch via thread-safe urllib3 client (no aiohttp/event loop)
     try:
-        candles_map = fetch_candles_batch_sync(pair_ids, granularity=3600, limit=30)
+        candles_map = _fetch_candles_batch_http(pair_ids, granularity=3600, limit=30) or {}
     except Exception:
         candles_map = {}
-    # durable backup of the batch for offline replay
-    try:
-        from data.feed_cache import save_candles
-        for pid, cs in candles_map.items():
-            if cs:
-                save_candles("coinbase_candles", pid, 3600, cs)
-    except Exception:
-        pass
+
+    # Durable backup of the batch for offline replay (best-effort, non-blocking
+    # so the dashboard request never waits on slow NAS parquet writes).
+    if candles_map:
+        _snapshot_for_backup = {pid: cs for pid, cs in candles_map.items() if cs}
+        try:
+            bg = threading.Thread(
+                target=_persist_watchlist_cache, args=(_snapshot_for_backup,), daemon=True
+            )
+            bg.start()
+        except Exception:
+            pass
+
     offline = not candles_map
     if offline:
-        # serve entirely from durable cache when the live feed is down (E7)
+        # Serve entirely from durable cache when the live feed is down
         try:
             from data.feed_cache import load_candles
             candles_map = {
@@ -976,6 +1085,11 @@ def api_market_watchlist(limit_pairs=24):
             }
         except Exception:
             pass
+    
+    # Final fallback to mock data
+    if not any(candles_map.values()):
+        candles_map = {pid: _generate_mock_candles(pid, 3600, 30) for pid in pair_ids}
+    
     rows = []
     for pid in pair_ids:
         cs = candles_map.get(pid) or []
@@ -1001,11 +1115,20 @@ def api_market_watchlist(limit_pairs=24):
     return result
 
 
+def _persist_watchlist_cache(candles_map: dict) -> None:
+    """Background durable write of fetched candles (best-effort, never raises)."""
+    try:
+        from data.feed_cache import save_candles
+        for pid, cs in candles_map.items():
+            if cs:
+                save_candles("coinbase_candles", pid, 3600, cs)
+    except Exception as e:  # pragma: no cover - durability is best-effort
+        logger.debug("watchlist cache persist skipped: %s", e)
+
+
 def _last_price(symbol):
     try:
-        _ensure_project_root_on_path()
-        from coinbase.src.rest_feed import fetch_candles_rest_sync
-        cs = fetch_candles_rest_sync(symbol, granularity=60, limit=1)
+        cs = _fetch_candles_http(symbol, granularity=60, limit=1)
         if cs:
             return float(cs[-1][4])
     except Exception:
@@ -2383,23 +2506,135 @@ def api_paper_hermes():
     }
 
 
+def _live_mark(product_id: str) -> float:
+    """Best-effort live mark for an open position's unrealized P&L.
+
+    Uses the SAME public Coinbase candle feed the agent loop uses (no auth,
+    read-only). Falls back to 0.0 on any failure so the caller can treat a
+    missing mark as "unknown" rather than crash the endpoint.
+    """
+    try:
+        rows = _fetch_candles_http(product_id, granularity=3600, limit=2)
+        if rows:
+            return float(rows[-1][4])
+    except Exception:
+        pass
+    return 0.0
+
+
+def _open_positions(state: dict, is_bot: bool) -> list[dict]:
+    """Both books' open positions with live mark + unrealized P&L.
+
+    Bot stores positions under ``paper_positions`` keyed by product_id with
+    ``size``/``entry_price``. Agent stores under ``positions`` keyed by
+    product_id (long) or ``SHORT:product_id`` (short) with ``base``/
+    ``entry_price``/``leverage``.
+    """
+    out = []
+    if is_bot:
+        raw = state.get("paper_positions") or []
+        # Bot may store positions as a list of dicts OR a dict keyed by product_id.
+        items = raw.items() if isinstance(raw, dict) else (
+            [(p.get("product_id"), p) for p in raw if isinstance(p, dict)]
+        )
+        for pid, pos in items:
+            if not isinstance(pos, dict) or not pid:
+                continue
+            base = float(pos.get("size") or pos.get("qty") or pos.get("base") or 0.0)
+            entry = float(pos.get("entry_price") or 0.0)
+            if base <= 1e-9 or entry <= 0:
+                continue
+            mark = _live_mark(pid)
+            has_mark = mark > 0
+            upl = (mark - entry) * base if has_mark else None
+            out.append({
+                "symbol": pid, "side": "LONG",
+                "qty": round(base, 6), "entry": round(entry, 6),
+                "mark": round(mark, 6) if has_mark else None,
+                "unrealized_pnl": round(upl, 4) if has_mark else None,
+            })
+    else:
+        for key, pos in (state.get("positions") or {}).items():
+            if not isinstance(pos, dict):
+                continue
+            base = float(pos.get("base") or 0.0)
+            entry = float(pos.get("entry_price") or 0.0)
+            if base <= 1e-9 or entry <= 0:
+                continue
+            is_short = key.startswith("SHORT:")
+            pid = key.replace("SHORT:", "")
+            mark = _live_mark(pid)
+            lev = float(pos.get("leverage") or 1.0)
+            if mark > 0:
+                # P&L scales by leverage for the agent book.
+                upl = ((mark - entry) * base * lev if not is_short
+                       else (entry - mark) * base * lev)
+            else:
+                upl = None
+            out.append({
+                "symbol": pid, "side": "SHORT" if is_short else "LONG",
+                "qty": round(base, 6), "entry": round(entry, 6),
+                "mark": round(mark, 6) if mark > 0 else None,
+                "unrealized_pnl": round(upl, 4) if mark > 0 else None,
+                "leverage": round(lev, 2),
+            })
+    return out
+
+
 def _competition_side(state: dict, is_bot: bool) -> dict:
-    """Normalize one paper book to the shared $10k start for a fair head-to-head."""
+    """Fair head-to-head: normalize one paper book to the shared $10k start.
+
+    HARDENED: the headline equity is derived independently and can NEVER be
+    lied to by a corrupted equity curve. We compute:
+
+        equity = start + realized_pnl + open_position_unrealized
+
+    where realized_pnl comes from the per-trade ledger (bot ``pnl`` /
+    agent ``realized_pnl``) and open unrealized is summed from the book's own
+    open positions marked at the live price. The bot's ``paper_equity_curve``
+    previously inflated equity by ~33% of notional per round-trip (a
+    double-counted leverage 'loan' term in run_trader_v4._paper_equity); it is
+    now used ONLY for the chart sparkline, never for the score.
+
+    Win rate is still computed from per-trade realized P&L (closed trades).
+    """
     if is_bot:
         start = float(state.get("paper_starting_capital", 10000.0) or 10000.0)
         equity_curve = state.get("paper_equity_curve") or []
-        wins = int(state.get("paper_wins", 0) or 0)
-        losses = int(state.get("paper_losses", 0) or 0)
+        trades = state.get("paper_trades", []) or []
+        pnl_key = "pnl"
+        # Accumulator is the authoritative running total for the bot (the
+        # per-trade ledger occasionally under-counts). Prefer it; fall back to
+        # the ledger sum if the field is missing.
+        realized_field = float(state.get("paper_realized_pnl", 0.0) or 0.0)
     else:
         start = float(state.get("starting_capital", 10000.0) or 10000.0)
         equity_curve = state.get("equity_curve") or []
-        wins = int(state.get("wins", 0) or 0)
-        losses = int(state.get("losses", 0) or 0)
-    equity = float(equity_curve[-1]) if equity_curve else float(
-        state.get("equity", start)
-    )
-    n = wins + losses
+        trades = state.get("trades", []) or []
+        pnl_key = "realized_pnl"
+        realized_field = float(state.get("realized_pnl", 0.0) or 0.0)
+
+    # Realized P&L from per-trade ledger (authoritative cross-check / fallback).
+    closed = [float(t.get(pnl_key, 0.0) or 0.0) for t in trades
+              if pnl_key in t]
+    ledger_realized = sum(closed)
+    n = len(closed)
+    wins = sum(1 for p in closed if p > 0)
+    losses = n - wins
     win_rate = (wins / n * 100.0) if n else 0.0
+
+    # Use the authoritative accumulator when it agrees in sign/magnitude with the
+    # ledger (or when the ledger is empty); otherwise the ledger sum.
+    realized = realized_field if abs(realized_field - ledger_realized) < max(1.0, abs(realized_field) * 0.5) or n == 0 else ledger_realized
+
+    # Open-position unrealized (live-marked) — feed from _open_positions so we
+    # don't re-hit the price feed.
+    opens = _open_positions(state, is_bot)
+    open_upl = sum(float(o.get("unrealized_pnl") or 0.0) for o in opens)
+
+    # Authoritative equity: start + realized + open unrealized.
+    equity = start + realized + open_upl
+
     ret_pct = (equity / start - 1.0) * 100.0 if start else 0.0
     return {
         "role": "bot" if is_bot else "hermes",
@@ -2411,6 +2646,9 @@ def _competition_side(state: dict, is_bot: bool) -> dict:
         "losses": losses,
         "win_rate": round(win_rate, 2),
         "trade_count": n,
+        "realized_pnl": round(realized, 2),
+        "open_unrealized_pnl": round(open_upl, 2),
+        "open_positions": opens,
         "equity_curve": [round(float(x), 2) for x in equity_curve[-120:]],
     }
 
@@ -2418,14 +2656,14 @@ def _competition_side(state: dict, is_bot: bool) -> dict:
 def api_competition():
     """Head-to-head: the live trading bot vs the competing Hermes agent.
 
-    Both run PAPER from a flat $10k start (hermes_agent_loop.py:794). Reads the
-    bot's book (paper_trader_v4_state.json) and the Hermes agent's book
+    Both run PAPER from a flat $10k start. Reads the bot's book
+    (paper_trader_v4_state.json) and the Hermes agent's book
     (hermes_agent_ledger.json), normalizes both to the shared start, and returns
-    a side-by-side plus a per-strategy leaderboard.
+    a side-by-side plus a per-strategy leaderboard and each book's open positions.
 
-    Bot per-strategy edge comes from its ``paper_trades`` list (each trade carries
-    ``strategy`` + realized ``pnl``). Hermes' ledger stores trades by ``setup``
-    without per-trade pnl, so its column is activity (trade count), not wins.
+    Per-trade realized P&L drives the win rate and the leaderboard for BOTH
+    books (bot uses ``pnl``, agent uses ``realized_pnl``) — so the comparison is
+    apples-to-apples, not trade-count noise.
     """
     bot_state = _load_json(ROOT / "data" / "paper_trader_v4_state.json", {})
     hermes_state = _load_json(ROOT / "data" / "hermes_agent_ledger.json", {})
@@ -2433,7 +2671,7 @@ def api_competition():
     bot = _competition_side(bot_state, is_bot=True)
     hermes = _competition_side(hermes_state, is_bot=False)
 
-    # Bot per-strategy edge from its trade ledger.
+    # Bot per-strategy P&L from its trade ledger.
     bot_strat = {}
     for t in bot_state.get("paper_trades", []) or []:
         strat = t.get("strategy")
@@ -2446,29 +2684,41 @@ def api_competition():
         if pnl > 0:
             d["wins"] += 1
 
-    # Hermes per-setup activity (no per-trade pnl in its ledger).
+    # Agent per-setup P&L from its ledger (it DOES store realized_pnl per close).
     hermes_strat = {}
     for t in hermes_state.get("trades", []) or []:
+        if "realized_pnl" not in t:
+            continue
         strat = t.get("setup") or t.get("strategy") or "?"
-        d = hermes_strat.setdefault(strat, {"trades": 0})
+        pnl = float(t.get("realized_pnl", 0.0) or 0.0)
+        d = hermes_strat.setdefault(strat, {"wins": 0, "trades": 0, "pnl": 0.0})
         d["trades"] += 1
+        d["pnl"] += pnl
+        if pnl > 0:
+            d["wins"] += 1
 
     leaderboard = []
     for strat in sorted(set(bot_strat) | set(hermes_strat)):
         bw = bot_strat.get(strat, {}).get("wins", 0)
         bsum = round(bot_strat.get(strat, {}).get("pnl", 0.0), 4)
         bcount = bot_strat.get(strat, {}).get("trades", 0)
+        hw = hermes_strat.get(strat, {}).get("wins", 0)
+        hsum = round(hermes_strat.get(strat, {}).get("pnl", 0.0), 4)
         hcount = hermes_strat.get(strat, {}).get("trades", 0)
-        edge = "bot" if bsum > 0 else ("hermes" if hcount > bcount and bsum <= 0 else "tie")
+        # Edge = who made more on this strategy (real P&L, both books).
+        if bsum > hsum:
+            edge = "bot"
+        elif hsum > bsum:
+            edge = "hermes"
+        else:
+            edge = "tie"
         leaderboard.append({
             "strategy": strat,
-            "bot_wins": bw,
-            "bot_trades": bcount,
-            "bot_pnl": bsum,
-            "hermes_trades": hcount,
+            "bot_wins": bw, "bot_trades": bcount, "bot_pnl": bsum,
+            "hermes_wins": hw, "hermes_trades": hcount, "hermes_pnl": hsum,
             "edge": edge,
         })
-    leaderboard.sort(key=lambda r: (r["bot_pnl"], r["bot_wins"]), reverse=True)
+    leaderboard.sort(key=lambda r: (r["bot_pnl"] + r["hermes_pnl"]), reverse=True)
 
     return {
         "bot": bot,

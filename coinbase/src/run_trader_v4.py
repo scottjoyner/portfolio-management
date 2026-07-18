@@ -303,6 +303,15 @@ class EventTraderV4:
         "_core_dca_dip_pct":       (float, 0.50, 30.0, 3.00,  "Dip % to trigger core DCA buy"),
         "_core_dca_cooldown_s":    (int,   60,   86400,3600,  "Cooldown between DCA buys (seconds)"),
         "_core_dca_amount":        (int,   5,    10000,25,    "DCA buy amount USD"),
+        # Concentration / sample-depth guards (anti-fragility). See _paper_execute_impl.
+        "max_strategy_pnl_share":  (float, 0.00, 1.00, 0.30,
+                                    "Max share of equity a single strategy's live "
+                                    "PnL may reach before new entries for it are blocked "
+                                    "(caps how much one strategy can dominate the book)"),
+        "min_trades_for_full_sizing": (int, 1, 500, 20,
+                                    "Min live trades before a strategy/product pair gets "
+                                    "full sizing weight; below this, confidence is scaled "
+                                    "down so tiny-sample 'lucky' winners can't overdrive size"),
     }
 
     def get_tunables(self) -> dict:
@@ -420,6 +429,12 @@ class EventTraderV4:
             "memes": {"SHIB", "PEPE", "BONK", "TRUMP", "FLOKI", "DOGE"},
         }
         self._max_cluster_exposure_pct = 0.30
+
+        # Seed concentration / sample-depth guards from tunable defaults so they
+        # always exist even before tuner_state_v4.json is loaded.
+        for _k, (_t, _mn, _mx, _dflt, _desc) in self.TUNABLE_KNOBS.items():
+            if not hasattr(self, _k):
+                setattr(self, _k, _dflt)
 
         # ── Core long-term holdings (multi-bucket: stable + volatile) ──
         self._core_holdings: Dict[str, CoreHolding] = {}
@@ -925,6 +940,49 @@ class EventTraderV4:
                 state = json.loads(raw)
                 if "paper_cash" not in state:
                     validate_issues.append("Paper state file missing 'paper_cash' field — may be corrupt")
+                else:
+                    # ── Ledger integrity assertion ──────────────────────────
+                    # Under the corrected accounting (fixed leverage 'loan'
+                    # double-count bug), the cash ledger MUST satisfy:
+                    #   paper_cash == start + realized_pnl
+                    #                   - Σ(open_margin)
+                    #                   - Σ(open fees_paid + cum_funding)
+                    # where open_margin = entry_notional / leverage per open
+                    # position. The fees_paid + cum_funding terms are required
+                    # because entry debits (margin + fee) and the position carries
+                    # its paid fees / accrued funding — omitting them makes the
+                    # check wrong by exactly the open-position fee (~$1-2) during
+                    # live trading. If this fails, the book is corrupt and we
+                    # must NOT trade on it. Fail hard so the operator fixes it.
+                    try:
+                        _start = float(state.get("paper_starting_capital", 0.0) or 0.0)
+                        _rpnl = float(state.get("paper_realized_pnl", 0.0) or 0.0)
+                        _cash = float(state.get("paper_cash", 0.0) or 0.0)
+                        _open_margin = 0.0
+                        _open_fees = 0.0
+                        for _p in (state.get("paper_positions") or []):
+                            if not isinstance(_p, dict):
+                                continue
+                            _notional = float(_p.get("entry_notional") or 0.0)
+                            if _notional <= 0:
+                                _qty = float(_p.get("qty") or 0.0)
+                                _ep = float(_p.get("entry_price") or 0.0)
+                                _notional = _qty * _ep
+                            _lev = max(float(_p.get("leverage") or 1.0), 1.0)
+                            _open_margin += _notional / _lev
+                            _open_fees += float(_p.get("fees_paid") or 0.0)
+                            _open_fees += float(_p.get("cum_funding") or 0.0)
+                        _expected = _start + _rpnl - _open_margin - _open_fees
+                        if abs(_cash - _expected) > 1.0:
+                            validate_issues.append(
+                                f"Paper ledger INTEGRITY FAIL: cash={_cash:.2f} "
+                                f"but expected={_expected:.2f} (start={_start:.2f} "
+                                f"+realized={_rpnl:.2f} -open_margin={_open_margin:.2f} "
+                                f"-open_fees={_open_fees:.2f}). "
+                                f"State file is corrupt — fix before trading."
+                            )
+                    except (TypeError, ValueError) as _e:
+                        validate_issues.append(f"Paper ledger integrity check error: {_e}")
             except (json.JSONDecodeError, OSError) as e:
                 validate_issues.append(f"Paper state file unreadable: {e}")
         data_dir = Path("data")
@@ -943,8 +1001,17 @@ class EventTraderV4:
             pass
 
         if validate_issues:
+            _fatal = [i for i in validate_issues if i.startswith("Paper ledger INTEGRITY FAIL")]
             for issue in validate_issues:
                 log.warning("STARTUP VALIDATION: %s", issue)
+            if _fatal:
+                # Corrupt ledger — refuse to trade on it. Aborting prevents the
+                # bot from silently re-inflating phantom equity on a bad state
+                # file. The operator must repair (or delete) the state file.
+                raise RuntimeError(
+                    "Startup aborted: paper ledger integrity failure — "
+                    + "; ".join(_fatal)
+                )
         else:
             log.info("Startup validation: all checks passed")
 
@@ -1604,15 +1671,30 @@ class EventTraderV4:
                     )
 
     def _paper_equity(self, prices: Optional[Dict[str, float]] = None) -> float:
+        """Honest paper equity.
+
+        Equity = paper_cash + sum of UNREALIZED P&L across open positions.
+
+        The previous implementation added back a `loan` term
+        (entry_notional * (1 - 1/leverage)) inside the loop while the cash
+        ledger had only been debited by the margin (entry_notional/leverage) on
+        entry and credited the full gross (minus the same loan) on exit. That
+        double-counted the borrowed slice on every round-trip, silently
+        inflating paper_cash and therefore equity by ~33% of notional per trade
+        (~$155k of phantom cash after 200 trades).
+
+        Correct model: margin is the only capital at risk. Entry debits margin,
+        exit returns margin + realized P&L, and equity is simply cash plus the
+        mark-to-market gain/loss on open positions. No separate loan term.
+        """
         prices = prices or {}
         equity = self.paper_cash
         for pid, pos in self.paper_positions.items():
             px = prices.get(pid, pos.entry_price)
             if pos.is_long:
-                loan = pos.entry_notional * (1.0 - 1.0 / max(pos.leverage, 1.0))
-                equity += pos.qty * px - loan - pos.cum_funding
+                equity += pos.qty * (px - pos.entry_price) - pos.cum_funding
             else:
-                equity -= pos.qty * px + pos.cum_funding
+                equity += pos.qty * (pos.entry_price - px) - pos.cum_funding
         # Add core holdings value
         equity += self._core_holdings_value(prices)
         return equity
@@ -1771,6 +1853,28 @@ class EventTraderV4:
                 if self._paper_state_path.exists():
                     bak1.write_text(self._paper_state_path.read_text())
                 tmp_path.replace(self._paper_state_path)
+                # ARCHIVAL BACKUP: timestamped copy so the ledger is ALWAYS
+                # recoverable even if the main file is deleted/races with a
+                # process kill. Throttled to once per 60s to bound disk growth.
+                now = time.time()
+                if now - getattr(self, "_last_state_archive_ts", 0.0) >= 60.0:
+                    self._last_state_archive_ts = now
+                    try:
+                        arch_dir = self._paper_state_path.parent / "state_backups"
+                        arch_dir.mkdir(exist_ok=True)
+                        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
+                        arch_path = arch_dir / f"paper_trader_v4_{stamp}.json"
+                        arch_path.write_text(self._paper_state_path.read_text())
+                        # prune to keep only the 10 most recent archives
+                        arches = sorted(arch_dir.glob("paper_trader_v4_*.json"),
+                                        key=lambda p: p.stat().st_mtime, reverse=True)
+                        for old in arches[10:]:
+                            try:
+                                old.unlink()
+                            except OSError:
+                                pass
+                    except Exception as ae:  # archival must never break the save
+                        log.debug("State archival skipped: %s", ae)
             self.health_status["last_state_save_ts"] = time.time()
         except Exception as e:
             log.debug("Failed to save paper state: %s", e)
@@ -1812,6 +1916,22 @@ class EventTraderV4:
             }
             self.paper_trades = [item for item in state.get("paper_trades", []) if isinstance(item, dict)]
             self.paper_realized_pnl = float(state.get("paper_realized_pnl", self.paper_realized_pnl))
+            # CROSS-CHECK the two realized-P&L views. paper_realized_pnl (the
+            # accumulator, incremented on every real exit) is the source of
+            # truth because it is what paper_cash is actually derived from. The
+            # per-trade ledger (paper_trades[].pnl) is a log and has historically
+            # under-counted (some exit records carry pnl=0.0 from unrelated
+            # stubs). If they disagree we keep the accumulator and only warn —
+            # we never overwrite the accumulator from the incomplete ledger.
+            ledger_rpnl = sum(float(t.get("pnl", 0.0) or 0.0)
+                              for t in self.paper_trades if "pnl" in t)
+            if abs(ledger_rpnl - self.paper_realized_pnl) > 0.01:
+                log.warning(
+                    "P&L cross-check: accumulator=%.2f but ledger sum=%.2f "
+                    "(ledger under-counts by %.2f — accumulator is authoritative)",
+                    self.paper_realized_pnl, ledger_rpnl,
+                    self.paper_realized_pnl - ledger_rpnl,
+                )
             self.paper_fees_paid = float(state.get("paper_fees_paid", self.paper_fees_paid))
             self.paper_wins = int(state.get("paper_wins", self.paper_wins))
             self.paper_losses = int(state.get("paper_losses", self.paper_losses))
@@ -2147,15 +2267,25 @@ class EventTraderV4:
         exit_fee_bps = maker_bps if is_maker else taker_bps
         fee = gross * (exit_fee_bps / 10_000.0)
         self.paper_fees_paid += fee
+        # Return the margin that was debited on entry, plus realized P&L.
+        # Entry debited margin_required (= entry_notional/leverage). Exit returns
+        # that margin plus the actual P&L on the trade. This is symmetric for
+        # long and short and eliminates the earlier phantom-cash inflation.
+        margin_returned = pos.entry_notional / max(pos.leverage, 1.0)
         if pos.is_short:
-            self.paper_cash -= gross + fee
+            # Short P&L = (entry - exit) * qty ; gross = qty*exit_price
+            self.paper_cash += margin_returned + (pos.entry_notional - gross) - fee
         else:
-            loan = pos.entry_notional * (1.0 - 1.0 / max(pos.leverage, 1.0)) if pos.leverage > 1.0 else 0.0
-            self.paper_cash += gross - loan - fee
+            # Long P&L = (exit - entry) * qty
+            self.paper_cash += margin_returned + (gross - pos.entry_notional) - fee
         raw_pnl = (exit_price - pos.entry_price) * pos.qty
         if not pos.is_long:
             raw_pnl = -raw_pnl
         pnl = raw_pnl - pos.fees_paid - fee - pos.cum_funding
+        # Accumulator is the authoritative running total (incremented on every
+        # real exit). The per-trade ledger (paper_trades[]) is a log that may
+        # occasionally omit/mis-record a pnl; the accumulator is what cash is
+        # actually built from, so it is the source of truth for total P&L.
         self.paper_realized_pnl += pnl
         self._perf_tracker.record_trade(pos.strategy, pos.product_id, pnl, pos.entry_notional, fee, pos.side,
                                         backtest_win_rate=float(getattr(pos, "win_rate", 0.0) or 0.0))
@@ -2769,8 +2899,11 @@ class EventTraderV4:
                 fee = notional * (entry_fee_bps / 10_000.0)
 
         # ── Cash modification (deferred after all checks) ──
+        # Both sides debit MARGIN only on entry (not full notional). Exit returns
+        # the same margin plus realized P&L — see _paper_exit_position. This keeps
+        # the cash ledger self-consistent and prevents phantom-cash inflation.
         if side_label == "SHORT":
-            self.paper_cash += notional - fee
+            self.paper_cash -= margin_required + fee
         else:
             self.paper_cash -= margin_required + fee
         self.paper_fees_paid += fee
@@ -3415,6 +3548,41 @@ class EventTraderV4:
                 log.info("PAPER SKIP %s: strategy %s globally disabled (poor aggregate win rate)",
                          product_id, best_strat)
                 return
+
+            # ── Concentration guard (anti-fragility) ───────────────────────
+            # A single strategy must not be allowed to dominate the book. If its
+            # live PnL already exceeds max_strategy_pnl_share of equity, block
+            # NEW entries for that strategy (existing positions are left to exit
+            # on their own signals). This prevents a handful of low-sample lucky
+            # trades from carrying the entire PnL (observed: top-3 strategies =
+            # 110% of total pnl, one pair bled -$2,894).
+            eq_now = 0.0
+            if self._last_price:
+                eq_now = self._paper_equity(self._last_price)
+            if self._last_price and eq_now > 0 and self.max_strategy_pnl_share > 0:
+                strat_pnl = self._perf_tracker.strategy_total_pnl(best_strat)
+                if strat_pnl > self.max_strategy_pnl_share * eq_now:
+                    log.info("PAPER SKIP %s: strategy %s live pnl=%.2f exceeds %.0f%% of equity (concentration cap)",
+                             product_id, best_strat, strat_pnl, self.max_strategy_pnl_share * 100)
+                    return
+
+            # ── Sample-depth guard (anti-fragility) ────────────────────────
+            # A strategy/product pair with few live trades is statistically
+            # meaningless. Scale its confidence DOWN (not up) until it has
+            # min_trades_for_full_sizing samples, so tiny-sample "winners"
+            # can't overdrive position size.
+            rec = self._perf_tracker.get(best_strat, product_id)
+            pair_trades = rec.trades if rec else 0
+            if pair_trades < self.min_trades_for_full_sizing:
+                depth_scale = max(0.25, pair_trades / float(self.min_trades_for_full_sizing))
+                best["confidence"] = max(0.01, float(best.get("confidence", 0.5)) * depth_scale)
+                if pair_trades == 0:
+                    log.debug("DEPTH PENALTY %s/%s: no live trades yet, conf scaled to %.3f",
+                              best_strat, product_id, best["confidence"])
+                else:
+                    log.debug("DEPTH PENALTY %s/%s: %d/%d trades, conf x%.2f -> %.3f",
+                              best_strat, product_id, pair_trades,
+                              self.min_trades_for_full_sizing, depth_scale, best["confidence"])
 
             # Multi-signal confluence: require ≥2 strategies agreeing on direction
             agreeing = sum(1 for o in opportunities if o.get("action") == best_action and

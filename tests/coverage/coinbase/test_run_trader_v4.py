@@ -571,16 +571,18 @@ class TestPaperAccounting(BaseV4):
                            entry_ts=time.time(), strategy="x", confidence=0.5, win_rate=0.5,
                            sharpe=0.5, entry_notional=100.0, leverage=1.0)
         self.t.paper_positions["BTC-USD"] = pos
+        # Honest equity: cash + unrealized P&L (mark - entry) for the long.
         eq = self.t._paper_equity({"BTC-USD": 120.0})
-        self.assertAlmostEqual(eq, self.t.paper_cash + 120.0)
+        self.assertAlmostEqual(eq, self.t.paper_cash + 20.0)  # (120-100)*1
 
     def test_paper_equity_short(self):
         pos = PaperPosition(product_id="BTC-USD", side="SHORT", qty=1.0, entry_price=100.0,
                            entry_ts=time.time(), strategy="x", confidence=0.5, win_rate=0.5,
                            sharpe=0.5, entry_notional=100.0, leverage=1.0)
         self.t.paper_positions["BTC-USD"] = pos
+        # Honest equity: cash + unrealized P&L (entry - mark) for the short.
         eq = self.t._paper_equity({"BTC-USD": 80.0})
-        self.assertAlmostEqual(eq, self.t.paper_cash - 80.0)
+        self.assertAlmostEqual(eq, self.t.paper_cash + 20.0)  # (100-80)*1
 
     def test_paper_equity_with_core_holdings(self):
         self.t._core_holdings["BTC-USD"] = CoreHolding(product_id="BTC-USD", qty=1.0,
@@ -837,6 +839,13 @@ class TestPaperExecute(BaseV4):
     def setUp(self):
         self.t = _make_trader(["BTC-USD"])
         self.t.streaming = _make_streaming(closes=[float(100 + i) for i in range(60)])
+        # Seed state the anti-fragility guards read (concentration + depth).
+        self.t._last_price = {"BTC-USD": 100.0}
+        # Give the test strategy/product enough live trades that the depth
+        # guard (min_trades_for_full_sizing=20) does not scale confidence down,
+        # and a tiny pnl so the concentration cap (30% of equity) never trips.
+        for _ in range(25):
+            self.t._perf_tracker.record_trade("ema_cross", "BTC-USD", 1.0, 100.0, 0.01, "LONG")
 
     def _opp(self, action="BUY", conf=0.8, wr=0.7, sharpe=1.0, atr=2.0, regime="strong_uptrend"):
         return {

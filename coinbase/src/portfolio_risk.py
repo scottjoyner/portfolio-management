@@ -232,50 +232,62 @@ class PortfolioRiskManager:
                 if corr > 0.7:
                     correlated_groups.append([p1, p2])
     
-    def check_pre_trade(self, product_id: str, side: str, notional: float, 
+    def check_pre_trade(self, product_id: str, side: str, notional: float,
                         current_price: float, equity: float) -> tuple[bool, str, float]:
         """
         Check if a new trade passes risk limits.
-        
+
         Returns:
             (allowed, reason, adjusted_notional)
+
+        IMPORTANT: scaling checks (cluster, asset, gross-leverage) no longer
+        early-return on a partial scale-down. They each compute the tightest
+        allowed notional and we take the MINIMUM across all of them, evaluating
+        every limit before returning. The previous implementation returned True
+        from the cluster/asset scale-down before the gross-leverage check ever
+        ran, which let aggregate notional blow past the max_leverage cap (e.g.
+        10 clusters x 30% = 300% of equity). Gross leverage is now a true hard
+        ceiling on total notional regardless of how positions are clustered.
         """
         with self._lock:
-            # 1. Portfolio drawdown
+            # 1. Portfolio drawdown — HARD stop
             if self._daily_start_equity > 0:
                 dd = (self._daily_peak_equity - equity) / self._daily_peak_equity * 100
                 if dd >= self.limits.max_portfolio_drawdown_pct:
                     return False, f"Portfolio drawdown {dd:.1f}% exceeds limit {self.limits.max_portfolio_drawdown_pct}%", 0.0
-            
-            # 2. Daily loss limit
+
+            # 2. Daily loss limit — HARD stop
             if self._daily_start_equity > 0:
                 daily_loss = (self._daily_start_equity - equity) / self._daily_start_equity * 100
                 if daily_loss >= self.limits.max_daily_loss_pct:
                     return False, f"Daily loss {daily_loss:.1f}% exceeds limit {self.limits.max_daily_loss_pct}%", 0.0
-            
-            # 3. Single asset exposure
+
+            # Scaling checks: track the tightest allowed notional across all of them.
+            allowed = notional
+            scale_reason = "OK"
+
+            # 3. Cluster (sector) exposure
             cluster = self.get_cluster(product_id)
             cluster_notional = sum(p.notional for p in self._positions.values() if self.get_cluster(p.product_id) == cluster)
-            new_cluster_exposure = cluster_notional + notional
             cluster_limit = equity * self.limits.max_sector_exposure_pct / 100
-            if new_cluster_exposure > cluster_limit:
-                # Scale down
-                allowed = max(0, cluster_limit - cluster_notional)
-                if allowed < 100:  # Min $100
+            cluster_allowed = cluster_limit - cluster_notional
+            if cluster_notional + notional > cluster_limit:
+                if cluster_allowed < 100:
                     return False, f"Cluster {cluster} exposure limit reached", 0.0
-                return True, f"Cluster limit, scaled to ${allowed:.0f}", allowed
-            
-            # 4. Single asset limit
+                allowed = min(allowed, cluster_allowed)
+                scale_reason = f"Cluster limit, scaled to ${cluster_allowed:.0f}"
+
+            # 4. Single asset exposure
             asset_notional = sum(p.notional for p in self._positions.values() if p.product_id == product_id)
-            new_asset_exposure = asset_notional + notional
             asset_limit = equity * self.limits.max_single_asset_pct / 100
-            if new_asset_exposure > asset_limit:
-                allowed = max(0, asset_limit - asset_notional)
-                if allowed < 100:
+            asset_allowed = asset_limit - asset_notional
+            if asset_notional + notional > asset_limit:
+                if asset_allowed < 100:
                     return False, f"Asset {product_id} exposure limit reached", 0.0
-                return True, f"Asset limit, scaled to ${allowed:.0f}", allowed
-            
-            # 5. Correlation check - count highly correlated positions
+                allowed = min(allowed, asset_allowed)
+                scale_reason = f"Asset limit, scaled to ${asset_allowed:.0f}"
+
+            # 5. Correlation check — HARD stop (count highly correlated positions)
             corr_count = 0
             for p in self._positions.values():
                 if p.product_id != product_id:
@@ -284,17 +296,19 @@ class PortfolioRiskManager:
                         corr_count += 1
             if corr_count >= self.limits.max_correlated_positions:
                 return False, f"Too many correlated positions ({corr_count} >= {self.limits.max_correlated_positions})", 0.0
-            
-            # 6. Gross leverage
-            total_notional = sum(p.notional for p in self._positions.values()) + notional
-            if total_notional / equity > self.limits.max_leverage:
-                # Scale down proportionally
-                max_allowed = equity * self.limits.max_leverage - sum(p.notional for p in self._positions.values())
-                if max_allowed < 100:
+
+            # 6. Gross leverage — HARD ceiling on total notional. Always evaluated.
+            current_total = sum(p.notional for p in self._positions.values())
+            lev_allowed = equity * self.limits.max_leverage - current_total
+            if current_total + notional > equity * self.limits.max_leverage:
+                if lev_allowed < 100:
                     return False, f"Max leverage {self.limits.max_leverage}x reached", 0.0
-                return True, f"Leverage limit, scaled to ${max_allowed:.0f}", max_allowed
-            
-            return True, "OK", notional
+                allowed = min(allowed, lev_allowed)
+                scale_reason = f"Leverage limit, scaled to ${lev_allowed:.0f}"
+
+            if allowed < 100:
+                return False, "Scaled notional below $100 minimum", 0.0
+            return True, scale_reason, allowed
     
     def get_risk_metrics(self, equity: float) -> RiskMetrics:
         """Get current risk metrics snapshot."""
