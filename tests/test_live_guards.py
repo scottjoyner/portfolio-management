@@ -4,6 +4,7 @@ Run: .venv/bin/python3 tests/test_live_guards.py
 """
 import os
 import sys
+import time
 import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,7 +44,14 @@ def _make(mode, dry_run=True):
     bot._cb_peak_equity = 10000.0
     bot._live_start_balance = 0.0
     bot._live_positions = {}
+    bot._last_intended_order = {}
+    bot._bracket_mgr = _BracketStub()  # _on_fill touches it; harmless stub
     return bot, args
+
+
+class _BracketStub:
+    def _check_bracket_status_by_fill(self, *a, **k):
+        return None
 
 
 def _stub_start_exchange(bot):
@@ -157,6 +165,66 @@ def test_drawdown_no_halt_within_cap(monkeypatch):
     assert ok is True, "within cap should allow trading"
     assert bot._cb_breach_reason == "", "no breach reason within cap"
     assert os.path.exists("data/trader_state_corrupt") is False, "no sentinel within cap"
+
+
+def test_validate_live_order_blocks_stablecoin(monkeypatch):
+    bot, args = _make("live", dry_run=False)
+    # Stablecoin-quoted pairs where the BASE is a stable are blocked.
+    ok, reason = bot._validate_live_order("USDC-USD", 1.0, 100.0)
+    assert ok is False and "stablecoin" in reason.lower(), reason
+    ok, reason = bot._validate_live_order("USDT-USD", 1.0, 100.0)
+    assert ok is False, "USDT base must be blocked"
+    # A normal crypto pair (base BTC, quote USDC) is allowed.
+    ok, reason = bot._validate_live_order("BTC-USDC", 1.0, 100.0)
+    assert ok is True, "BTC-USDC is a legitimate pair, not a stablecoin base"
+
+
+def test_validate_live_order_blocks_dust_and_bad_size(monkeypatch):
+    bot, args = _make("live", dry_run=False)
+    # Dust notional below floor (default $10).
+    ok, reason = bot._validate_live_order("BTC-USD", 0.0001, 3.0)
+    assert ok is False and "floor" in reason.lower(), reason
+    # 13-dp base size (Coinbase rejects) — exceeds 8dp precision.
+    ok, reason = bot._validate_live_order("BTC-USD", 0.0000000000001, 100.0)
+    assert ok is False and "8dp" in reason.lower(), reason
+    # Non-positive size.
+    ok, reason = bot._validate_live_order("BTC-USD", 0.0, 100.0)
+    assert ok is False and "non-positive" in reason.lower(), reason
+
+
+def test_validate_live_order_allows_valid(monkeypatch):
+    bot, args = _make("live", dry_run=False)
+    monkeypatch.setenv("LIVE_MIN_NOTIONAL_USD", "10.0")
+    ok, reason = bot._validate_live_order("BTC-USD", 0.00100000, 100.0)
+    assert ok is True and reason == "", reason
+
+
+def test_fill_drift_alerts_on_mismatch(monkeypatch):
+    bot, args = _make("live", dry_run=False)
+    bot._push_calls = []
+    monkeypatch.setattr(bot, "_push_notification",
+                        lambda ch, title, msg, data=None: bot._push_calls.append((ch, msg)))
+    # Intended: size 0.001 @ $50000 = $50; actual fill @ $60000 = $60 (20% drift > 5% tol).
+    bot._last_intended_order["BTC-USD"] = {
+        "base_size": 0.001, "notional": 50.0, "price": 50000.0, "ts": time.time()}
+    bot._on_fill({"order_id": "o1", "product_id": "BTC-USD", "side": "BUY",
+                  "size": 0.001, "price": 60000.0, "fee": 0.0})
+    assert any(c[0] == "fill_drift" for c in bot._push_calls), \
+        "fill drift must push a notification when notional drifts > tolerance"
+
+
+def test_fill_drift_no_alert_within_tolerance(monkeypatch):
+    bot, args = _make("live", dry_run=False)
+    bot._push_calls = []
+    monkeypatch.setattr(bot, "_push_notification",
+                        lambda ch, title, msg, data=None: bot._push_calls.append((ch, msg)))
+    # Intended: size 0.001 @ $50000 = $50. Actual @ $50500 = $50.50 (1% drift < 5% tol).
+    bot._last_intended_order["BTC-USD"] = {
+        "base_size": 0.001, "notional": 50.0, "price": 50000.0, "ts": time.time()}
+    bot._on_fill({"order_id": "o1", "product_id": "BTC-USD", "side": "BUY",
+                  "size": 0.001, "price": 50500.0, "fee": 0.0})
+    assert not any(c[0] == "fill_drift" for c in bot._push_calls), \
+        "no fill-drift alert when within tolerance"
 
 
 if __name__ == "__main__":

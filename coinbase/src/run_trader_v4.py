@@ -396,6 +396,8 @@ class EventTraderV4:
         self.mode = mode
         # Session-start real balance for the live max-drawdown hard-halt.
         self._live_start_balance: float = 0.0
+        # Last intended order per product, for fill-vs-preview drift detection.
+        self._last_intended_order: Dict[str, dict] = {}
         self.dry_run = dry_run
         self.min_change_pct = min_change_pct
         self.paper_product_cooldown_s = paper_product_cooldown_s
@@ -3386,6 +3388,37 @@ class EventTraderV4:
 
     # ── Live Execution ─────────────────────────────────────────────
 
+    def _validate_live_order(self, product_id: str, base_size: float,
+                             notional: float) -> "tuple[bool, str]":
+        """Pre-trade guard for live orders (real money).
+
+        Returns (ok, reason). Rejects:
+          - stablecoin / fiat products (USDC, USDT, DAI, any *USD* quote)
+          - non-positive or mis-rounded base size (Coinbase rejects 13-dp BTC;
+            8-dp is the safe precision)
+          - notional below LIVE_MIN_NOTIONAL_USD floor (dust burns fees)
+        Inert in paper mode (caller only invokes this in live path).
+        """
+        import os as _os
+        # Stablecoins / fiat — never trade these as the asset.
+        _pid = (product_id or "").upper()
+        if _pid in ("USDC", "USDT", "DAI", "USD", "TUSD", "USDC-USDC"):
+            return False, f"stablecoin/fiat product blocked: {product_id}"
+        # Coinbase product ids are like BTC-USD; block if the BASE is a stable.
+        _base = _pid.split("-")[0]
+        if _base in ("USDC", "USDT", "DAI", "USD", "TUSD"):
+            return False, f"stablecoin base blocked: {product_id}"
+        # Base size sanity: positive and within 8-dp precision.
+        if not isinstance(base_size, (int, float)) or base_size <= 0:
+            return False, f"non-positive base_size: {base_size}"
+        if round(base_size, 8) != base_size:
+            return False, f"base_size exceeds 8dp precision: {base_size}"
+        # Notional floor.
+        _floor = float(_os.environ.get("LIVE_MIN_NOTIONAL_USD", "10.0"))
+        if notional < _floor:
+            return False, f"notional ${notional:.2f} < floor ${_floor:.2f}"
+        return True, ""
+
     def _live_execute(self, product_id: str, price: float, opportunities: List[Dict[str, Any]],
                       regime_cmatrix: str = "") -> None:
         """Place real orders via NativeExecutionEngine + BracketManager with risk checks."""
@@ -3508,6 +3541,24 @@ class EventTraderV4:
             if not ok:
                 log.info("LIVE SKIP %s: risk check failed: %s", product_id, reason)
                 return
+
+            # ── PRE-TRADE ORDER VALIDATION (live, real money) ──────────
+            # Guard against malformed/unsafe orders reaching the exchange:
+            #  - notional below a hard floor (dust orders waste fees)
+            #  - non-positive or mis-rounded base size (Coinbase rejects
+            #    13-dp BTC; 8-dp is the safe integer precision)
+            #  - stablecoin products (USDC/USDT/DAI/USD*) — never trade fiat
+            _valid, _vreason = self._validate_live_order(product_id, base_size, notional)
+            if not _valid:
+                log.warning("LIVE SKIP %s: order validation failed: %s", product_id, _vreason)
+                return
+
+            # Remember the intended order so _on_fill can detect slippage /
+            # exposure drift vs what we actually sent.
+            self._last_intended_order[product_id] = {
+                "base_size": base_size, "notional": notional, "price": price,
+                "ts": time.time(),
+            }
 
             bracket = self._bracket_mgr.place_bracket(
                 product_id=product_id,
@@ -4808,7 +4859,38 @@ class EventTraderV4:
                     pos["size"] -= size
                     if pos["size"] <= 1e-9:
                         del self._live_positions[product_id]
-                        
+
+            # ── FILL vs INTENDED-ORDER DRIFT CHECK (live, real money) ─
+            # Detect slippage / exposure drift: the actual fill should match
+            # what we sent. If filled notional or fee drifts beyond tolerance,
+            # alert loudly (possible partial fill, price spike, or bug).
+            if self.mode == "live" and not self.dry_run and side in ("BUY", "SELL"):
+                try:
+                    import os as _os
+                    _pid = product_id or ""
+                    _intended = self._last_intended_order.get(_pid)
+                    if _intended:
+                        _fill_notional = size * price
+                        _intended_notional = _intended.get("notional", 0.0)
+                        _tol = float(_os.environ.get("LIVE_FILL_DRIFT_PCT", "0.05"))
+                        if _intended_notional > 0:
+                            _drift = abs(_fill_notional - _intended_notional) / _intended_notional
+                            if _drift > _tol:
+                                _msg = (f"FILL DRIFT {product_id} {side}: filled "
+                                        f"${_fill_notional:.2f} vs intended "
+                                        f"${_intended_notional:.2f} (drift {_drift:.1%} > "
+                                        f"{_tol:.1%})")
+                                log.warning("[FILL] %s", _msg)
+                                self._push_notification("fill_drift", "FILL DRIFT",
+                                                        _msg, {"product_id": _pid,
+                                                               "side": side,
+                                                               "drift": round(_drift, 4)})
+                        # Consume the intended order so a later unrelated fill
+                        # for the same product isn't compared to a stale intent.
+                        if time.time() - _intended.get("ts", 0) > 300:
+                            self._last_intended_order.pop(_pid, None)
+                except Exception as _fe:
+                    log.warning("[FILL] drift check error: %s", _fe)                        
         except Exception as e:
             log.error(f"[FILL] Error processing fill: {e}")
 
