@@ -4478,27 +4478,94 @@ class EventTraderV4:
             log.error(f"[RECONCILE] Failed to reconcile open orders: {e}")
 
     def _sync_positions_from_exchange(self) -> None:
-        """Sync positions from Coinbase on startup.
-        
-        Fetches current holdings and updates local position tracking.
+        """Reconcile local positions against the exchange on startup/restart.
+
+        This is the SAFETY mechanism for surviving a crash/power-loss/outage:
+        after the bot comes back, it MUST match its local view to what is
+        ACTUALLY open on Coinbase, otherwise it would either (a) orphan real
+        positions it forgot about (no stop, no exit — money at risk), or
+        (b) try to manage "ghost" positions that already closed during the
+        outage.
+
+        Reconciliation rules (LIVE mode):
+          - Real exchange position NOT in local tracking  -> ADOPT it (rebuild a
+            PaperPosition so the bot manages it and re-establishes stops).
+          - Real exchange position already tracked          -> UPDATE qty/entry.
+          - Local position NOT present on the exchange       -> it closed during
+            the outage; drop it from local tracking and book the realized close
+            so cash/equity reconcile and the bot doesn't manage a ghost.
+        In PAPER mode this is a no-op (positions are already loaded from state).
         """
         if not self._cb_client:
             return
         try:
-            positions = self._cb_client.get_positions()
-            for pos in positions:
-                pid = pos.get("product_id")
-                if not pid:
-                    continue
-                # Update local paper tracking for live mode
-                if self.mode == "live":
-                    # Store in a live positions dict for reference
-                    if not hasattr(self, "_live_positions"):
-                        self._live_positions = {}
-                    self._live_positions[pid] = pos
-                    log.info(f"[SYNC] Live position: {pid} side={pos.get('side')} size={pos.get('size')} entry={pos.get('entry_price')}")
+            exchange = self._cb_client.get_positions()
         except Exception as e:
-            log.error(f"[SYNC] Failed to sync positions: {e}")
+            log.error("[SYNC] Failed to fetch positions: %s", e)
+            return
+
+        if self.mode != "live":
+            # Paper: keep reference snapshot only; do not mutate local book.
+            self._live_positions = {p.get("product_id"): p for p in exchange if p.get("product_id")}
+            return
+
+        live_pids = {p.get("product_id") for p in exchange if p.get("product_id")}
+        now = time.time()
+
+        # 1) Adopt / update real positions.
+        for ex in exchange:
+            pid = ex.get("product_id")
+            if not pid:
+                continue
+            size = float(ex.get("size", 0) or 0)
+            if size <= 0:
+                continue
+            entry = float(ex.get("entry_price", 0) or 0)
+            side = "SHORT" if str(ex.get("side", "")).upper() == "SHORT" else "LONG"
+            existing = self.paper_positions.get(pid)
+            if existing is None:
+                # ADOPT: rebuild a managed PaperPosition from exchange truth.
+                self.paper_positions[pid] = PaperPosition(
+                    product_id=pid,
+                    side=side,
+                    qty=size,
+                    entry_price=entry,
+                    entry_ts=now,
+                    strategy="adopted_on_restart",
+                    confidence=0.5,
+                    win_rate=0.5,
+                    sharpe=0.5,
+                    entry_notional=size * entry,
+                    leverage=1.0,
+                    highest_price=entry,
+                    lowest_price=entry,
+                )
+                log.warning("[SYNC] ADOPTED live position %s %s x%.6f @ %.4f (was unknown locally)",
+                            pid, side, size, entry)
+            else:
+                # UPDATE: trust the exchange for qty/entry.
+                existing.qty = size
+                if entry > 0:
+                    existing.entry_price = entry
+                    existing.entry_notional = size * entry
+                existing.highest_price = max(existing.highest_price, entry)
+                existing.lowest_price = min(existing.lowest_price or entry, entry)
+                log.info("[SYNC] Updated local %s -> qty=%.6f entry=%.4f", pid, size, entry)
+
+        # 2) Drop ghosts: local positions that are NOT on the exchange.
+        for pid in list(self.paper_positions.keys()):
+            if pid not in live_pids:
+                pos = self.paper_positions.pop(pid)
+                # Book the close at last known price so cash/equity reconcile.
+                px = pos.highest_price or pos.entry_price or 0.0
+                close_pnl = (px - pos.entry_price) * pos.qty if pos.is_long else \
+                            (pos.entry_price - px) * pos.qty
+                self.paper_realized_pnl += close_pnl
+                self.paper_cash += pos.qty * px
+                log.warning("[SYNC] Dropped GHOST local position %s (not on exchange); "
+                           "booked close pnl=%.2f", pid, close_pnl)
+
+        self._live_positions = {p.get("product_id"): p for p in exchange if p.get("product_id")}
 
     def _on_fill(self, event: dict) -> None:
         """Handle fill events from Advanced Trade WebSocket."""
