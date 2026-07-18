@@ -394,6 +394,8 @@ class EventTraderV4:
         max_hold_s: int = 86400,
     ):
         self.mode = mode
+        # Session-start real balance for the live max-drawdown hard-halt.
+        self._live_start_balance: float = 0.0
         self.dry_run = dry_run
         self.min_change_pct = min_change_pct
         self.paper_product_cooldown_s = paper_product_cooldown_s
@@ -821,8 +823,26 @@ class EventTraderV4:
     # ── Startup ──────────────────────────────────────────────────────
 
     def start(self):
-        # ── Live mode startup: validate config + init engines ──────
+        # ── Live mode startup: validate config + init engines ──
         if self.mode == "live":
+            # ── EXPLICIT LIVE AUTHORIZATION ───────────────────────────────
+            # Going live moves REAL money. --mode live alone is NOT enough:
+            # require a deliberate, out-of-band authorization so a typo, a
+            # misconfigured cron, or an accidental autostart flip can NEVER
+            # start live trading. Operator must set ALLOW_LIVE_TRADING=1 (env)
+            # OR touch data/live_authorized. Paper/approval modes are exempt.
+            import os as _os
+            _live_authorized = (
+                _os.environ.get("ALLOW_LIVE_TRADING", "").strip() == "1"
+                or Path("data/live_authorized").exists()
+            )
+            if not _live_authorized:
+                raise RuntimeError(
+                    "REFUSING TO START LIVE: explicit authorization missing. "
+                    "Set ALLOW_LIVE_TRADING=1 or `touch data/live_authorized` "
+                    "before running with --mode live. (Paper mode needs no "
+                    "authorization.)"
+                )
             self._live_cfg = TradingConfig.from_env()
             issues = LiveSafetyValidator.check(self._live_cfg)
             if issues:
@@ -885,6 +905,12 @@ class EventTraderV4:
             )
             self._risk_mgr = RiskManager(profile=risk_profile, limit=risk_limit)
             log.info("Live execution engines initialized: dry_run=%s", self.dry_run)
+            # Session-start real balance — the reference for the max-total
+            # drawdown hard-halt. Captured once at startup.
+            try:
+                self._live_start_balance = float(self._dca_available_cash() or 0.0)
+            except Exception:
+                self._live_start_balance = 0.0
 
             # Slippage model with order book simulation (live only)
             self._slippage_model = get_slippage_model()
@@ -3152,6 +3178,51 @@ class EventTraderV4:
             log.warning("CIRCUIT BREAKER: kill switch active")
             return False
 
+        # ── MAX TOTAL DRAWDOWN HARD-HALT (live, real money) ─────────────
+        # Daily-loss limit (above) blocks NEW trades but leaves the book open.
+        # This is the portfolio-level backstop: if real equity drawdown from
+        # session start exceeds the cap, we HARD-STOP the process (not just
+        # pause) so nothing else can execute. Mirrors the corruption-sentinel
+        # pattern: writes a sentinel, then exits.
+        if self.mode == "live" and not getattr(self, "dry_run", False):
+            try:
+                import os as _os
+                _dd_cap = float(_os.environ.get("LIVE_MAX_DRAWDOWN_PCT", "0.15"))
+                _start = getattr(self, "_live_start_balance", 0.0) or 0.0
+                if _start > 0:
+                    _avail = self._dca_available_cash()
+                    _positions = getattr(self, "_live_positions", {}) or {}
+                    _open = 0.0
+                    for _p in _positions.values():
+                        if not isinstance(_p, dict):
+                            continue
+                        _qty = float(_p.get("size") or _p.get("base_size") or _p.get("qty") or 0)
+                        _entry = float(_p.get("entry_price") or _p.get("average_price")
+                                       or _p.get("entry") or 0)
+                        _open += _qty * _entry
+                    _equity = _avail + _open
+                    _dd = (_start - _equity) / _start
+                    if _dd >= _dd_cap:
+                        self._cb_breached = True
+                        self._cb_breach_reason = f"max_drawdown:{_dd:.1%}>={_dd_cap:.1%}"
+                        log.error("CIRCUIT BREAKER (HARD HALT): %s", self._cb_breach_reason)
+                        self._push_notification(
+                            "circuit_breaker", "HARD HALT — max drawdown",
+                            f"Real equity drawdown {_dd:.1%} >= {_dd_cap:.1%}. Stopping bot.",
+                            {"reason": self._cb_breach_reason})
+                        try:
+                            Path("data/trader_state_corrupt").write_text(
+                                f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode=live "
+                                f"path={self._paper_state_path.name}\n"
+                                f"HARD HALT max_drawdown: dd={_dd:.1%}>=cap={_dd_cap:.1%}\n")
+                        except OSError:
+                            pass
+                        # Hard stop: autostart will NOT relaunch while the
+                        # sentinel exists. Operator must review before restart.
+                        os._exit(1)
+            except Exception as _de:
+                log.warning("Max-drawdown halt check skipped (error): %s", _de)
+
         return True
 
     def _record_live_result(self, pnl: float) -> None:
@@ -3389,6 +3460,35 @@ class EventTraderV4:
             if notional < 10.0:
                 log.debug("LIVE SKIP %s: notional $%.2f too small", product_id, notional)
                 return
+
+            # ── REAL-BALANCE EXPOSURE CAP (live only) ───────────────────
+            # Size is computed off internal equity, but REAL money is bounded
+            # by the actual exchange balance. Never let total open notional
+            # exceed the available balance × cap (default 0.95) — this is the
+            # guard against the bot over-committing funds it doesn't have.
+            try:
+                import os as _os
+                _cap = float(_os.environ.get("LIVE_BALANCE_CAP", "0.95"))
+                _avail = self._dca_available_cash()
+                _positions = getattr(self, "_live_positions", {}) or {}
+                _open_notional = 0.0
+                for _p in _positions.values():
+                    if not isinstance(_p, dict):
+                        continue
+                    _qty = float(_p.get("size") or _p.get("base_size") or _p.get("qty") or 0)
+                    _entry = float(_p.get("entry_price") or _p.get("average_price")
+                                   or _p.get("entry") or 0)
+                    _open_notional += _qty * _entry
+                if _avail and _avail > 0:
+                    _max_total = _avail * _cap
+                    if (_open_notional + notional) > _max_total:
+                        log.warning(
+                            "LIVE SKIP %s: would exceed balance cap — open=$%.2f + "
+                            "order=$%.2f > avail=$%.2f x%.2f=$%.2f",
+                            product_id, _open_notional, notional, _avail, _cap, _max_total)
+                        return
+            except Exception as _be:
+                log.warning("LIVE balance-cap check skipped (error): %s", _be)
 
             base_size = notional / max(price, 1e-9)
             stop_dist = atr_val * stop_mult if atr_val > 0 else price * 0.03

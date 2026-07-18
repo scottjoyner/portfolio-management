@@ -58,6 +58,16 @@
   .stat .k{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;font-weight:500}
   .stat .v{font-size:14px;font-weight:600;font-family:var(--font-mono)}
 
+  /* ── Mode Banner (live vs paper — unmistakable) ── */
+  .mode-banner{
+    padding:6px 16px;font-size:12px;font-weight:700;letter-spacing:.4px;
+    text-align:center;flex-shrink:0;
+  }
+  .mode-banner.paper{background:rgba(22,199,132,.12);color:var(--green);border-bottom:1px solid rgba(22,199,132,.3)}
+  .mode-banner.live{background:rgba(234,57,67,.16);color:var(--red);border-bottom:1px solid rgba(234,57,67,.4);animation:livePulse 2s infinite}
+  .mode-banner.unknown{background:rgba(240,185,11,.12);color:var(--amber);border-bottom:1px solid rgba(240,185,11,.3)}
+  @keyframes livePulse{0%,100%{opacity:1}50%{opacity:.65}}
+
   /* ── Main Layout ── */
   /* 3 columns; columns grow to fit content; the page scrolls, not individual
      panels fighting for 1/N of a fixed viewport. */
@@ -287,6 +297,8 @@
   <div class="stat"><span class="k">Positions</span><span class="v mono" id="h-pos">--</span></div>
   <div class="stat"><span class="k">At Risk</span><span class="v mono" id="h-risk">--</span></div>
 </div>
+
+<div class="mode-banner paper" id="mode-banner">PAPER MODE — simulation, no real money</div>
 
 <div class="grid">
   <!-- LEFT: Watchlist + Strategies + Risk -->
@@ -766,7 +778,21 @@ async function loadHealth() {
   if (acc && acc.accounts && acc.accounts[0]) {
     const nav = acc.accounts.reduce((s,a)=>s+(a.nav||0),0);
     if (nav>0) $("#h-risk").textContent = fmtUsd(nav * 0.2);
-    $("#mode-sub").textContent = acc.accounts[0].mode || "paper";
+    const mode = acc.accounts[0].mode || "paper";
+    $("#mode-sub").textContent = mode;
+    // Prominent, unmistakable mode banner so the operator can NEVER confuse
+    // live (real money) with paper (simulation).
+    const banner = $("#mode-banner");
+    if (mode === "live") {
+      banner.className = "mode-banner live";
+      banner.textContent = "LIVE MODE — REAL MONEY AT RISK";
+    } else if (mode === "paper") {
+      banner.className = "mode-banner paper";
+      banner.textContent = "PAPER MODE — simulation, no real money";
+    } else {
+      banner.className = "mode-banner unknown";
+      banner.textContent = "MODE UNKNOWN — verify before trusting";
+    }
   }
 }
 
