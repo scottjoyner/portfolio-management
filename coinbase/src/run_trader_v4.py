@@ -1164,6 +1164,17 @@ class EventTraderV4:
         )
         self._funding_thread.start()
 
+        # ── Periodic state-save daemon ────────────────────────────────
+        # Persists the running book on a fixed interval REGARDLESS of trades,
+        # so a freshly-started book (or one with no recent fills) always has
+        # an on-disk checkpoint before any restart / power loss. Trades also
+        # save on their own events; this is the backstop. Archival inside
+        # _save_paper_state is throttled to 60s so disk growth is bounded.
+        self._state_save_thread = threading.Thread(
+            target=self._state_save_loop, daemon=True, name="state_save"
+        )
+        self._state_save_thread.start()
+
         if not self._ws_feed or not self._ws_feed._running:
             log.warning("No WebSocket — falling back to polling mode")
             self.health_status["status"] = "polling"
@@ -1930,6 +1941,30 @@ class EventTraderV4:
             self.health_status["last_state_save_ts"] = time.time()
         except Exception as e:
             log.debug("Failed to save paper state: %s", e)
+
+    def _state_save_loop(self) -> None:
+        """Daemon: persist the running book on a fixed interval.
+
+        Backs up the in-memory ledger to disk every LIVE_STATE_SAVE_INTERVAL
+        seconds (default 60) regardless of trade activity, so a freshly
+        started book (or one with no recent fills) always has an on-disk
+        checkpoint before any restart or power loss. _save_paper_state is
+        mode-aware (paper -> paper_trader_v4_state.json, live ->
+        live_trader_v4_state.json) and throttles archival to bound disk growth.
+        """
+        import os as _os
+        interval = max(10, float(_os.environ.get("LIVE_STATE_SAVE_INTERVAL", "60")))
+        log.info("State-save daemon started (every %.0fs)", interval)
+        while not getattr(self, "_shutdown", False):
+            try:
+                self._save_paper_state()
+            except Exception as e:
+                log.debug("Periodic state save failed: %s", e)
+            # Sleep in small slices so shutdown is responsive.
+            _elapsed = 0.0
+            while _elapsed < interval and not getattr(self, "_shutdown", False):
+                time.sleep(min(5.0, interval - _elapsed))
+                _elapsed += min(5.0, interval - _elapsed)
 
     def _state_structural_issues(self, state: dict) -> str:
         """Return a reason string if the loaded state is structurally corrupt.

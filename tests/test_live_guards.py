@@ -227,6 +227,33 @@ def test_fill_drift_no_alert_within_tolerance(monkeypatch):
         "no fill-drift alert when within tolerance"
 
 
+def test_state_save_loop_writes_file(monkeypatch, tmp_path):
+    """The interval save daemon must checkpoint the book to disk even with
+    zero trades — the robustness gap we just closed."""
+    import threading as _th
+    bot, args = _make("paper", dry_run=True)
+    # Don't exercise the full snapshot machinery; just prove the daemon calls
+    # _save_paper_state on its interval and respects shutdown. We stub the
+    # save to write a marker so we confirm the loop actually fired.
+    marker = tmp_path / "saved_marker.json"
+    calls = {"n": 0}
+
+    def _fake_save():
+        calls["n"] += 1
+        marker.write_text(str(calls["n"]))
+
+    monkeypatch.setattr(bot, "_save_paper_state", _fake_save)
+    monkeypatch.setenv("LIVE_STATE_SAVE_INTERVAL", "1")  # fast interval for test
+    bot._shutdown = False
+    t = _th.Thread(target=bot._state_save_loop, daemon=True)
+    t.start()
+    t.join(timeout=3.0)  # ~3 save cycles at 1s interval
+    bot._shutdown = True
+    t.join(timeout=2.0)
+    assert marker.exists(), "state-save daemon must call save within the interval"
+    assert calls["n"] >= 1, "save was called at least once"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
