@@ -46,11 +46,13 @@ function renderSystemTruth(truth) {
     if (strong) strong.textContent = value;
   };
   const mode = truth.trading_mode || {};
+  const trader = truth.services?.trader || {};
   const heartbeat = truth.feed?.heartbeat || {};
   const snapshot = truth.services?.snapshot || {};
   const exposure = truth.exposure || {};
   const cache = truth.cache || {};
   setCell('truth-mode', `${mode.value || 'unknown'} · ${mode.source || 'unknown'}`, mode.value === 'live' ? 'critical' : mode.value === 'paper' ? 'ok' : 'warn');
+  setCell('truth-trader', trader.available ? `${trader.mode || 'reachable'} · ${trader.status || 'unknown'}` : (trader.error || 'unknown'), trader.available && trader.mode === 'paper' ? 'ok' : trader.available && trader.mode === 'live' ? 'critical' : 'warn');
   setCell('truth-feed', `${heartbeat.freshness || 'unknown'}${heartbeat.age_sec === null || heartbeat.age_sec === undefined ? '' : ` · ${heartbeat.age_sec}s`}`, heartbeat.freshness === 'fresh' ? 'ok' : 'warn');
   setCell('truth-cache', cache.status || 'unknown', cache.status === 'ok' ? 'ok' : 'warn');
   setCell('truth-services', snapshot.freshness || 'unknown', snapshot.freshness === 'fresh' ? 'ok' : 'warn');

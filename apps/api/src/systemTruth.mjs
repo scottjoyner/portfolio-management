@@ -150,7 +150,9 @@ export function buildSystemTruth({ state, env = {}, dataDir = DATA_ROOT, now = D
     feed: { heartbeat: feedHeartbeat },
     cache: cacheTruth(),
     services: {
-      trader: { available: false, source: 'not_probed', status: 'unknown' },
+      trader: snapshotFreshness === 'fresh' && snapshotData?.trader
+        ? { ...snapshotData.trader, source: 'system_health_snapshot' }
+        : { available: false, source: 'not_probed', status: 'unknown' },
       snapshot: {
         source: 'system_health_snapshot',
         age_sec: snapshotAge === null ? null : round(snapshotAge, 1),
