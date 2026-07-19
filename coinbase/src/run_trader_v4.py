@@ -4386,62 +4386,43 @@ class EventTraderV4:
                 continue
         return ""
 
-    def _submit_via_assistx(self, prompt: str) -> str:
-        """Queue one advisory-only paper-trade review on the dedicated AssistX lane.
-
-        The trading engine never consumes this task's result for order placement,
-        gates, leverage, or configuration changes.  It is a durable review record
-        and proposal generator only.
-        """
-        import base64
+    def _submit_via_assistx(self, prompt: str, orinth_review: str, vibethinker_review: str) -> None:
+        """Submit analysis as an event to AssistX for task/graph persistence."""
         import urllib.request
         try:
-            url = os.getenv("ASSISTX_TRADE_REVIEW_URL", "http://127.0.0.1:8010").rstrip("/")
-            credential_path = Path(os.getenv(
-                "ASSISTX_TRADE_REVIEW_CREDENTIALS_FILE",
-                str(Path.home() / ".config/portfolio-trader/assistx-trade-review.credentials"),
-            ))
-            username, password = credential_path.read_text().strip().split(":", 1)
-            now = int(time.time())
-            task = json.dumps({
-                "task_id": f"trade-review-{now}",
-                "title": "Paper trading performance review (advisory only)",
-                "task_type": "trade_review",
-                "kind": "trade_review",
-                "required_capabilities": ["trade_review"],
-                "target_agent_id": "xwing-trade-review",
-                "priority": "LOW",
-                "idempotency_key": f"trade-review-{now}",
-                "correlation_id": f"corr-trade-review-{now}",
+            event = json.dumps({
+                "event_id": f"analytics_{int(time.time())}",
+                "event_type": "strategy.analysis.completed",
+                "source_repo": "portfolio-management",
+                "source_service": "trader-v4-experiment",
+                "node_id": "xwing",
+                "occurred_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "idempotency_key": f"analytics-{int(time.time())}",
+                "subject": f"strategy-analysis-{int(time.time())}",
                 "payload": {
-                    "description": prompt,
-                    "execution_policy": "ADVISORY_ONLY: never place orders or change strategy gates, leverage, or configuration.",
-                    "source_repo": "portfolio-management",
-                    "source_service": "trader-v4-experiment",
-                    "node_id": "xwing",
                     "trades": self.paper_wins + self.paper_losses,
                     "win_rate": round(self.paper_wins / max(self.paper_wins + self.paper_losses, 1), 4),
                     "realized_pnl": round(self.paper_realized_pnl, 2),
+                    "orinth_review": orinth_review[:500],
+                    "vibethinker_review": vibethinker_review[:500],
                 },
+                "correlation_id": f"corr_analytics_{int(time.time())}",
+                "actor": "trader-v4",
             }).encode()
-            auth = base64.b64encode(f"{username}:{password}".encode()).decode()
-            req = urllib.request.Request(
-                f"{url}/api/tasks", data=task,
-                headers={"Content-Type": "application/json", "Authorization": f"Basic {auth}"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                result = json.loads(response.read().decode())
-            return str(result.get("task_id", ""))
+            req = urllib.request.Request("http://100.64.43.123:8000/api/events",
+                                         data=event,
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5)
         except Exception as e:
-            log.warning("AssistX trade-review enqueue failed: %s", e)
-            return ""
+            log.debug("AssistX event submit failed: %s", e)
 
     def _experiment_review(self) -> Dict[str, Any]:
         prompt = self._analytics_review_prompt()
         if not prompt or prompt.startswith("No strategy"):
             return {}
-        task_id = self._submit_via_assistx(prompt)
-        proposal = {"ts": time.time(), "assistx_task_id": task_id, "status": "queued" if task_id else "enqueue_failed"}
+        orinth_review = self._llm_review(prompt, "orinth")
+        vibethinker_review = self._llm_review(prompt, "vibethinker")
+        proposal = {"ts": time.time(), "orinth": orinth_review, "vibethinker": vibethinker_review}
         path = Path("data/experiment_proposals.json")
         try:
             existing = json.loads(path.read_text()) if path.exists() else []
@@ -4452,7 +4433,9 @@ class EventTraderV4:
             tmp_path.replace(path)
         except Exception as e:
             log.debug("Failed to save proposal: %s", e)
-        log.info("EXPERIMENT: AssistX trade-review task=%s", task_id or "enqueue_failed")
+        self._submit_via_assistx(prompt, orinth_review, vibethinker_review)
+        log.info("EXPERIMENT: orinth=%d chars vibethinker=%d chars",
+                 len(orinth_review), len(vibethinker_review))
         return proposal
 
     def _experiment_loop(self) -> None:
