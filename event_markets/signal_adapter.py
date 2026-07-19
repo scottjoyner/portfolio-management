@@ -126,7 +126,7 @@ class PredictionMarketAdapter:
         min_volume: float = 2000,
         min_extremity: float = 0.2,
         min_open_interest: float = 100,
-        max_spread: float = 0.20,
+        max_spread: float = 0.15,
         categories: Optional[List[str]] = None,
     ):
         self._client = UnifiedPredictionMarketClient(
@@ -179,12 +179,22 @@ class PredictionMarketAdapter:
             logger.debug("Order book fetch failed for %s: %s", market.market_id, e)
             return 0, 0
 
-    def get_signals(self, price_map: Optional[Dict[str, float]] = None) -> List[Any]:
+    def get_signals(
+        self,
+        price_map: Optional[Dict[str, float]] = None,
+        kg_assessments: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
         """Fetch prediction market signals for configured categories.
 
         Returns list of dicts matching AccumulatedSignal fields so callers
         can construct the dataclass directly.  Returns empty list on error.
+
+        ``kg_assessments`` maps ``market.market_id`` -> a
+        ``KnowledgeGapAssessment``; when a significant assessment exists it
+        overrides the signal side and boosts confidence (see
+        ``_kg_side_and_boost``), reconciling the adapter with the optimizer.
         """
+        kg_assessments = kg_assessments or {}
         signals = []
         use_crypto_only = self.categories == ["crypto"]
         try:
@@ -198,7 +208,7 @@ class PredictionMarketAdapter:
                         continue
                     if m.spread > self.max_spread:
                         continue
-                    sigs = self._market_to_signals(m)
+                    sigs = self._market_to_signals(m, kg_assessments.get(m.market_id))
                     signals.extend(sigs)
             else:
                 all_cats = self.categories if self.categories != ["*"] else None
@@ -217,7 +227,7 @@ class PredictionMarketAdapter:
                             continue
                         if m.spread > self.max_spread:
                             continue
-                        sigs = self._market_to_signals(m)
+                        sigs = self._market_to_signals(m, kg_assessments.get(m.market_id))
                         signals.extend(sigs)
         except Exception as e:
             logger.warning("Prediction market fetch failed: %s", e)
@@ -233,8 +243,20 @@ class PredictionMarketAdapter:
                 unique.append(s)
         return unique
 
-    def _market_to_signals(self, m: PredictionMarket) -> List[Dict[str, Any]]:
-        """Convert a single prediction market into 0-2 signals."""
+    def _market_to_signals(
+        self, m: PredictionMarket,
+        kg_assessment: Any = None,
+    ) -> List[Dict[str, Any]]:
+        """Convert a single prediction market into 0-2 signals.
+
+        Side derivation reconciles the naive mid-price rule with the knowledge
+        gap (KG) direction so the adapter agrees with
+        ``portfolio_optimizer._detect_event_markets``:
+          - KG undervalued  => market's YES price is too LOW vs evidence  => BUY YES
+          - KG overvalued   => market's YES price is too HIGH vs evidence => SELL YES
+        When no significant KG is present we fall back to the mid-price rule
+        (mp > 0.5 -> BUY, mp < 0.5 -> SELL).
+        """
         if not m.is_tradeable:
             return []
         mp = m.mid_price
@@ -248,11 +270,11 @@ class PredictionMarketAdapter:
         # Order book depth for liquidity validation
         bid_depth, ask_depth = self._get_order_book_depth(m)
         depth_score = min((bid_depth + ask_depth) / (m.volume * 0.01), 1.0) if m.volume > 0 else 0
-        
+
         # Time to expiry weighting
         hours_left = self._hours_to_expiry(m.end_date)
         time_weight = min(1.0, hours_left / 168)  # Cap at 1 week
-        
+
         # Confidence: extremity * liquidity * depth * time_weight
         confidence = min(extremity * m.liquidity_score * 1.5 * depth_score * time_weight, 0.95)
         base_score = confidence * 0.5
@@ -262,6 +284,14 @@ class PredictionMarketAdapter:
         if m.category not in ACTIONABLE_CATEGORIES:
             confidence *= 0.6
 
+        # Knowledge-gap override of side + confidence when significant.
+        kg_sig = self._kg_side_and_boost(m, kg_assessment)
+        if kg_sig is not None:
+            kg_side, kg_boost = kg_sig
+            confidence = min(confidence * kg_boost, 0.95)
+        else:
+            kg_side = None
+
         signals = []
         base_reason = (
             f"{m.platform} [{m.category}]: {m.question[:60]} → {mp*100:.0f}% YES "
@@ -269,12 +299,47 @@ class PredictionMarketAdapter:
             f"hours_left={hours_left:.1f})"
         )
 
-        if mp > 0.5 + self.min_extremity * 0.5:
-            signals.append(self._make_signal(symbol, "BUY", confidence, base_score, m, base_reason))
+        # Decide side: prefer KG direction; else naive mid-price rule.
+        if kg_side is not None:
+            side = kg_side
+            if kg_assessment is not None and getattr(kg_assessment, "is_significant", False):
+                base_reason += f" [kg: {kg_assessment.direction} gap={kg_assessment.gap_pct:.0f}%]"
+        elif mp > 0.5 + self.min_extremity * 0.5:
+            side = "BUY"
         elif mp < 0.5 - self.min_extremity * 0.5:
-            signals.append(self._make_signal(symbol, "SELL", confidence, base_score, m, base_reason))
+            side = "SELL"
+        else:
+            return signals
 
+        signals.append(self._make_signal(symbol, side, confidence, base_score, m, base_reason))
         return signals
+
+    @staticmethod
+    def _kg_side_and_boost(m: PredictionMarket, kg: Any) -> Optional[tuple]:
+        """Return (side, confidence_boost) when KG is significant and contradicts
+        or confirms the mid-price direction, matching the optimizer's logic.
+
+        Returns None when there is no significant KG assessment (caller falls
+        back to the naive mid-price rule).
+        """
+        if kg is None or not getattr(kg, "is_significant", False):
+            return None
+        mp = m.mid_price
+        contradiction = (
+            (kg.direction == "overvalued" and mp > 0.5)
+            or (kg.direction == "undervalued" and mp < 0.5)
+        )
+        confirmation = (
+            (kg.direction == "overvalued" and mp < 0.5)
+            or (kg.direction == "undervalued" and mp > 0.5)
+        )
+        if contradiction:
+            side = "BUY" if kg.direction == "undervalued" else "SELL"
+            return (side, 1.4)
+        if confirmation:
+            side = "BUY" if kg.direction == "undervalued" else "SELL"
+            return (side, 1.2)
+        return ("BUY" if kg.direction == "undervalued" else "SELL", 1.0)
 
     def _make_signal(
         self, symbol: str, action: str, confidence: float, base_score: float,
@@ -304,6 +369,11 @@ class PredictionMarketAdapter:
         
         adjusted_confidence = confidence * time_weight
 
+        # NOTE: the top-level keys here MUST be exactly the AccumulatedSignal
+        # dataclass fields, because the accumulator constructs
+        # ``AccumulatedSignal(**signal_dict)``. Platform-specific extras
+        # (kelly_fraction, hours_to_expiry, depth, …) live inside market_data
+        # so both Kalshi and Polymarket produce an identical, constructible shape.
         return {
             "symbol": symbol,
             "action": action,
@@ -313,8 +383,6 @@ class PredictionMarketAdapter:
             "strategy_name": f"PM:{m.platform}:{m.category}",
             "signal_reason": reason,
             "estimated_volume_usd": round(confidence * m.volume * 0.1, 2),
-            "kelly_fraction": round(kelly_f, 4),
-            "hours_to_expiry": round(hours_left, 1),
             "market_data": {
                 "platform": m.platform,
                 "category": m.category,
@@ -327,6 +395,8 @@ class PredictionMarketAdapter:
                 "bid_depth_1pct": round(bid_depth, 2),
                 "ask_depth_1pct": round(ask_depth, 2),
                 "actionable": is_actionable,
+                "kelly_fraction": round(kelly_f, 4),
+                "hours_to_expiry": round(hours_left, 1),
             },
         }
 

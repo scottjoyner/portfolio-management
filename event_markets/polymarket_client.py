@@ -129,6 +129,10 @@ class PolymarketBook:
     asks: List[tuple] = field(default_factory=list)
     spread: float = 0.0
     mid_price: float = 0.0
+    # USD size available within 1% of mid (both sides) — depth proxy.
+    liquidity_1pct: float = 0.0
+    # 0-1 liquidity score derived from tight-spread depth.
+    liquidity_score: float = 0.0
 
 
 class PolymarketClient:
@@ -308,23 +312,27 @@ class PolymarketClient:
         best_ask = asks[0][0] if asks else 0.0
         best_bid = bids[0][0] if bids else 0.0
 
-        # VWAP for first 5 levels of depth
-        def _vwap(levels):
-            vol = sum(p * s for p, s in levels)
-            qty = sum(s for _, s in levels)
-            return vol / qty if qty > 0 else 0.0
-
-        # Cumulative liquidity: USD to move price 1% from mid
+        # Cumulative liquidity: USD available within 1% of mid on each side.
         mid = (best_ask + best_bid) / 2 if best_ask > 0 and best_bid > 0 else 0.0
-        liq_target = mid * 1.01
-        cum_liq = sum(s for p, s in asks if p <= liq_target) if mid > 0 else 0
+        if mid > 0:
+            ask_liq = sum(p * s for p, s in asks if p <= mid * 1.01)
+            bid_liq = sum(p * s for p, s in bids if p >= mid * 0.99)
+            liq_1pct = ask_liq + bid_liq
+        else:
+            liq_1pct = 0.0
+        spread = (best_ask - best_bid) if best_ask > 0 and best_bid > 0 else 0.0
+        # Score: reward depth (saturates ~$10k within 1%) and penalise wide spreads.
+        depth_component = min(liq_1pct / 10000.0, 1.0)
+        spread_component = max(0.0, 1.0 - spread * 5)
+        liq_score = round(depth_component * spread_component, 4)
 
         return PolymarketBook(
             bids=bids,
             asks=asks,
-            spread=(best_ask - best_bid) if best_ask > 0 and best_bid > 0 else 0.0,
+            spread=spread,
             mid_price=mid,
-            # Additional depth metrics stored as raw_data dict
+            liquidity_1pct=round(liq_1pct, 2),
+            liquidity_score=liq_score,
         )
 
     def _parse_gamma_market(self, raw: dict) -> PolymarketMarket:

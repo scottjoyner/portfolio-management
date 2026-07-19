@@ -68,6 +68,14 @@ DEFAULT_SUITE: List[Dict[str, Any]] = [
         "ensemble_min_groups": 2,
         "thresholds": {"min_sharpe": 0.3},
     },
+    {
+        "name": "edgefilter_1h",
+        "strategies": "rust",
+        "universe": "all-harvested",
+        "granularity": 3600,
+        "window_bars": 5000,
+        "thresholds": {"min_sharpe": 0.3, "min_trades": 15},
+    },
 ]
 
 # Experiments considered candidates (regression-checked) when no explicit

@@ -1,31 +1,27 @@
 # Cross-Repository Integration Matrix
 
-**Date:** 2026-05-27
-**Repo:** `~/git/portfolio-management/` (single canonical repository)
-**Purpose:** Map components and integration paths within this repository.
-
-> NOTE: This document was originally written to describe a split between a
-> `crypto-trading/` "primary" repo and this `portfolio-management/` "secondary"
-> repo. The `crypto-trading/` repository does not exist; all components
-> described below now reside within `portfolio-management/`. References to a
-> primary/secondary split are historical and should be read as describing
-> sub-trees of this single repository.
+**Date:** 2026-05-27  
+**Repo:** `~/git/portfolio-management/` (single repository — this is the canonical source of truth)  
+**Note:** This document originally referenced a separate `~/git/crypto-trading/` "primary" repo. That repository does **not** exist. All components described below now live within `portfolio-management/` itself (under `trading_system/`, `coinbase/`, and `deploy/`). The matrix below maps internal component locations within this single repo.  
+**Purpose:** Map all components and integration paths within the repository  
 
 ---
 
-## Repository Overview
+## Repository Layout (single repo)
 
 ### `~/git/portfolio-management/` (canonical)
+Unified crypto/stock trading system. Key areas:
 
-| Directory | Files | Status | Notes |
-|-----------|-------|--------|-------|
-| apps/api/ | 800 lines | ✅ Production | Node/TS API |
-| trading_system/database/ | 1,200 lines | ✅ Production | SQLAlchemy schemas |
-| trading_system/onchain/runtime/ | 75KB | ✅ Complete | Onchain runtime |
-| coinbase/ | 700 lines | ✅ Production | Coinbase connectors |
-| risk/approvals/ | 400 lines | ✅ Production | Approval workflow |
-| strategies/market_making/ | 900 lines | ✅ Production | MM strategies |
-| deploy/ | 600 lines | ✅ Production | Deploy assets |
+| Area | Location | Notes |
+|------|----------|-------|
+| Onchain runtime / pollers | `trading_system/onchain/` | Production |
+| PostgreSQL storage / ORM | `trading_system/database`, `trading_system/storage/` | SQLAlchemy + alembic |
+| Coinbase connectors | `coinbase/` | Live trader entrypoint `coinbase/src/run_trader_v4.py` |
+| Risk / approvals | `trading_system/risk`, `approval_server.py` | Production |
+| Strategies / market making | `trading_system/strategies`, `coinbase/src/` | Production |
+| Deployment assets | `deploy/` | Docker Compose, k8s, GitHub workflow |
+
+> Legacy `archive/` holds shadow copies of older scripts. Some live code (e.g. `portfolio_optimizer.py`) still imports from `archive/coinbase_src/` — do not delete `archive/` without reconciling those imports.
 
 ---
 

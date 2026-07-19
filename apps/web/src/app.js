@@ -16,7 +16,7 @@ let activeTab = 'dashboard';
 let pollingId = null;
 let quotePollingId = null;
 let prevPrices = {};
-let allState = { summary: {}, systemTruth: null, accounts: [], positions: [], opportunities: [], executions: [], feed: [], config: {} };
+let allState = { summary: {}, accounts: [], positions: [], opportunities: [], executions: [], feed: [], config: {} };
 let opportunityViewState = { status: 'all', venue: 'all', query: '' };
 let polymarketSelection = null;
 let auditViewState = { level: 'all', query: '' };
@@ -33,44 +33,6 @@ function updateSidebarStats(summary) {
   $('#s-opp-count').textContent = c.opportunities || 0;
   $('#s-pos-count').textContent = c.positions || 0;
   $('#s-audit-count').textContent = c.auditEvents || 0;
-}
-
-function renderSystemTruth(truth) {
-  if (!truth) return;
-  const setCell = (id, value, status = 'warn') => {
-    const cell = $(`#${id}`);
-    if (!cell) return;
-    cell.classList.remove('truth-ok', 'truth-warn', 'truth-critical');
-    cell.classList.add(`truth-${status}`);
-    const strong = cell.querySelector('strong');
-    if (strong) strong.textContent = value;
-  };
-  const mode = truth.trading_mode || {};
-  const trader = truth.services?.trader || {};
-  const heartbeat = truth.feed?.heartbeat || {};
-  const snapshot = truth.services?.snapshot || {};
-  const paperBook = truth.paper_book || {};
-  const executionDecision = truth.execution_decision || {};
-  const cache = truth.cache || {};
-  setCell('truth-mode', `${mode.value || 'unknown'} · ${mode.source || 'unknown'}`, mode.value === 'live' ? 'critical' : mode.value === 'paper' ? 'ok' : 'warn');
-  setCell('truth-trader', trader.available ? `${trader.mode || 'reachable'} · ${trader.status || 'unknown'}` : (trader.error || 'unknown'), trader.available && trader.mode === 'paper' ? 'ok' : trader.available && trader.mode === 'live' ? 'critical' : 'warn');
-  setCell('truth-feed', `${heartbeat.freshness || 'unknown'}${heartbeat.age_sec === null || heartbeat.age_sec === undefined ? '' : ` · ${heartbeat.age_sec}s`}`, heartbeat.freshness === 'fresh' ? 'ok' : 'warn');
-  setCell('truth-cache', cache.status || 'unknown', cache.status === 'ok' ? 'ok' : 'warn');
-  setCell('truth-services', snapshot.freshness || 'unknown', snapshot.freshness === 'fresh' ? 'ok' : 'warn');
-  const paperBookValue = paperBook.cash_usd === null || paperBook.cash_usd === undefined
-    ? 'unknown'
-    : `Cash ${money(paperBook.cash_usd)} · P&L ${money(paperBook.realized_pnl_usd || 0)} · ${paperBook.open_positions ?? 'unknown'} open · ${paperBook.source || 'unknown'}`;
-  setCell('truth-paper-book', paperBookValue, paperBook.status === 'ok' ? 'ok' : 'warn');
-  setCell('truth-execution-decision', `${executionDecision.value || 'unknown'} · ${executionDecision.source || 'unknown'}`, executionDecision.status === 'ok' ? 'ok' : 'warn');
-  const terminalTruth = truth.terminal || {};
-  const terminalEl = $('#truth-terminal');
-  if (terminalEl) {
-    terminalEl.href = terminalTruth.url || '/dashboard';
-    terminalEl.classList.remove('truth-ok', 'truth-warn', 'truth-critical');
-    terminalEl.classList.add(`truth-${terminalTruth.status === 'ok' ? 'ok' : 'warn'}`);
-    const strong = terminalEl.querySelector('strong');
-    if (strong) strong.textContent = terminalTruth.status === 'ok' ? 'Open terminal' : 'Dashboard fallback';
-  }
 }
 
 function switchTab(tab) {
@@ -117,16 +79,13 @@ async function pollQuotes() {
 }
 
 async function fetchAll() {
-  const [summary, config, systemTruth] = await Promise.all([
+  const [summary, config] = await Promise.all([
     api('/api/operator/summary').catch(() => ({ counts: {} })),
-    api('/api/config').catch(() => ({ config: {} })),
-    api('/api/system-truth').catch(() => null),
+    api('/api/config').catch(() => ({ config: {} }))
   ]);
   allState.summary = summary;
   allState.config = config.config || {};
-  allState.systemTruth = systemTruth;
   updateSidebarStats(summary);
-  renderSystemTruth(systemTruth);
   $('#topbar-refresh-time').textContent = new Date().toLocaleTimeString();
   return summary;
 }
@@ -295,7 +254,7 @@ async function loadExecutionTab() {
   const data = await api('/api/executions').catch(() => ({ executions: [] }));
   allState.executions = data.executions || [];
   const execs = allState.executions;
-  let html = `<div class="tab-panel"><div class="panel-header"><span class="eyebrow">Execution Engine</span><span class="label">Local operator execution (non-canonical)</span><span class="label">${execs.length} executions</span><button id="refresh-exec" class="btn">Refresh</button></div>`;
+  let html = `<div class="tab-panel"><div class="panel-header"><span class="eyebrow">Execution Engine</span><span class="label">${execs.length} executions</span><button id="refresh-exec" class="btn">Refresh</button></div>`;
   html += `<div class="stat-cards">${[['Total', execs.length], ['Filled', execs.filter(e => e.status === 'filled').length], ['Pending', execs.filter(e => e.status === 'draft' || e.status === 'submitted').length], ['Failed', execs.filter(e => e.status === 'failed').length]].map(([l, v]) => `<div class="stat-card"><span class="label">${l}</span><strong>${v}</strong></div>`).join('')}</div>`;
   html += `<div class="table-wrap"><table><thead><tr><th>ID</th><th>Strategy</th><th>Mode</th><th>Status</th><th>Confidence</th><th>Orders</th><th>Fills</th><th>Settlement</th><th>Started</th><th>Actions</th></tr></thead><tbody>${execs.map(e => `<tr><td><code>${e.id ? e.id.slice(0, 12) + '…' : '—'}</code></td><td>${e.strategyId || '—'}</td><td><span class="badge">${e.mode}</span></td><td><span class="badge ${e.status === 'filled' ? 'badge-ok' : e.status === 'failed' ? 'badge-err' : e.status === 'draft' ? 'badge-warn' : ''}">${e.status}</span></td><td>${e.confidenceScore ? (e.confidenceScore * 100).toFixed(1) + '%' : '—'}</td><td>${(e.orders || []).length}</td><td>${(e.fills || []).length}</td><td><span class="label">${(e.fills || []).filter(f => f.settlementStatus === 'settled').length}/${(e.fills || []).length} settled</span></td><td class="label">${e.startedAt ? new Date(e.startedAt).toLocaleString() : '—'}</td><td class="action-cell">${e.status === 'draft' ? `<button class="btn btn-sm btn-ok" data-exec-action="approve" data-exec-id="${e.id}">Approve</button>` : ''}${e.status === 'draft' || e.status === 'submitted' ? `<button class="btn btn-sm btn-err" data-exec-action="cancel" data-exec-id="${e.id}">Cancel</button>` : ''}${(e.fills || []).length ? `<button class="btn btn-sm" data-exec-action="reconcile" data-exec-id="${e.id}">Reconcile</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="10" class="label">No executions yet</td></tr>'}</tbody></table></div>`;
   html += '</div>';
@@ -454,6 +413,55 @@ async function loadSettingsTab() {
   return html;
 }
 
+const SECRET_FRESHNESS = {
+  fresh: { label: 'Fresh', cls: 'badge-ok' },
+  due_soon: { label: 'Due Soon', cls: 'badge-warn' },
+  expired: { label: 'Expired', cls: 'badge-err' },
+  unknown: { label: 'Unknown', cls: 'badge-warn' },
+};
+
+function secretsAutoRotateSummary(view) {
+  const state = view.autoRotateEnabled
+    ? `Auto-rotate ON · rotation age ${view.rotationDays}d`
+    : 'Auto-rotate OFF';
+  return `<span class="label">${state}</span>`;
+}
+
+async function loadSecretsTab() {
+  const data = await api('/api/secrets').catch(() => ({ secrets: { providers: [], secrets: [], autoRotateEnabled: false, rotationDays: 30 } }));
+  const view = data.secrets || {};
+  const providers = view.providers || [];
+  const secrets = view.secrets || [];
+
+  let html = `<div class="tab-panel"><div class="panel-header"><span class="eyebrow">Secrets & Credential Rotation</span>${secretsAutoRotateSummary(view)}<button id="refresh-secrets" class="btn">Refresh</button></div>`;
+
+  // Auto-rotate control panel
+  html += `<div class="settings-grid" style="padding:0.75rem"><fieldset><legend>Auto-Rotation</legend>`;
+  html += `<label style="display:flex;align-items:center;gap:0.5rem"><input type="checkbox" id="sec-auto" ${view.autoRotateEnabled ? 'checked' : ''} /> Enable scheduled auto-rotation</label>`;
+  html += `<label>Rotation age (days) <input type="number" id="sec-rotation-days" value="${view.rotationDays || 30}" min="1" max="365" /></label>`;
+  html += `<label>Run every (days) <input type="number" id="sec-interval-days" value="${view.autoRotateIntervalMs ? Math.round(view.autoRotateIntervalMs / 86400000) : 30}" min="1" max="365" /></label>`;
+  html += `<div class="opp-actions"><button id="sec-auto-save" class="btn btn-sm">Save Auto-Rotate</button><button id="sec-auto-run" class="btn btn-sm">Run Due Rotations Now</button></div>`;
+  html += `</fieldset><fieldset><legend>Providers</legend><div class="stat-cards">`;
+  for (const p of providers) {
+    const fs = SECRET_FRESHNESS[p.freshnessState] || SECRET_FRESHNESS.unknown;
+    html += `<div class="stat-card"><span class="label">${p.label}</span><span class="badge ${fs.cls}">${fs.label}</span>${p.rotatable ? `<button class="btn btn-sm sec-rotate" data-provider="${p.id}" style="margin-top:0.4rem">Rotate</button>` : ''}</div>`;
+  }
+  html += `</div></fieldset></div>`;
+
+  // Manual update form
+  html += `<div class="settings-grid" style="padding:0.75rem"><fieldset><legend>Update Credentials</legend>`;
+  for (const s of secrets) {
+    const fs = SECRET_FRESHNESS[s.freshness.state] || SECRET_FRESHNESS.unknown;
+    const age = s.freshness.daysOld != null ? `${s.freshness.daysOld}d old` : 'never set';
+    html += `<div class="secret-field"><label>${s.label} ${s.required ? '<span class="label">required</span>' : ''}`;
+    html += `<input type="${s.kind === 'opaque' ? 'password' : 'text'}" id="sec-${s.key}" placeholder="${s.set ? s.masked + ' (' + age + ')' : 'not set'}" /></label>`;
+    html += `<span class="badge ${fs.cls}">${fs.label}</span></div>`;
+  }
+  html += `<div class="opp-actions"><button id="sec-save" class="btn">Save Credentials</button></div>`;
+  html += `</fieldset></div></div>`;
+  return html;
+}
+
 async function renderCurrentTab() {
   const target = $('#tab-content');
   target.innerHTML = '<div class="tab-loading">Loading…</div>';
@@ -469,6 +477,7 @@ async function renderCurrentTab() {
     case 'polymarket': html = await loadPolymarketTab(); break;
     case 'sweeper': html = await loadSweeperTab(); break;
     case 'adapters': html = await loadAdaptersTab(); break;
+    case 'secrets': html = await loadSecretsTab(); break;
     case 'settings': html = await loadSettingsTab(); break;
     case 'audit': html = await loadAuditTab(); break;
     default: html = `<div class="tab-panel"><p class="label">Unknown tab: ${activeTab}</p></div>`;
@@ -528,6 +537,21 @@ function wireTabActions() {
   if (refAdpt) refAdpt.addEventListener('click', () => refresh());
   const saveBtn = $('#save-settings');
   if (saveBtn) saveBtn.addEventListener('click', saveSettings);
+  // Secrets tab handlers
+  const refSec = $('#refresh-secrets');
+  if (refSec) refSec.addEventListener('click', () => refresh());
+  const secSave = $('#sec-save');
+  if (secSave) secSave.addEventListener('click', saveSecrets);
+  const secAutoSave = $('#sec-auto-save');
+  if (secAutoSave) secAutoSave.addEventListener('click', saveSecretAutoRotate);
+  const secAutoRun = $('#sec-auto-run');
+  if (secAutoRun) secAutoRun.addEventListener('click', runSecretAutoRotate);
+  $$('.sec-rotate').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/secrets/rotate/${btn.dataset.provider}`, { method: 'POST' });
+      await refresh();
+    });
+  });
   const runSweep = $('#run-sweep');
   if (runSweep) runSweep.addEventListener('click', () => refresh());
 }
@@ -561,6 +585,30 @@ async function saveSettings() {
   await refresh();
 }
 
+async function saveSecrets() {
+  const keys = ['coinbaseApiKey', 'coinbaseApiSecret', 'kalshiEmail', 'kalshiPassword', 'polymarketApiKey', 'polymarketWalletAddress', 'polymarketPrivateKey'];
+  const body = {};
+  for (const k of keys) {
+    const el = document.getElementById(`sec-${k}`);
+    if (el && el.value) body[k] = el.value;
+  }
+  await api('/api/secrets', { method: 'PUT', body });
+  await refresh();
+}
+
+async function saveSecretAutoRotate() {
+  const enabled = document.getElementById('sec-auto')?.checked || false;
+  const rotationDays = Number(document.getElementById('sec-rotation-days')?.value || 30);
+  const intervalDays = Number(document.getElementById('sec-interval-days')?.value || 30);
+  await api('/api/secrets/auto-rotate/config', { method: 'POST', body: { enabled, rotationDays, intervalDays } });
+  await refresh();
+}
+
+async function runSecretAutoRotate() {
+  await api('/api/secrets/auto-rotate/run', { method: 'POST' });
+  await refresh();
+}
+
 async function refresh() {
   const summary = await fetchAll();
   renderKPI(summary);
@@ -572,14 +620,9 @@ function startPolling() {
   if (pollingId) clearInterval(pollingId);
   pollingId = setInterval(async () => {
     await pollFeed();
-    const [summary, systemTruth] = await Promise.all([
-      api('/api/operator/summary').catch(() => ({ counts: {} })),
-      api('/api/system-truth').catch(() => null),
-    ]);
+    const summary = await api('/api/operator/summary').catch(() => ({ counts: {} }));
     allState.summary = summary;
-    allState.systemTruth = systemTruth;
     updateSidebarStats(summary);
-    renderSystemTruth(systemTruth);
   }, 5000);
 }
 

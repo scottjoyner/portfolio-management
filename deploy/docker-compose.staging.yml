@@ -1,29 +1,33 @@
 # Trading System Staging Deployment Stack
-# Build context: repo root (portfolio-management/)
-# NOTE: Docker Compose is the canonical deploy path.
+## Target Machine: destroyer (ThinkPad T14 i7 32GB RAM)
+## Purpose: Pre-production testing and validation
+## Date: 2026-05-27 | Status: Ready for staging deployment
 
 services:
+  # Main Trading Service - Staging Environment
   trading-service:
-    image: ghcr.io/falcon/trading-system:staging-latest
+    image: destroyer/trading-service:staging-latest
     build:
-      context: .
+      context: ../trading_system
       dockerfile: deploy/Dockerfile.prod
       args:
         ENVIRONMENT: staging
-    container_name: trading-runtime-staging
+    container_name: trading-runtime-staging-destructor
     restart: unless-stopped
     environment:
-      - RPC_URL=https://eth-goerli.alchemy.com/v2/YOUR_GOERLI_KEY
-      - METADATA_CACHE_TTL=600
+      - RPC_URL=https://eth-goerli.alchemy.com/v2/YOUR_GOERLI_KEY  # Goerli testnet
+      - METADATA_CACHE_TTL=600  # 10 minutes for faster feedback
       - EVENT_QUEUE_CAPACITY=5000
       - LOG_LEVEL=DEBUG
       - ONCHAIN_NETWORKS=ethereum,goerli,sepolia
       - STAGING_MODE=true
     volumes:
-      - ./logs/staging:/app/logs
-      - ./data/staging:/app/data
+      - ../trading_system/logs/staging:/app/logs
+      - ../trading_system/data/staging:/app/data
+      # Mount local code for development (optional)
+      # - ./trading_system/onchain:/app/onchain:ro
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9090/ping'); sys.exit(0)"]
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=3).status == 200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 2
@@ -31,11 +35,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
-          cpus: '2'
+          memory: 2G     # Limit memory for staging
+          cpus: '2'      # Limit CPU for staging
     networks:
-      - trading-network
+      - tailscale-prod
 
 networks:
-  trading-network:
-    driver: bridge
+  tailscale-prod:
+    external: true  # Use existing Tailscale network

@@ -43,15 +43,9 @@ _BT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="opt_bt")
 # Strategy engine
 from strategy_engine import run_strategies as _run_strategies
 from strategy_engine import batch_signals_fast as _batch_signals_fast
-from strategy_engine import batch_signals_universe as _batch_signals_universe
-from strategy_engine import batch_signals_from_candles as _batch_signals_from_candles
-from strategy_engine import batch_signals_cached as _batch_signals_cached
-from strategy_engine import tick_signals as _tick_signals
-from strategy_engine import tick_candidates as _tick_candidates
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import backtest_strategy as _backtest_strategy
 from strategy_engine import BacktestVerdict
-from strategy_engine import BACKTEST_PASS
 from strategy_engine import batch_backtest_rust as _batch_backtest_rust
 from strategy_engine import FundingRateContrarian as _FundingRateContrarian
 from strategy_engine import OrderFlowCVD as _OrderFlowCVD
@@ -101,12 +95,6 @@ except ImportError:
     ConfidenceEngine = None
     _HAS_CONFIDENCE_ENGINE = False
     logger.warning("ConfidenceEngine not available (trading_system.signal_confidence)")
-
-# New trading-system registry strategies (12 mean-reversion/momentum/volatility/microstructure)
-try:
-    from trading_system.strategies.registry.registry import load_strategies as _load_trading_system_strategies
-except Exception:  # pragma: no cover
-    _load_trading_system_strategies = None
 
 try:
     from trading_system.core.performance_model import latency_tuned_priority as _latency_tuned_priority
@@ -459,7 +447,7 @@ COINBASE_FEE_TIERS = [
 ]
 
 # Minimum time between executions of the same type (seconds)
-OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "rebalance_bot": 3600, "stairstep": 60, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300, "funding_onchain": 600, "order_flow": 600, "new_registry_strategies": 300}
+OP_COOLDOWN = {"tlh": 86400, "fee_tier": 3600, "rebalance": 43200, "rebalance_bot": 3600, "stairstep": 60, "strategy": 300, "cycle": 600, "accumulator": 120, "aggregator": 300, "funding_onchain": 600, "order_flow": 600}
 
 # Fee tier volume cycling
 CYCLE_MIN_PROFIT_PCT = 0.0   # we'll break even or small loss for volume
@@ -1035,8 +1023,6 @@ class PortfolioOptimizer:
             except Exception as e:
                 logger.warning("SmartFeed initialization failed: %s", e)
                 self._feed_mgr = None
-
-        self._new_strategies: Optional[List[Any]] = None
 
         self._arb_scanner: Optional[Any] = None
         if self._pm_client:
@@ -3629,7 +3615,6 @@ class PortfolioOptimizer:
         ops.extend(self._detect_fee_tier_volume())
         ops.extend(self._detect_rebalance())
         ops.extend(self._detect_strategy_signals())
-        ops.extend(self._detect_new_registry_strategies())
         ops.extend(self._detect_volume_cycles())
         ops.extend(self._detect_accumulator_signals())
         ops.extend(self._detect_rebalance_bot())
@@ -4342,227 +4327,6 @@ class PortfolioOptimizer:
             logger.info("Volume cycles: %d positions stale (age > %dh)", len(ops), CYCLE_MAX_HOLD_HOURS)
         return ops
 
-    # ── Full-registry (python-only) strategy evaluation ─────────────────────
-    # The Rust fast path (_RUST_STRATEGIES, ~84 ids) only covers the ported
-    # strategies. The trading-system registry holds the FULL 200-strategy set;
-    # the registry ids NOT covered by Rust are evaluated here so the live tick
-    # considers every strategy and they can be warmed into bt_cache.
-    _REGISTRY_STRATEGIES_CACHE: Optional[List] = None
-
-    def _get_registry_strategies(self) -> List:
-        """Return the full trading-system registry strategy list (cached)."""
-        if PortfolioOptimizer._REGISTRY_STRATEGIES_CACHE is None:
-            if _load_trading_system_strategies is None:
-                PortfolioOptimizer._REGISTRY_STRATEGIES_CACHE = []
-            else:
-                try:
-                    PortfolioOptimizer._REGISTRY_STRATEGIES_CACHE = (
-                        _load_trading_system_strategies()
-                    )
-                except Exception as e:  # pragma: no cover
-                    logger.warning("Failed to load strategy registry: %s", e)
-                    PortfolioOptimizer._REGISTRY_STRATEGIES_CACHE = []
-        return PortfolioOptimizer._REGISTRY_STRATEGIES_CACHE
-
-    def _run_registry_strategies(
-        self,
-        currency: str,
-        asset_class: str,
-        closes: List[float],
-        volumes: List[float],
-        highs: List[float],
-        lows: List[float],
-        price: float,
-        rust_names: set,
-    ) -> List:
-        """Evaluate the registry's python-only strategies for one product.
-
-        Returns a list of strategy_engine.Signal (action/confidence/reason/
-        strategy) — only for strategies whose strategy_id is NOT already in the
-        Rust set, so we never duplicate a signal the fast path produced.
-        """
-        out: List = []
-        registry = self._get_registry_strategies()
-        if not registry or len(closes) < 30:
-            return out
-        market_state = {
-            "product_id": currency,
-            "close": price,
-            "closes": closes,
-            "highs": highs,
-            "lows": lows,
-            "volumes": volumes,
-            "score": 0.0,
-            "warmup_complete": True,
-            "asset_class": asset_class,
-        }
-        for strat in registry:
-            sid = getattr(strat, "strategy_id", None)
-            if not sid or sid in rust_names:
-                continue
-            try:
-                sig = strat.generate_signal(market_state)
-            except Exception as e:  # pragma: no cover - single strategy fault tolerance
-                logger.debug("Registry strategy %s failed for %s: %s", sid, currency, e)
-                continue
-            if sig is None:
-                continue
-            score = float(getattr(sig, "score", 0.0) or 0.0)
-            if score == 0:
-                continue
-            action = "BUY" if score > 0 else "SELL"
-            conf = float(getattr(sig, "confidence", abs(score)) or abs(score))
-            reason = getattr(sig, "reason", f"registry:{sid}") or f"registry:{sid}"
-            out.append(StrategySignal(
-                action=action,
-                confidence=min(1.0, max(0.0, conf)),
-                reason=f"registry:{reason}",
-                strategy=sid,
-            ))
-        return out
-
-    def _backtest_registry_strategy(
-        self,
-        strategy_id: str,
-        currency: str,
-        closes: List[float],
-        volumes: List[float],
-        highs: List[float],
-        lows: List[float],
-    ) -> Any:
-        """Walk-forward backtest a registry strategy via its generate_signal
-        interface, producing a BacktestVerdict (so the registry strategies can
-        be warmed/cached and pass the backtest gate).
-        """
-        registry = self._get_registry_strategies()
-        strat = next(
-            (s for s in registry if getattr(s, "strategy_id", None) == strategy_id),
-            None,
-        )
-        if strat is None or len(closes) < 45:
-            return BacktestVerdict(
-                strategy_id, currency, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                "unknown", False, "registry strategy not found / insufficient data",
-            )
-        warmup = int(getattr(getattr(strat, "config", None), "warmup_period", 30) or 30)
-        warmup = min(warmup, len(closes) - 5)
-        returns: List[float] = []
-        trades = wins = 0
-        gross_profit = gross_loss = 0.0
-        equity = 1.0
-        peak = 1.0
-        max_dd = 0.0
-        pos = 0  # +1 long, -1 short, 0 flat
-        entry = 0.0
-        for i in range(warmup, len(closes) - 1):
-            ms = {
-                "product_id": currency,
-                "close": closes[i],
-                "closes": closes[: i + 1],
-                "highs": highs[: i + 1] if highs else [],
-                "lows": lows[: i + 1] if lows else [],
-                "volumes": volumes[: i + 1] if volumes else [],
-                "score": 0.0,
-                "warmup_complete": True,
-                "asset_class": "crypto",
-            }
-            try:
-                sig = strat.generate_signal(ms)
-            except Exception:  # pragma: no cover
-                continue
-            if sig is None:
-                continue
-            score = float(getattr(sig, "score", 0.0) or 0.0)
-            if score == 0:
-                continue
-            direction = 1.0 if score > 0 else -1.0
-            if pos == 0:
-                pos = int(direction)
-                entry = closes[i]
-            elif (pos > 0 and score < 0) or (pos < 0 and score > 0):
-                # close existing position on opposite signal
-                pnl = pos * (closes[i + 1] - entry) / entry if entry > 0 else 0.0
-                returns.append(pnl)
-                trades += 1
-                equity *= (1.0 + pnl)
-                peak = max(peak, equity)
-                dd = (peak - equity) / peak if peak > 0 else 0.0
-                max_dd = max(max_dd, dd)
-                if pnl > 0:
-                    wins += 1
-                    gross_profit += pnl
-                else:
-                    gross_loss += -pnl
-                pos = 0
-        win_rate = (wins / trades * 100.0) if trades else 0.0
-        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (
-            float("inf") if gross_profit > 0 else 0.0
-        )
-        sharpe = 0.0
-        if len(returns) > 1:
-            mean = sum(returns) / len(returns)
-            var = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
-            sd = var ** 0.5
-            if sd > 0:
-                sharpe = (mean / sd) * (252.0 ** 0.5)
-        total_return_pct = (equity - 1.0) * 100.0
-        passed = (
-            trades >= 3
-            and win_rate >= BACKTEST_PASS["min_win_rate"]
-            and sharpe > BACKTEST_PASS["min_sharpe"]
-            and profit_factor > BACKTEST_PASS["min_profit_factor"]
-            and total_return_pct > BACKTEST_PASS["min_total_return_pct"]
-            and max_dd * 100.0 <= BACKTEST_PASS["max_drawdown_pct"]
-        )
-        return BacktestVerdict(
-            strategy_id, currency, trades, wins, max(trades - wins, 0),
-            win_rate, total_return_pct, sharpe,
-            profit_factor if profit_factor != float("inf") else 999.0,
-            max_dd * 100.0, "unknown", passed,
-            "registry walk-forward" if passed else "registry walk-forward (below thresholds)",
-        )
-
-    def _maybe_backfill_bt_cache(self, parsed_data: List) -> None:
-        """One-time startup backfill: warm bt_cache with a backtest verdict for
-        every FULL-registry strategy × currently-held-currency combo that is not
-        yet cached. Bounded to held currencies (parsed_data products) so the
-        first tick stays cheap; only runs while the cache is under-populated.
-        """
-        if getattr(self, "_bt_backfill_done", False):
-            return
-        _threshold = max(self._bt_cache_warn_threshold, len(parsed_data) * 3)
-        if len(self._bt_cache) >= _threshold:
-            self._bt_backfill_done = True
-            return
-        registry = self._get_registry_strategies()
-        if not registry or not parsed_data:
-            return
-        logger.info(
-            "BT cache backfill: warming %d registry strategies × %d held currencies",
-            len(registry), len(parsed_data),
-        )
-        for h, pid, closes, volumes, highs, lows in parsed_data:
-            currency = h["currency"]
-            for strat in registry:
-                sid = getattr(strat, "strategy_id", None)
-                if not sid:
-                    continue
-                ck = f"{sid}/{currency}"
-                if ck in self._bt_cache:
-                    continue
-                try:
-                    verdict = self._backtest_registry_strategy(
-                        sid, currency, closes, volumes,
-                        highs if highs else [], lows if lows else [],
-                    )
-                    self._bt_cache[ck] = verdict
-                    self.store.save_bt_cache(ck, verdict)
-                except Exception as e:  # pragma: no cover
-                    logger.debug("Backfill backtest failed for %s: %s", ck, e)
-        self._bt_backfill_done = True
-        if len(self._bt_cache) >= self._bt_cache_warn_threshold:
-            self._bt_cache_warn_emitted = True
-
     def _batch_uncached_backtests(
         self,
         candidates_with_sigs: List[Tuple[dict, str, List[float], List[float], List[float], List[float], List]],
@@ -4571,33 +4335,27 @@ class PortfolioOptimizer:
         Uses ThreadPoolExecutor to run backtests for different products concurrently
         (Rust releases GIL during computation, so threads run in parallel).
         """
-        # Split un-cached strategies into Rust-portable vs registry (python-only)
-        # sets so each is backtested by the engine that understands its interface.
-        rust_by_product: Dict[str, List] = {}
-        registry_jobs: List[Tuple[str, str, List[float], List[float], List[float], List[float]]] = []
-        _registry_ids = {getattr(s, "strategy_id", None) for s in self._get_registry_strategies()}
+        # Collect all un-cached (strategy, currency, closes, volumes) across all products
+        uncached_by_product: Dict[str, List] = {}
         for h, pid, closes, volumes, highs, lows, signals in candidates_with_sigs:
             currency = h["currency"]
             for sig in signals:
                 ck = f"{sig.strategy}/{currency}"
                 if ck in self._bt_cache:
                     continue
-                if sig.strategy in _registry_ids:
-                    registry_jobs.append((sig.strategy, currency, closes, volumes, highs, lows))
-                else:
-                    if currency not in rust_by_product:
-                        rust_by_product[currency] = []
-                    rust_by_product[currency].append(
-                        (sig.strategy, closes, volumes, highs, lows)
-                    )
+                if currency not in uncached_by_product:
+                    uncached_by_product[currency] = []
+                uncached_by_product[currency].append(
+                    (sig.strategy, closes, volumes, highs, lows)
+                )
 
-        if not rust_by_product and not registry_jobs:
+        if not uncached_by_product:
             return
 
-        # Submit one Rust backtest job per product to the BT executor
+        # Submit one backtest job per product to the BT executor
         # Each product gets its strategies batched via backtest_multi_py (rayon)
         bt_futs = {}
-        for currency, strategy_list in rust_by_product.items():
+        for currency, strategy_list in uncached_by_product.items():
             def _do_backtest(cur=currency, slist=strategy_list):
                 strategies_for_rust = [
                     (s_name, cur, closes, vols, highs, lows)
@@ -4606,7 +4364,7 @@ class PortfolioOptimizer:
                 return _batch_backtest_rust(strategies_for_rust)
             bt_futs[_BT_EXECUTOR.submit(_do_backtest)] = currency
 
-        # Collect Rust results
+        # Collect results
         for fut in as_completed(bt_futs):
             currency = bt_futs[fut]
             try:
@@ -4623,25 +4381,23 @@ class PortfolioOptimizer:
             except Exception as e:
                 logger.debug("Batch backtest failed for %s: %s", currency, e)
 
-        # Backtest registry (python-only) strategies via their generate_signal path
-        for s_name, currency, closes, volumes, highs, lows in registry_jobs:
-            ck = f"{s_name}/{currency}"
-            if ck in self._bt_cache:
-                continue
-            try:
-                verdict = self._backtest_registry_strategy(
-                    s_name, currency, closes, volumes,
-                    highs if highs else [], lows if lows else [],
-                )
-                self._bt_cache[ck] = verdict
-                self.store.save_bt_cache(ck, verdict)
-                if self.neo4j_store:
-                    try:
-                        self.neo4j_store.save_bt_cache(ck, verdict)
-                    except Exception as e:
-                        logger.warning("Neo4j BT cache write failed: %s", e)
-            except Exception as e:
-                logger.debug("Registry backtest failed for %s: %s", ck, e)
+        # Fallback: backtest any remaining un-cached strategies sequentially (Python path)
+        for h, pid, closes, volumes, highs, lows, signals in candidates_with_sigs:
+            currency = h["currency"]
+            for sig in signals:
+                ck = f"{sig.strategy}/{currency}"
+                if ck in self._bt_cache:
+                    continue
+                try:
+                    verdict = _backtest_strategy(
+                        sig.strategy, currency, closes, volumes,
+                        highs=highs if highs else None,
+                        lows=lows if lows else None,
+                    )
+                    self._bt_cache[ck] = verdict
+                    self.store.save_bt_cache(ck, verdict)
+                except Exception as e:
+                    logger.debug("Backtest failed for %s: %s", ck, e)
 
     def _detect_strategy_signals(self) -> List[Opportunity]:
         """Run 5 strategies on each meaningful holding; return top signals as opportunities."""
@@ -4665,8 +4421,6 @@ class PortfolioOptimizer:
         parsed_data: List[Tuple[dict, str, List[float], List[float], List[float], List[float]]] = []
         candidate_pids = [(h, h.get("product_id", f"{h['currency']}-USD")) for h in candidates]
 
-        # Raw batched candles (oldest-first) for the all-in-one Rust path.
-        raw_batched: Dict[str, list] = {}
         if self._feed_mgr:
             all_pids = [pid for _, pid in candidate_pids]
             batched = self._feed_mgr.get_candles_batch(all_pids, granularity=3600, limit=100)
@@ -4674,7 +4428,6 @@ class PortfolioOptimizer:
                 candles = batched.get(pid)
                 if not candles or len(candles) < 30:
                     continue
-                raw_batched[pid] = candles
                 closes, volumes, highs, lows = [], [], [], []
                 for c in reversed(candles):
                     if isinstance(c, dict):
@@ -4727,197 +4480,54 @@ class PortfolioOptimizer:
             volumes_dict = {pid: v for _, pid, _, v, _, _ in parsed_data}
             highs_dict = {pid: hi for _, pid, _, _, hi, _ in parsed_data}
             lows_dict = {pid: lo for _, pid, _, _, _, lo in parsed_data}
-            # Parallel universe eval: one rayon-backed Rust call across ALL
-            # products (single Python<->Rust round-trip) instead of N serial
-            # per-product calls. Falls back to the legacy per-product path.
-            try:
-                if raw_batched:
-                    batch_results = _batch_signals_cached(
-                        [(pid, h["classification"]) for h, pid, _, _, _, _ in parsed_data],
-                        raw_batched, None,
-                    )
-                else:
-                    batch_results = _batch_signals_universe(
-                        [p for p, _ in products_list],
-                        closes_dict, volumes_dict, highs_dict, lows_dict,
-                    )
-            except Exception as e:
-                logger.debug("Universe batch signal generation failed (%s); falling back", e)
-                batch_results = _batch_signals_fast(products_list, closes_dict, volumes_dict, highs_dict, lows_dict)
+            batch_results = _batch_signals_fast(products_list, closes_dict, volumes_dict, highs_dict, lows_dict)
         except Exception as e:
             logger.debug("Batch signal generation failed: %s", e)
             batch_results = {}
 
-        # Phase 1: collect signals for all products (batch or fallback).
-        # OPTIONAL FAST PATH: pre-compute the backtest-verdict gate in Rust so
-        # Python never loops products×strategies checking self._bt_cache. We pass
-        # the set of (strategy/currency) keys that are ALLOWED to pass the gate:
-        # cached PASS verdicts, plus not-yet-cached combos (backtested downstream
-        # in Phase 2 exactly as the legacy path). Only cached-FAIL combos are
-        # excluded, which is behaviour-preserving. On any failure we fall back to
-        # the legacy per-product assembly below.
+        # Phase 1: collect signals for all products (batch or fallback)
         candidates_with_sigs: List[Tuple[dict, str, List[float], List[float], List[float], List[float], List]] = []
-        _fast_tuples = None
-        _fast_candidates = None
-        if raw_batched:
-            try:
-                from strategy_engine import _RUST_STRATEGIES as _RUST_NAMES
-                _all_currencies = [h["currency"] for h, _, _, _, _, _ in parsed_data]
-                _pass_keys: List[str] = []
-                for _ck, _v in self._bt_cache.items():
-                    if getattr(_v, "passed", False):
-                        _pass_keys.append(_ck)
-                for _cur in _all_currencies:
-                    for _s in _RUST_NAMES:
-                        _key = f"{_s}/{_cur}"
-                        _cached = self._bt_cache.get(_key)
-                        if _cached is None or getattr(_cached, "passed", False):
-                            _pass_keys.append(_key)
-                # New all-in-one fast path: produces the full candidate shape
-                # directly inside Rust (OHLCV parse + eval + bt-gate + regime
-                # filter). Falls back to legacy assembly on None.
-                _fast_candidates = _tick_candidates(
-                    [pid for _, pid, _, _, _, _ in parsed_data],
-                    _all_currencies,
-                    raw_batched,
-                    _pass_keys,
-                )
-                if _fast_candidates is None:
-                    _fast_tuples = _tick_signals(
-                        [pid for _, pid, _, _, _, _ in parsed_data],
-                        _all_currencies,
-                        raw_batched,
-                        _pass_keys,
-                    )
-            except Exception as e:
-                logger.debug("tick_candidates fast-path failed (%s); using legacy path", e)
-                _fast_candidates = None
-                _fast_tuples = None
-
-        if _fast_candidates is not None:
-            # Build candidates_with_sigs directly from the all-in-one Rust path.
-            _by_pid: Dict[str, List] = {}
-            for _pid, _cur, _cl, _vo, _hi, _lo, _sigs in _fast_candidates:
-                _by_pid.setdefault(_pid, (_cur, _cl, _vo, _hi, _lo, _sigs))
-            for h, pid, closes, volumes, highs, lows in parsed_data:
-                _entry = _by_pid.get(pid)
-                if not _entry:
-                    continue
-                _cur, _cl, _vo, _hi, _lo, _sigs = _entry
-                if not _sigs:
-                    continue
-                # NOTE: the Rust fast path (tick_candidates_py) already applied the
-                # identical regime filter + HOLD drop, so no Python re-filter is needed
-                # here — this branch is a pure assembly of pre-filtered signals.
-                signals = [
-                    StrategySignal(
-                        strategy=_n, action=_a, confidence=0.5,
-                        reason=f"batch:{_n}",
-                    )
-                    for _n, _a in _sigs
-                ]
-                if signals:
-                    candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
-        else:
-            for h, pid, closes, volumes, highs, lows in parsed_data:
-                currency = h["currency"]
-                pid_results = batch_results.get(pid) if batch_results else None
-                if pid_results:
-                    signals = []
-                    for s_name, action in pid_results.items():
-                        if action != "HOLD":
-                            signals.append(StrategySignal(
-                                strategy=s_name, action=action, confidence=0.5,
-                                reason=f"batch:{s_name}",
-                            ))
-                else:
-                    signals = _run_strategies(
-                        currency=currency, asset_class=h["classification"],
-                        closes=closes, volumes=volumes, current_price=h["price"],
-                        highs=highs if highs else None, lows=lows if lows else None,
-                    )
-
-                # ── Regime filtering: skip strategies unsuited for current market regime ──
-                if signals and highs and lows and len(closes) >= 30:
-                    regime = _detect_market_regime(highs, lows, closes)
-                    filtered_signals = []
-                    for sig in signals:
-                        strat = sig.strategy
-                        # Skip trend strategies in ranging markets
-                        if regime == "ranging" and strat in TREND_STRATEGIES:
-                            logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
-                            continue
-                        # Skip mean-reversion in trending markets
-                        if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
-                            logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
-                            continue
-                        # Skip volatility strategies in quiet markets
-                        if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
-                            logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
-                            continue
-                        filtered_signals.append(sig)
-                    signals = filtered_signals
-
-                if signals:
-                    candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
-
-        # Phase 1b: FULL-REGISTRY (python-only) evaluation.
-        # The Rust fast path above only covers _RUST_STRATEGIES. Evaluate every
-        # registry strategy NOT already covered by Rust so the live tick considers
-        # the entire 200-strategy registry. Results are appended to
-        # candidates_with_sigs in the same 7-tuple shape and run through the
-        # identical regime filter. A single strategy error is tolerated.
-        try:
-            from strategy_engine import _RUST_STRATEGIES as _RUST_NAMES_B
-            _rust_set = set(_RUST_NAMES_B)
-        except Exception:
-            _rust_set = set()
-        _seen_keys = {(sig.strategy, h.get("currency")) for h, _, _, _, _, _, signals in candidates_with_sigs for sig in signals}
         for h, pid, closes, volumes, highs, lows in parsed_data:
             currency = h["currency"]
-            try:
-                py_signals = self._run_registry_strategies(
-                    currency=currency,
-                    asset_class=h.get("classification", "crypto"),
-                    closes=closes, volumes=volumes, highs=highs, lows=lows,
-                    price=h.get("price", closes[-1] if closes else 0.0),
-                    rust_names=_rust_set,
+            pid_results = batch_results.get(pid) if batch_results else None
+            if pid_results:
+                signals = []
+                for s_name, action in pid_results.items():
+                    if action != "HOLD":
+                        signals.append(StrategySignal(
+                            strategy=s_name, action=action, confidence=0.5,
+                            reason=f"batch:{s_name}",
+                        ))
+            else:
+                signals = _run_strategies(
+                    currency=currency, asset_class=h["classification"],
+                    closes=closes, volumes=volumes, current_price=h["price"],
+                    highs=highs if highs else None, lows=lows if lows else None,
                 )
-            except Exception as e:  # pragma: no cover
-                logger.debug("Registry evaluation failed for %s: %s", currency, e)
-                py_signals = []
-            if not py_signals:
-                continue
-            # Drop any strategy the Rust path already contributed (no duplicates)
-            py_signals = [
-                s for s in py_signals
-                if (s.strategy, currency) not in _seen_keys and s.strategy not in _rust_set
-            ]
-            if not py_signals:
-                continue
-            # Apply the same regime filter used by the legacy path.
-            if highs and lows and len(closes) >= 30:
+            
+            # ── Regime filtering: skip strategies unsuited for current market regime ──
+            if signals and highs and lows and len(closes) >= 30:
                 regime = _detect_market_regime(highs, lows, closes)
-                _filtered = []
-                for sig in py_signals:
+                filtered_signals = []
+                for sig in signals:
                     strat = sig.strategy
+                    # Skip trend strategies in ranging markets
                     if regime == "ranging" and strat in TREND_STRATEGIES:
+                        logger.debug("  Skipping %s (trend strategy) in %s regime for %s", strat, regime, currency)
                         continue
+                    # Skip mean-reversion in trending markets
                     if regime == "trending" and strat in MEAN_REVERSION_STRATEGIES:
+                        logger.debug("  Skipping %s (mean-reversion) in %s regime for %s", strat, regime, currency)
                         continue
+                    # Skip volatility strategies in quiet markets
                     if regime == "quiet" and strat in VOLATILITY_STRATEGIES:
+                        logger.debug("  Skipping %s (vol strategy) in %s regime for %s", strat, regime, currency)
                         continue
-                    _filtered.append(sig)
-                py_signals = _filtered
-            if py_signals:
-                candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, py_signals))
-
-        # Startup backfill: warm bt_cache for the full registry × held currencies
-        # (bounded to currently-held products) so strategies can pass the gate.
-        try:
-            self._maybe_backfill_bt_cache(parsed_data)
-        except Exception as e:  # pragma: no cover
-            logger.debug("BT cache backfill failed: %s", e)
+                    filtered_signals.append(sig)
+                signals = filtered_signals
+            
+            if signals:
+                candidates_with_sigs.append((h, pid, closes, volumes, highs, lows, signals))
 
         # Phase 2: batch-backtest all un-cached strategy×product pairs in parallel
         self._batch_uncached_backtests(candidates_with_sigs)
@@ -5158,212 +4768,6 @@ class PortfolioOptimizer:
 
         if ops:
             logger.info("Strategy signals: %d opportunities", len(ops))
-        return ops
-
-    # 12 known new trading-system strategy ids (registry-loaded)
-    _NEW_STRATEGY_IDS = frozenset({
-        "BollingerBandReversionStrategy",
-        "RsiBounceReversionStrategy",
-        "DonchianMeanReversionStrategy",
-        "EmaMacdMomentumStrategy",
-        "AdxDiStrengthStrategy",
-        "AroonBreakoutMomentumStrategy",
-        "KeltnerVolBreakoutStrategy",
-        "BollingerSqueezeVolExpansionStrategy",
-        "DonchianChoppinessVolBreakoutStrategy",
-        "TradeFlowImbalanceStrategy",
-        "SpreadCompressionStrategy",
-        "CvdExhaustionStrategy",
-    })
-
-    def _detect_new_registry_strategies(self) -> List[Opportunity]:
-        """Run the 12 new registry strategies on each holding; emit STRATEGY_SIGNAL ops."""
-        if time.time() - self.last_execution.get("new_registry_strategies", 0) < OP_COOLDOWN["new_registry_strategies"]:
-            return []
-        if _load_trading_system_strategies is None or not self.state:
-            return []
-
-        # Lazy-init the 12 strategy instances
-        if self._new_strategies is None:
-            try:
-                all_strats = _load_trading_system_strategies()
-                self._new_strategies = [s for s in all_strats if getattr(s, "strategy_id", None) in self._NEW_STRATEGY_IDS]
-            except Exception as e:
-                logger.debug("Registry strategy load failed: %s", e)
-                self._new_strategies = []
-        if not self._new_strategies:
-            return []
-
-        candidates = [
-            h for h in self.state.holdings.values()
-            if h["currency"] not in ("USDC", "USDT", "DAI") and h["value"] >= self.min_value and not self._is_static_currency(h["currency"])
-        ]
-        if not candidates:
-            return []
-
-        ops: List[Opportunity] = []
-        remaining_buy_capacity = self._buy_capacity()
-
-        parsed_data: List[Tuple[dict, str, List[float], List[float], List[float], List[float]]] = []
-        candidate_pids = [(h, h.get("product_id", f"{h['currency']}-USD")) for h in candidates]
-
-        if self._feed_mgr:
-            all_pids = [pid for _, pid in candidate_pids]
-            batched = self._feed_mgr.get_candles_batch(all_pids, granularity=3600, limit=100)
-            for h, pid in candidate_pids:
-                candles = batched.get(pid)
-                if not candles or len(candles) < 30:
-                    continue
-                closes, volumes, highs, lows = [], [], [], []
-                for c in reversed(candles):
-                    if isinstance(c, dict):
-                        closes.append(to_float(c.get("close", 0)))
-                        volumes.append(to_float(c.get("volume", 0)))
-                        highs.append(to_float(c.get("high", 0)))
-                        lows.append(to_float(c.get("low", 0)))
-                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
-                        closes.append(to_float(c[4]))
-                        volumes.append(to_float(c[5]))
-                        highs.append(to_float(c[2]))
-                        lows.append(to_float(c[1]))
-                if len(closes) < 30:
-                    continue
-                parsed_data.append((h, pid, closes, volumes, highs, lows))
-        else:
-            candle_futs = {}
-            for h, pid in candidate_pids:
-                fut = _IO_EXECUTOR.submit(self.cli.get_candles, pid, "1h", 100)
-                candle_futs[fut] = (h, pid)
-            for fut in as_completed(candle_futs):
-                h, pid = candle_futs[fut]
-                try:
-                    candles = fut.result()
-                except Exception as e:
-                    logger.debug("Candle fetch failed for %s: %s", pid, e)
-                    continue
-                if not candles or len(candles) < 30:
-                    continue
-                closes, volumes, highs, lows = [], [], [], []
-                for c in reversed(candles):
-                    if isinstance(c, dict):
-                        closes.append(to_float(c.get("close", 0)))
-                        volumes.append(to_float(c.get("volume", 0)))
-                        highs.append(to_float(c.get("high", 0)))
-                        lows.append(to_float(c.get("low", 0)))
-                    elif isinstance(c, (list, tuple)) and len(c) >= 6:
-                        closes.append(to_float(c[4]))
-                        volumes.append(to_float(c[5]))
-                        highs.append(to_float(c[2]))
-                        lows.append(to_float(c[1]))
-                if len(closes) < 30:
-                    continue
-                parsed_data.append((h, pid, closes, volumes, highs, lows))
-
-        for h, pid, closes, volumes, highs, lows in parsed_data:
-            currency = h["currency"]
-            price = to_float(h.get("price", 0)) or (closes[-1] if closes else 0.0)
-            score = 0.0
-            if len(closes) >= 2 and closes[-2] != 0:
-                score = max(-1.0, min(1.0, (closes[-1] - closes[-2]) / closes[-2]))
-            market_state = {
-                "product_id": pid,
-                "currency": currency,
-                "close": closes[-1] if closes else price,
-                "closes": closes,
-                "highs": highs,
-                "lows": lows,
-                "volumes": volumes,
-                "open": closes[0] if closes else price,
-                "price": price,
-                "score": score,
-                "warmup_complete": len(closes) >= 30,
-                "best_bid": price * 0.999,
-                "best_ask": price * 1.001,
-                "mid_price": price,
-                "spread_bps": 2.0,
-                "bid_volume": 0.0,
-                "ask_volume": 0.0,
-                "trade_flow_imbalance": 0.0,
-                "imbalance": 0.0,
-                "cumulative_delta": 0.0,
-            }
-
-            for strategy in self._new_strategies:
-                try:
-                    sig = strategy.generate_signal(market_state)
-                except Exception as e:
-                    logger.debug("Strategy %s failed on %s: %s", getattr(strategy, "strategy_id", "?"), currency, e)
-                    continue
-                if sig is None or abs(getattr(sig, "score", 0.0)) <= 0:
-                    continue
-
-                side = "BUY" if sig.score > 0 else "SELL"
-                confidence = getattr(sig, "confidence", min(1.0, abs(sig.score)))
-                use_pid = self.cli.best_product(currency, side)
-                if not use_pid:
-                    continue
-
-                if side == "BUY" and remaining_buy_capacity < self.min_value:
-                    continue
-                if side == "SELL" and h["value"] < self.min_value:
-                    continue
-
-                daily_chg = abs(to_float(h.get("change_24h", 0)))
-                exit_plan = self._compute_exit_plan(
-                    currency, confidence,
-                    expected_return_pct=max(confidence * 10.0, 0.5),
-                    trade_style="momentum" if side == "BUY" else "mean_reversion",
-                    side=side,
-                    volatility_pct=max(daily_chg * 1.5, 5.0),
-                )
-                graph_multiplier = self._graph_multiplier_for_product(use_pid, max_boost=0.25)
-                final_conf = min(0.95, confidence * graph_multiplier)
-
-                if side == "BUY":
-                    size = min(self._buy_capacity(), self.cfg.get("max_notional_opportunity", 50.0))
-                    size = min(size * graph_multiplier, remaining_buy_capacity, self.cfg.get("max_notional_opportunity", 50.0))
-                else:
-                    size = min(h["value"], self.cfg.get("max_notional_opportunity", 50.0))
-                    size = min(size * graph_multiplier, h["value"])
-                if size < self.min_value:
-                    continue
-
-                if side == "BUY":
-                    remaining_buy_capacity = max(remaining_buy_capacity - size, 0.0)
-
-                ops.append(Opportunity(
-                    opp_type=OpportunityType.STRATEGY_SIGNAL,
-                    currency=currency,
-                    side=side,
-                    size_usd=size,
-                    reason=f"new:{sig.strategy_id} {sig.reason} (conf={final_conf:.2f})",
-                    priority=self._latency_adjusted_priority(
-                        min(final_conf * 0.8 + 0.1, 0.95),
-                        "momentum" if side == "BUY" else "mean_reversion",
-                    ),
-                    product_id=use_pid,
-                    entry_price_est=h.get("price", 0),
-                    stop_loss_pct=exit_plan["stop_loss_pct"],
-                    take_profit_pct=exit_plan["take_profit_pct"],
-                    holding_period_hours=exit_plan["holding_period_hours"],
-                    expected_return_pct=exit_plan["expected_return_pct"],
-                    risk_pct=exit_plan["risk_pct"],
-                    meta={
-                        "aggregated": False,
-                        "confidence": final_conf,
-                        "graph_overlay": graph_multiplier,
-                        "graph_score": self._graph_score_for_product(use_pid),
-                        "strategy_count": 1,
-                        "strategies": [sig.strategy_id],
-                        "agreeing_groups": [],
-                        "capital_bucket": "opportunity",
-                        "trade_style": "momentum" if side == "BUY" else "mean_reversion",
-                        "exit_plan": exit_plan,
-                    },
-                ))
-
-        if ops:
-            logger.info("New registry strategies: %d opportunities", len(ops))
         return ops
 
     def _detect_funding_and_onchain_signals(self) -> List[Opportunity]:

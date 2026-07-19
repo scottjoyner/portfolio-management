@@ -157,24 +157,44 @@ class StrategyRanking:
     def save(self, path: str = RANKING_STATE_PATH):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as f:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
                 json.dump(self.to_dict(), f, indent=2)
+            # Keep one good backup for recovery on a future corrupt read.
+            if os.path.exists(path):
+                try:
+                    os.replace(path, path + ".bak")
+                except OSError:
+                    pass
+            os.replace(tmp, path)  # atomic on POSIX; never leaves a half-written file
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("Failed to save ranking state: %s", e)
 
     def load(self, path: str = RANKING_STATE_PATH):
-        try:
-            if os.path.exists(path):
-                with open(path) as f:
+        candidates = [path]
+        if os.path.exists(path + ".bak"):
+            candidates.append(path + ".bak")
+        loaded = None
+        for p in candidates:
+            if not os.path.exists(p):
+                continue
+            try:
+                with open(p) as f:
                     data = json.load(f)
                 for name, sd in data.get("stats", {}).items():
                     s = StrategyStats(**sd)
                     self._stats[name] = s
                 self._ranked = data.get("ranked", [])
-        except Exception as e:
+                loaded = p
+                break
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to load ranking state %s: %s", p, e)
+                continue
+        if loaded is None:
             import logging
-            logging.getLogger(__name__).warning("Failed to load ranking state: %s", e)
+            logging.getLogger(__name__).warning("Ranking state missing/corrupt - starting fresh")
 
     def summary(self) -> Dict:
         return {

@@ -3,7 +3,6 @@
 
 Endpoints:
   GET /health                   — System health
-  GET /system-truth             — Read-only source-labelled runtime truth
   GET /accounts                 — Portfolio accounts
   GET /positions                — Open positions
   GET /strategies               — Strategy performance/stats
@@ -38,7 +37,6 @@ import argparse
 import time
 import logging
 import threading
-import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -46,57 +44,6 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError
-
-# Thread-safe urllib3 HTTP pool for live Coinbase candle fetches (no aiohttp,
-# no event loop) — avoids the segfaults seen when aiohttp sessions run inside
-# worker threads of this threaded HTTP server.
-try:
-    import urllib3
-    _CANDLE_HTTP = urllib3.PoolManager(maxsize=12, retries=urllib3.Retry(total=1, connect=1, read=1))
-except Exception:  # pragma: no cover
-    _CANDLE_HTTP = None
-
-_CB_API = "https://api.exchange.coinbase.com"
-_CB_GRAN = {60: "60", 300: "300", 900: "900", 3600: "3600", 21600: "21600", 86400: "86400"}
-_CB_GRAN_REV = {v: k for k, v in _CB_GRAN.items()}
-
-
-def _fetch_candles_http(product_id, granularity=3600, limit=30, timeout=8.0):
-    """Synchronous, urllib3-based Coinbase candle fetch. Returns list of
-    (ts, open, high, low, close, volume) oldest-first, or [] on failure."""
-    if _CANDLE_HTTP is None:
-        return []
-    g = _CB_GRAN.get(granularity, str(granularity))
-    url = f"{_CB_API}/products/{product_id}/candles?granularity={g}&limit={min(limit, 300)}"
-    try:
-        resp = _CANDLE_HTTP.request("GET", url, headers={"User-Agent": "PMDashboard/1.0"}, timeout=timeout)
-        if resp.status != 200:
-            return []
-        data = json.loads(resp.data.decode("utf-8"))
-        out = []
-        for c in reversed(data):
-            if isinstance(c, (list, tuple)) and len(c) >= 6:
-                ts, lo, hi, op, cl, vol = c[:6]
-                out.append((int(ts), float(op), float(hi), float(lo), float(cl), float(vol)))
-        return out
-    except Exception as e:
-        logger.warning("candle http fetch failed for %s: %s", product_id, e)
-        return []
-
-
-def _fetch_candles_batch_http(pair_ids, granularity=3600, limit=30, max_workers=12):
-    """Fetch candles for many products concurrently using thread pool + urllib3."""
-    result = {}
-    if not pair_ids:
-        return result
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(pair_ids))) as ex:
-        fut = {pid: ex.submit(_fetch_candles_http, pid, granularity, limit) for pid in pair_ids}
-        for pid, f in fut.items():
-            try:
-                result[pid] = f.result(timeout=12)
-            except Exception:
-                result[pid] = []
-    return result
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("dashboard_server")
@@ -115,14 +62,6 @@ APPROVALS_INBOX = ROOT / 'data' / 'approvals_inbox'
 STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
 CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
 EQUITY_SUMMARY_PATH = str(ROOT / 'data' / 'equity_summary.json')
-PAPER_TRADER_PATH = str(ROOT / 'data' / 'paper_trader_v4_state.json')
-SYSTEM_HEALTH_PATH = str(ROOT / 'data' / 'system-health.json')
-DAEMON_HEARTBEAT_PATH = str(ROOT / 'data' / '.daemon_heartbeat')
-FRESHNESS_STALE_SECONDS = 180.0
-TRADER_HEALTH_TIMEOUT_SECONDS = 0.25
-# System truth is deliberately local-only: this must never be environment-configurable.
-TRADER_HEALTH_URL = 'http://127.0.0.1:9090/health'
-HERMES_LEDGER_PATH = str(ROOT / 'data' / 'hermes_agent_ledger.json')
 OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data' / 'operator-actions.json'))
 OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
@@ -712,171 +651,60 @@ def _refresh_cache():
 
 # ── API Handlers ────────────────────────────────────────────────
 
-def _freshness(age_sec):
-    if age_sec is None:
-        return "unknown"
-    return "fresh" if age_sec <= FRESHNESS_STALE_SECONDS else "stale"
+def _load_trader_health():
+    path = ROOT / "data" / ".trader_health.json"
+    return _load_json(str(path), None)
 
 
-def _file_age(path, now):
-    try:
-        return max(0.0, now - os.path.getmtime(path))
-    except OSError:
-        return None
+def _read_kill_switch(op_state):
+    ks = op_state.get("killSwitch")
+    if isinstance(ks, dict):
+        if ks.get("enabled"):
+            return True
+    elif isinstance(ks, bool):
+        return ks
+    env_ks = os.environ.get("KILL_SWITCH", "")
+    if env_ks.strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    # File flag (set via POST /kill-switch) halts non-env-locked traders.
+    if (ROOT / "data" / "trading_kill_switch").exists():
+        return True
+    return False
 
 
-def _probe_trader_health():
-    """Read the local trader health endpoint only; never contact a broker."""
-    try:
-        request = Request(TRADER_HEALTH_URL, headers={"Accept": "application/json"})
-        with urlopen(request, timeout=TRADER_HEALTH_TIMEOUT_SECONDS) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("health response is not an object")
-        mode = str(payload.get("mode", payload.get("trading_mode", ""))).lower()
-        if mode not in {"paper", "live"}:
-            mode = None
-        return {"available": True, "source": "trader_health", "mode": mode, "payload": payload}
-    except Exception as exc:
-        return {"available": False, "source": "trader_health", "mode": None, "error": type(exc).__name__}
+def _extract_latency_p95(trader_health):
+    th = trader_health or {}
+    lat = th.get("latency")
+    if isinstance(lat, dict):
+        v = lat.get("p95", lat.get("p95_ms"))
+        if v is None:
+            v = lat.get("p95_s")
+        return float(v) if v is not None else None
+    if isinstance(lat, (int, float)):
+        return float(lat)
+    return th.get("latency_p95")
 
 
-def _inspect_feed_cache():
-    try:
-        from data.feed_cache import inspect_cache
-        return inspect_cache()
-    except Exception as exc:
-        return {"source": "feed_cache", "status": "unknown", "readable": False, "error": type(exc).__name__}
-
-
-def _paper_mode_evidence():
-    state = _load_json(PAPER_TRADER_PATH, None)
-    if isinstance(state, dict) and any(key.startswith("paper_") for key in state):
-        return {"value": "paper", "source": "persisted_paper_state"}
-    return {"value": "unknown", "source": "persisted_paper_state"}
-
-
-def _safe_terminal_url(value):
-    """Allow only local paths and fully-qualified HTTP(S) terminal URLs."""
-    if not isinstance(value, str):
-        return None
-    candidate = value.strip()
-    if candidate.startswith("/") and not candidate.startswith("//"):
-        return candidate
-    parsed = urlparse(candidate)
-    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
-        return candidate
-    return None
-
-
-def _marked_exposure(operator_state):
-    positions = operator_state.get("positions") if isinstance(operator_state, dict) else None
-    if not isinstance(positions, list):
-        return {"gross_exposure_usd": None, "status": "unknown", "source": "operator_state"}
-    market = {str(row.get("symbol", "")): row for row in operator_state.get("marketDataSnapshots", []) if isinstance(row, dict)}
-    gross = 0.0
-    unknown_mark = False
-    open_count = 0
-    for position in positions:
-        if not isinstance(position, dict) or str(position.get("status", "open")).lower() != "open":
-            continue
-        open_count += 1
-        symbol = str(position.get("symbol", ""))
-        mark = position.get("markPrice")
-        if mark in (None, ""):
-            mark = market.get(symbol, {}).get("bid")
-        try:
-            gross += abs(float(position.get("quantity", 0) or 0) * float(mark))
-        except (TypeError, ValueError):
-            unknown_mark = True
+def _status_bar_payload(op_state, trader_health):
+    regime = op_state.get("marketIntelligence", {}).get("coinbase", {}).get("regime") \
+        or op_state.get("config", {}).get("regime")
+    open_positions = len(op_state.get("positions", []) or [])
+    tick_count = None
+    latency_p95 = None
+    if trader_health:
+        tick_count = trader_health.get("tick_count", tick_count)
+        lat = trader_health.get("latency")
+        if isinstance(lat, dict):
+            latency_p95 = lat.get("p95", latency_p95) or lat.get("p95_ms", latency_p95)
+        elif isinstance(lat, (int, float)):
+            latency_p95 = lat
     return {
-        "gross_exposure_usd": round(gross, 2) if not unknown_mark else None,
-        "open_positions": open_count,
-        "status": "unknown" if unknown_mark else "ok",
-        "source": "operator_state_marked_positions",
+        "tick_count": tick_count,
+        "latency_p95": latency_p95,
+        "regime": regime,
+        "kill_switch": _read_kill_switch(op_state),
+        "open_positions": open_positions,
     }
-
-
-def api_system_truth():
-    """Read-only, fail-closed diagnostic contract for the dashboard."""
-    now = time.time()
-    warnings = []
-    trader = _probe_trader_health()
-    paper = _paper_mode_evidence()
-    mode = trader.get("mode") if trader.get("available") else None
-    if trader.get("available") and mode not in {"paper", "live"}:
-        trading_mode = {"value": "unknown", "source": "trader_health", "status": "warn"}
-        warnings.append("trader health did not provide a recognized mode")
-    elif mode in {"paper", "live"} and paper["value"] == "paper" and mode != "paper":
-        trading_mode = {"value": "unknown", "source": "mode_conflict", "status": "warn"}
-        warnings.append("trader health mode conflicts with persisted paper state")
-    elif mode in {"paper", "live"}:
-        trading_mode = {"value": mode, "source": "trader_health"}
-    else:
-        trading_mode = paper
-    if trading_mode["value"] == "unknown":
-        warnings.append("trading mode is unknown")
-
-    heartbeat_age = _file_age(DAEMON_HEARTBEAT_PATH, now)
-    if heartbeat_age is not None:
-        try:
-            heartbeat_age = max(0.0, now - float(Path(DAEMON_HEARTBEAT_PATH).read_text().strip()))
-        except (OSError, ValueError):
-            heartbeat_age = None
-    heartbeat = {"source": "daemon_heartbeat", "age_sec": round(heartbeat_age, 1) if heartbeat_age is not None else None,
-                 "freshness": _freshness(heartbeat_age)}
-    if heartbeat["freshness"] != "fresh":
-        warnings.append("daemon heartbeat is " + heartbeat["freshness"])
-
-    snapshot_age = _file_age(SYSTEM_HEALTH_PATH, now)
-    snapshot = _load_json(SYSTEM_HEALTH_PATH, None) if snapshot_age is not None else None
-    snapshot_freshness = _freshness(snapshot_age) if isinstance(snapshot, dict) else "unknown"
-    service_snapshot = {"source": "system_health_snapshot", "age_sec": round(snapshot_age, 1) if snapshot_age is not None else None,
-                        "freshness": snapshot_freshness, "data": snapshot if isinstance(snapshot, dict) else None}
-    if snapshot_freshness != "fresh":
-        warnings.append("system health snapshot is " + snapshot_freshness)
-
-    cache = _inspect_feed_cache()
-    if cache.get("status") != "ok" or cache.get("fallback") or not cache.get("readable", False):
-        warnings.append("feed cache is " + str(cache.get("status", "unknown")))
-    operator_state = _load_json(OPERATOR_STATE_PATH, {})
-    exposure = _marked_exposure(operator_state)
-    capital = operator_state.get("capital_in_play_usd") if isinstance(operator_state, dict) else None
-    try:
-        capital = float(capital) if capital is not None else None
-    except (TypeError, ValueError):
-        capital = None
-    exposure["capital_in_play_usd"] = round(capital, 2) if capital is not None else None
-    exposure["capital_in_play_source"] = "operator_state" if capital is not None else "unknown"
-    if exposure["status"] != "ok":
-        warnings.append("gross exposure has unmarked positions")
-
-    configured_terminal_url = os.environ.get("TRADING_TERMINAL_URL", "/dashboard")
-    terminal_url = _safe_terminal_url(configured_terminal_url)
-    terminal = {"url": terminal_url or "/dashboard", "source": "TRADING_TERMINAL_URL" if "TRADING_TERMINAL_URL" in os.environ else "dashboard_default"}
-    if terminal_url is None:
-        terminal["status"] = "warn"
-        warnings.append("unsafe terminal URL; using dashboard default")
-    return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "trading_mode": trading_mode,
-        "feed": {"heartbeat": heartbeat},
-        "cache": cache,
-        "services": {"trader": {k: trader.get(k) for k in ("available", "source", "mode", "error")}, "snapshot": service_snapshot},
-        "exposure": exposure,
-        "terminal": terminal,
-        "warnings": warnings,
-    }
-
-
-def _component_is_hard_bad(value):
-    """True for an explicit component failure, not arbitrary descriptions."""
-    if not isinstance(value, str):
-        return False
-    normalized = value.strip().lower()
-    if not normalized:
-        return False
-    return normalized.split(":", 1)[0].split(None, 1)[0] in {"error", "unavailable", "unreadable"}
 
 
 def api_health():
@@ -937,22 +765,13 @@ def api_health():
         state["components"]["feed_cache"] = f"error: {e}"
 
     healthy_states = {"ok", "empty", "stale"}
-    # Components whose values are descriptive strings (e.g. signal_cache's
-    # "N strategy, M pm...") are not status words and must be skipped when
-    # computing overall health. A missing optimizer daemon heartbeat is a soft
-    # warning, not a hard failure — the dashboard and its read-only feeds are
-    # still live, so the UI should show "live".
-    status_like = healthy_states | {"error", "unavailable", "unreadable", "missing"}
     all_ok = all(
-        k == "daemon_heartbeat"
-        or not isinstance(v, str)
-        or _component_is_hard_bad(v) is False and (
-            not v.strip() or v.strip().split()[0].rstrip(":").lower() not in status_like
-            or v.strip().split()[0].rstrip(":").lower() in healthy_states
-        )
-        for k, v in state["components"].items()
+        v in healthy_states for v in state["components"].values()
     )
     state["status"] = "healthy" if all_ok else "degraded"
+
+    op_state = _load_json(OPERATOR_STATE_PATH, {})
+    state["status_bar"] = _status_bar_payload(op_state, _load_trader_health())
     return state
 
 
@@ -1096,22 +915,63 @@ def api_backtest_experiments(name: str | None = None):
                 pass
         return {"experiment": match, "status": "ok"}
 
-    # Enrich each row with scorecard summary where available.
-    enriched = []
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    bt_by_strat = {}
+    for bt in op.get("backtests", []) or []:
+        sid = bt.get("strategyId") or bt.get("id")
+        if sid:
+            bt_by_strat[sid] = bt
+
+    experiments = []
     for r in rows:
-        entry = dict(r)
-        sc_path = exp_dir / r.get("name", "") / "scorecard.json"
+        name_ = r.get("name") or r.get("id") or "unknown"
+        sc = None
+        sc_path = exp_dir / name_ / "scorecard.json"
         if sc_path.exists():
             try:
                 sc = json.loads(sc_path.read_text(encoding="utf-8"))
-                entry["mean_sharpe_passed"] = sc.get("mean_sharpe_passed", entry.get("mean_sharpe_passed"))
-                entry["n_strategies_tested"] = sc.get("n_strategies_tested")
-                entry["ensemble"] = sc.get("ensemble")
-                entry["regime"] = sc.get("regime")
             except json.JSONDecodeError:
-                pass
-        enriched.append(entry)
-    return {"experiments": enriched, "count": len(enriched), "status": "ok"}
+                sc = None
+
+        if sc:
+            passed = bool(sc.get("passed", sc.get("pass_rate", 0) >= 0.5))
+            win_rate = sc.get("mean_win_rate", sc.get("win_rate"))
+            sharpe = sc.get("mean_sharpe", sc.get("mean_sharpe_passed"))
+            profit_factor = sc.get("mean_profit_factor", sc.get("profit_factor"))
+            total_return = sc.get("mean_total_return", sc.get("total_return"))
+            ensemble = sc.get("ensemble")
+            regime = sc.get("regime")
+        else:
+            bt = bt_by_strat.get(name_)
+            m = (bt or {}).get("metrics", {})
+            passed = str((bt or {}).get("status", "")).lower() == "completed" and (
+                float(m.get("winRatePct", 0)) >= 40
+            )
+            win_rate = (float(m.get("winRatePct", 0)) / 100.0) if m.get("winRatePct") is not None else None
+            sharpe = m.get("sharpe")
+            profit_factor = m.get("profitFactor")
+            total_return = m.get("totalReturnPct")
+            ensemble = None
+            regime = None
+
+        experiments.append({
+            "name": name_,
+            "strategy": name_,
+            "verdict": "PASS" if passed else "FAIL",
+            "passed": bool(passed),
+            "win_rate": round(float(win_rate), 4) if win_rate is not None else None,
+            "win_rate_pct": round(float(win_rate) * 100, 2) if win_rate is not None else None,
+            "sharpe": round(float(sharpe), 3) if sharpe is not None else None,
+            "profit_factor": round(float(profit_factor), 3) if profit_factor is not None else None,
+            "total_return": round(float(total_return), 2) if total_return is not None else None,
+            "n_strategies_tested": sc.get("n_strategies_tested") if sc else None,
+            "ensemble": ensemble,
+            "regime": regime,
+            "updated_at": r.get("updated_at") or r.get("timestamp"),
+        })
+
+    experiments.sort(key=lambda e: str(e.get("updated_at") or ""), reverse=True)
+    return {"experiments": experiments, "count": len(experiments), "status": "ok"}
 
 
 def _ensure_project_root_on_path():
@@ -1126,75 +986,30 @@ def _ensure_project_root_on_path():
         sys.path.insert(0, root)
 
 
-def _run_with_timeout(fn, timeout_sec=5.0):
-    """Run a function with a timeout, return None on timeout/error."""
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fn)
-        try:
-            return future.result(timeout=timeout_sec)
-        except concurrent.futures.TimeoutError:
-            return None
-        except Exception:
-            return None
-
-
-def _generate_mock_candles(symbol="BTC-USD", granularity=3600, limit=200):
-    """Generate realistic mock candles for offline/demo mode."""
-    import random
-    base_price = {"BTC-USD": 65000, "ETH-USD": 3500, "SOL-USD": 150}.get(symbol, 100)
-    now = int(time.time())
-    # Align to granularity
-    now = now - (now % granularity)
-    candles = []
-    price = base_price
-    for i in range(limit):
-        ts = now - (limit - i - 1) * granularity
-        # Random walk with slight trend
-        change_pct = random.uniform(-0.02, 0.02)
-        price = price * (1 + change_pct)
-        high = price * random.uniform(1.0, 1.015)
-        low = price * random.uniform(0.985, 1.0)
-        open_ = price * random.uniform(0.995, 1.005)
-        close = price
-        volume = random.uniform(10, 1000)
-        candles.append((ts, open_, high, low, close, volume))
-    return candles
-
-
 def api_market_candles(symbol="BTC-USD", granularity=3600, limit=200):
     """Fetch OHLCV candles for the charting panel (Coinbase public REST)."""
     symbol = symbol or "BTC-USD"
     granularity = int(granularity)
-    limit = int(limit)
-    candles = []
-
-    # Try live fetch via thread-safe urllib3 client (no aiohttp/event loop)
     try:
-        candles = _fetch_candles_http(symbol, granularity=granularity, limit=limit) or []
+        _ensure_project_root_on_path()
+        from coinbase.src.rest_feed import fetch_candles_rest_sync
+        candles = fetch_candles_rest_sync(symbol, granularity=granularity, limit=int(limit))
     except Exception as e:
         logger.warning("candle fetch failed for %s: %s", symbol, e)
         candles = []
-
-    # Fallback to durable cache
     if not candles:
+        # offline fallback from the durable NAS cache
         try:
             from data.feed_cache import load_candles
-            candles = load_candles("coinbase_candles", symbol, granularity, limit=limit)
+            candles = load_candles("coinbase_candles", symbol, granularity, limit=int(limit))
         except Exception:
             candles = []
-
-    # Final fallback to mock data
-    if not candles:
-        candles = _generate_mock_candles(symbol, granularity, limit)
     else:
-        # Save to cache
         try:
             from data.feed_cache import save_candles
             save_candles("coinbase_candles", symbol, granularity, candles)
         except Exception:
             pass
-
     out = [{"t": c[0], "o": c[1], "h": c[2], "l": c[3], "c": c[4], "v": c[5]} for c in candles]
     return {"symbol": symbol, "granularity": granularity, "candles": out}
 
@@ -1212,7 +1027,7 @@ def _simple_regime(closes):
     return "chop"
 
 
-_WL_CACHE = {"ts": 0.0, "data": None, "ttl": 300.0}
+_WL_CACHE = {"ts": 0.0, "data": None, "ttl": 30.0}
 
 
 def api_market_watchlist(limit_pairs=24):
@@ -1224,38 +1039,33 @@ def api_market_watchlist(limit_pairs=24):
     now = time.time()
     if _WL_CACHE["data"] is not None and (now - _WL_CACHE["ts"]) < _WL_CACHE["ttl"]:
         return _WL_CACHE["data"]
-    
-    # Use known top pairs directly (skip slow discovery which takes 20+ seconds)
-    default_pairs = [
-        "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
-        "AVAX-USD", "LINK-USD", "ATOM-USD", "LTC-USD", "NEAR-USD", "APT-USD",
-    ]
-    pairs = [(s, s.split("-")[0]) for s in default_pairs[:limit_pairs]]
-    
-    pair_ids = [p[0] for p in pairs]
-    candles_map = {}
-
-    # Try live batch fetch via thread-safe urllib3 client (no aiohttp/event loop)
     try:
-        candles_map = _fetch_candles_batch_http(pair_ids, granularity=3600, limit=30) or {}
+        _ensure_project_root_on_path()
+        from coinbase.src.pair_discovery import top_coinbase_pairs
+        from coinbase.src.rest_feed import fetch_candles_batch_sync
+        pairs = top_coinbase_pairs(n=int(limit_pairs))
+    except Exception as e:
+        logger.warning("watchlist discovery failed: %s", e)
+        pairs = [(s, s.split("-")[0]) for s in [
+            "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "DOGE-USD", "ADA-USD",
+            "AVAX-USD", "LINK-USD", "ATOM-USD", "LTC-USD", "NEAR-USD", "APT-USD",
+        ]]
+    pair_ids = [p[0] for p in pairs]
+    try:
+        candles_map = fetch_candles_batch_sync(pair_ids, granularity=3600, limit=30)
     except Exception:
         candles_map = {}
-
-    # Durable backup of the batch for offline replay (best-effort, non-blocking
-    # so the dashboard request never waits on slow NAS parquet writes).
-    if candles_map:
-        _snapshot_for_backup = {pid: cs for pid, cs in candles_map.items() if cs}
-        try:
-            bg = threading.Thread(
-                target=_persist_watchlist_cache, args=(_snapshot_for_backup,), daemon=True
-            )
-            bg.start()
-        except Exception:
-            pass
-
+    # durable backup of the batch for offline replay
+    try:
+        from data.feed_cache import save_candles
+        for pid, cs in candles_map.items():
+            if cs:
+                save_candles("coinbase_candles", pid, 3600, cs)
+    except Exception:
+        pass
     offline = not candles_map
     if offline:
-        # Serve entirely from durable cache when the live feed is down
+        # serve entirely from durable cache when the live feed is down (E7)
         try:
             from data.feed_cache import load_candles
             candles_map = {
@@ -1264,11 +1074,6 @@ def api_market_watchlist(limit_pairs=24):
             }
         except Exception:
             pass
-    
-    # Final fallback to mock data
-    if not any(candles_map.values()):
-        candles_map = {pid: _generate_mock_candles(pid, 3600, 30) for pid in pair_ids}
-    
     rows = []
     for pid in pair_ids:
         cs = candles_map.get(pid) or []
@@ -1294,20 +1099,11 @@ def api_market_watchlist(limit_pairs=24):
     return result
 
 
-def _persist_watchlist_cache(candles_map: dict) -> None:
-    """Background durable write of fetched candles (best-effort, never raises)."""
-    try:
-        from data.feed_cache import save_candles
-        for pid, cs in candles_map.items():
-            if cs:
-                save_candles("coinbase_candles", pid, 3600, cs)
-    except Exception as e:  # pragma: no cover - durability is best-effort
-        logger.debug("watchlist cache persist skipped: %s", e)
-
-
 def _last_price(symbol):
     try:
-        cs = _fetch_candles_http(symbol, granularity=60, limit=1)
+        _ensure_project_root_on_path()
+        from coinbase.src.rest_feed import fetch_candles_rest_sync
+        cs = fetch_candles_rest_sync(symbol, granularity=60, limit=1)
         if cs:
             return float(cs[-1][4])
     except Exception:
@@ -2323,7 +2119,7 @@ def _enrich_signals_with_graph(queue: list[dict]) -> list[dict]:
     return enriched
 
 
-def api_opportunities():
+def api_opportunities(product=None, direction=None):
     _refresh_cache()
     with _SHARED_CACHE_LOCK:
         report = dict(_cache or {})
@@ -2332,6 +2128,17 @@ def api_opportunities():
     queue.sort(key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0), reverse=True)
     if queue and not any(s.get("graph_score") is not None for s in queue[:10]):
         queue = _enrich_signals_with_graph(queue)
+
+    if product:
+        product = str(product).strip().upper()
+        queue = [s for s in queue if str(s.get("symbol", s.get("product", "")) or "").upper() == product]
+    if direction:
+        direction = str(direction).strip().upper()
+        queue = [
+            s for s in queue
+            if str(s.get("action", s.get("direction", s.get("side", ""))) or "").upper() == direction
+        ]
+
     report["queue"] = queue
     report["total_signals"] = len(queue)
     report["buy_signals"] = sum(1 for s in queue if s.get("action", "").upper() == "BUY")
@@ -2341,6 +2148,110 @@ def api_opportunities():
     quality_scores = sorted((float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0) for s in queue), reverse=True)
     report["quality_score"] = round(sum(quality_scores[:5]) / len(quality_scores[:5]) if quality_scores else 0, 3)
     return report
+
+
+def _normalize_opportunity(s):
+    action = str(s.get("action", s.get("direction", s.get("side", "")) or "")).upper()
+    conf = s.get("confidence")
+    if conf is None:
+        conf = s.get("conf_pct")
+    if conf is None:
+        conf = s.get("opportunity_score", 0)
+    return {
+        "product": str(s.get("product") or s.get("symbol") or ""),
+        "symbol": str(s.get("symbol") or s.get("product") or ""),
+        "direction": action,
+        "side": action,
+        "strategy": str(s.get("strategy_name") or s.get("strategy") or "—"),
+        "strategy_name": str(s.get("strategy_name") or s.get("strategy") or "—"),
+        "confidence": round(float(conf or 0), 3),
+        "conf_pct": round(float(conf or 0) * 100, 1) if float(conf or 0) <= 1 else round(float(conf or 0), 1),
+        "notional": s.get("notional"),
+        "price": s.get("price"),
+        "priority": s.get("priority"),
+        "reason": s.get("reason"),
+    }
+
+
+def api_portfolio_summary():
+    op = _load_json(OPERATOR_STATE_PATH, {})
+    trader_health = _load_trader_health()
+
+    eq = _load_json(EQUITY_SUMMARY_PATH, {})
+    equity = float(eq.get("total_equity", eq.get("total_value", 0)) or 0)
+    accounts = op.get("accounts", [])
+    acc_mode = (accounts[0].get("mode") if accounts else "") or "paper"
+
+    positions_raw = op.get("positions", []) or []
+    total_unrealized_pnl = 0.0
+    total_pos_value = 0.0
+    for p in positions_raw:
+        try:
+            qty = float(p.get("quantity", 0))
+            avg = float(p.get("averagePrice", 0))
+            md = {str(x.get("symbol", "")): x for x in op.get("marketDataSnapshots", [])}
+            cur = float(md.get(p.get("symbol", ""), {}).get("bid", 0) or 0) or float(p.get("markPrice", 0) or 0)
+        except (TypeError, ValueError):
+            qty, avg, cur = 0, 0, 0
+        if avg and cur:
+            total_unrealized_pnl += (cur - avg) * qty
+        if cur:
+            total_pos_value += qty * cur
+    pnl_pct = (total_unrealized_pnl / total_pos_value * 100) if total_pos_value else 0.0
+
+    snapshots = []
+    store = _get_state_store()
+    if store:
+        try:
+            snapshots = store.load_snapshots(limit=100)
+            trades = store.load_trades(limit=200)
+            winners = sum(1 for t in trades if float(t.get("pnl_usd", t.get("realized_pnl", 0))) > 0)
+            win_rate = (winners / len(trades)) if trades else 0.0
+        except Exception:
+            win_rate = 0.0
+    else:
+        win_rate = 0.0
+
+    bt_drawdown = 0.0
+    for bt in op.get("backtests", []) or []:
+        bt_drawdown = min(bt_drawdown, float(bt.get("metrics", {}).get("maxDrawdownPct", 0)))
+    for sn in snapshots:
+        bt_drawdown = min(bt_drawdown, float(sn.get("max_drawdown_pct", 0)))
+
+    regime = None
+    if trader_health and trader_health.get("regime"):
+        regime = trader_health.get("regime")
+    else:
+        mi = op.get("marketIntelligence", {})
+        regime = mi.get("coinbase", {}).get("regime") or op.get("config", {}).get("regime")
+
+    _refresh_cache()
+    with _SHARED_CACHE_LOCK:
+        cache = dict(_cache or {})
+    opp_queue = sorted(
+        cache.get("queue", []),
+        key=lambda s: float(s.get("opportunity_score", s.get("final_confidence", 0)) or 0),
+        reverse=True,
+    )
+    top_opportunities = [_normalize_opportunity(s) for s in opp_queue[:10]]
+
+    return {
+        "equity": round(equity, 2),
+        "total_value": round(equity, 2),
+        "pnl": round(total_unrealized_pnl, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "drawdown": round(abs(bt_drawdown), 2),
+        "win_rate": round(win_rate, 4),
+        "open_positions": len(positions_raw),
+        "tick_count": (trader_health or {}).get("tick_count"),
+        "latency_p95": _extract_latency_p95(trader_health),
+        "regime": regime,
+        "kill_switch": _read_kill_switch(op),
+        "status": "ok",
+        "accounts_mode": acc_mode,
+        "top_opportunities": top_opportunities,
+        "updated_at": eq.get("timestamp"),
+    }
 
 
 def api_signal_feed():
@@ -2545,367 +2456,21 @@ def api_crypto_divergence():
 
 
 def api_paper_trades():
-    """Return recent paper trades from the bot's paper trader state."""
-    state = _load_json(PAPER_TRADER_PATH, {})
-    trades = state.get("paper_trades", []) or []
-    trades.sort(key=lambda t: t.get("ts", t.get("timestamp", "")), reverse=True)
-    return {"trades": trades[:100], "total": len(trades)}
-
-
-def api_paper_performance():
-    """Compute performance metrics from the paper trader's equity curve."""
-    state = _load_json(PAPER_TRADER_PATH, {})
-    equity_curve = state.get("paper_equity_curve", []) or []
-    starting = float(state.get("paper_starting_capital", 10000.0) or 10000.0)
-    equity = float(equity_curve[-1]) if equity_curve else float(state.get("equity", starting))
-    total_return = ((equity / starting) - 1.0) * 100.0 if starting else 0.0
-    wins = int(state.get("paper_wins", 0) or 0)
-    losses = int(state.get("paper_losses", 0) or 0)
-    total = wins + losses
-    win_rate = (wins / total * 100.0) if total else 0.0
-    max_dd = 0.0
-    peak = starting
-    for v in equity_curve:
-        v = float(v)
-        if v > peak:
-            peak = v
-        dd = (peak - v) / peak * 100.0 if peak else 0.0
-        if dd > max_dd:
-            max_dd = dd
-    sharpe = 0.0
-    if len(equity_curve) > 2:
-        rets = []
-        for i in range(1, len(equity_curve)):
-            prev = float(equity_curve[i-1])
-            cur = float(equity_curve[i])
-            if prev:
-                rets.append((cur - prev) / prev)
-        if rets:
-            import statistics
-            mu = statistics.mean(rets)
-            sd = statistics.stdev(rets) if len(rets) > 1 else 1e-9
-            sharpe = (mu / sd) * (252 ** 0.5) if sd else 0.0
-    return {
-        "starting_capital": round(starting, 2),
-        "equity": round(equity, 2),
-        "total_return_pct": round(total_return, 2),
-        "max_drawdown_pct": round(max_dd, 2),
-        "sharpe": round(sharpe, 2),
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(win_rate, 2),
-        "total_trades": total,
-        "equity_curve": [round(float(x), 2) for x in equity_curve[-500:]],
-    }
-
-
-def api_paper_positions():
-    """Return open paper positions with bracket info (stop/target/trail)."""
-    state = _load_json(PAPER_TRADER_PATH, {})
-    positions = state.get("paper_positions", []) or []
-    out = []
-    for pos in positions:
-        if isinstance(pos, dict):
-            qty = float(pos.get("qty", pos.get("quantity", 0)) or 0)
-            if abs(qty) < 1e-9:
-                continue
-            side = pos.get("side", "LONG" if qty > 0 else "SHORT")
-            entry = float(pos.get("entry_price", pos.get("avg_entry", pos.get("price", 0))) or 0)
-            mark = float(pos.get("mark_price", pos.get("current_price", entry)) or entry)
-            unreal = (mark - entry) * qty if side == "LONG" else (entry - mark) * qty
-            stop = pos.get("stop_price") or pos.get("stop_loss")
-            target = pos.get("take_profit")
-            trail = pos.get("trailing_stop")
-            sym = pos.get("product_id") or pos.get("symbol")
-            out.append({
-                "symbol": sym,
-                "side": side,
-                "quantity": round(qty, 6),
-                "entry_price": round(entry, 2),
-                "mark_price": round(mark, 2),
-                "unrealized_pnl": round(unreal, 2),
-                "unrealized_pnl_pct": round((unreal / (entry * abs(qty)) * 100) if entry and qty else 0, 2),
-                "stop_loss": round(float(stop), 2) if stop else None,
-                "take_profit": round(float(target), 2) if target else None,
-                "trailing_stop": round(float(trail), 2) if trail else None,
-                "strategy": pos.get("strategy"),
-            })
-    return {"positions": out, "count": len(out)}
-
-
-def api_brackets():
-    """Return bracket orders from paper positions (stop/target/trail)."""
-    paper_pos = _load_json(PAPER_TRADER_PATH, {}).get("paper_positions", []) or []
-    out = {}
-    for pos in paper_pos:
-        if isinstance(pos, dict) and (pos.get("stop_price") or pos.get("stop_loss") or pos.get("take_profit")):
-            sym = pos.get("product_id") or pos.get("symbol")
-            out[sym] = {
-                "stop_loss": pos.get("stop_price") or pos.get("stop_loss"),
-                "take_profit": pos.get("take_profit"),
-                "trailing_stop": pos.get("trailing_stop"),
-                "entry_price": pos.get("entry_price"),
-                "quantity": pos.get("qty"),
-                "side": pos.get("side"),
-            }
-    return {"brackets": out}
-
-
-def api_paper_hermes():
-    """Hermes agent paper performance for comparison."""
-    state = _load_json(HERMES_LEDGER_PATH, {})
-    equity_curve = state.get("equity_curve", []) or []
-    starting = float(state.get("starting_capital", 10000.0) or 10000.0)
-    equity = float(equity_curve[-1]) if equity_curve else float(state.get("equity", starting))
-    total_return = ((equity / starting) - 1.0) * 100.0 if starting else 0.0
-    trades = state.get("trades", []) or []
-    wins = sum(1 for t in trades if float(t.get("realized_pnl", 0) or 0) > 0)
-    losses = sum(1 for t in trades if float(t.get("realized_pnl", 0) or 0) < 0)
-    total = wins + losses
-    win_rate = (wins / total * 100.0) if total else 0.0
-    max_dd = 0.0
-    peak = starting
-    for v in equity_curve:
-        v = float(v)
-        if v > peak:
-            peak = v
-        dd = (peak - v) / peak * 100.0 if peak else 0.0
-        if dd > max_dd:
-            max_dd = dd
-    return {
-        "starting_capital": round(starting, 2),
-        "equity": round(equity, 2),
-        "total_return_pct": round(total_return, 2),
-        "max_drawdown_pct": round(max_dd, 2),
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(win_rate, 2),
-        "total_trades": total,
-        "equity_curve": [round(float(x), 2) for x in equity_curve[-500:]],
-    }
-
-
-def _live_mark(product_id: str) -> float:
-    """Best-effort live mark for an open position's unrealized P&L.
-
-    Uses the SAME public Coinbase candle feed the agent loop uses (no auth,
-    read-only). Falls back to 0.0 on any failure so the caller can treat a
-    missing mark as "unknown" rather than crash the endpoint.
-    """
+    PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
+    if not PAPER_TRADES_PATH.exists():
+        return {"trades": [], "total": 0, "settlement_summary": {}}
     try:
-        rows = _fetch_candles_http(product_id, granularity=3600, limit=2)
-        if rows:
-            return float(rows[-1][4])
-    except Exception:
-        pass
-    return 0.0
-
-
-def _open_positions(state: dict, is_bot: bool) -> list[dict]:
-    """Both books' open positions with live mark + unrealized P&L.
-
-    Bot stores positions under ``paper_positions`` keyed by product_id with
-    ``size``/``entry_price``. Agent stores under ``positions`` keyed by
-    product_id (long) or ``SHORT:product_id`` (short) with ``base``/
-    ``entry_price``/``leverage``.
-    """
-    out = []
-    if is_bot:
-        raw = state.get("paper_positions") or []
-        # Bot may store positions as a list of dicts OR a dict keyed by product_id.
-        items = raw.items() if isinstance(raw, dict) else (
-            [(p.get("product_id"), p) for p in raw if isinstance(p, dict)]
-        )
-        for pid, pos in items:
-            if not isinstance(pos, dict) or not pid:
-                continue
-            base = float(pos.get("size") or pos.get("qty") or pos.get("base") or 0.0)
-            entry = float(pos.get("entry_price") or 0.0)
-            if base <= 1e-9 or entry <= 0:
-                continue
-            mark = _live_mark(pid)
-            has_mark = mark > 0
-            upl = (mark - entry) * base if has_mark else None
-            out.append({
-                "symbol": pid, "side": "LONG",
-                "qty": round(base, 6), "entry": round(entry, 6),
-                "mark": round(mark, 6) if has_mark else None,
-                "unrealized_pnl": round(upl, 4) if has_mark else None,
-            })
-    else:
-        for key, pos in (state.get("positions") or {}).items():
-            if not isinstance(pos, dict):
-                continue
-            base = float(pos.get("base") or 0.0)
-            entry = float(pos.get("entry_price") or 0.0)
-            if base <= 1e-9 or entry <= 0:
-                continue
-            is_short = key.startswith("SHORT:")
-            pid = key.replace("SHORT:", "")
-            mark = _live_mark(pid)
-            lev = float(pos.get("leverage") or 1.0)
-            if mark > 0:
-                # P&L scales by leverage for the agent book.
-                upl = ((mark - entry) * base * lev if not is_short
-                       else (entry - mark) * base * lev)
-            else:
-                upl = None
-            out.append({
-                "symbol": pid, "side": "SHORT" if is_short else "LONG",
-                "qty": round(base, 6), "entry": round(entry, 6),
-                "mark": round(mark, 6) if mark > 0 else None,
-                "unrealized_pnl": round(upl, 4) if mark > 0 else None,
-                "leverage": round(lev, 2),
-            })
-    return out
-
-
-def _competition_side(state: dict, is_bot: bool) -> dict:
-    """Fair head-to-head: normalize one paper book to the shared $10k start.
-
-    HARDENED: the headline equity is derived independently and can NEVER be
-    lied to by a corrupted equity curve. We compute:
-
-        equity = start + realized_pnl + open_position_unrealized
-
-    where realized_pnl comes from the per-trade ledger (bot ``pnl`` /
-    agent ``realized_pnl``) and open unrealized is summed from the book's own
-    open positions marked at the live price. The bot's ``paper_equity_curve``
-    previously inflated equity by ~33% of notional per round-trip (a
-    double-counted leverage 'loan' term in run_trader_v4._paper_equity); it is
-    now used ONLY for the chart sparkline, never for the score.
-
-    Win rate is still computed from per-trade realized P&L (closed trades).
-    """
-    if is_bot:
-        start = float(state.get("paper_starting_capital", 10000.0) or 10000.0)
-        equity_curve = state.get("paper_equity_curve") or []
-        trades = state.get("paper_trades", []) or []
-        pnl_key = "pnl"
-        # Accumulator is the authoritative running total for the bot (the
-        # per-trade ledger occasionally under-counts). Prefer it; fall back to
-        # the ledger sum if the field is missing.
-        realized_field = float(state.get("paper_realized_pnl", 0.0) or 0.0)
-    else:
-        start = float(state.get("starting_capital", 10000.0) or 10000.0)
-        equity_curve = state.get("equity_curve") or []
-        trades = state.get("trades", []) or []
-        pnl_key = "realized_pnl"
-        realized_field = float(state.get("realized_pnl", 0.0) or 0.0)
-
-    # Realized P&L from per-trade ledger (authoritative cross-check / fallback).
-    closed = [float(t.get(pnl_key, 0.0) or 0.0) for t in trades
-              if pnl_key in t]
-    ledger_realized = sum(closed)
-    n = len(closed)
-    wins = sum(1 for p in closed if p > 0)
-    losses = n - wins
-    win_rate = (wins / n * 100.0) if n else 0.0
-
-    # Use the authoritative accumulator when it agrees in sign/magnitude with the
-    # ledger (or when the ledger is empty); otherwise the ledger sum.
-    realized = realized_field if abs(realized_field - ledger_realized) < max(1.0, abs(realized_field) * 0.5) or n == 0 else ledger_realized
-
-    # Open-position unrealized (live-marked) — feed from _open_positions so we
-    # don't re-hit the price feed.
-    opens = _open_positions(state, is_bot)
-    open_upl = sum(float(o.get("unrealized_pnl") or 0.0) for o in opens)
-
-    # Authoritative equity: start + realized + open unrealized.
-    equity = start + realized + open_upl
-
-    ret_pct = (equity / start - 1.0) * 100.0 if start else 0.0
-    return {
-        "role": "bot" if is_bot else "hermes",
-        "label": "Trading Bot" if is_bot else "Hermes Agent",
-        "starting_capital": round(start, 2),
-        "equity": round(equity, 2),
-        "return_pct": round(ret_pct, 2),
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(win_rate, 2),
-        "trade_count": n,
-        "realized_pnl": round(realized, 2),
-        "open_unrealized_pnl": round(open_upl, 2),
-        "open_positions": opens,
-        "equity_curve": [round(float(x), 2) for x in equity_curve[-120:]],
-    }
-
-
-def api_competition():
-    """Head-to-head: the live trading bot vs the competing Hermes agent.
-
-    Both run PAPER from a flat $10k start. Reads the bot's book
-    (paper_trader_v4_state.json) and the Hermes agent's book
-    (hermes_agent_ledger.json), normalizes both to the shared start, and returns
-    a side-by-side plus a per-strategy leaderboard and each book's open positions.
-
-    Per-trade realized P&L drives the win rate and the leaderboard for BOTH
-    books (bot uses ``pnl``, agent uses ``realized_pnl``) — so the comparison is
-    apples-to-apples, not trade-count noise.
-    """
-    bot_state = _load_json(ROOT / "data" / "paper_trader_v4_state.json", {})
-    hermes_state = _load_json(ROOT / "data" / "hermes_agent_ledger.json", {})
-
-    bot = _competition_side(bot_state, is_bot=True)
-    hermes = _competition_side(hermes_state, is_bot=False)
-
-    # Bot per-strategy P&L from its trade ledger.
-    bot_strat = {}
-    for t in bot_state.get("paper_trades", []) or []:
-        strat = t.get("strategy")
-        if not strat:
-            continue
-        pnl = float(t.get("pnl", 0.0) or 0.0)
-        d = bot_strat.setdefault(strat, {"wins": 0, "trades": 0, "pnl": 0.0})
-        d["trades"] += 1
-        d["pnl"] += pnl
-        if pnl > 0:
-            d["wins"] += 1
-
-    # Agent per-setup P&L from its ledger (it DOES store realized_pnl per close).
-    hermes_strat = {}
-    for t in hermes_state.get("trades", []) or []:
-        if "realized_pnl" not in t:
-            continue
-        strat = t.get("setup") or t.get("strategy") or "?"
-        pnl = float(t.get("realized_pnl", 0.0) or 0.0)
-        d = hermes_strat.setdefault(strat, {"wins": 0, "trades": 0, "pnl": 0.0})
-        d["trades"] += 1
-        d["pnl"] += pnl
-        if pnl > 0:
-            d["wins"] += 1
-
-    leaderboard = []
-    for strat in sorted(set(bot_strat) | set(hermes_strat)):
-        bw = bot_strat.get(strat, {}).get("wins", 0)
-        bsum = round(bot_strat.get(strat, {}).get("pnl", 0.0), 4)
-        bcount = bot_strat.get(strat, {}).get("trades", 0)
-        hw = hermes_strat.get(strat, {}).get("wins", 0)
-        hsum = round(hermes_strat.get(strat, {}).get("pnl", 0.0), 4)
-        hcount = hermes_strat.get(strat, {}).get("trades", 0)
-        # Edge = who made more on this strategy (real P&L, both books).
-        if bsum > hsum:
-            edge = "bot"
-        elif hsum > bsum:
-            edge = "hermes"
-        else:
-            edge = "tie"
-        leaderboard.append({
-            "strategy": strat,
-            "bot_wins": bw, "bot_trades": bcount, "bot_pnl": bsum,
-            "hermes_wins": hw, "hermes_trades": hcount, "hermes_pnl": hsum,
-            "edge": edge,
-        })
-    leaderboard.sort(key=lambda r: (r["bot_pnl"] + r["hermes_pnl"]), reverse=True)
-
-    return {
-        "bot": bot,
-        "hermes": hermes,
-        "leaderboard": leaderboard,
-        "normalized_start": 10000.0,
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+        trades = json.loads(PAPER_TRADES_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"trades": [], "total": 0, "settlement_summary": {}}
+    trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
+    settlement_summary = {}
+    try:
+        from event_markets.settlement import SettlementTracker
+        settlement_summary = SettlementTracker(trades_path=PAPER_TRADES_PATH).summary()
+    except Exception as e:
+        logger.debug("settlement summary failed: %s", e)
+    return {"trades": trades[:100], "total": len(trades), "settlement_summary": settlement_summary}
 
 
 _LAST_SETTLE_TS = 0.0
@@ -3368,7 +2933,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         handlers = {
             "/health": lambda: api_health(),
-            "/system-truth": lambda: api_system_truth(),
             "/accounts": lambda: api_accounts(),
             "/positions": lambda: api_positions(),
             "/strategies": lambda: api_strategies(),
@@ -3385,19 +2949,18 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/arbitrage/execution-status": lambda: api_execution_status(),
             "/crypto-divergence": lambda: api_crypto_divergence(),
             "/paper-trades": lambda: api_paper_trades(),
-            "/paper-performance": lambda: api_paper_performance(),
-            "/paper-positions": lambda: api_paper_positions(),
-            "/brackets": lambda: api_brackets(),
-            "/paper-hermes": lambda: api_paper_hermes(),
             "/trade-plans": lambda: api_trade_plans(),
             "/capital/bucket-presets": lambda: api_bucket_presets(),
             "/capital/buckets": lambda: _load_json(CAPITAL_BUCKETS_PATH, {"buckets": []}),
             "/equity-summary": lambda: _load_json(EQUITY_SUMMARY_PATH, {}),
             "/actions": lambda: api_operator_actions(),
-            "/signals/opportunities": lambda: api_opportunities(),
+            "/signals/opportunities": lambda: api_opportunities(
+                product=_qs(parsed.query, "product", None),
+                direction=_qs(parsed.query, "direction", None),
+            ),
             "/signals/feed": lambda: api_signal_feed(),
+            "/portfolio/summary": lambda: api_portfolio_summary(),
             "/signals/diversification": lambda: api_diversification_signals(),
-            "/competition": lambda: api_competition(),
             "/strategies/performance": lambda: api_strategies_performance(),
             "/strategies/rebalance": lambda: api_rebalance(),
             "/strategies/rebalance/presets": lambda: api_rebalance_presets(),
@@ -3503,7 +3066,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
-        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all", "/arbitrage/execute", "/orders/submit"}:
+        if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all", "/arbitrage/execute", "/orders/submit", "/kill-switch"}:
             self._json_response(json.dumps({"error": "not found"}), status=404)
             return
 
@@ -3552,6 +3115,20 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 result = api_order_submit(payload)
                 status = 200 if result.get("ok") else 400
                 self._json_response(json.dumps(result, default=str), status=status)
+            elif path == "/kill-switch":
+                # Engage/disengage the file-based kill switch flag. NOTE: when
+                # KILL_SWITCH=true is set in the environment the trader ignores
+                # this flag; it only halts traders not env-locked.
+                enabled = bool(payload.get("enabled", False))
+                flag = ROOT / "data" / "trading_kill_switch"
+                try:
+                    if enabled:
+                        flag.touch()
+                    else:
+                        flag.unlink(missing_ok=True)
+                    self._json_response(json.dumps({"ok": True, "kill_switch": enabled}))
+                except OSError as e:
+                    self._json_response(json.dumps({"error": str(e)}), status=500)
             else:
                 saved = _save_capital_buckets(payload)
                 self._json_response(json.dumps({"ok": True, "capital_buckets": saved}, default=str))

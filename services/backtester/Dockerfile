@@ -1,31 +1,29 @@
-# backtester service — rebuilt from current code (shared Python runtime).
-# Build context: repo root (portfolio-management/)
+# Backtester Service
+# Build context: repository root (docker build -f services/backtester/Dockerfile .)
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1     PIP_NO_CACHE_DIR=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
-COPY deploy/ /app/deploy/
-COPY deploy/requirements.venv-lock.txt /app/requirements.lock.txt
-RUN pip install --no-cache-dir -r /app/requirements.lock.txt
+# Install dependencies (canonical prod deps)
+COPY deploy/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY trading_system/ /app/trading_system/
+# Copy real application source
 COPY coinbase/ /app/coinbase/
-COPY config.yaml /app/
-COPY strategy_engine.py confidence_matrix.py state_store.py market_universe.py neo4j_store.py notification.py portfolio_optimizer.py approval_server.py /app/
-COPY archive/root/alerts.py /app/alerts.py
-COPY archive/root/data_collector.py /app/data_collector.py
-COPY rust_core/ /app/rust_core/
+COPY trading_system/ /app/trading_system/
 
-ENV PYTHONPATH=/app:/app/trading_system:/app/coinbase
-
-RUN mkdir -p /app/logs /app/data /app/state /app/templates
-
-# Non-root user for security
-RUN useradd -u 1000 -m -s /bin/bash appuser &&     chown -R appuser:appuser /app
-
+# Create non-root user (security)
+RUN useradd --create-home --uid 1000 appuser && \
+    chown -R appuser:appuser /app
 USER appuser
 
-WORKDIR /app
-CMD ["python3", "-u", "backtester.py"]
+# Real backtester entrypoint (trading_system/backtester.py has a __main__)
+EXPOSE 3002
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start_period=30s \
+    CMD python3 -c "import sys; sys.path.insert(0, '/app'); import trading_system.backtester; print('OK')"
+
+CMD ["python3", "-u", "/app/trading_system/backtester.py"]

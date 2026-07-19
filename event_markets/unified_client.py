@@ -227,10 +227,18 @@ class UnifiedPredictionMarketClient:
                 continue
             if pm.volume < min_volume:
                 continue
+            # A spread of exactly 1.0 is the "no valid book" sentinel set by
+            # polymarket_client._parse_gamma_market when bestAsk is missing /
+            # the market has effectively no liquidity — always reject it so a
+            # permissive max_spread (e.g. 1.0 in the crypto path) can't let it
+            # through as a phantom signal.
+            if pm.spread >= 1.0:
+                continue
             # Use Gamma's built-in bid/ask/spread; fall back to CLOB order book
             spread = pm.spread
             bid = pm.yes_bid
             ask = pm.yes_ask
+            book_liq: Optional[float] = None
             if spread <= 0 and pm.tokens and "token_id" in pm.tokens[0]:
                 book = self._polymarket.get_order_book(
                     pm.tokens[0]["token_id"]
@@ -238,10 +246,14 @@ class UnifiedPredictionMarketClient:
                 spread = book.spread
                 bid = max((p for p, _ in book.bids), default=0)
                 ask = min((p for p, _ in book.asks), default=1)
+                book_liq = getattr(book, "liquidity_score", None)
             if spread > max_spread:
                 continue
             token_ids = [t["token_id"] for t in pm.tokens if "token_id" in t]
             ls = min(pm.volume / 50000, 1.0) * max(0, 1 - spread * 3)
+            # Prefer the richer CLOB-derived liquidity score when we fetched a book.
+            if book_liq is not None:
+                ls = max(ls, book_liq)
             results.append(PredictionMarket(
                 platform="polymarket",
                 market_id=pm.condition_id,
@@ -256,6 +268,7 @@ class UnifiedPredictionMarketClient:
                 spread=spread,
                 liquidity_score=ls,
                 category=self._detect_category(pm.question),
+                keywords=[kw for kw in CRYPTO_KEYWORDS if _kw_in(pm.question.lower(), kw)],
                 raw_data={"token_ids": token_ids},
             ))
         results.sort(key=lambda p: p.volume, reverse=True)

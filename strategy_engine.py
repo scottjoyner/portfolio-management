@@ -2649,9 +2649,10 @@ class BacktestVerdict:
     sharpe_ratio: float
     profit_factor: float
     max_drawdown_pct: float
-    regime: str
-    passed: bool
-    reason: str
+    regime: str = "UNKNOWN"
+    passed: bool = False
+    reason: str = ""
+    avg_trade_pct: float = 0.0
 
 
 # ── Single-sourced backtest pass thresholds (P1-6) ──────────────────
@@ -2880,6 +2881,7 @@ def backtest_strategy(
         sharpe_ratio=round(sharpe, 2),
         profit_factor=round(profit_factor, 2),
         max_drawdown_pct=round(dd * 100, 2),
+        avg_trade_pct=round(avg_ret * 100, 4),
         regime=regime,
         passed=passed,
         reason=reasons[0] if reasons else "Passed backtest",
@@ -2930,19 +2932,6 @@ _RUST_STRATEGIES: set = {
     "supertrend", "fisher", "ultimate_osc", "vw_rsi",
     # ── 2 new Rust strategies (73-74) ──
     "kalman_mr", "hp_trend",
-    # ── 10 ported Python strategies (75-84) — Rust id == Python strategy_id ──
-    "GarchLiteVolForecastStrategy", "VolClusteringBreakoutStrategy",
-    "RegimePersistenceVolStrategy", "DFAAlphaRegimeStrategy",
-    "SampleEntropyComplexityRegimeStrategy", "EwmaVarBreakout",
-    "KatzFractalBreakout", "MultiTFTrendConfluenceStrategy",
-    "VolTargetOverlay", "VolTermStructureCarryStrategy",
-    # ── 11 ported quality (registry) strategies ──
-    "FisherTransformStochStrategy", "ChaikinVolatilityBreakoutStrategy",
-    "WilliamsPctRStrategy", "CciShortReversalStrategy",
-    "SessionOpeningRangeBreakoutStrategy", "BollingerDoubleTouchStrategy",
-    "KeltnerReversionStrategy", "AtrChannelReversionStrategy",
-    "StochasticExtremeReversionStrategy", "PriceChannelBreakoutPullbackStrategy",
-    "AdxWeakRangeFadeStrategy",
 }
 
 # ── Rust native: run ALL strategies on ALL products ────────────────
@@ -3125,8 +3114,9 @@ def batch_backtest_rust(
             )
             for s_name, metrics in raw:
                 ck = f"{s_name}/{currency}"
-                if len(metrics) >= 9:
-                    passed = bool(metrics[8])
+                if len(metrics) >= 10:
+                    avg_trade_pct = float(metrics[8])
+                    passed = bool(metrics[9])
                     results[ck] = BacktestVerdict(
                         strategy=s_name,
                         currency=currency,
@@ -3138,6 +3128,7 @@ def batch_backtest_rust(
                         sharpe_ratio=metrics[5],
                         profit_factor=metrics[6],
                         max_drawdown_pct=metrics[7],
+                        avg_trade_pct=avg_trade_pct,
                         regime="AUTO",
                         passed=passed,
                         reason="Rust batch" if passed else "Rust batch: below thresholds",
@@ -3145,294 +3136,6 @@ def batch_backtest_rust(
         except Exception as e:
             logger.debug("Rust batch backtest for %s failed: %s", currency, e)
     return results
-
-
-# ── Universe-wide parallel evaluation (single Rust round-trip) ─────
-
-def batch_signals_universe(
-    products: List[Tuple[str, str]],
-    closes_dict: Dict[str, List[float]],
-    volumes_dict: Dict[str, List[float]],
-    highs_dict: Optional[Dict[str, List[float]]] = None,
-    lows_dict: Optional[Dict[str, List[float]]] = None,
-    opens_dict: Optional[Dict[str, List[float]]] = None,
-) -> Dict[str, Dict[str, str]]:
-    """Run ALL strategies on the whole product universe in ONE Rust call.
-
-    Evaluates every product via ``rust_core.evaluate_universe_py`` (rayon over
-    products, one task each) in a single Python↔Rust round-trip. Returns the
-    same shape as :func:`batch_signals_rust` (pid -> {strategy_name: action}).
-
-    Falls back to the existing per-product :func:`batch_signals_rust` loop if
-    Rust is unavailable, the new binding is missing, or the call raises.
-    """
-    if not _HAS_RUST or not hasattr(_rust_core, "evaluate_universe_py"):
-        return batch_signals_rust(products, closes_dict, volumes_dict,
-                                  highs_dict or {}, lows_dict or {})
-    try:
-        pids = [pid for pid, _ in products]
-        if not pids:
-            return {}
-        closes_map = {pid: (closes_dict.get(pid) or []) for pid in pids}
-        volumes_map = {pid: (volumes_dict.get(pid) or []) for pid in pids}
-        # Build plain dicts (missing entries dropped so Rust treats them as absent).
-        hm = {pid: highs_dict[pid] for pid in pids if highs_dict and pid in highs_dict} if highs_dict else None
-        lm = {pid: lows_dict[pid] for pid in pids if lows_dict and pid in lows_dict} if lows_dict else None
-        om = {pid: opens_dict[pid] for pid in pids if opens_dict and pid in opens_dict} if opens_dict else None
-        raw = _rust_core.evaluate_universe_py(
-            pids, closes_map, volumes_map, hm, lm, om,
-        )
-        results: Dict[str, Dict[str, str]] = {}
-        for pid in pids:
-            pid_sigs: Dict[str, str] = {}
-            for s_name, action, confidence, reason in raw.get(pid, []):
-                pid_sigs[s_name] = action
-            results[pid] = pid_sigs
-        return results
-    except Exception as e:
-        logger.debug("batch_signals_universe failed, falling back: %s", e)
-        prods = [(pid, "growth") for pid in (p[0] if isinstance(p, (tuple, list)) else p) for p in products] \
-            if products and isinstance(products[0], (tuple, list)) else products
-        return batch_signals_rust(prods, closes_dict, volumes_dict,
-                                  highs_dict or {}, lows_dict or {})
-
-
-def batch_signals_from_candles(
-    products: List[Tuple[str, str]],
-    candles_map: Dict[str, list],
-    opens_map: Optional[Dict[str, List[float]]] = None,
-) -> Dict[str, Dict[str, str]]:
-    """Run ALL strategies on raw candle dicts in ONE Rust call.
-
-    ``candles_map`` is the raw ``Dict[str, list]`` returned by the feed manager:
-    each value is a list of candles, each candle EITHER a dict with keys
-    ``open/high/low/close/volume`` OR a normalized tuple/list
-    ``[ts, low, high, open, close, volume]`` (index 1=low, 2=high, 3=open,
-    4=close, 5=volume). OHLCV extraction + all-strategy eval happen inside Rust.
-
-    Returns pid -> {strategy_name: action}, identical in shape to
-    :func:`batch_signals_universe`.
-
-    Falls back to the legacy parse loop + :func:`batch_signals_universe` if Rust
-    is unavailable, the new binding is missing, or the call raises.
-    """
-    if not _HAS_RUST or not hasattr(_rust_core, "batch_signals_from_candles_py"):
-        return _batch_signals_from_candles_parse(products, candles_map, opens_map)
-    try:
-        pids = [pid for pid, _ in products]
-        if not pids:
-            return {}
-        raw = _rust_core.batch_signals_from_candles_py(
-            [p for p, _ in products], candles_map, opens_map,
-        )
-        results: Dict[str, Dict[str, str]] = {}
-        for pid in pids:
-            pid_sigs: Dict[str, str] = {}
-            for s_name, action, confidence, reason in raw.get(pid, []):
-                pid_sigs[s_name] = action
-            results[pid] = pid_sigs
-        return results
-    except Exception as e:
-        logger.debug("batch_signals_from_candles failed, fallback: %s", e)
-        return _batch_signals_from_candles_parse(products, candles_map, opens_map)
-
-
-def batch_signals_cached(products, candles_map, opens_map=None, max_len=100):
-    """Ingest raw candles into the persistent Rust buffer, then evaluate from cached Vecs.
-
-    Falls back to batch_signals_from_candles on any error / missing binding.
-    """
-    if not _HAS_RUST or not hasattr(_rust_core, "candle_store_eval_py"):
-        return batch_signals_from_candles(products, candles_map, opens_map)
-    try:
-        pids = [p for p, _ in products]
-        for pid in pids:
-            cands = candles_map.get(pid) or []
-            if cands:
-                _rust_core.candle_store_ingest_py(pid, cands)
-        raw = _rust_core.candle_store_eval_py(pids)
-        return {pid: {name: action for (name, action, conf, reason) in sigs} for pid, sigs in raw.items()}
-    except Exception as e:
-        logger.debug("batch_signals_cached failed, fallback: %s", e)
-        return batch_signals_from_candles(products, candles_map, opens_map)
-
-
-# Expose the persistent-buffer clear helper (None if the binding is absent).
-# NB: bound lazily at end of module (after _rust_core is imported).
-candle_store_clear = None
-
-
-def tick_signals(products, currencies, candles_map, pass_cache_keys, opens_map=None):
-    """Fast-path per-tick signal + bt-cache gate.
-
-    Ingests raw candles, evaluates all strategies in Rust, and returns only the
-    ``(pid, name, action, conf)`` tuples whose ``f"{name}/{currency}"`` key is in
-    ``pass_cache_keys``. Falls back to ``None`` on any error / missing binding so
-    callers can use the legacy path.
-    """
-    if not _HAS_RUST or not hasattr(_rust_core, "tick_signals_py"):
-        return None
-    try:
-        return _rust_core.tick_signals_py(
-            list(products), list(currencies), candles_map, list(pass_cache_keys),
-            opens_map,
-        )
-    except Exception as e:
-        logger.debug("tick_signals failed, fallback: %s", e)
-        return None
-
-
-def tick_candidates(products, currencies, candles_map, pass_cache_keys, opens_map=None):
-    """Fast-path per-tick candidate builder.
-
-    Returns the full candidate shape
-    ``(pid, currency, closes, volumes, highs, lows, [(name, action), ...])``
-    per product directly from Rust (OHLCV parse + all-strategy eval + bt-cache
-    gate + regime group filter). Equivalent to the legacy Python fast path in
-    ``portfolio_optimizer._detect_strategy_signals``. Returns ``None`` on any
-    error / missing binding so callers can fall back to the legacy path.
-    """
-    if not _HAS_RUST or not hasattr(_rust_core, "tick_candidates_py"):
-        return None
-    try:
-        return _rust_core.tick_candidates_py(
-            list(products), list(currencies), candles_map, list(pass_cache_keys),
-            opens_map,
-        )
-    except Exception as e:
-        logger.debug("tick_candidates failed, fallback: %s", e)
-        return None
-
-
-def _batch_signals_from_candles_parse(
-    products: List[Tuple[str, str]],
-    candles_map: Dict[str, list],
-    opens_map: Optional[Dict[str, List[float]]] = None,
-) -> Dict[str, Dict[str, str]]:
-    """Legacy fallback: replicate the optimizer parse loop then batch_universe."""
-    pids = [pid for pid, _ in products]
-    if not pids:
-        return {}
-    closes_dict: Dict[str, List[float]] = {}
-    volumes_dict: Dict[str, List[float]] = {}
-    highs_dict: Dict[str, List[float]] = {}
-    lows_dict: Dict[str, List[float]] = {}
-    for pid in pids:
-        candles = candles_map.get(pid) or []
-        cl, vo, hi, lo = [], [], [], []
-        for c in candles[-100:]:
-            if isinstance(c, dict):
-                cl.append(float(c.get("close", 0.0)))
-                vo.append(float(c.get("volume", 0.0)))
-                hi.append(float(c.get("high", 0.0)))
-                lo.append(float(c.get("low", 0.0)))
-            else:
-                # tuple form [ts, low, high, open, close, volume]
-                cl.append(float(c[4]))
-                vo.append(float(c[5]))
-                hi.append(float(c[2]))
-                lo.append(float(c[1]))
-        closes_dict[pid] = cl
-        volumes_dict[pid] = vo
-        highs_dict[pid] = hi
-        lows_dict[pid] = lo
-    return batch_signals_universe(
-        products, closes_dict, volumes_dict, highs_dict, lows_dict, opens_map,
-    )
-
-
-def batch_backtest_universe(
-    strategies: List[Tuple[str, str, List[float], List[float], Optional[List[float]], Optional[List[float]]]],
-    warmup: int = 30,
-) -> Dict[str, "BacktestVerdict"]:
-    """Backtest the given strategy set for each product in ONE Rust call.
-
-    Wraps ``rust_core.backtest_universe_py`` (rayon over products). Returns the
-    same shape as :func:`batch_backtest_rust` (cache_key -> BacktestVerdict).
-
-    Falls back to :func:`batch_backtest_rust` if Rust is unavailable, the new
-    binding is missing, or the call raises.
-    """
-    if not _HAS_RUST or not hasattr(_rust_core, "backtest_universe_py"):
-        return batch_backtest_rust(strategies, warmup=warmup)
-    try:
-        # Group strategies by product (currency).
-        by_product: Dict[str, Dict[str, Any]] = {}
-        for s_name, currency, closes, volumes, highs, lows in strategies:
-            if s_name not in _RUST_STRATEGIES:
-                continue
-            if currency not in by_product:
-                by_product[currency] = {"names": set(), "closes": closes,
-                                        "volumes": volumes, "highs": highs,
-                                        "lows": lows}
-            by_product[currency]["names"].add(s_name)
-
-        if not by_product:
-            return {}
-
-        pids = list(by_product.keys())
-        closes_map = {}
-        volumes_map = {}
-        hm: Dict[str, List[float]] = {}
-        lm: Dict[str, List[float]] = {}
-        names_by_product: List[List[str]] = []
-        for pid in pids:
-            info = by_product[pid]
-            closes = info["closes"]
-            if len(closes) <= warmup:
-                continue
-            volumes = info["volumes"] if info["volumes"] else [1.0] * len(closes)
-            if len(volumes) != len(closes):
-                volumes = [1.0] * len(closes)
-            closes_map[pid] = closes
-            volumes_map[pid] = volumes
-            if info.get("highs"):
-                hm[pid] = info["highs"]
-            if info.get("lows"):
-                lm[pid] = info["lows"]
-            names_by_product.append(sorted(info["names"]))
-
-        if not closes_map:
-            return {}
-
-        raw = _rust_core.backtest_universe_py(
-            # flat list of all strategy names (per-product sets applied in Rust loop);
-            # backtest_universe_py backtests the SAME set for every product, so we
-            # pass the union and accept the slight over-compute on sparse products.
-            sorted({n for ns in names_by_product for n in ns}),
-            list(closes_map.keys()), closes_map, volumes_map, warmup,
-            hm if hm else None, lm if lm else None, None,
-            0.0, 0,
-            BACKTEST_PASS["min_win_rate"], BACKTEST_PASS["min_sharpe"],
-            BACKTEST_PASS["min_profit_factor"], BACKTEST_PASS["max_drawdown_pct"],
-            BACKTEST_PASS["min_total_return_pct"],
-        )
-        results: Dict[str, "BacktestVerdict"] = {}
-        for pid in raw:
-            for s_name, metrics in raw[pid]:
-                ck = f"{s_name}/{pid}"
-                if len(metrics) >= 9:
-                    passed = bool(metrics[8])
-                    results[ck] = BacktestVerdict(
-                        strategy=s_name,
-                        currency=pid,
-                        total_trades=int(metrics[0]),
-                        winning_trades=int(metrics[1]),
-                        losing_trades=int(metrics[2]),
-                        win_rate=metrics[3],
-                        total_return_pct=metrics[4],
-                        sharpe_ratio=metrics[5],
-                        profit_factor=metrics[6],
-                        max_drawdown_pct=metrics[7],
-                        regime="AUTO",
-                        passed=passed,
-                        reason="Rust universe batch" if passed else "Rust universe batch: below thresholds",
-                    )
-        return results
-    except Exception as e:
-        logger.debug("batch_backtest_universe failed, falling back: %s", e)
-        return batch_backtest_rust(strategies, warmup=warmup)
-
 
 try:
     import rust_core as _rust_core
@@ -3443,9 +3146,6 @@ except ImportError:  # pragma: no cover
     _HAS_RUST = False
     logger.info("Rust core not available — using pure Python")
     _rust_core = None  # type: ignore
-
-# Now that _rust_core is imported, bind the persistent-buffer clear helper.
-candle_store_clear = getattr(_rust_core, "candle_store_clear_py", None) if _HAS_RUST else None
 
 
 def _rust_backtest_strategy(
@@ -3483,9 +3183,10 @@ def _rust_backtest_strategy(
             max_dd_pct=BACKTEST_PASS["max_drawdown_pct"],
             min_ret_pct=BACKTEST_PASS["min_total_return_pct"],
         )
-        if bt is None or len(bt) < 9:
+        if bt is None or len(bt) < 10:
             return None
-        passed = bool(bt[8])
+        avg_trade_pct = float(bt[8])
+        passed = bool(bt[9])
         return BacktestVerdict(
             strategy=strategy_name,
             currency=currency,
@@ -3497,6 +3198,7 @@ def _rust_backtest_strategy(
             sharpe_ratio=bt[5],
             profit_factor=bt[6],
             max_drawdown_pct=bt[7],
+            avg_trade_pct=avg_trade_pct,
             regime="AUTO",
             passed=passed,
             reason="Rust backtest: passed" if passed else "Rust backtest: below thresholds",

@@ -55,25 +55,70 @@ def _realized_vol(candles: list, n: int = 20) -> float:
 
 
 def vol_regime(candles: list, n: int = 20) -> dict:
-    """Bucket realized vol into LOW/NORMAL/HIGH/EXTREME by per-candle return stdev."""
+    """Bucket realized vol into LOW/NORMAL/HIGH/EXTREME by per-candle return stdev.
+
+    Phase 6c re-tune: the OLD EXTREME cutoff was 2.2% stdev, which in normal BTC
+    conditions (2-4% per-candle on 4h/daily) stood the agent down almost always.
+    Raised so only genuine vol expansion (>=4.0%) forces a stand-down; HIGH covers
+    the normal elevated-crypto band (2.2-4.0%) where we still trade but size down.
+    """
     sd = _realized_vol(candles, n)
     if sd <= 0.0:
         return {"bucket": "UNKNOWN", "sd": 0.0, "stand_down": False}
-    if sd < 0.006:
+    if sd < 0.010:
         b = "LOW"
-    elif sd < 0.012:
-        b = "NORMAL"
     elif sd < 0.022:
+        b = "NORMAL"
+    elif sd < 0.040:   # Phase 6c: raised from 0.022 -> 0.040
         b = "HIGH"
     else:
         b = "EXTREME"
     return {"bucket": b, "sd": round(sd, 5), "stand_down": b == "EXTREME"}
 
 
+# Phase 6b: reliability weights per timeframe. The daily trend is the most
+# trustworthy regime signal; the 1h is the noisiest. Used to break a split vote
+# instead of hard-standing-down on MIXED (which kept the agent at 0 trades in
+# normal crypto conditions where 1h/4h/1d routinely disagree).
+_TF_WEIGHT = {86400: 3.0, 14400: 2.0, 3600: 1.0}
+
+# "Hard" regimes that must be respected even on a split vote — if ANY reliable
+# timeframe (4h/1d) screams CRISIS, we still stand down (real event/vol risk).
+_HARD_REGIMES = {"CRISIS"}
+
+
+def _weighted_regime(votes_detail: dict, timeframes: list) -> tuple[str, float]:
+    """Return (regime, agreement 0..1) from a per-tf vote map, weighting by
+    timeframe reliability. agreement = weighted-share of the winning regime, so
+    callers can SCALE SIZE DOWN on disagreement rather than fully standing down."""
+    wsum = {r: 0.0 for r in set(list(votes_detail.values()) + ["TREND_UP",
+              "TREND_DOWN", "RANGE", "CRISIS", "UNKNOWN"])}
+    total = 0.0
+    for tf, r in votes_detail.items():
+        w = _TF_WEIGHT.get(tf, 1.0)
+        wsum[r] = wsum.get(r, 0.0) + w
+        total += w
+    # winning regime = highest weighted vote, ignoring UNKNOWN unless it dominates
+    ranked = sorted(((r, w) for r, w in wsum.items() if r != "UNKNOWN"),
+                    key=lambda x: -x[1])
+    if not ranked:
+        return "MIXED", 0.0
+    best, best_w = ranked[0]
+    agreement = (best_w / total) if total else 0.0
+    return best, round(agreement, 3)
+
+
 def multi_timeframe_regime(product: str, client,
                            timeframes: Optional[list] = None) -> dict:
-    """Agree regime across timeframes. Default 1h(3600)+4h(14400)+1d(86400).
-    Returns dominant regime only if >=2/3 agree, else MIXED (fakeout guard)."""
+    """Phase 6b: agree regime across timeframes with a WEIGHTED FALLBACK.
+
+    OLD behavior: required >=2/3 raw agreement, else hard MIXED -> entry gate
+    fully closed (agent never traded in normal split conditions).
+    NEW behavior: weight votes by reliability (1d>4h>1h). Returns the weighted
+    winning regime PLUS an `agreement` score (0..1). Callers scale size DOWN on
+    low agreement (fakeout protection preserved) instead of standing down
+    entirely. Hard regimes (CRISIS on any 4h/1d tf) still force a stand-down.
+    """
     if timeframes is None:
         timeframes = [3600, 14400, 86400]
     votes = {}
@@ -82,15 +127,27 @@ def multi_timeframe_regime(product: str, client,
         r = _regime_on_tf(product, client, tf)
         detail[tf] = r
         votes[r] = votes.get(r, 0) + 1
-    best = max(votes, key=lambda k: votes[k])
-    best_n = votes[best]
-    agree = best_n >= 2  # majority (or unanimous)
+    # Hard stand-down: a reliable timeframe (>=4h) flagging CRISIS is real risk.
+    hard_crisis = any(detail.get(tf) == "CRISIS" for tf in timeframes
+                      if _TF_WEIGHT.get(tf, 1.0) >= 2.0)
+    if hard_crisis:
+        return {
+            "regime": "CRISIS", "agree": False, "agreement": 0.0,
+            "votes": votes, "detail": detail, "n_tf": len(timeframes),
+            "weighted_fallback": False, "reason": "hard_crisis_on_reliable_tf",
+        }
+    best, agreement = _weighted_regime(detail, timeframes)
+    # Treat UNKNOWN-dominated or truly empty as MIXED (stand down).
+    if best in ("UNKNOWN",) or agreement <= 0.0:
+        best = "MIXED"
     return {
-        "regime": best if agree else "MIXED",
-        "agree": agree,
+        "regime": best,
+        "agree": agreement >= 0.66,   # 2/3 weighted = "clean" agreement
+        "agreement": agreement,        # 0..1, used by loop to scale size
         "votes": votes,
         "detail": detail,
         "n_tf": len(timeframes),
+        "weighted_fallback": agreement < 0.66,
     }
 
 

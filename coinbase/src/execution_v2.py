@@ -3,6 +3,7 @@ import time
 import uuid
 import logging
 import threading
+import math
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Callable
 from enum import Enum
@@ -67,6 +68,33 @@ def _fmt_quote(v: float) -> str:
 
 def _fmt_price(v: float) -> str:
     return f"{float(v):.2f}"
+
+
+def round_to_increment(base_size: float, base_increment: float) -> float:
+    """Snap a base size to the exchange lot step (``base_increment``).
+
+    Coinbase rejects orders that are not an integer multiple of the product's
+    ``base_increment`` (e.g. 0.00000001 for BTC, but 0.01 / 1 / 100 for some
+    small caps). A qty that is off by a fraction of an increment is rejected,
+    leaving a dangling entry with no stop/target bracket. Snap DOWN to the
+    nearest valid lot step and never return a size below one increment.
+
+    Returns 0.0 when the size is too small to express as a positive lot, so the
+    caller can skip the order rather than place a guaranteed-reject.
+    """
+    try:
+        inc = float(base_increment)
+    except (TypeError, ValueError):
+        inc = 0.0
+    if inc <= 0:
+        # Unknown increment -> best effort, return the size unchanged.
+        return float(base_size)
+    snapped = math.floor(float(base_size) / inc) * inc
+    # Trim floating-point dust so 0.010000000001 -> 0.01.
+    snapped = float(f"{snapped:.10g}")
+    if snapped <= 0:
+        return 0.0
+    return snapped
 
 
 def _age_tighten_mult(age_s: float, max_hold_s: float) -> float:
@@ -309,8 +337,17 @@ class BracketManager:
     def place_bracket(
         self, product_id: str, side: str, base_size: float,
         entry_price: float, stop_price: float, target_price: float,
-        strategy_id: str = "bracket",
+        strategy_id: str = "bracket", base_increment: float = 0.0,
     ) -> Dict[str, Any]:
+        if base_increment and base_increment > 0:
+            base_size = round_to_increment(base_size, base_increment)
+            if base_size <= 0:
+                return {
+                    "status": "REJECTED",
+                    "product_id": product_id,
+                    "side": side,
+                    "error": "base_size below one lot increment after rounding",
+                }
         cid = str(uuid.uuid4())
         base = _fmt_base(base_size)
 

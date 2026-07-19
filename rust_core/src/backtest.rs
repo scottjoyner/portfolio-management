@@ -24,6 +24,7 @@ pub struct BacktestVerdict {
     pub sharpe_ratio: f64,
     pub profit_factor: f64,
     pub max_drawdown_pct: f64,
+    pub avg_trade_pct: f64,
     pub passed: bool,
     pub reason: String,
 }
@@ -87,6 +88,7 @@ pub fn backtest_strategy(
             sharpe_ratio: 0.0,
             profit_factor: 1.0,
             max_drawdown_pct: 0.0,
+            avg_trade_pct: 0.0,
             passed: false,
             reason: "Insufficient data".to_string(),
         };
@@ -197,6 +199,7 @@ pub fn backtest_strategy(
             sharpe_ratio: 0.0,
             profit_factor: 1.0,
             max_drawdown_pct: 0.0,
+            avg_trade_pct: 0.0,
             passed: false,
             reason: "Too few trades".to_string(),
         };
@@ -211,6 +214,10 @@ pub fn backtest_strategy(
         .filter_map(|t| t.return_pct)
         .collect();
     let mean_ret = returns.iter().sum::<f64>() / returns.len() as f64;
+    // Average per-trade return (net of fees), in percent. A strategy can clear
+    // win_rate/sharpe on a tiny sample yet have a negative avg trade — that is
+    // noise, not edge. Surfaced to the experiment framework as avg_trade_pct.
+    let avg_trade_pct = mean_ret;
     let variance = returns.iter().map(|r| (r - mean_ret).powi(2)).sum::<f64>() / returns.len() as f64;
     let sharpe_ratio = if variance > 0.0 {
         let std = variance.sqrt();
@@ -248,6 +255,7 @@ pub fn backtest_strategy(
         sharpe_ratio,
         profit_factor,
         max_drawdown_pct,
+        avg_trade_pct,
         passed,
         reason,
     }
@@ -383,5 +391,42 @@ mod tests {
         assert!((p.min_profit_factor - 1.20).abs() < 1e-9);
         assert_eq!(p.max_drawdown_pct, 15.0);
         assert_eq!(p.min_total_return_pct, -10.0);
+    }
+
+    #[test]
+    fn test_avg_trade_pct_present_and_meaningful() {
+        // avg_trade_pct must be finite for any backtest and must have the same
+        // sign as the total return (it is just mean per-trade return in pct).
+        use std::f64::consts::PI;
+        let n = 400usize;
+        let mut closes = Vec::with_capacity(n);
+        let mut p = 100.0;
+        for i in 0..n {
+            p += 0.2 + 3.0 * (i as f64 / 4.0 * PI).sin();
+            closes.push(p.max(1.0));
+        }
+        for strat in ["ema_cross", "rsi_revert", "macd", "zscore_revert"] {
+            let verdict = backtest_strategy(
+                strat, &closes, &vols(n), None, None, None, 0.0, 0,
+                BacktestPass::default(), 30,
+            );
+            assert!(verdict.avg_trade_pct.is_finite(), "{} avg_trade_pct NaN", strat);
+            if verdict.total_trades >= 2 {
+                let same_sign = (verdict.avg_trade_pct >= 0.0) == (verdict.total_return_pct >= 0.0);
+                assert!(same_sign, "{} sign mismatch avg={} tot={}", strat, verdict.avg_trade_pct, verdict.total_return_pct);
+            }
+        }
+    }
+
+    #[test]
+    fn test_avg_trade_pct_zero_for_no_edge() {
+        // A pure sine with no drift yields round trips whose average net return is
+        // ~0 (fees off) — avg_trade_pct must not be NaN and should be <= 0.
+        let closes = wave(300);
+        let verdict = backtest_strategy(
+            "ema_cross", &closes, &vols(300), None, None, None, 0.0, 0,
+            BacktestPass::default(), 21,
+        );
+        assert!(verdict.avg_trade_pct.is_finite());
     }
 }

@@ -23,6 +23,7 @@ DEFAULT_THRESHOLDS: Dict[str, float] = {
     "min_sharpe": 0.30,
     "min_profit_factor": 1.05,
     "min_trades": 5,
+    "min_avg_trade_pct": 0.0,  # minimum average per-trade return pct (net of fees); gates out noise edges
     "max_drawdown_pct": 50.0,  # reject if worse than this
 }
 
@@ -93,7 +94,7 @@ class Experiment:
         """Build an Experiment from argparse args (used by the CLI)."""
         thresholds = dict(DEFAULT_THRESHOLDS)
         for key in ("min_win_rate", "min_sharpe", "min_profit_factor", "min_trades",
-                    "max_drawdown_pct"):
+                    "max_drawdown_pct", "min_avg_trade_pct"):
             val = getattr(args, key, None)
             if val is not None:
                 thresholds[key] = val
@@ -145,6 +146,8 @@ def evaluate_verdict(v, thresholds: Dict[str, float]) -> bool:
     if v.profit_factor < thresholds.get("min_profit_factor", 1.05):
         return False
     if v.max_drawdown_pct > thresholds.get("max_drawdown_pct", 50.0):
+        return False
+    if getattr(v, "avg_trade_pct", 0.0) < thresholds.get("min_avg_trade_pct", 0.0):
         return False
     return True
 

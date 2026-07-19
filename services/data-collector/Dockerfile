@@ -1,31 +1,29 @@
-# data-collector service — rebuilt from current code (shared Python runtime).
-# Build context: repo root (portfolio-management/)
+# Data Collector Service
+# Build context: repository root (docker build -f services/data-collector/Dockerfile .)
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1     PIP_NO_CACHE_DIR=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
-COPY deploy/ /app/deploy/
-COPY deploy/requirements.venv-lock.txt /app/requirements.lock.txt
-RUN pip install --no-cache-dir -r /app/requirements.lock.txt
+# Install dependencies (canonical prod deps)
+COPY deploy/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY trading_system/ /app/trading_system/
+# Copy real application source
 COPY coinbase/ /app/coinbase/
-COPY config.yaml /app/
-COPY strategy_engine.py confidence_matrix.py state_store.py market_universe.py neo4j_store.py notification.py portfolio_optimizer.py approval_server.py /app/
-COPY archive/root/alerts.py /app/alerts.py
-COPY archive/root/data_collector.py /app/data_collector.py
-COPY rust_core/ /app/rust_core/
+COPY trading_system/ /app/trading_system/
 
-ENV PYTHONPATH=/app:/app/trading_system:/app/coinbase
-
-RUN mkdir -p /app/logs /app/data /app/state /app/templates
-
-# Non-root user for security
-RUN useradd -u 1000 -m -s /bin/bash appuser &&     chown -R appuser:appuser /app
-
+# Create non-root user (security)
+RUN useradd --create-home --uid 1000 appuser && \
+    chown -R appuser:appuser /app
 USER appuser
 
-WORKDIR /app
-CMD ["python3", "-u", "data_collector.py"]
+# Real live entrypoint (EventTraderV4) with health server on a dedicated port
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start_period=30s \
+    CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/status', timeout=3).status == 200 else 1)"
+
+CMD ["python3", "-u", "/app/coinbase/src/run_trader_v4.py", "--health-port", "8080"]

@@ -1,32 +1,29 @@
 # Portfolio Manager Service
-# Build context: repo root (portfolio-management/)
+# Build context: repository root (docker build -f services/portfolio-manager/Dockerfile .)
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
 
 WORKDIR /app
 
-COPY deploy/requirements.txt /app/deploy/requirements.txt
-RUN pip install --no-cache-dir -r /app/deploy/requirements.txt
+# Install dependencies (canonical prod deps)
+COPY deploy/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy real source trees that exist in the repo
+# Copy real application source
 COPY coinbase/ /app/coinbase/
 COPY trading_system/ /app/trading_system/
-COPY portfolio_optimizer.py config.yaml /app/
 
-RUN mkdir -p /app/logs /app/data
-
-RUN useradd -u 1000 -m -s /bin/bash appuser && \
+# Create non-root user (security)
+RUN useradd --create-home --uid 1000 appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 9090
+# Real live entrypoint (EventTraderV4) with health server on a dedicated port
+EXPOSE 3001
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start_period=30s \
+    CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3001/status', timeout=3).status == 200 else 1)"
 
-# Real HTTP healthcheck against the trader health server
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python3 -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:9090/ping'); sys.exit(0)" || exit 1
-
-# Run the real Coinbase trader with an HTTP health port
-CMD ["python3", "-u", "/app/coinbase/src/run_trader_v4.py", "--mode", "paper", "--health-port", "9090"]
+CMD ["python3", "-u", "/app/coinbase/src/run_trader_v4.py", "--health-port", "3001"]

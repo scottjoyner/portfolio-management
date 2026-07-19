@@ -133,7 +133,7 @@ jobs:
       - name: Build Docker image for ${{ env.ENVIRONMENT }}
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: trading_system
           file: deploy/Dockerfile.prod
           push: false
           load: true
@@ -167,13 +167,14 @@ jobs:
           DESTROYER_HOST: ${{ vars.DESTROYER_HOST || 'destroyer.example.com' }}
           DESTROYER_USER: deployuser
         run: |
+          cd trading_system
           ssh deploy@${DESTROYER_HOST} << EOF
-            cd ~/git/portfolio-management
-            docker compose -f deploy/docker-compose.prod.yml down
+            cd /home/destroyer/trading_system
+            docker-compose -f deploy/docker-compose.prod.yml down
             git pull origin main
-            docker build -t trading-system:${GITHUB_SHA} -f deploy/Dockerfile.prod .
-            docker compose -f deploy/docker-compose.prod.yml up -d --build
-            docker logs trading-runtime-prod --tail=50
+            docker build -t trading-system:${GITHUB_SHA} . -f deploy/Dockerfile.prod
+            docker-compose -f deploy/docker-compose.prod.yml up -d --build
+            docker logs trading-runtime-destructor --tail=50
           EOF
 
   # Job 6: Deploy to Staging (for validation)

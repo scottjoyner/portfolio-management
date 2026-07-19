@@ -120,6 +120,7 @@ def run(exp: Experiment) -> Dict[str, Any]:
             "sharpe": round(v.sharpe_ratio, 4),
             "profit_factor": round(v.profit_factor, 3),
             "max_drawdown_pct": round(v.max_drawdown_pct, 3),
+            "avg_trade_pct": round(getattr(v, "avg_trade_pct", 0.0), 4),
             "regime": v.regime,
         }
 
@@ -268,6 +269,8 @@ def cli():
     p.add_argument("--min-profit-factor", type=float, default=None, dest="min_profit_factor")
     p.add_argument("--min-trades", type=float, default=None, dest="min_trades")
     p.add_argument("--max-drawdown-pct", type=float, default=None, dest="max_drawdown_pct")
+    p.add_argument("--min-avg-trade-pct", type=float, default=None, dest="min_avg_trade_pct",
+                   help="minimum average per-trade return pct (net of fees) to pass")
     p.add_argument("--walk-forward", type=int, default=0, dest="walk_forward_folds",
                    help="walk-forward folds (>=2) for out-of-sample scoring")
     p.add_argument("--ensemble", action="store_true", dest="ensemble",

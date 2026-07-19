@@ -96,13 +96,6 @@ PROCESSES: dict[str, dict] = {
         "logfile": LOGDIR / "llm-watchdog.log",
         "proc": None,
     },
-    "system-truth-publisher": {
-        "script": "scripts/trading/system_health_publisher.py",
-        "args": ["--interval", "15"],
-        "pidfile": LOGDIR / "system-truth-publisher.pid",
-        "logfile": LOGDIR / "system-truth-publisher.log",
-        "proc": None,
-    },
 }
 
 _shutdown_requested = False
@@ -113,6 +106,70 @@ _last_restart_ts: dict[str, float] = {}
 _START_BACKOFF_S: float = 5.0
 _MAX_BACKOFF_S: float = 300.0
 _HEALTHY_UPTIME_S: float = 60.0
+
+# Health-based self-healing: a child that is alive but unhealthy (serving
+# errors, hung, or stale) is restarted after this many consecutive failed probes.
+_HEALTH_FAIL_LIMIT: int = 3
+_HEALTH_PROBE_TIMEOUT_S: float = 5.0
+# Stale heartbeat (daemon/llm-watchdog write a heartbeat file) older than this
+# counts as unhealthy.
+_HEARTBEAT_STALE_S: float = 180.0
+
+import json as _json
+import urllib.request as _urllib_req
+import urllib.error as _urllib_err
+
+# Per-child health probe. Returns True if the child is considered healthy.
+# HTTP children are probed via their health/summary endpoint; process-only
+# children fall back to "alive == healthy".
+_HEALTH_PROBES: dict[str, dict] = {
+    "trader-v4": {"url": "http://127.0.0.1:9090/health", "status_key": "status",
+                  "ok_values": ("running", "healthy")},
+    "dashboard": {"url": "http://127.0.0.1:8002/health", "status_key": "status",
+                  "ok_values": ("healthy", "ok", "running")},
+    "daemon": {"heartbeat": "data/.daemon_heartbeat"},
+    "llm-watchdog": {"heartbeat": "data/.llm_watchdog_heartbeat"},
+}
+
+# Consecutive failed-health counts, reset on a passing probe.
+_health_fail_counts: dict[str, int] = {}
+
+
+def _probe_http(url: str, status_key: str, ok_values) -> bool:
+    try:
+        req = _urllib_req.Request(url, headers={"User-Agent": "supervisor-probe/1.0"})
+        with _urllib_req.urlopen(req, timeout=_HEALTH_PROBE_TIMEOUT_S) as resp:
+            if resp.status != 200:
+                return False
+            body = _json.loads(resp.read().decode("utf-8", "replace"))
+        val = body.get(status_key)
+        return val in ok_values if ok_values else val is not None
+    except (_urllib_err.URLError, ValueError, OSError, TimeoutError):
+        return False
+
+
+def _probe_heartbeat(path: str) -> bool:
+    p = ROOT / path
+    if not p.exists():
+        return False
+    try:
+        age = time.time() - float(p.read_text().strip())
+        return age <= _HEARTBEAT_STALE_S
+    except (ValueError, OSError):
+        return False
+
+
+def health_ok(name: str) -> bool:
+    """Return True if the named child passes its health probe (or has no probe)."""
+    probe = _HEALTH_PROBES.get(name)
+    if not probe:
+        return True
+    if "url" in probe:
+        return _probe_http(probe["url"], probe.get("status_key", "status"),
+                           probe.get("ok_values"))
+    if "heartbeat" in probe:
+        return _probe_heartbeat(probe["heartbeat"])
+    return True
 
 
 def _signal_handler(signum: int, _frame) -> None:
@@ -230,6 +287,11 @@ def supervise() -> None:
 
     while not _shutdown_requested:
         now = time.time()
+        # Advertise supervisor liveness so an external watchdog can detect death.
+        try:
+            (LOGDIR / "supervisor_heartbeat").write_text(f"{now:.3f}\n")
+        except OSError:
+            pass
         for name in PROCESSES:
             cfg = PROCESSES[name]
             proc = cfg.get("proc")
@@ -240,11 +302,33 @@ def supervise() -> None:
                     sys.stdout.write(f"  {name}: healthy for {_HEALTHY_UPTIME_S:.0f}s, resetting restart counter\n")
                     sys.stdout.flush()
                 _restart_counts[name] = 0
+
             if proc and proc.poll() is not None:
                 ret = proc.poll()
                 sys.stdout.write(f"  {name} exited code {ret}, restarting...\n")
                 sys.stdout.flush()
                 _start(name)
+                _health_fail_counts[name] = 0
+                continue
+
+            # Health-based self-healing: process is alive but may be unhealthy.
+            if proc and name in _HEALTH_PROBES:
+                if health_ok(name):
+                    if _health_fail_counts.get(name, 0) != 0:
+                        sys.stdout.write(f"  {name}: health recovered\n")
+                        sys.stdout.flush()
+                    _health_fail_counts[name] = 0
+                else:
+                    _health_fail_counts[name] = _health_fail_counts.get(name, 0) + 1
+                    fails = _health_fail_counts[name]
+                    sys.stdout.write(f"  {name}: health probe failed ({fails}/{_HEALTH_FAIL_LIMIT})\n")
+                    sys.stdout.flush()
+                    if fails >= _HEALTH_FAIL_LIMIT:
+                        sys.stdout.write(f"  {name}: UNHEALTHY for {fails} probes, restarting...\n")
+                        sys.stdout.flush()
+                        _stop(name)
+                        _start(name)
+                        _health_fail_counts[name] = 0
 
         # Sleep with 1s granularity so SIGTERM is responsive
         for _ in range(5):
