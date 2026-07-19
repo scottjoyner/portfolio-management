@@ -14,9 +14,6 @@
     --font-mono:"JetBrains Mono","SF Mono",ui-monospace,Menlo,Consolas,monospace;
     --font-sans:"Inter",system-ui,-apple-system,sans-serif;
   }
-  @media (prefers-color-scheme: light) {
-    :root { --bg:#f8fafc; --panel:#fff; --panel2:#f1f5f9; --line:#e2e8f0; --txt:#1e293b; --dim:#64748b; --grid:#e2e8f0; --border:#cbd5e1; }
-  }
   *{box-sizing:border-box}
   html,body{margin:0}
   body{
@@ -616,20 +613,8 @@ function initChart() {
       {
         label: "Price",
         width: 1.5,
-        stroke: (u, i) => i > 0 && data[4][i] >= data[4][i-1] ? "#16c784" : "#ea3943",
-        fill: (u, i) => i > 0 && data[4][i] >= data[4][i-1] ? "rgba(22,199,132,.08)" : "rgba(234,57,67,.08)",
-        paths: u => {
-          const { ctx, scales: { x, y } } = u;
-          const { left, top, width, height } = u.bbox;
-          ctx.beginPath();
-          data[0].forEach((t, i) => {
-            const xPos = x * width + left;
-            const yPos = y * height + top;
-            if (i === 0) ctx.moveTo(xPos, yPos);
-            else ctx.lineTo(xPos, yPos);
-          });
-          ctx.stroke();
-        }
+        stroke: "#4ea1ff",
+        fill: "rgba(78,161,255,.08)"
       },
       { label: "Vol", y: "v", show: false }
     ],
@@ -687,7 +672,7 @@ function initChart() {
 }
 
 function updateChart() {
-  if (!uplot) { initChart(); return; }
+  if (!uplot) { initChart(); }
   const data = [
     state.candles.map(c => c.t * 1000),
     state.candles.map(c => c.o),

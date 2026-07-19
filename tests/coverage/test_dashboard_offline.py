@@ -205,3 +205,14 @@ def test_dashboard_system_truth_strip_static_contract():
     assert "acc.accounts[0].mode" not in page
     assert "function safeTerminalUrl" in page
     assert "link.href = safeTerminalUrl(terminalHref);" in page
+
+
+def test_dashboard_chart_uses_default_uplot_path_and_never_overrides_dark_theme():
+    """The operator terminal must render its fetched candles on a dark surface."""
+    page = Path(ds.__file__).with_name("dashboard.html").read_text()
+
+    assert "paths: u =>" not in page
+    assert "@media (prefers-color-scheme: light)" not in page
+    assert "--bg:#0a0e14" in page
+    assert 'stroke: "#4ea1ff"' in page
+    assert "if (!uplot) { initChart(); }" in page
