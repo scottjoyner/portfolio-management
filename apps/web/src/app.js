@@ -57,9 +57,9 @@ function renderSystemTruth(truth) {
   setCell('truth-feed', `${heartbeat.freshness || 'unknown'}${heartbeat.age_sec === null || heartbeat.age_sec === undefined ? '' : ` · ${heartbeat.age_sec}s`}`, heartbeat.freshness === 'fresh' ? 'ok' : 'warn');
   setCell('truth-cache', cache.status || 'unknown', cache.status === 'ok' ? 'ok' : 'warn');
   setCell('truth-services', snapshot.freshness || 'unknown', snapshot.freshness === 'fresh' ? 'ok' : 'warn');
-  const paperBookValue = paperBook.gross_exposure_usd === null || paperBook.gross_exposure_usd === undefined
+  const paperBookValue = paperBook.cash_usd === null || paperBook.cash_usd === undefined
     ? 'unknown'
-    : `${money(paperBook.gross_exposure_usd)} · ${paperBook.open_positions ?? 'unknown'} positions · ${paperBook.source || 'unknown'}`;
+    : `Cash ${money(paperBook.cash_usd)} · P&L ${money(paperBook.realized_pnl_usd || 0)} · ${paperBook.open_positions ?? 'unknown'} open · ${paperBook.source || 'unknown'}`;
   setCell('truth-paper-book', paperBookValue, paperBook.status === 'ok' ? 'ok' : 'warn');
   setCell('truth-execution-decision', `${executionDecision.value || 'unknown'} · ${executionDecision.source || 'unknown'}`, executionDecision.status === 'ok' ? 'ok' : 'warn');
   const terminalTruth = truth.terminal || {};

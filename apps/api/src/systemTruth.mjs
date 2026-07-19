@@ -80,7 +80,10 @@ function cacheTruth() {
 }
 
 function unknownPaperBook() {
-  return { gross_exposure_usd: null, open_positions: null, capital_in_play_usd: null, status: 'unknown', source: 'unknown' };
+  return {
+    gross_exposure_usd: null, open_positions: null, capital_in_play_usd: null, cash_usd: null,
+    realized_pnl_usd: null, fees_paid_usd: null, state_age_sec: null, status: 'unknown', source: 'unknown',
+  };
 }
 
 function unknownExecutionDecision() {
@@ -93,13 +96,15 @@ function paperBook(snapshot, snapshotFreshness) {
   const gross = finiteNumber(book?.gross_exposure_usd);
   const positions = finiteNumber(book?.open_positions);
   const capital = finiteNumber(book?.capital_in_play_usd);
-  if (!book || typeof book !== 'object' || Array.isArray(book) || gross === null || positions === null || capital === null || typeof book.status !== 'string' || !book.status || typeof book.source !== 'string' || !book.source) return unknownPaperBook();
+  const cash = finiteNumber(book?.cash_usd);
+  const realized = finiteNumber(book?.realized_pnl_usd);
+  const fees = finiteNumber(book?.fees_paid_usd);
+  const stateAge = finiteNumber(book?.state_age_sec);
+  if (!book || typeof book !== 'object' || Array.isArray(book) || gross === null || positions === null || capital === null || cash === null || realized === null || fees === null || stateAge === null || typeof book.status !== 'string' || book.status !== 'ok' || typeof book.source !== 'string' || !book.source) return unknownPaperBook();
   return {
-    gross_exposure_usd: round(gross),
-    open_positions: round(positions),
-    capital_in_play_usd: round(capital),
-    status: book.status,
-    source: book.source,
+    gross_exposure_usd: round(gross), open_positions: round(positions), capital_in_play_usd: round(capital),
+    cash_usd: round(cash), realized_pnl_usd: round(realized), fees_paid_usd: round(fees),
+    state_age_sec: round(stateAge, 1), status: 'ok', source: book.source,
   };
 }
 
