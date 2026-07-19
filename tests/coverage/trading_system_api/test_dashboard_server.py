@@ -274,6 +274,23 @@ def test_api_health(env):
     assert m.api_health()["status"] in ("healthy", "degraded")
 
 
+@pytest.mark.parametrize("component_value", ["unavailable", "unreadable", "error", "error: cache offline"])
+def test_api_health_recognizes_hard_bad_component_values(component_value):
+    assert m._component_is_hard_bad(component_value) is True
+
+
+def test_api_health_ignores_descriptive_component_values():
+    assert m._component_is_hard_bad("12 strategy, 4 pm, 2 arb") is False
+
+
+def test_api_health_error_message_forces_degraded(env, monkeypatch):
+    def unavailable_store():
+        raise RuntimeError("cache offline")
+
+    monkeypatch.setattr(m, "_get_state_store", unavailable_store)
+    assert m.api_health()["status"] == "degraded"
+
+
 def test_api_accounts(env):
     assert "accounts" in m.api_accounts()
 

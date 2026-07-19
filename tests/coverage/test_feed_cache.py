@@ -113,6 +113,109 @@ def test_non_ohlcv_records():
     assert len(load_records("onchain", "exchange_netflow")) == 3
 
 
+def test_inspect_cache_reports_existing_tree_without_creating_or_probing(tmp_path, monkeypatch):
+    """Status inspection must be observational: no fallback resolution or writes."""
+    import data.feed_cache as fc
+
+    configured = tmp_path / "nas-cache"
+    selected = tmp_path / "local-cache"
+    (selected / "coinbase_candles" / "BTC-USD").mkdir(parents=True)
+    candle = selected / "coinbase_candles" / "BTC-USD" / "3600.parquet"
+    candle.write_bytes(b"abc")
+    (selected / "news").mkdir()
+    (selected / "news" / "wire.jsonl").write_bytes(b"news")
+    monkeypatch.setattr(fc, "NAS_FEED_ROOT", str(configured))
+    monkeypatch.setattr(fc, "_RESOLVED_ROOT", str(selected))
+    monkeypatch.setattr(fc, "ensure_root", lambda: (_ for _ in ()).throw(AssertionError("must not resolve")))
+
+    report = fc.inspect_cache(now=candle.stat().st_mtime + 10)
+
+    assert report["configured_root"] == str(configured)
+    assert report["resolved_root"] == str(selected)
+    assert report["selected_root"] == str(selected)
+    assert report["fallback"] is True
+    assert report["readable"] is True
+    assert report["totals"] == {"files": 2, "bytes": 7, "truncated": False, "unreadable_entries": 0}
+    assert report["kinds"]["coinbase_candles"]["files"] == 1
+    assert report["kinds"]["coinbase_candles"]["freshness"] == "fresh"
+    assert not configured.exists(), "inspection must not create the configured root"
+
+
+def test_inspect_cache_missing_or_unavailable_is_unknown_and_bounded(tmp_path, monkeypatch):
+    import data.feed_cache as fc
+
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(fc, "NAS_FEED_ROOT", str(missing))
+    monkeypatch.setattr(fc, "_RESOLVED_ROOT", None)
+    report = fc.inspect_cache(max_files=1)
+
+    assert report["selected_root"] == str(missing)
+    assert report["readable"] is False
+    assert report["status"] == "unknown"
+    assert report["kinds"] == {}
+    assert not missing.exists()
+
+
+def test_inspect_cache_caps_streamed_directory_entries_and_regular_files(tmp_path, monkeypatch):
+    import data.feed_cache as fc
+
+    root = tmp_path / "cache"
+    root.mkdir()
+    for index in range(5):
+        (root / f"file-{index}.jsonl").write_text("x")
+    monkeypatch.setattr(fc, "NAS_FEED_ROOT", str(root))
+    monkeypatch.setattr(fc, "_RESOLVED_ROOT", None)
+
+    entry_limited = fc.inspect_cache(max_files=10, max_entries=2)
+    file_limited = fc.inspect_cache(max_files=1, max_entries=10)
+
+    assert entry_limited["totals"]["files"] == 2
+    assert entry_limited["totals"]["truncated"] is True
+    assert entry_limited["status"] == "warn"
+    assert entry_limited["truncation_reasons"] == ["directory_entries_limit"]
+    assert file_limited["totals"]["files"] == 1
+    assert file_limited["totals"]["truncated"] is True
+    assert file_limited["status"] == "warn"
+    assert file_limited["truncation_reasons"] == ["regular_files_limit"]
+
+
+def test_inspect_cache_zero_file_limit_records_no_files(tmp_path, monkeypatch):
+    import data.feed_cache as fc
+
+    root = tmp_path / "cache"
+    root.mkdir()
+    (root / "file.jsonl").write_text("x")
+    monkeypatch.setattr(fc, "NAS_FEED_ROOT", str(root))
+    monkeypatch.setattr(fc, "_RESOLVED_ROOT", None)
+
+    report = fc.inspect_cache(max_files=0, max_entries=10)
+
+    assert report["totals"]["files"] == 0
+    assert report["totals"]["truncated"] is True
+    assert report["truncation_reasons"] == ["regular_files_limit"]
+    assert report["status"] == "warn"
+
+
+def test_inspect_cache_reports_depth_truncation(tmp_path, monkeypatch):
+    import data.feed_cache as fc
+
+    root = tmp_path / "cache"
+    deep = root
+    for depth in range(14):
+        deep = deep / f"level-{depth}"
+    deep.mkdir(parents=True)
+    (deep / "hidden.jsonl").write_text("x")
+    monkeypatch.setattr(fc, "NAS_FEED_ROOT", str(root))
+    monkeypatch.setattr(fc, "_RESOLVED_ROOT", None)
+
+    report = fc.inspect_cache(max_files=10, max_entries=100)
+
+    assert report["totals"]["files"] == 0
+    assert report["totals"]["truncated"] is True
+    assert report["truncation_reasons"] == ["max_depth"]
+    assert report["status"] == "warn"
+
+
 # ── collector normalization (scripts/collect_backtest_data.py) ────────────────
 
 def test_collector_yahoo_normalization():

@@ -68,6 +68,17 @@
   .mode-banner.unknown{background:rgba(240,185,11,.12);color:var(--amber);border-bottom:1px solid rgba(240,185,11,.3)}
   @keyframes livePulse{0%,100%{opacity:1}50%{opacity:.65}}
 
+  /* ── System Truth (server-authoritative diagnostic strip) ── */
+  .system-truth{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+  .truth-cell{min-width:0;padding:6px 10px;background:var(--panel);border-left:3px solid var(--dim)}
+  .truth-cell:first-child{border-left:0}
+  .truth-cell .k{display:block;color:var(--dim);font-size:9px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+  .truth-cell .v{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px var(--font-mono);font-weight:600}
+  .truth-cell.green{border-color:var(--green)} .truth-cell.red{border-color:var(--red)} .truth-cell.amber{border-color:var(--amber)}
+  .truth-cell a{color:inherit;text-decoration:none}.truth-cell a:hover{text-decoration:underline}
+  @media (max-width: 1100px){.system-truth{grid-template-columns:repeat(4,minmax(0,1fr))}}
+  @media (max-width: 650px){.system-truth{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
   /* ── Main Layout ── */
   /* 3 columns; columns grow to fit content; the page scrolls, not individual
      panels fighting for 1/N of a fixed viewport. */
@@ -298,7 +309,16 @@
   <div class="stat"><span class="k">At Risk</span><span class="v mono" id="h-risk">--</span></div>
 </div>
 
-<div class="mode-banner paper" id="mode-banner">PAPER MODE — simulation, no real money</div>
+<div class="mode-banner unknown" id="mode-banner">MODE UNKNOWN — awaiting server truth</div>
+<div class="system-truth" id="system-truth" aria-label="System Truth">
+  <div class="truth-cell amber" id="truth-mode"><span class="k">Mode / evidence</span><span class="v">awaiting truth</span></div>
+  <div class="truth-cell amber" id="truth-trader"><span class="k">Trader</span><span class="v">unknown</span></div>
+  <div class="truth-cell amber" id="truth-feed"><span class="k">Feed age</span><span class="v">unknown</span></div>
+  <div class="truth-cell amber" id="truth-cache"><span class="k">Cache root / coverage</span><span class="v">unknown</span></div>
+  <div class="truth-cell amber" id="truth-services"><span class="k">Services</span><span class="v">unknown</span></div>
+  <div class="truth-cell amber" id="truth-exposure"><span class="k">Gross exposure</span><span class="v">unknown</span></div>
+  <div class="truth-cell amber" id="truth-terminal"><span class="k">Terminal</span><span class="v">unknown</span></div>
+</div>
 
 <div class="grid">
   <!-- LEFT: Watchlist + Strategies + Risk -->
@@ -745,6 +765,110 @@ async function loadChart() {
   updateChart();
 }
 
+// ── System Truth / server-authoritative mode ──
+function truthTone(value) {
+  const state = String(value || "unknown").toLowerCase();
+  if (["live", "failure", "failed", "error", "down", "unavailable"].includes(state)) return "red";
+  if (["paper", "fresh", "ok", "healthy"].includes(state)) return "green";
+  return "amber"; // unknown, stale, conflict, fallback, and warn fail closed
+}
+
+function truthAge(ageSec) {
+  if (ageSec == null || !Number.isFinite(Number(ageSec))) return "unknown";
+  const seconds = Math.max(0, Math.round(Number(ageSec)));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+
+function setTruthCell(id, value, tone) {
+  const cell = $("#" + id);
+  if (!cell) return;
+  cell.className = "truth-cell " + (tone || "amber");
+  const text = cell.querySelector(".v");
+  if (text) text.textContent = value || "unknown";
+}
+
+function safeTerminalUrl(value) {
+  const candidate = typeof value === "string" ? value.trim() : "";
+  if (candidate.startsWith("/") && !candidate.startsWith("//")) return candidate;
+  try {
+    const parsed = new URL(candidate);
+    return ["http:", "https:"].includes(parsed.protocol) ? candidate : "/dashboard";
+  } catch (_) {
+    return "/dashboard";
+  }
+}
+
+function renderSystemTruth(truth) {
+  if (!truth || truth._error) {
+    ["truth-mode", "truth-trader", "truth-feed", "truth-cache", "truth-services", "truth-exposure", "truth-terminal"]
+      .forEach(id => setTruthCell(id, "unavailable", "amber"));
+    const banner = $("#mode-banner");
+    banner.className = "mode-banner unknown";
+    banner.textContent = "MODE UNKNOWN — system truth unavailable; verify before trading";
+    $("#mode-sub").textContent = "unknown";
+    return;
+  }
+
+  const mode = truth.trading_mode || {};
+  const modeValue = String(mode.value || "unknown").toLowerCase();
+  const modeEvidence = mode.reason || mode.source || "unknown evidence";
+  const modeTone = truthTone(mode.status || modeValue);
+  setTruthCell("truth-mode", `${modeValue} · ${modeEvidence}`, modeTone);
+  $("#mode-sub").textContent = modeValue;
+  const banner = $("#mode-banner");
+  if (modeTone === "amber") {
+    banner.className = "mode-banner unknown";
+    banner.textContent = `MODE ${String(mode.status || modeValue).toUpperCase()} — verify before trading`;
+  } else if (modeValue === "live") {
+    banner.className = "mode-banner live";
+    banner.textContent = "LIVE MODE — REAL MONEY AT RISK";
+  } else if (modeValue === "paper") {
+    banner.className = "mode-banner paper";
+    banner.textContent = "PAPER MODE — simulation, no real money";
+  } else {
+    banner.className = "mode-banner unknown";
+    banner.textContent = "MODE UNKNOWN — verify before trading";
+  }
+
+  const trader = (truth.services || {}).trader || {};
+  const traderValue = trader.available ? (trader.mode || "reachable") : (trader.error || "unknown");
+  setTruthCell("truth-trader", traderValue, truthTone(trader.available ? trader.mode || "unknown" : trader.error || "unknown"));
+
+  const heartbeat = (truth.feed || {}).heartbeat || {};
+  setTruthCell("truth-feed", `${truthAge(heartbeat.age_sec)} · ${heartbeat.freshness || "unknown"}`, truthTone(heartbeat.freshness));
+
+  const cache = truth.cache || {};
+  const root = cache.selected_root || cache.resolved_root || cache.configured_root || "unknown";
+  const coverage = cache.totals && cache.totals.files != null ? `${cache.totals.files} files` : "coverage unknown";
+  setTruthCell("truth-cache", `${root} · ${coverage}`, truthTone(cache.status || (cache.fallback ? "fallback" : "unknown")));
+
+  const snapshot = (truth.services || {}).snapshot || {};
+  const serviceData = snapshot.data && snapshot.data.services;
+  const serviceCount = serviceData && typeof serviceData === "object" ? ` · ${Object.keys(serviceData).length} services` : "";
+  setTruthCell("truth-services", `${truthAge(snapshot.age_sec)} · ${snapshot.freshness || "unknown"}${serviceCount}`, truthTone(snapshot.freshness));
+
+  const exposure = truth.exposure || {};
+  setTruthCell("truth-exposure", `${fmtUsd(exposure.gross_exposure_usd)} · ${exposure.status || "unknown"}`, truthTone(exposure.status));
+
+  const terminal = truth.terminal || {};
+  const terminalHref = terminal.href || terminal.url;
+  const safeHref = safeTerminalUrl(terminalHref);
+  const terminalCell = $("#truth-terminal");
+  terminalCell.className = "truth-cell " + (terminal.status === "warn" ? "amber" : "green");
+  const terminalValue = terminalCell.querySelector(".v");
+  terminalValue.textContent = "";
+  const link = document.createElement("a");
+  link.href = safeTerminalUrl(terminalHref);
+  link.textContent = safeHref;
+  terminalValue.appendChild(link);
+}
+
+async function loadSystemTruth() {
+  renderSystemTruth(await api("/system-truth"));
+}
+
 // ── Health / Top Bar ──
 async function loadHealth() {
   const h = await api("/health");
@@ -778,21 +902,6 @@ async function loadHealth() {
   if (acc && acc.accounts && acc.accounts[0]) {
     const nav = acc.accounts.reduce((s,a)=>s+(a.nav||0),0);
     if (nav>0) $("#h-risk").textContent = fmtUsd(nav * 0.2);
-    const mode = acc.accounts[0].mode || "paper";
-    $("#mode-sub").textContent = mode;
-    // Prominent, unmistakable mode banner so the operator can NEVER confuse
-    // live (real money) with paper (simulation).
-    const banner = $("#mode-banner");
-    if (mode === "live") {
-      banner.className = "mode-banner live";
-      banner.textContent = "LIVE MODE — REAL MONEY AT RISK";
-    } else if (mode === "paper") {
-      banner.className = "mode-banner paper";
-      banner.textContent = "PAPER MODE — simulation, no real money";
-    } else {
-      banner.className = "mode-banner unknown";
-      banner.textContent = "MODE UNKNOWN — verify before trusting";
-    }
   }
 }
 
@@ -1154,6 +1263,7 @@ $("#help-modal").onclick = e => { if (e.target === $("#help-modal")) $("#help-mo
 let lastRefresh = Date.now();
 async function tick() {
   await Promise.all([
+    loadSystemTruth(),
     loadHealth(),
     loadPositions(),
     loadWatchlist(),

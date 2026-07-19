@@ -126,6 +126,121 @@ def ensure_root() -> str:
     return _root()
 
 
+def inspect_cache(max_files: int = 10_000, freshness_seconds: float = 900.0,
+                  now: Optional[float] = None, max_entries: Optional[int] = None) -> dict:
+    """Return an observational cache report without resolving or modifying roots.
+
+    Unlike :func:`ensure_root`, this function never creates directories and never
+    performs a write probe.  It reports the root selected by the current process
+    when one has already been resolved; otherwise it only examines the configured
+    NAS path. Traversal is deliberately bounded for dashboard requests: both
+    directory entries and regular files have independent limits. ``max_entries``
+    defaults to ``max_files`` for backward-compatible bounded calls.
+    """
+    max_files = max(0, int(max_files))
+    max_entries = max_files if max_entries is None else max(0, int(max_entries))
+    configured = NAS_FEED_ROOT
+    resolved = _RESOLVED_ROOT
+    selected = resolved or configured
+    report = {
+        "source": "feed_cache",
+        "configured_root": configured,
+        "resolved_root": resolved,
+        "selected_root": selected,
+        "fallback": bool(resolved and os.path.abspath(resolved) != os.path.abspath(configured)),
+        "readable": False,
+        "status": "unknown",
+        "truncation_reasons": [],
+        "totals": {"files": 0, "bytes": 0, "truncated": False, "unreadable_entries": 0},
+        "kinds": {},
+    }
+    try:
+        os.stat(selected)
+        if not os.path.isdir(selected):
+            return report
+        # Opening the directory is the useful read-access test.  Do not use a
+        # write probe or os.makedirs here.
+        with os.scandir(selected):
+            pass
+        report["readable"] = True
+    except OSError:
+        return report
+
+    now = time.time() if now is None else now
+    stack = [(selected, "", 0)]
+    files_seen = 0
+    entries_seen = 0
+    max_depth = 12
+    stop_traversal = False
+
+    def truncate(reason: str) -> None:
+        report["totals"]["truncated"] = True
+        if reason not in report["truncation_reasons"]:
+            report["truncation_reasons"].append(reason)
+
+    while stack and not stop_traversal:
+        directory, kind, depth = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entries_seen >= max_entries:
+                        truncate("directory_entries_limit")
+                        stop_traversal = True
+                        break
+                    entries_seen += 1
+                    item_kind = kind or entry.name
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if depth < max_depth:
+                                stack.append((entry.path, item_kind, depth + 1))
+                            else:
+                                # A bounded inspection must disclose that it
+                                # deliberately omitted descendants.
+                                truncate("max_depth")
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        # Enforce the file limit before a file contributes to
+                        # totals. In particular, max_files=0 records none.
+                        if files_seen >= max_files:
+                            truncate("regular_files_limit")
+                            stop_traversal = True
+                            break
+                        stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        report["totals"]["unreadable_entries"] += 1
+                        continue
+                    files_seen += 1
+                    detail = report["kinds"].setdefault(item_kind, {
+                        "files": 0, "bytes": 0, "newest_mtime": None,
+                        "age_sec": None, "freshness": "unknown",
+                    })
+                    detail["files"] += 1
+                    detail["bytes"] += max(int(stat.st_size), 0)
+                    newest = detail["newest_mtime"]
+                    detail["newest_mtime"] = stat.st_mtime if newest is None else max(newest, stat.st_mtime)
+                    report["totals"]["files"] += 1
+                    report["totals"]["bytes"] += max(int(stat.st_size), 0)
+                    if files_seen >= max_files:
+                        truncate("regular_files_limit")
+                        stop_traversal = True
+                        break
+        except OSError:
+            continue
+
+    for detail in report["kinds"].values():
+        if detail["newest_mtime"] is not None:
+            detail["age_sec"] = round(max(0.0, now - detail["newest_mtime"]), 1)
+            detail["freshness"] = "fresh" if detail["age_sec"] <= freshness_seconds else "stale"
+            detail["newest_mtime"] = round(detail["newest_mtime"], 3)
+    if (report["fallback"] or report["totals"]["truncated"] or report["totals"]["unreadable_entries"]
+            or any(detail["freshness"] == "stale" for detail in report["kinds"].values())):
+        report["status"] = "warn"
+    elif report["totals"]["files"]:
+        report["status"] = "ok"
+    return report
+
+
 def _path(kind: str, *parts: str) -> str:
     return os.path.join(_root(), kind, *[str(p) for p in parts])
 

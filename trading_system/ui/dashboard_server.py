@@ -3,6 +3,7 @@
 
 Endpoints:
   GET /health                   — System health
+  GET /system-truth             — Read-only source-labelled runtime truth
   GET /accounts                 — Portfolio accounts
   GET /positions                — Open positions
   GET /strategies               — Strategy performance/stats
@@ -115,6 +116,12 @@ STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
 CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
 EQUITY_SUMMARY_PATH = str(ROOT / 'data' / 'equity_summary.json')
 PAPER_TRADER_PATH = str(ROOT / 'data' / 'paper_trader_v4_state.json')
+SYSTEM_HEALTH_PATH = str(ROOT / 'data' / 'system-health.json')
+DAEMON_HEARTBEAT_PATH = str(ROOT / 'data' / '.daemon_heartbeat')
+FRESHNESS_STALE_SECONDS = 180.0
+TRADER_HEALTH_TIMEOUT_SECONDS = 0.25
+# System truth is deliberately local-only: this must never be environment-configurable.
+TRADER_HEALTH_URL = 'http://127.0.0.1:9090/health'
 HERMES_LEDGER_PATH = str(ROOT / 'data' / 'hermes_agent_ledger.json')
 OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data' / 'operator-actions.json'))
 OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
@@ -705,6 +712,173 @@ def _refresh_cache():
 
 # ── API Handlers ────────────────────────────────────────────────
 
+def _freshness(age_sec):
+    if age_sec is None:
+        return "unknown"
+    return "fresh" if age_sec <= FRESHNESS_STALE_SECONDS else "stale"
+
+
+def _file_age(path, now):
+    try:
+        return max(0.0, now - os.path.getmtime(path))
+    except OSError:
+        return None
+
+
+def _probe_trader_health():
+    """Read the local trader health endpoint only; never contact a broker."""
+    try:
+        request = Request(TRADER_HEALTH_URL, headers={"Accept": "application/json"})
+        with urlopen(request, timeout=TRADER_HEALTH_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("health response is not an object")
+        mode = str(payload.get("mode", payload.get("trading_mode", ""))).lower()
+        if mode not in {"paper", "live"}:
+            mode = None
+        return {"available": True, "source": "trader_health", "mode": mode, "payload": payload}
+    except Exception as exc:
+        return {"available": False, "source": "trader_health", "mode": None, "error": type(exc).__name__}
+
+
+def _inspect_feed_cache():
+    try:
+        from data.feed_cache import inspect_cache
+        return inspect_cache()
+    except Exception as exc:
+        return {"source": "feed_cache", "status": "unknown", "readable": False, "error": type(exc).__name__}
+
+
+def _paper_mode_evidence():
+    state = _load_json(PAPER_TRADER_PATH, None)
+    if isinstance(state, dict) and any(key.startswith("paper_") for key in state):
+        return {"value": "paper", "source": "persisted_paper_state"}
+    return {"value": "unknown", "source": "persisted_paper_state"}
+
+
+def _safe_terminal_url(value):
+    """Allow only local paths and fully-qualified HTTP(S) terminal URLs."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if candidate.startswith("/") and not candidate.startswith("//"):
+        return candidate
+    parsed = urlparse(candidate)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        return candidate
+    return None
+
+
+def _marked_exposure(operator_state):
+    positions = operator_state.get("positions") if isinstance(operator_state, dict) else None
+    if not isinstance(positions, list):
+        return {"gross_exposure_usd": None, "status": "unknown", "source": "operator_state"}
+    market = {str(row.get("symbol", "")): row for row in operator_state.get("marketDataSnapshots", []) if isinstance(row, dict)}
+    gross = 0.0
+    unknown_mark = False
+    open_count = 0
+    for position in positions:
+        if not isinstance(position, dict) or str(position.get("status", "open")).lower() != "open":
+            continue
+        open_count += 1
+        symbol = str(position.get("symbol", ""))
+        mark = position.get("markPrice")
+        if mark in (None, ""):
+            mark = market.get(symbol, {}).get("bid")
+        try:
+            gross += abs(float(position.get("quantity", 0) or 0) * float(mark))
+        except (TypeError, ValueError):
+            unknown_mark = True
+    return {
+        "gross_exposure_usd": round(gross, 2) if not unknown_mark else None,
+        "open_positions": open_count,
+        "status": "unknown" if unknown_mark else "ok",
+        "source": "operator_state_marked_positions",
+    }
+
+
+def api_system_truth():
+    """Read-only, fail-closed diagnostic contract for the dashboard."""
+    now = time.time()
+    warnings = []
+    trader = _probe_trader_health()
+    paper = _paper_mode_evidence()
+    mode = trader.get("mode") if trader.get("available") else None
+    if trader.get("available") and mode not in {"paper", "live"}:
+        trading_mode = {"value": "unknown", "source": "trader_health", "status": "warn"}
+        warnings.append("trader health did not provide a recognized mode")
+    elif mode in {"paper", "live"} and paper["value"] == "paper" and mode != "paper":
+        trading_mode = {"value": "unknown", "source": "mode_conflict", "status": "warn"}
+        warnings.append("trader health mode conflicts with persisted paper state")
+    elif mode in {"paper", "live"}:
+        trading_mode = {"value": mode, "source": "trader_health"}
+    else:
+        trading_mode = paper
+    if trading_mode["value"] == "unknown":
+        warnings.append("trading mode is unknown")
+
+    heartbeat_age = _file_age(DAEMON_HEARTBEAT_PATH, now)
+    if heartbeat_age is not None:
+        try:
+            heartbeat_age = max(0.0, now - float(Path(DAEMON_HEARTBEAT_PATH).read_text().strip()))
+        except (OSError, ValueError):
+            heartbeat_age = None
+    heartbeat = {"source": "daemon_heartbeat", "age_sec": round(heartbeat_age, 1) if heartbeat_age is not None else None,
+                 "freshness": _freshness(heartbeat_age)}
+    if heartbeat["freshness"] != "fresh":
+        warnings.append("daemon heartbeat is " + heartbeat["freshness"])
+
+    snapshot_age = _file_age(SYSTEM_HEALTH_PATH, now)
+    snapshot = _load_json(SYSTEM_HEALTH_PATH, None) if snapshot_age is not None else None
+    snapshot_freshness = _freshness(snapshot_age) if isinstance(snapshot, dict) else "unknown"
+    service_snapshot = {"source": "system_health_snapshot", "age_sec": round(snapshot_age, 1) if snapshot_age is not None else None,
+                        "freshness": snapshot_freshness, "data": snapshot if isinstance(snapshot, dict) else None}
+    if snapshot_freshness != "fresh":
+        warnings.append("system health snapshot is " + snapshot_freshness)
+
+    cache = _inspect_feed_cache()
+    if cache.get("status") != "ok" or cache.get("fallback") or not cache.get("readable", False):
+        warnings.append("feed cache is " + str(cache.get("status", "unknown")))
+    operator_state = _load_json(OPERATOR_STATE_PATH, {})
+    exposure = _marked_exposure(operator_state)
+    capital = operator_state.get("capital_in_play_usd") if isinstance(operator_state, dict) else None
+    try:
+        capital = float(capital) if capital is not None else None
+    except (TypeError, ValueError):
+        capital = None
+    exposure["capital_in_play_usd"] = round(capital, 2) if capital is not None else None
+    exposure["capital_in_play_source"] = "operator_state" if capital is not None else "unknown"
+    if exposure["status"] != "ok":
+        warnings.append("gross exposure has unmarked positions")
+
+    configured_terminal_url = os.environ.get("TRADING_TERMINAL_URL", "/dashboard")
+    terminal_url = _safe_terminal_url(configured_terminal_url)
+    terminal = {"url": terminal_url or "/dashboard", "source": "TRADING_TERMINAL_URL" if "TRADING_TERMINAL_URL" in os.environ else "dashboard_default"}
+    if terminal_url is None:
+        terminal["status"] = "warn"
+        warnings.append("unsafe terminal URL; using dashboard default")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "trading_mode": trading_mode,
+        "feed": {"heartbeat": heartbeat},
+        "cache": cache,
+        "services": {"trader": {k: trader.get(k) for k in ("available", "source", "mode", "error")}, "snapshot": service_snapshot},
+        "exposure": exposure,
+        "terminal": terminal,
+        "warnings": warnings,
+    }
+
+
+def _component_is_hard_bad(value):
+    """True for an explicit component failure, not arbitrary descriptions."""
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    return normalized.split(":", 1)[0].split(None, 1)[0] in {"error", "unavailable", "unreadable"}
+
+
 def api_health():
     state = {"status": "healthy", "timestamp": time.time(), "components": {}}
 
@@ -763,15 +937,20 @@ def api_health():
         state["components"]["feed_cache"] = f"error: {e}"
 
     healthy_states = {"ok", "empty", "stale"}
-    # A missing optimizer daemon heartbeat is a soft warning, not a hard
-    # failure — the dashboard itself and its read-only data sources are fine,
-    # so the UI should still show "live". Only hard errors/availability
-    # problems downgrade the overall status.
-    hard_bad = {"error", "unavailable", "unreadable"}
+    # Components whose values are descriptive strings (e.g. signal_cache's
+    # "N strategy, M pm...") are not status words and must be skipped when
+    # computing overall health. A missing optimizer daemon heartbeat is a soft
+    # warning, not a hard failure — the dashboard and its read-only feeds are
+    # still live, so the UI should show "live".
+    status_like = healthy_states | {"error", "unavailable", "unreadable", "missing"}
     all_ok = all(
-        v in healthy_states or k == "daemon_heartbeat"
+        k == "daemon_heartbeat"
+        or not isinstance(v, str)
+        or _component_is_hard_bad(v) is False and (
+            not v.strip() or v.strip().split()[0].rstrip(":").lower() not in status_like
+            or v.strip().split()[0].rstrip(":").lower() in healthy_states
+        )
         for k, v in state["components"].items()
-        if v not in hard_bad
     )
     state["status"] = "healthy" if all_ok else "degraded"
     return state
@@ -3189,6 +3368,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         handlers = {
             "/health": lambda: api_health(),
+            "/system-truth": lambda: api_system_truth(),
             "/accounts": lambda: api_accounts(),
             "/positions": lambda: api_positions(),
             "/strategies": lambda: api_strategies(),
