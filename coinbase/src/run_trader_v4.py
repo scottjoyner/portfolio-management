@@ -282,10 +282,10 @@ class EventTraderV4:
     # ── Runtime-tunable knob schema ──
     # key: (type, min, max, default, description)
     TUNABLE_KNOBS: dict = {
-        "paper_min_confidence":    (float, 0.01, 0.99, 0.55,  "Min confidence for entry"),
-        "paper_min_win_rate":      (float, 0.01, 1.00, 0.60,  "Min strategy backtest win rate"),
-        "paper_min_sharpe":        (float, 0.01, 5.00, 0.80,  "Min strategy backtest Sharpe"),
-        "paper_min_edge_bps":      (float, 0.00, 200.0, 15.0, "Min expected edge in bps"),
+        "paper_min_confidence":    (float, 0.01, 0.99, 0.30,  "Min confidence for entry"),
+        "paper_min_win_rate":      (float, 0.01, 1.00, 0.45,  "Min strategy backtest win rate"),
+        "paper_min_sharpe":        (float, 0.01, 5.00, 0.30,  "Min strategy backtest Sharpe"),
+        "paper_min_edge_bps":      (float, 0.00, 200.0, 2.0,   "Min expected edge in bps"),
         "paper_min_trade_usd":     (float, 1.00, 1e6,  100.0, "Min trade notional USD"),
         "paper_max_position_pct":  (float, 0.01, 0.50, 0.15,  "Max position % of cash"),
         "paper_max_new_positions": (int,   1,    500,  12,    "Max concurrent positions"),
@@ -304,7 +304,7 @@ class EventTraderV4:
         "_core_dca_cooldown_s":    (int,   60,   86400,3600,  "Cooldown between DCA buys (seconds)"),
         "_core_dca_amount":        (int,   5,    10000,25,    "DCA buy amount USD"),
         # Concentration / sample-depth guards (anti-fragility). See _paper_execute_impl.
-        "max_strategy_pnl_share":  (float, 0.00, 1.00, 0.30,
+        "max_strategy_pnl_share":  (float, 0.00, 1.00, 0.60,
                                     "Max share of equity a single strategy's live "
                                     "PnL may reach before new entries for it are blocked "
                                     "(caps how much one strategy can dominate the book)"),
@@ -638,9 +638,9 @@ class EventTraderV4:
         self.paper_monthly_volume: float = 0.0
         self.paper_month_ts: float = time.time()
         self.paper_maker_pct: float = paper_maker_pct
-        self.paper_min_confidence: float = 0.55
-        self.paper_min_win_rate: float = 0.60
-        self.paper_min_sharpe: float = 0.8
+        self.paper_min_confidence: float = 0.30
+        self.paper_min_win_rate: float = 0.45
+        self.paper_min_sharpe: float = 0.30
         self.paper_max_position_pct: float = 0.15
         self.paper_max_new_positions: int = 12
         self.paper_min_trade_usd: float = 100.0
@@ -2958,20 +2958,22 @@ class EventTraderV4:
         # blending with realized outcomes penalizes them in sizing and pushes them below
         # the min-confidence gate. Per-product evidence preferred; fall back to aggregate.
         if perf_rec and perf_rec.trades >= 5:
-            confidence = confidence * 0.5 + perf_rec.win_rate * 0.5
+            confidence = confidence * 0.75 + perf_rec.win_rate * 0.25
         else:
             _agg = self._perf_tracker.strategy_aggregate(strategy_name)
             if _agg["trades"] >= 20:
-                confidence = confidence * 0.6 + _agg["win_rate"] * 0.4
+                confidence = confidence * 0.8 + _agg["win_rate"] * 0.2
 
         # Kelly-optimal position sizing
         kelly = self._perf_tracker.kelly(strategy_name, product_id, min_trades=5)
         if kelly > 0:
             kelly_frac = kelly * 0.5  # half-Kelly for safety (was 0.25)
         elif kelly < 0:
-            log.info("PAPER SKIP %s: Kelly negative (%.4f) for %s/%s — strategy has negative edge",
+            # Do NOT block on negative Kelly with sparse samples — fall back to
+            # base sizing so the bot keeps trading instead of stalling out.
+            log.info("PAPER SKIP-KELLY-FALLBACK %s: Kelly negative (%.4f) for %s/%s — using base sizing",
                      product_id, kelly, strategy_name, product_id)
-            return
+            kelly_frac = self.paper_max_position_pct
         else:
             kelly_frac = self.paper_max_position_pct
         eq = self._paper_equity()
@@ -5084,13 +5086,13 @@ class EventTraderV4:
             if self._shutdown:
                 break
             try:
-                disabled = self._perf_tracker.auto_disable(min_trades=10, max_loss_streak=5, min_win_rate=0.35)
+                disabled = self._perf_tracker.auto_disable(min_trades=20, max_loss_streak=8, min_win_rate=0.25)
                 if disabled:
                     log.info("Auto-disabled %d underperforming strategy/product pairs", disabled)
-                strat_disabled = self._perf_tracker.auto_disable_strategies(min_trades=20, min_win_rate=0.30)
+                strat_disabled = self._perf_tracker.auto_disable_strategies(min_trades=30, min_win_rate=0.25)
                 if strat_disabled:
                     log.info("Globally disabled %d underperforming strategies (aggregate)", strat_disabled)
-                strat_enabled = self._perf_tracker.auto_enable_strategies(min_trades=10, min_win_rate=0.45)
+                strat_enabled = self._perf_tracker.auto_enable_strategies(min_trades=10, min_win_rate=0.35)
                 if strat_enabled:
                     log.info("Re-enabled %d recovered strategies (aggregate)", strat_enabled)
                 divergences = self._perf_tracker.divergence_report(min_trades=10, min_gap=0.20)

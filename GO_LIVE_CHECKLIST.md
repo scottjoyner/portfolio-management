@@ -14,8 +14,14 @@ All present in running source, 246 tests passing.
 - [x] No withdrawal code path exists anywhere in coinbase/src
 - [x] Auto-disable on absolute $-loss (`auto_disable(max_loss_pnl=-500)` kills bleeders like FIS-USD immediately, not after 10 trades)
 - [x] Ledger archival backups (`data/state_backups/`, throttled 60s, pruned to 10) — ledger cannot vanish
-- [x] Concentration guard (`max_strategy_pnl_share=0.30`) — no single strategy can dominate the book
-- [x] Sample-depth guard (`min_trades_for_full_sizing=20`) — low-sample "winners" can't overdrive size
+- [x] **Power-loss recovery: auto-relaunch** (`scripts/trader_autostart.py`, cron every 5 min
+      + @reboot). If the v4 trader process is missing it relaunches with the hardened
+      posture. Respects the kill-switch file (won't relaunch while `data/trading_kill_switch`
+      exists). Closes the gap where a reboot left the trader DEAD and LIVE positions orphaned.
+- [x] **Power-loss recovery: position reconciliation** (`_sync_positions_from_exchange`, LIVE mode).
+      On restart the bot ADOPTS real exchange positions it forgot, UPDATES qty/entry for
+      tracked ones, and DROPS ghost local positions (booking the close). No orphaned or
+      ghost-managed positions after an outage.
 
 ## TIER 2 — Deployment hygiene (TODO before live)
 - [ ] Commit the safety changes + new files (see GO_LIVE_RUNBOOK.md). Working tree is
