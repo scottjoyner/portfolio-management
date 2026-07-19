@@ -1,0 +1,81 @@
+{
+  "name": "paniccheck",
+  "config_ref": "",
+  "strategies": "impulse_exh,liq_vac",
+  "universe": "BTC-USD,ETH-USD,SOL-USD",
+  "asset_classes": [
+    "safe",
+    "growth",
+    "speculative"
+  ],
+  "granularity": 3600,
+  "window_bars": 5000,
+  "thresholds": {
+    "min_win_rate": 0.4,
+    "min_sharpe": 0.3,
+    "min_profit_factor": 1.05,
+    "min_trades": 5,
+    "max_drawdown_pct": 50.0
+  },
+  "n_symbols": 3,
+  "n_strategies_tested": 4,
+  "n_passed": 1,
+  "pass_rate": 0.25,
+  "mean_sharpe_passed": 1.9219,
+  "mean_profit_factor_passed": 2.448,
+  "worst_drawdown_passed": 13.633,
+  "walk_forward": null,
+  "ensemble": null,
+  "regime": null,
+  "multitimeframe": null,
+  "results": {
+    "impulse_exh/BTC": {
+      "strategy": "impulse_exh",
+      "currency": "BTC",
+      "passed": false,
+      "total_trades": 0,
+      "win_rate": 0.0,
+      "total_return_pct": 0.0,
+      "sharpe": 0.0,
+      "profit_factor": 1.0,
+      "max_drawdown_pct": 0.0,
+      "regime": "AUTO"
+    },
+    "liq_vac/BTC": {
+      "strategy": "liq_vac",
+      "currency": "BTC",
+      "passed": true,
+      "total_trades": 41,
+      "win_rate": 0.6098,
+      "total_return_pct": 56.388,
+      "sharpe": 1.9219,
+      "profit_factor": 2.448,
+      "max_drawdown_pct": 13.633,
+      "regime": "AUTO"
+    },
+    "impulse_exh/ETH": {
+      "strategy": "impulse_exh",
+      "currency": "ETH",
+      "passed": false,
+      "total_trades": 0,
+      "win_rate": 0.0,
+      "total_return_pct": 0.0,
+      "sharpe": 0.0,
+      "profit_factor": 1.0,
+      "max_drawdown_pct": 0.0,
+      "regime": "AUTO"
+    },
+    "liq_vac/ETH": {
+      "strategy": "liq_vac",
+      "currency": "ETH",
+      "passed": false,
+      "total_trades": 28,
+      "win_rate": 0.5,
+      "total_return_pct": -28.367,
+      "sharpe": -0.826,
+      "profit_factor": 0.591,
+      "max_drawdown_pct": 37.224,
+      "regime": "AUTO"
+    }
+  }
+}

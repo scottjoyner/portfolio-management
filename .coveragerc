@@ -1,0 +1,34 @@
+[run]
+branch = True
+source =
+    .
+omit =
+    */.venv/*
+    */.venv_test/*
+    */node_modules/*
+    */archive/*
+    */site-packages/*
+    */tests/*
+    */test_*.py
+    test_*.py
+    setup.py
+    conftest.py
+    */__init__.py
+    manage.py
+    */graph-alpha-bot/app/tools/demo_signals.py
+    */trading_system/backtest/test_suites/robust_backtest_suite.py
+    */trading_system/backtest/test_suites/robust_test_suite.py
+    */trading_system/backtest/strategies/kalshi_poly_arb_backtest.py
+    */rust_core/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+    raise NotImplementedError
+    def __repr__
+    def __str__
+show_missing = True
+skip_covered = False

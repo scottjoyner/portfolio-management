@@ -764,10 +764,16 @@ def api_health():
     except Exception as e:
         state["components"]["feed_cache"] = f"error: {e}"
 
+    # Only REAL health-state values count toward the overall status. Metadata
+    # fields (signal_cache string, approvals_pending int, total_signals int) are
+    # informational and must NOT be checked against healthy_states — otherwise
+    # the endpoint always reports "degraded" and the supervisor's health probe
+    # loops the dashboard in a restart cycle (it expects "healthy"/"ok").
+    _HEALTH_KEYS = ("operator_state", "state_store", "daemon_heartbeat",
+                    "feed_cache")
     healthy_states = {"ok", "empty", "stale"}
-    all_ok = all(
-        v in healthy_states for v in state["components"].values()
-    )
+    health_vals = [state["components"].get(k) for k in _HEALTH_KEYS]
+    all_ok = all(v in healthy_states for v in health_vals)
     state["status"] = "healthy" if all_ok else "degraded"
 
     op_state = _load_json(OPERATOR_STATE_PATH, {})
