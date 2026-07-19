@@ -96,6 +96,13 @@ PROCESSES: dict[str, dict] = {
         "logfile": LOGDIR / "llm-watchdog.log",
         "proc": None,
     },
+    "system-truth-publisher": {
+        "script": "scripts/trading/system_health_publisher.py",
+        "args": ["--interval", "15"],
+        "pidfile": LOGDIR / "system-truth-publisher.pid",
+        "logfile": LOGDIR / "system-truth-publisher.log",
+        "proc": None,
+    },
 }
 
 _shutdown_requested = False
