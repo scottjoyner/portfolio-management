@@ -88,6 +88,18 @@ body { background: radial-gradient(ellipse at 20% 20%, rgba(14, 116, 144, 0.12),
 .ticker-down .ticker-mid { color: var(--red); }
 .ticker-down .ticker-arrow { color: var(--red); }
 
+/* Server-authoritative System Truth */
+.system-truth { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
+.truth-cell { display: flex; min-width: 0; flex-direction: column; gap: 0.18rem; padding: 0.45rem 0.6rem; background: var(--panel); color: inherit; text-decoration: none; }
+.truth-cell .label { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.truth-cell strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
+.truth-ok strong { color: var(--green); }
+.truth-warn strong { color: var(--amber); }
+.truth-critical strong { color: var(--red); }
+.truth-cell:hover { background: var(--panel-2); }
+@media (max-width: 900px) { .system-truth { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .system-truth { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 /* Activity Feed */
 #activity-feed-panel {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;

@@ -16,7 +16,7 @@ let activeTab = 'dashboard';
 let pollingId = null;
 let quotePollingId = null;
 let prevPrices = {};
-let allState = { summary: {}, accounts: [], positions: [], opportunities: [], executions: [], feed: [], config: {} };
+let allState = { summary: {}, systemTruth: null, accounts: [], positions: [], opportunities: [], executions: [], feed: [], config: {} };
 let opportunityViewState = { status: 'all', venue: 'all', query: '' };
 let polymarketSelection = null;
 let auditViewState = { level: 'all', query: '' };
@@ -33,6 +33,37 @@ function updateSidebarStats(summary) {
   $('#s-opp-count').textContent = c.opportunities || 0;
   $('#s-pos-count').textContent = c.positions || 0;
   $('#s-audit-count').textContent = c.auditEvents || 0;
+}
+
+function renderSystemTruth(truth) {
+  if (!truth) return;
+  const setCell = (id, value, status = 'warn') => {
+    const cell = $(`#${id}`);
+    if (!cell) return;
+    cell.classList.remove('truth-ok', 'truth-warn', 'truth-critical');
+    cell.classList.add(`truth-${status}`);
+    const strong = cell.querySelector('strong');
+    if (strong) strong.textContent = value;
+  };
+  const mode = truth.trading_mode || {};
+  const heartbeat = truth.feed?.heartbeat || {};
+  const snapshot = truth.services?.snapshot || {};
+  const exposure = truth.exposure || {};
+  const cache = truth.cache || {};
+  setCell('truth-mode', `${mode.value || 'unknown'} · ${mode.source || 'unknown'}`, mode.value === 'live' ? 'critical' : mode.value === 'paper' ? 'ok' : 'warn');
+  setCell('truth-feed', `${heartbeat.freshness || 'unknown'}${heartbeat.age_sec === null || heartbeat.age_sec === undefined ? '' : ` · ${heartbeat.age_sec}s`}`, heartbeat.freshness === 'fresh' ? 'ok' : 'warn');
+  setCell('truth-cache', cache.status || 'unknown', cache.status === 'ok' ? 'ok' : 'warn');
+  setCell('truth-services', snapshot.freshness || 'unknown', snapshot.freshness === 'fresh' ? 'ok' : 'warn');
+  setCell('truth-exposure', exposure.gross_exposure_usd === null || exposure.gross_exposure_usd === undefined ? 'unknown' : money(exposure.gross_exposure_usd), exposure.status === 'ok' ? 'ok' : 'warn');
+  const terminalTruth = truth.terminal || {};
+  const terminalEl = $('#truth-terminal');
+  if (terminalEl) {
+    terminalEl.href = terminalTruth.url || '/dashboard';
+    terminalEl.classList.remove('truth-ok', 'truth-warn', 'truth-critical');
+    terminalEl.classList.add(`truth-${terminalTruth.status === 'ok' ? 'ok' : 'warn'}`);
+    const strong = terminalEl.querySelector('strong');
+    if (strong) strong.textContent = terminalTruth.status === 'ok' ? 'Open terminal' : 'Dashboard fallback';
+  }
 }
 
 function switchTab(tab) {
@@ -79,13 +110,16 @@ async function pollQuotes() {
 }
 
 async function fetchAll() {
-  const [summary, config] = await Promise.all([
+  const [summary, config, systemTruth] = await Promise.all([
     api('/api/operator/summary').catch(() => ({ counts: {} })),
-    api('/api/config').catch(() => ({ config: {} }))
+    api('/api/config').catch(() => ({ config: {} })),
+    api('/api/system-truth').catch(() => null),
   ]);
   allState.summary = summary;
   allState.config = config.config || {};
+  allState.systemTruth = systemTruth;
   updateSidebarStats(summary);
+  renderSystemTruth(systemTruth);
   $('#topbar-refresh-time').textContent = new Date().toLocaleTimeString();
   return summary;
 }
@@ -531,9 +565,14 @@ function startPolling() {
   if (pollingId) clearInterval(pollingId);
   pollingId = setInterval(async () => {
     await pollFeed();
-    const summary = await api('/api/operator/summary').catch(() => ({ counts: {} }));
+    const [summary, systemTruth] = await Promise.all([
+      api('/api/operator/summary').catch(() => ({ counts: {} })),
+      api('/api/system-truth').catch(() => null),
+    ]);
     allState.summary = summary;
+    allState.systemTruth = systemTruth;
     updateSidebarStats(summary);
+    renderSystemTruth(systemTruth);
   }, 5000);
 }
 

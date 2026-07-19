@@ -8,6 +8,7 @@ import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } 
 import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { logRequest, recordResponse, renderPrometheusMetrics } from './metrics.mjs';
 import { verifyAuditIntegrity } from '../../../packages/audit/src/integrity.mjs';
+import { buildSystemTruth } from './systemTruth.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -52,7 +53,8 @@ async function loadState(store) {
 }
 
 function isP1Route(pathname) {
-  return pathname === '/api/accounts'
+  return pathname === '/api/system-truth'
+    || pathname === '/api/accounts'
     || pathname === '/api/instruments'
     || pathname === '/api/strategy-templates'
     || pathname === '/api/paper-executions'
@@ -214,6 +216,15 @@ async function dispatchRequest(req, options = {}) {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
       return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store, runtime), requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/system-truth') {
+      return withSecurityHeaders(json(200, buildSystemTruth({
+        state,
+        env,
+        // Production uses /app/data; this option is a deterministic test seam.
+        dataDir: options.dataDir,
+      })), req, env);
     }
 
     if (method === 'GET' && url.pathname === '/api/audit/verify') {
