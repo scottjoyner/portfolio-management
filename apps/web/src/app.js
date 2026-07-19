@@ -49,14 +49,19 @@ function renderSystemTruth(truth) {
   const trader = truth.services?.trader || {};
   const heartbeat = truth.feed?.heartbeat || {};
   const snapshot = truth.services?.snapshot || {};
-  const exposure = truth.exposure || {};
+  const paperBook = truth.paper_book || {};
+  const executionDecision = truth.execution_decision || {};
   const cache = truth.cache || {};
   setCell('truth-mode', `${mode.value || 'unknown'} · ${mode.source || 'unknown'}`, mode.value === 'live' ? 'critical' : mode.value === 'paper' ? 'ok' : 'warn');
   setCell('truth-trader', trader.available ? `${trader.mode || 'reachable'} · ${trader.status || 'unknown'}` : (trader.error || 'unknown'), trader.available && trader.mode === 'paper' ? 'ok' : trader.available && trader.mode === 'live' ? 'critical' : 'warn');
   setCell('truth-feed', `${heartbeat.freshness || 'unknown'}${heartbeat.age_sec === null || heartbeat.age_sec === undefined ? '' : ` · ${heartbeat.age_sec}s`}`, heartbeat.freshness === 'fresh' ? 'ok' : 'warn');
   setCell('truth-cache', cache.status || 'unknown', cache.status === 'ok' ? 'ok' : 'warn');
   setCell('truth-services', snapshot.freshness || 'unknown', snapshot.freshness === 'fresh' ? 'ok' : 'warn');
-  setCell('truth-exposure', exposure.gross_exposure_usd === null || exposure.gross_exposure_usd === undefined ? 'unknown' : money(exposure.gross_exposure_usd), exposure.status === 'ok' ? 'ok' : 'warn');
+  const paperBookValue = paperBook.gross_exposure_usd === null || paperBook.gross_exposure_usd === undefined
+    ? 'unknown'
+    : `${money(paperBook.gross_exposure_usd)} · ${paperBook.open_positions ?? 'unknown'} positions · ${paperBook.source || 'unknown'}`;
+  setCell('truth-paper-book', paperBookValue, paperBook.status === 'ok' ? 'ok' : 'warn');
+  setCell('truth-execution-decision', `${executionDecision.value || 'unknown'} · ${executionDecision.source || 'unknown'}`, executionDecision.status === 'ok' ? 'ok' : 'warn');
   const terminalTruth = truth.terminal || {};
   const terminalEl = $('#truth-terminal');
   if (terminalEl) {
@@ -290,7 +295,7 @@ async function loadExecutionTab() {
   const data = await api('/api/executions').catch(() => ({ executions: [] }));
   allState.executions = data.executions || [];
   const execs = allState.executions;
-  let html = `<div class="tab-panel"><div class="panel-header"><span class="eyebrow">Execution Engine</span><span class="label">${execs.length} executions</span><button id="refresh-exec" class="btn">Refresh</button></div>`;
+  let html = `<div class="tab-panel"><div class="panel-header"><span class="eyebrow">Execution Engine</span><span class="label">Local operator execution (non-canonical)</span><span class="label">${execs.length} executions</span><button id="refresh-exec" class="btn">Refresh</button></div>`;
   html += `<div class="stat-cards">${[['Total', execs.length], ['Filled', execs.filter(e => e.status === 'filled').length], ['Pending', execs.filter(e => e.status === 'draft' || e.status === 'submitted').length], ['Failed', execs.filter(e => e.status === 'failed').length]].map(([l, v]) => `<div class="stat-card"><span class="label">${l}</span><strong>${v}</strong></div>`).join('')}</div>`;
   html += `<div class="table-wrap"><table><thead><tr><th>ID</th><th>Strategy</th><th>Mode</th><th>Status</th><th>Confidence</th><th>Orders</th><th>Fills</th><th>Settlement</th><th>Started</th><th>Actions</th></tr></thead><tbody>${execs.map(e => `<tr><td><code>${e.id ? e.id.slice(0, 12) + '…' : '—'}</code></td><td>${e.strategyId || '—'}</td><td><span class="badge">${e.mode}</span></td><td><span class="badge ${e.status === 'filled' ? 'badge-ok' : e.status === 'failed' ? 'badge-err' : e.status === 'draft' ? 'badge-warn' : ''}">${e.status}</span></td><td>${e.confidenceScore ? (e.confidenceScore * 100).toFixed(1) + '%' : '—'}</td><td>${(e.orders || []).length}</td><td>${(e.fills || []).length}</td><td><span class="label">${(e.fills || []).filter(f => f.settlementStatus === 'settled').length}/${(e.fills || []).length} settled</span></td><td class="label">${e.startedAt ? new Date(e.startedAt).toLocaleString() : '—'}</td><td class="action-cell">${e.status === 'draft' ? `<button class="btn btn-sm btn-ok" data-exec-action="approve" data-exec-id="${e.id}">Approve</button>` : ''}${e.status === 'draft' || e.status === 'submitted' ? `<button class="btn btn-sm btn-err" data-exec-action="cancel" data-exec-id="${e.id}">Cancel</button>` : ''}${(e.fills || []).length ? `<button class="btn btn-sm" data-exec-action="reconcile" data-exec-id="${e.id}">Reconcile</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="10" class="label">No executions yet</td></tr>'}</tbody></table></div>`;
   html += '</div>';

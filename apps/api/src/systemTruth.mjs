@@ -46,18 +46,11 @@ function snapshotMode(snapshot) {
   return explicitMode(snapshot?.trading_mode) || explicitMode(snapshot?.tradingMode) || explicitMode(snapshot?.mode);
 }
 
-function localMode(state) {
-  return explicitMode(state?.tradingMode) || explicitMode(state?.mode) || explicitMode(state?.config?.tradingMode) || explicitMode(state?.config?.trading_mode);
-}
-
-function tradingMode(state, snapshot, snapshotFreshness) {
-  const local = localMode(state);
+function tradingMode(snapshot, snapshotFreshness) {
   const health = snapshotFreshness === 'fresh' ? snapshotMode(snapshot) : null;
-  if (local && health && local !== health) return { value: 'unknown', source: 'mode_conflict', status: 'warn', warning: 'trading mode evidence conflicts' };
-  if (local && health) return { value: local, source: 'system_health_snapshot+local_state', status: 'warn' };
-  if (health) return { value: health, source: 'system_health_snapshot', status: 'warn' };
-  if (local) return { value: local, source: 'local_state', status: 'warn' };
-  return { value: 'unknown', source: 'local_state', status: 'warn', warning: 'trading mode is unknown' };
+  return health
+    ? { value: health, source: 'system_health_snapshot', status: 'ok' }
+    : { value: 'unknown', source: 'unknown', status: 'unknown' };
 }
 
 function heartbeat(dataDir, now) {
@@ -86,32 +79,35 @@ function cacheTruth() {
   };
 }
 
-function markedExposure(state) {
-  const positions = Array.isArray(state?.positions) ? state.positions : null;
-  if (!positions) return { gross_exposure_usd: null, open_positions: null, status: 'unknown', source: 'operator_state_marked_positions' };
-  let gross = 0;
-  let openPositions = 0;
-  let unmarked = false;
-  for (const position of positions) {
-    if (!position || typeof position !== 'object' || String(position.status || 'open').toLowerCase() !== 'open') continue;
-    openPositions += 1;
-    const quantity = finiteNumber(position.quantity);
-    const mark = finiteNumber(position.markPrice ?? position.mark_price);
-    if (quantity === null || mark === null) {
-      unmarked = true;
-      continue;
-    }
-    gross += Math.abs(quantity * mark);
-  }
-  const capital = finiteNumber(state?.capitalInPlayUsd ?? state?.capital_in_play_usd);
+function unknownPaperBook() {
+  return { gross_exposure_usd: null, open_positions: null, capital_in_play_usd: null, status: 'unknown', source: 'unknown' };
+}
+
+function unknownExecutionDecision() {
+  return { value: 'unknown', status: 'unknown', source: 'unknown' };
+}
+
+function paperBook(snapshot, snapshotFreshness) {
+  if (snapshotFreshness !== 'fresh') return unknownPaperBook();
+  const book = snapshot?.trader?.paper_book;
+  const gross = finiteNumber(book?.gross_exposure_usd);
+  const positions = finiteNumber(book?.open_positions);
+  const capital = finiteNumber(book?.capital_in_play_usd);
+  if (!book || typeof book !== 'object' || Array.isArray(book) || gross === null || positions === null || capital === null || typeof book.status !== 'string' || !book.status || typeof book.source !== 'string' || !book.source) return unknownPaperBook();
   return {
-    gross_exposure_usd: unmarked ? null : round(gross),
-    open_positions: openPositions,
-    status: unmarked ? 'unknown' : 'ok',
-    source: 'operator_state_marked_positions',
-    capital_in_play_usd: capital === null ? null : round(capital),
-    capital_in_play_source: capital === null ? 'unknown' : 'operator_state',
+    gross_exposure_usd: round(gross),
+    open_positions: round(positions),
+    capital_in_play_usd: round(capital),
+    status: book.status,
+    source: book.source,
   };
+}
+
+function executionDecision(snapshot, snapshotFreshness) {
+  if (snapshotFreshness !== 'fresh') return unknownExecutionDecision();
+  const decision = snapshot?.trader?.execution_decision;
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision) || typeof decision.value !== 'string' || !decision.value || typeof decision.status !== 'string' || !decision.status || typeof decision.source !== 'string' || !decision.source) return unknownExecutionDecision();
+  return { value: decision.value, status: decision.status, source: decision.source };
 }
 
 function terminal(env) {
@@ -126,21 +122,21 @@ function terminal(env) {
  * Build read-only operator diagnostics. Production always reads only /app/data;
  * dataDir is a test seam and is never sourced from environment configuration.
  */
-export function buildSystemTruth({ state, env = {}, dataDir = DATA_ROOT, now = Date.now() / 1000 } = {}) {
+export function buildSystemTruth({ env = {}, dataDir = DATA_ROOT, now = Date.now() / 1000 } = {}) {
   const warnings = [];
   const snapshotPath = join(dataDir, SNAPSHOT_FILE);
   const snapshotAge = fileAgeSeconds(snapshotPath, now);
   const snapshotData = readOptionalJson(snapshotPath);
   const snapshotFreshness = snapshotData ? freshness(snapshotAge) : 'unknown';
-  const mode = tradingMode(state, snapshotData, snapshotFreshness);
+  const mode = tradingMode(snapshotData, snapshotFreshness);
   const feedHeartbeat = heartbeat(dataDir, now);
-  const exposure = markedExposure(state);
+  const currentPaperBook = paperBook(snapshotData, snapshotFreshness);
+  const currentExecutionDecision = executionDecision(snapshotData, snapshotFreshness);
   const terminalLink = terminal(env);
 
-  if (mode.warning) warnings.push(mode.warning);
   if (feedHeartbeat.freshness !== 'fresh') warnings.push(`daemon heartbeat is ${feedHeartbeat.freshness}`);
   if (snapshotFreshness !== 'fresh') warnings.push(`system health snapshot is ${snapshotFreshness}`);
-  if (exposure.status !== 'ok') warnings.push('gross exposure has unmarked positions');
+  if (currentPaperBook.status === 'unknown') warnings.push('paper book is unavailable from system health snapshot');
   if (terminalLink.status !== 'ok') warnings.push('unsafe terminal URL; using dashboard default');
   warnings.push('cache/NAS health is unknown from this API container');
 
@@ -160,7 +156,8 @@ export function buildSystemTruth({ state, env = {}, dataDir = DATA_ROOT, now = D
         data: snapshotData,
       },
     },
-    exposure,
+    paper_book: currentPaperBook,
+    execution_decision: currentExecutionDecision,
     terminal: terminalLink,
     warnings,
   };
