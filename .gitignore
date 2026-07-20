@@ -172,3 +172,6 @@ data/paper_trader_v4_state.json.bak2
 data/paper_trader_v4_state.json.bak3
 scripts/coverage/
 scripts/experiments/
+
+# runtime rehab state (hard-killed strategy cooldown clocks)
+data/bot_killed_strategies.json
