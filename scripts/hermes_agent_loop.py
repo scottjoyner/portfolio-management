@@ -408,13 +408,17 @@ def run_once(verbose: bool = True) -> dict:
               f"news={news['bucket']}({news['score']})")
 
     # Composite NEW-ENTRY gate (any of these close the gate; open positions still managed):
-    #  - MIXED regime (timeframes disagree)
     #  - EXTREME vol
     #  - drawdown circuit tripped (Phase 4)
     #  - EXTREME_GREED + macro event (sell-the-news, Phase 7)
+    # MIXED regime (timeframes disagree) was a HARD stand-down -> the
+    # agent barely traded (39 round-trips). Now MIXED is a REDUCED-SIZE
+    # mode (see _entry_mult), not a full gate: entries allowed at
+    # 0.5x size, so the agent competes instead of waiting for
+    # perfect alignment. Real risk-offs below stay HARD gates.
     circuit = drawdown_circuit()
     circuit_open = circuit["open"]
-    entry_gate_open = (regime != "MIXED" and not vol["stand_down"]
+    entry_gate_open = (not vol["stand_down"]
                       and circuit_open and not overlay["stand_down_new"]
                       and not news["stand_down_new"])  # Phase 14: news panic soft-gate
     if verbose and not entry_gate_open:
@@ -438,6 +442,15 @@ def run_once(verbose: bool = True) -> dict:
     # Bounded to [1.0, 2.0]: floor 0.40 win rate -> mult 2.5 capped at 2.0.
     _wr = agent_win_rate(led)
     _win_rate_mult = min(2.0, 1.0 / max(_wr, 0.40))
+    # Edge-aware ENTRY sizing (Phase 20): scale per-trade size by live
+    # win rate (lower WR -> smaller size, so the agent can trade
+    # MORE often safely) and by regime (MIXED -> 0.5x). MIXED
+    # was a full stand-down; now it's a reduced-size mode so the
+    # agent actually competes (was only 39 round-trips). Clamped
+    # [0.25, 1.0] so a tiny-sample WR can't zero/oversize.
+    _entry_mult = max(0.25, min(1.0, _wr / 0.50))
+    if regime == "MIXED":
+        _entry_mult *= 0.5
     # Phase 10: CROSS-BOOK universe tilt (agent + bot merged). Use the
     # unified view, NOT agent-only universe_tilt — otherwise the agent is
     # blind to the bot's P&L and the self-learning loop stays half-wired
@@ -616,7 +629,7 @@ def run_once(verbose: bool = True) -> dict:
                 results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
                                 "reason": "agent_drop(btc)"})
             else:
-                rec = record_signal(BTC, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
+                rec = record_signal(BTC, "BUY", quote_size=NOTIONAL_PER_SIGNAL * _entry_mult,
                                     note=f"btc-localUP-mom{mom:.4f}",
                                     price=last if last and last > 0 else None)
                 results.append({"pair": BTC, "signal": "BUY", "mom": round(mom, 5),
@@ -633,7 +646,7 @@ def run_once(verbose: bool = True) -> dict:
                 results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
                                 "reason": "agent_drop(btc)"})
             else:
-                rec = open_short(BTC, NOTIONAL_PER_SIGNAL,
+                rec = open_short(BTC, NOTIONAL_PER_SIGNAL * _entry_mult,
                                  note=f"btc-localDOWN-mom{mom:.4f}",
                                  price=last if last and last > 0 else None)
                 results.append({"pair": BTC, "signal": "SHORT", "mom": round(mom, 5),
@@ -784,7 +797,7 @@ def run_once(verbose: bool = True) -> dict:
             size_mult = (conviction(mom, vol["bucket"]) * overlay["size_mult"]
                          * conf_mult * news["size_mult"] * agent_boost
                          * sess_mult * greed_penalty)
-            raw = min(size_for(mom), size_for(0.02)) * strength * size_mult * eq_factor
+            raw = min(size_for(mom), size_for(0.02)) * strength * size_mult * eq_factor * _entry_mult
             if verdict == "bot_wins_here":
                 floor = MAX_NOTIONAL * 0.60
             elif is_moonshot:
