@@ -280,6 +280,23 @@ class LivePerformanceTracker:
                     total += rec.total_pnl
         return total
 
+    def strategy_backtest_win_rate(self, strategy: str) -> float:
+        """The strategy's BACKTEST win-rate (populated at strategy onboarding),
+        averaged across its product records. backtest_win_rate == 0.0 means
+        'no backtest on record' (vwap_revert/AAVE — the biggest LIVE
+        winner — carries 0.0), NOT 'bad backtest'. Returns the max
+        populated value; a strategy's backtest is uniform across products.
+        Callers must treat 0.0 as 'uninformed', not 'fail'.
+        """
+        vals = []
+        with self._lock:
+            for rec in self._records.values():
+                if rec.strategy == strategy:
+                    bw = getattr(rec, "backtest_win_rate", 0.0) or 0.0
+                    if bw > 0.0:
+                        vals.append(bw)
+        return max(vals) if vals else 0.0
+
     def asset_expectancy(self, min_trades: int = 8) -> Dict[str, Dict[str, Any]]:
         """Per-asset live expectancy aggregated across ALL strategies on that asset.
 

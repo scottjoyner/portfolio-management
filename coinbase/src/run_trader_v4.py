@@ -327,6 +327,14 @@ class EventTraderV4:
                                     "that has lost this much aggregate is a structural loser, not "
                                     "one bad asset. Symmetric to paper_asset_drop_pnl but steeper "
                                     "because it spans many products."),
+        "paper_min_backtest_wr": (float, 0.0, 1.0, 0.45,
+                                    "Pre-emptive backtest gate. Block a strategy if its BACKTEST "
+                                    "win-rate is POPULATED (recorded at onboarding) AND below this "
+                                    "floor. backtest_win_rate==0.0 means 'no backtest on record' "
+                                    "(vwap_revert/AAVE — the biggest live winner — carries 0.0), "
+                                    "so 0.0 is treated as 'uninformed', NOT 'fail': it is NOT "
+                                    "blocked. Only a real, populated, poor backtest (< floor) blocks. "
+                                    "Stops a bad strategy before live P&L confirms it."),
     }
 
     def get_tunables(self) -> dict:
@@ -3908,6 +3916,24 @@ class EventTraderV4:
         # regimes. "unknown" is always blocked (genuinely insufficient data).
         if not pos and regime in ("unknown", "ranging", "low_volatility"):
             _best_strat = str(best.get("strategy", ""))
+            # Pre-emptive backtest gate: block a strategy whose BACKTEST
+            # win-rate is POPULATED (recorded at onboarding) AND below the
+            # floor. backtest_win_rate==0.0 means 'no backtest on record'
+            # (vwap_revert/AAVE — the biggest live winner — carries 0.0),
+            # so 0.0 is treated as 'uninformed', NOT 'fail': it is NOT
+            # blocked. Only a real, populated, poor backtest (< floor) blocks.
+            # This stops a bad strategy BEFORE live P&L confirms it
+            # (the reactive hard-kill at -$150 is the backstop).
+            if self._perf_tracker is not None and _best_strat:
+                try:
+                    _bw = self._perf_tracker.strategy_backtest_win_rate(_best_strat)
+                    if _bw > 0.0 and _bw < self.paper_min_backtest_wr:
+                        log.info("PAPER SKIP %s: strategy '%s' backtest win_rate "
+                                  "%.2f < %.2f (populated, pre-emptive block)",
+                                  product_id, _best_strat, _bw, self.paper_min_backtest_wr)
+                        return
+                except Exception:
+                    pass
             _is_mean_rev = _best_strat in self._MEAN_REVERSION_STRATS
             if regime == "unknown" or not _is_mean_rev:
                 log.debug("PAPER SKIP %s: unfavorable regime %s for %s", product_id, regime, _best_strat)
