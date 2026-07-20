@@ -327,6 +327,16 @@ class EventTraderV4:
                                     "that has lost this much aggregate is a structural loser, not "
                                     "one bad asset. Symmetric to paper_asset_drop_pnl but steeper "
                                     "because it spans many products."),
+        "paper_rehab_cooldown_days": (float, 1.0, 120.0, 14.0,
+                                    "Escalating-cooldown REHAB for hard-killed strategies. "
+                                    "A killed strategy is re-tried after this many days; the "
+                                    "cooldown DOUBLES on each re-failure, so a genuinely-bad "
+                                    "strategy stays dead but a transient-regime loser gets "
+                                    "periodic retries. Recovery is automatic: if the strategy "
+                                    "earns its aggregate P&L back above paper_strat_kill_pnl "
+                                    "(via a profitable retry), the next scan simply won't "
+                                    "re-hit the kill branch. Persistent via "
+                                    "data/bot_killed_strategies.json."),
         "paper_min_backtest_wr": (float, 0.0, 1.0, 0.45,
                                     "Pre-emptive backtest gate. Block a strategy if its BACKTEST "
                                     "win-rate is POPULATED (recorded at onboarding) AND below this "
@@ -585,10 +595,21 @@ class EventTraderV4:
             log.warning("MacroRiskEngine init failed: %s", e)
             self._macro_risk = None
         try:
-            self._macro_tf_analyzer = MacroTrendAnalyzer(cache_ttl=900)
+            self._macro_rf_analyzer = MacroTrendAnalyzer(cache_ttl=900)
         except Exception as e:
             log.warning("MacroTrendAnalyzer init failed: %s", e)
-            self._macro_tf_analyzer = None
+            self._macro_rf_analyzer = None
+        # Rehab state: hard-killed strategies + their escalating cooldown
+        # retries, persisted so restarts don't lose it. {strategy: {ts, retries}}
+        self._killed_strats: Dict[str, Dict[str, float]] = {}
+        try:
+            import os as _os
+            _kp = "data/bot_killed_strategies.json"
+            if _os.path.exists(_kp):
+                with open(_kp) as _f:
+                    self._killed_strats = json.load(_f)
+        except Exception:
+            self._killed_strats = {}
         self._last_macro_signal: Optional[CompositeMacroSignal] = None
         try:
             self._perf_tracker = LivePerformanceTracker(path="data/live_performance.json")
@@ -811,6 +832,29 @@ class EventTraderV4:
         """Blended fee rate: maker_pct × maker_bps + (1 - maker_pct) × taker_bps."""
         _, taker, maker = self._fee_tier()
         return self.paper_maker_pct * maker + (1.0 - self.paper_maker_pct) * taker
+
+    def _persist_killed_strats(self) -> None:
+        """Atomically write the hard-killed-strategy rehab state
+        ({strategy: {ts, retries}}) to data/bot_killed_strategies.json
+        so a supervisor restart doesn't lose the cooldown clocks.
+        """
+        try:
+            import os as _os
+            import tempfile as _tf
+            _kp = "data/bot_killed_strategies.json"
+            _dir = _os.path.dirname(_kp) or "."
+            _fd, _tmp = _tf.mkstemp(dir=_dir, suffix=".tmp")
+            try:
+                with _os.fdopen(_fd, "w") as _f:
+                    json.dump(self._killed_strats, _f)
+                _os.replace(_tmp, _kp)
+            except Exception:
+                try:
+                    _os.unlink(_tmp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _fee_regime(self) -> tuple[str, float]:
         """Return ("WAIVED"|"PAID", effective_fee_bps).
@@ -3871,22 +3915,56 @@ class EventTraderV4:
                 _sa = self._perf_tracker.strategy_aggregate(_s) if _s else {}
                 _st = int(_sa.get("trades", 0))
                 _sp = float(_sa.get("total_pnl", 0.0))
-                if _st >= 8:
-                    # Strategy-tier HARD-KILL: aggregate loser across all products.
-                    # obv_div at -$517 / 55 trades is the canonical case — it
-                    # bleeds via 55 separate product records, none individually
-                    # past the per-asset disable bar, but the STRATEGY is a
-                    # structural loser. Block all new entries for it until it
-                    # recovers above the kill floor.
-                    if _sp < self.paper_strat_kill_pnl:
+                if _sp < self.paper_strat_kill_pnl:
+                    # Strategy-tier HARD-KILL + escalating-cooldown REHAB.
+                    # obv_div at -$517 / 55 trades is the canonical
+                    # case — it bleeds via 55 separate product records,
+                    # none individually past the per-asset disable bar, but
+                    # the STRATEGY is a structural loser. Block all new
+                    # entries for it until it recovers above the kill floor.
+                    #
+                    # REHAB: a killed strategy is re-tried after a
+                    # cooldown that DOUBLES on each re-failure
+                    # (paper_rehab_cooldown_days × 2^retries), so a
+                    # genuinely-bad strategy stays dead but a transient-
+                    # regime loser gets periodic retries. Recovery is
+                    # AUTOMATIC: if the strategy earns its aggregate
+                    # P&L back above the kill floor (via a profitable
+                    # retry), the next scan simply won't hit this branch.
+                    # State persists via data/bot_killed_strategies.json.
+                    _kk = self._killed_strats.get(_s)
+                    if _kk is None:
+                        self._killed_strats[_s] = {"ts": time.time(), "retries": 0}
+                        self._persist_killed_strats()
                         _strat_mult = 0.0
                         log.info("PAPER SKIP %s: strategy '%s' hard-killed "
                                   "(agg_pnl=%.1f < %.1f, %dt)",
                                   product_id, _s, _sp, self.paper_strat_kill_pnl, _st)
                         return  # do NOT open — strategy is a proven loser
-                    elif _sp < -50.0:
-                        _strat_mult = 0.5
-                    elif _sp > 50.0:
+                    _cd = self.paper_rehab_cooldown_days * (2.0 ** _kk["retries"])
+                    # _cd is in DAYS; time.time() diff is in SECONDS — compare
+                    # in the same unit (days) or the bot would NEVER cool
+                    # down (seconds >> days -> always past -> always retry).
+                    _elapsed_d = (time.time() - _kk["ts"]) / 86400.0
+                    if _elapsed_d < _cd:
+                        _strat_mult = 0.0
+                        log.info("PAPER SKIP %s: strategy '%s' cooling down "
+                                  "(%.0fd < %.0fd rehab cooldown, retry %d)",
+                                  product_id, _s, _elapsed_d,
+                                  _cd, _kk["retries"] + 1)
+                        return
+                    # Cooldown elapsed -> REHAB RETRY: allow this entry.
+                    # Escalate next cooldown if it fails again.
+                    _kk["ts"] = time.time()
+                    _kk["retries"] = int(_kk["retries"]) + 1
+                    self._persist_killed_strats()
+                    log.info("PAPER REHAB retry %s: strategy '%s' (attempt %d, "
+                              "cooldown was %.0fd)", product_id, _s, _kk["retries"], _cd)
+                    # fall through — strategy-weight block sizes it (0.5x if
+                    # still < -50, or full/boost if it recovered)
+                elif _sp < -50.0:
+                    _strat_mult = 0.5
+                elif _sp > 50.0:
                         # Steeper curve so the bot's dominant winners get real size:
                         # +$200 -> 1.33x, +$500 -> 1.83x, +$1000+ -> 2.5x (capped).
                         # vwap_revert (+$3427) / rsi_revert (+$532) run near-max;
