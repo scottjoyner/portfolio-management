@@ -7,7 +7,11 @@ Launches and monitors:
   2. dashboard_server.py     — serves the web UI on port 8002
   3. trader-v4               — EventTraderV4 paper trading with all-Rust strategies,
                                 cross-asset regime, config.py pydantic fallback
-  4. llm-watchdog             — multi-model LLM risk oversight daemon
+  4. agent-watcher          — Hermes agent exit-only stop-loss watcher for the paper book
+
+  NOTE: llm-watchdog (multi-model LLM risk oversight daemon) was removed from the
+  supervised set — it calls a remote model endpoint and is not required for paper
+  trading. Re-add to PROCESSES + _HEALTH_PROBES to restore LLM oversight.
 
  The supervisor normally forks to background on `start`, writes per-process PID files,
  and auto-restarts crashed children. When launched under systemd (or via `run`), it stays
@@ -87,15 +91,6 @@ PROCESSES: dict[str, dict] = {
         "logfile": LOGDIR / "trader-v4.log",
         "proc": None,
     },
-    "llm-watchdog": {
-        "script": "scripts/trading/llm_watchdog_daemon.py",
-        "args": [
-            "--status-url", "http://localhost:9090/health",
-        ],
-        "pidfile": LOGDIR / "llm-watchdog.pid",
-        "logfile": LOGDIR / "llm-watchdog.log",
-        "proc": None,
-    },
     "agent-watcher": {
         "script": "scripts/hermes_agent_watch.py",
         "args": [
@@ -137,7 +132,6 @@ _HEALTH_PROBES: dict[str, dict] = {
     "dashboard": {"url": "http://127.0.0.1:8002/health", "status_key": "status",
                   "ok_values": ("healthy", "ok", "running")},
     "daemon": {"heartbeat": "data/.daemon_heartbeat"},
-    "llm-watchdog": {"heartbeat": "data/.llm_watchdog_heartbeat"},
 }
 
 # Consecutive failed-health counts, reset on a passing probe.
