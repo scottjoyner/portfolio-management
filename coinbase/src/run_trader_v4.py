@@ -777,6 +777,18 @@ class EventTraderV4:
         _, taker, maker = self._fee_tier()
         return self.paper_maker_pct * maker + (1.0 - self.paper_maker_pct) * taker
 
+    def _fee_regime(self) -> tuple[str, float]:
+        """Return ("WAIVED"|"PAID", effective_fee_bps).
+
+        The first $500 of monthly volume is fee-waived (0bps) — pure alpha.
+        After that the bot pays Tier-1 (~44bps effective at maker_pct 0.80),
+        where only high-edge signals survive. Entry sizing + edge floor adapt
+        to this regime so the bot (a) captures the free window aggressively and
+        (b) stays selective once fees bite.
+        """
+        fee_bps = self._effective_fee_bps()
+        return ("WAIVED" if fee_bps <= 0.0 else "PAID", fee_bps)
+
     def _reset_monthly_volume_if_needed(self) -> None:
         """Reset monthly volume counter when calendar month changes."""
         now = time.time()
@@ -3027,10 +3039,17 @@ class EventTraderV4:
                      product_id, win_rate, sharpe, self.paper_min_win_rate, self.paper_min_sharpe)
             return
         edge = self._paper_edge_model(confidence, win_rate, sharpe)
-        if edge["net_bps"] < self.paper_min_edge_bps:
+        # Fee-aware edge floor: a flat 2bps floor is fine during the fee-waived
+        # window, but once the bot pays Tier-1 (~44bps) a trade that "nets +2bps"
+        # is one slippage blip from negative. Require net edge to clear fees by a
+        # margin so we only take trades with genuinely positive expected value.
+        _fee_regime, _fee_bps = self._fee_regime()
+        _min_edge = self.paper_min_edge_bps + _fee_bps * 0.10
+        if edge["net_bps"] < _min_edge:
             log.info(
-                "PAPER SKIP %s edge too small: gross=%.1fbps fees=%.1fbps latency=%.1fbps net=%.1fbps",
-                product_id, edge["gross_bps"], edge["fee_bps"], edge["latency_bps"], edge["net_bps"],
+                "PAPER SKIP %s edge too small (fee-%s %.1fbps): gross=%.1fbps fees=%.1fbps latency=%.1fbps net=%.1fbps (need>=%.1f)",
+                product_id, _fee_regime, _fee_bps, edge["gross_bps"], edge["fee_bps"],
+                edge["latency_bps"], edge["net_bps"], _min_edge,
             )
             return
         score_mult = self._paper_score_multiplier(confidence, win_rate, sharpe)
@@ -3723,6 +3742,16 @@ class EventTraderV4:
                         _asset_mult = min(1.5, 1.0 + min(_rec["total_pnl"], 200.0) / 300.0)
             except Exception:
                 pass
+        # ── Fee-regime sizing ──
+        # During the fee-waived window (first $500/mo, 0bps) the bot has pure
+        # alpha — size up to capture it. Once Tier-1 fees bite (~44bps), keep
+        # base sizing (the edge floor above already filters thin-edge trades).
+        _fee_regime, _fee_bps = self._fee_regime()
+        _fee_mult = 1.4 if _fee_regime == "WAIVED" else 1.0
+        if _fee_mult != 1.0:
+            log.info("PAPER FEE-WAIVED %s: 0bps window — sizing x%.1f", product_id, _fee_mult)
+        # Combined size multiplier: per-asset BOOST/DROP (already gates drops) * fee regime.
+        _size_mult = _asset_mult * _fee_mult
         # Pick the best opp AMONG those that can actually clear the entry gates.
         # Previously `max(opportunities, key=_paper_signal_score)` could select an opp
         # that then failed the raw confidence/win_rate/sharpe gate (e.g. a high-win_rate
@@ -4067,7 +4096,7 @@ class EventTraderV4:
             best["is_long_horizon"] = bool(macro_conf > 0.5 and is_aligned)
             if best["is_long_horizon"] and best.get("atr_14", 0.0) > 0:
                 best["stop_dist"] = best.get("atr_14", 0.0) * 4.0  # wider stops
-            self._paper_open_position(product_id, price, best, asset_size_mult=_asset_mult)
+            self._paper_open_position(product_id, price, best, asset_size_mult=_size_mult)
 
         # ── Scale-in: add to winning positions ───────────────────────
         pos = self.paper_positions.get(product_id)
