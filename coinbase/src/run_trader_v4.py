@@ -279,6 +279,14 @@ class EventTraderV4:
         "keltner", "williams_r", "scci", "cmo",
     })
 
+    # Strategies that have proven to be the bot's primary profit engine in live
+    # paper trading (vwap_revert + rsi_revert dominate total P&L). Used by the
+    # concentration guard to keep capital flowing to what actually works even
+    # when the distinct-asset cap is reached.
+    _DOMINANT_STRATS = frozenset({
+        "vwap_revert", "rsi_revert",
+    })
+
     # ── Runtime-tunable knob schema ──
     # key: (type, min, max, default, description)
     TUNABLE_KNOBS: dict = {
@@ -653,6 +661,13 @@ class EventTraderV4:
         # cut after ~8-10 trades instead of ~12, directly attacking the bot's broad bleed
         # across many small-negative assets (e.g. ETH/LTC/ALLO at -$20..-$41 each).
         self.paper_asset_drop_pnl: float = -25.0
+        # Concentration guard: cap how many DISTINCT assets the bot holds at once.
+        # The bot's profit is dominated by a few strategies (vwap_revert, rsi_revert)
+        # on liquid assets; left unconstrained it sprays 12 positions across 12
+        # small-cap noise assets and under-utilizes its edge. Once at the cap, new
+        # entries are only allowed on assets with proven positive expectancy (the
+        # boost set) or via the dominant strategies — forcing concentration on what works.
+        self.paper_max_assets: int = 8
         # Mode-aware state file: paper and live/approval books NEVER share a
         # ledger. This prevents a paper state from being loaded into a live run
         # (or vice versa) — a real money hazard at go-live.
@@ -2961,11 +2976,33 @@ class EventTraderV4:
                               asset_size_mult: float = 1.0) -> None:
         if price <= 0:
             return
+        strategy_name = str(opp.get("strategy", "unknown"))
         if len(self.paper_positions) >= self.paper_max_new_positions:
             return
+        # ── Concentration guard ──
+        # Once we hold >= paper_max_assets distinct assets, only open NEW positions on
+        # assets where the bot has proven positive expectancy (boost set) or via its
+        # dominant strategies. Prevents spraying thin across small-cap noise and forces
+        # capital toward the edges that actually make money (vwap_revert / rsi_revert).
+        _held_assets = {p.get("product_id") for p in self.paper_positions}
+        if len(_held_assets) >= self.paper_max_assets and product_id not in _held_assets:
+            _allow = False
+            try:
+                if strategy_name in self._DOMINANT_STRATS:
+                    _allow = True
+                else:
+                    _ae = self._perf_tracker.asset_expectancy(min_trades=8)
+                    _rec = _ae.get(product_id)
+                    if _rec is not None and _rec["total_pnl"] > 50.0:
+                        _allow = True
+            except Exception:
+                pass
+            if not _allow:
+                log.debug("PAPER SKIP %s: concentration cap (%d assets held) — not a proven winner",
+                          product_id, len(_held_assets))
+                return
         now = time.time()
         last_trade_ts = self.paper_last_trade_ts.get(product_id, 0.0)
-        strategy_name = str(opp.get("strategy", "unknown"))
         perf_rec = self._perf_tracker.get(strategy_name, product_id)
 
         # Dynamic cooldown: shorter after wins, longer after losses
@@ -3790,7 +3827,11 @@ class EventTraderV4:
                     if _sp < -50.0:
                         _strat_mult = 0.5
                     elif _sp > 50.0:
-                        _strat_mult = min(1.5, 1.0 + min(_sp, 200.0) / 300.0)
+                        # Steeper curve so the bot's dominant winners get real size:
+                        # +$200 -> 1.33x, +$500 -> 1.83x, +$1000+ -> 2.5x (capped).
+                        # vwap_revert (+$3427) / rsi_revert (+$532) run near-max;
+                        # marginal winners (zscore_revert +$80) stay modest.
+                        _strat_mult = min(2.5, 1.0 + min(_sp, 1000.0) / 600.0)
             except Exception:
                 pass
         _size_mult = _asset_mult * _fee_mult * _strat_mult
