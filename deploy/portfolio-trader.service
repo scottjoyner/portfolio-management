@@ -2,10 +2,9 @@
 Description=Portfolio Management Trading System (paper mode)
 After=network-online.target
 Wants=network-online.target
-# Co-start the Hermes agent exit-watcher so agent paper positions are always
-# guarded by the high-frequency stop-loss loop after a reboot.
-Wants=portfolio-agent-watcher.service
-After=portfolio-agent-watcher.service
+# The Hermes agent exit-only watcher (portfolio-agent-watcher.service) is now a
+# managed child of the supervisor (run_production.py), so it co-starts/restarts
+# with this unit automatically. No separate Wants/After needed here.
 
 [Service]
 Type=simple
