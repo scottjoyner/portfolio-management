@@ -282,7 +282,10 @@ class EventTraderV4:
     # Strategies that have proven to be the bot's primary profit engine in live
     # paper trading (vwap_revert + rsi_revert dominate total P&L). Used by the
     # concentration guard to keep capital flowing to what actually works even
-    # when the distinct-asset cap is reached.
+    # when the distinct-asset cap is reached. paper_max_assets is the HARD cap
+    # for non-winners; paper_max_assets_winner is a higher ceiling that only
+    # proven winners (dominant-strategy or boost-set expectancy) may reach, so
+    # a book that is winning everywhere isn't artificially capped at 8.
     _DOMINANT_STRATS = frozenset({
         "vwap_revert", "rsi_revert",
     })
@@ -704,6 +707,10 @@ class EventTraderV4:
         # entries are only allowed on assets with proven positive expectancy (the
         # boost set) or via the dominant strategies — forcing concentration on what works.
         self.paper_max_assets: int = 8
+        # Higher ceiling ONLY proven winners (dominant-strategy or boost-set
+        # expectancy) may reach. Lets a book that is winning everywhere
+        # concentrate beyond the hard 8-asset cap for non-winners.
+        self.paper_max_assets_winner: int = 15
         # Mode-aware state file: paper and live/approval books NEVER share a
         # ledger. This prevents a paper state from being loaded into a live run
         # (or vice versa) — a real money hazard at go-live.
@@ -3064,25 +3071,30 @@ class EventTraderV4:
         if len(self.paper_positions) >= self.paper_max_new_positions:
             return
         # ── Concentration guard ──
-        # Once we hold >= paper_max_assets distinct assets, only open NEW positions on
-        # assets where the bot has proven positive expectancy (boost set) or via its
-        # dominant strategies. Prevents spraying thin across small-cap noise and forces
-        # capital toward the edges that actually make money (vwap_revert / rsi_revert).
+        # Hard cap (paper_max_assets) for NON-winners; a higher ceiling
+        # (paper_max_assets_winner) that ONLY proven winners may reach, so a
+        # book that is winning everywhere isn't artificially capped at 8.
         _held_assets = {p.get("product_id") for p in self.paper_positions}
         if len(_held_assets) >= self.paper_max_assets and product_id not in _held_assets:
-            _allow = False
+            _is_winner = False
             try:
                 if strategy_name in self._DOMINANT_STRATS:
-                    _allow = True
+                    _is_winner = True
                 else:
                     _ae = self._perf_tracker.asset_expectancy(min_trades=8)
                     _rec = _ae.get(product_id)
                     if _rec is not None and _rec["total_pnl"] > 50.0:
-                        _allow = True
+                        _is_winner = True
             except Exception:
                 pass
-            if not _allow:
+            if not _is_winner:
+                # Hard cap for non-winners
                 log.debug("PAPER SKIP %s: concentration cap (%d assets held) — not a proven winner",
+                          product_id, len(_held_assets))
+                return
+            # Proven winner: allow up to the higher winner ceiling
+            if len(_held_assets) >= self.paper_max_assets_winner:
+                log.debug("PAPER SKIP %s: winner concentration ceiling (%d) reached",
                           product_id, len(_held_assets))
                 return
         now = time.time()
