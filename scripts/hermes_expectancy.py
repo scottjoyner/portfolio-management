@@ -106,7 +106,7 @@ def universe_tilt(led: dict | None = None) -> dict:
     return out
 
 
-def live_ready(min_regimes: int = 2, min_closed: int = 12) -> dict:
+def live_ready(led: dict | None = None, min_regimes: int = 2, min_closed: int = 12) -> dict:
     """Phase 12 trigger. Paper is ready to promote to a tiny live allocation
     iff: (a) positive expectancy in >= min_regimes distinct regimes,
     (b) enough closed trades, (c) drawdown circuit currently OPEN (healthy).
