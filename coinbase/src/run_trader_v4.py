@@ -3750,7 +3750,8 @@ class EventTraderV4:
         _fee_mult = 1.4 if _fee_regime == "WAIVED" else 1.0
         if _fee_mult != 1.0:
             log.info("PAPER FEE-WAIVED %s: 0bps window — sizing x%.1f", product_id, _fee_mult)
-        # Combined size multiplier: per-asset BOOST/DROP (already gates drops) * fee regime.
+        # Combined size multiplier: per-asset BOOST/DROP * fee regime (strategy
+        # weight folded in below once `best` is selected).
         _size_mult = _asset_mult * _fee_mult
         # Pick the best opp AMONG those that can actually clear the entry gates.
         # Previously `max(opportunities, key=_paper_signal_score)` could select an opp
@@ -3767,6 +3768,27 @@ class EventTraderV4:
         ]
         best = max(_eligible or opportunities, key=self._paper_signal_score)
         pos = self.paper_positions.get(product_id)
+
+        # ── Per-strategy walk-forward capital weight (self-learning loop) ──
+        # The bot tracks live per-strategy P&L (LivePerformanceTracker). Soft-
+        # reweight toward strategies with proven positive expectancy, away from
+        # proven losers — continuous learning complementing the binary
+        # auto_disable hard-kill. Thin samples stay 1.0x (cannot re-park bot).
+        _strat_mult = 1.0
+        if self._perf_tracker is not None:
+            try:
+                _s = str(best.get("strategy", ""))
+                _sa = self._perf_tracker.strategy_aggregate(_s) if _s else {}
+                _st = int(_sa.get("trades", 0))
+                _sp = float(_sa.get("total_pnl", 0.0))
+                if _st >= 8:
+                    if _sp < -50.0:
+                        _strat_mult = 0.5
+                    elif _sp > 50.0:
+                        _strat_mult = min(1.5, 1.0 + min(_sp, 200.0) / 300.0)
+            except Exception:
+                pass
+        _size_mult = _asset_mult * _fee_mult * _strat_mult
 
         if pos:
             pos.mark(price)
