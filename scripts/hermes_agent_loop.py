@@ -226,6 +226,41 @@ BOOK_TP = 0.05  # +5% session -> flip to capital-preservation mode
 def book_tp_active(equity: float, start: float = 10000.0) -> bool:
     return (equity - start) / start >= BOOK_TP
 
+
+def agent_win_rate(led: dict, min_trades: int = 5) -> float:
+    """Live win rate from the agent ledger, by pairing OPEN/CLOSE fills into
+    round-trips. Returns 0.5 (neutral) if fewer than `min_trades` completed
+    round-trips exist, so the edge-aware TP defaults to symmetric until the
+    agent has enough history. Used to widen TP when win rate < 50%.
+    """
+    tr = led.get("trades", [])
+    opens = {}
+    wins = losses = 0
+    for t in sorted(tr, key=lambda x: x.get("ts", "")):
+        s = t.get("side", "")
+        pid = t.get("product_id")
+        if "OPEN" in s:
+            d = "LONG" if "BUY" in s else "SHORT"
+            opens[(pid, d)] = t
+        elif "CLOSE" in s:
+            d = "LONG" if "BUY" in s else "SHORT"
+            o = opens.pop((pid, d), None)
+            if o is None:
+                continue
+            ep = float(o.get("fill_price", 0))
+            xp = float(t.get("fill_price", 0))
+            base = float(o.get("base_size", 0)) or float(t.get("base_size", 0)) or 0
+            comm = float(o.get("commission", 0) or 0) + float(t.get("commission", 0) or 0)
+            pnl = (xp - ep) * base - comm if d == "LONG" else (ep - xp) * base - comm
+            if pnl >= 0:
+                wins += 1
+            else:
+                losses += 1
+    total = wins + losses
+    if total < min_trades:
+        return 0.5
+    return wins / total
+
 # 9) Net BTC-correlated exposure (for cross-hedge decision).
 def net_corr_exposure(led: dict, corr_cache: dict, threshold: float = 0.5) -> float:
     net = 0.0
@@ -248,7 +283,7 @@ HEDGE_CORR_NET = 1500.0   # if net long-correlated > $1500, open a BTC short hed
 
 def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool,
                 local: str = "", vol_bucket: str = "NORMAL", bot_coholds: bool = False,
-                atr: float = 0.0, book_tp: bool = False):
+                atr: float = 0.0, book_tp: bool = False, win_rate_mult: float = 1.0):
     try:
         cur_f = float(cur) if cur is not None else 0.0
     except (TypeError, ValueError):
@@ -283,6 +318,11 @@ def _exit_check(pid: str, pos: dict, cur: float | None, regime: str, stale: bool
     # a bit more — widen TP slightly and engage the trailing stop earlier.
     if bot_coholds:
         tp_mult *= 1.10
+    # Edge-aware TP: the agent's win rate is ~40% (below 50%), so a SYMMETRIC
+    # TP (TP ≈ SL) gives NEGATIVE expectancy (0.40*TP - 0.60*SL < 0). Widen TP
+    # by ~1/win_rate so expected value flips positive. Bounded [1.0, 2.0] so a
+    # tiny-sample win rate can't blow TP up. win_rate_mult passed from run_once.
+    tp_mult *= win_rate_mult
     tp_pnl = (TP_LONG if not is_short else -TP_SHORT) * tp_mult
     # Phase 19.5: ATR-based stop — replace the flat % SL with the asset's own
     # realized vol. Tight for low-vol assets (stop churn), wide for high-vol
@@ -393,6 +433,11 @@ def run_once(verbose: bool = True) -> dict:
     bot_edge = load_bot_edge()
     from scripts.hermes_agent_trader import load_ledger, close_position, close_short
     led = load_ledger()
+    # Edge-aware TP: widen take-profit when live win rate < 50% so expected
+    # value stays >= 0 (symmetric TP with sub-50% win rate is negative EV).
+    # Bounded to [1.0, 2.0]: floor 0.40 win rate -> mult 2.5 capped at 2.0.
+    _wr = agent_win_rate(led)
+    _win_rate_mult = min(2.0, 1.0 / max(_wr, 0.40))
     # Phase 10: CROSS-BOOK universe tilt (agent + bot merged). Use the
     # unified view, NOT agent-only universe_tilt — otherwise the agent is
     # blind to the bot's P&L and the self-learning loop stays half-wired
@@ -463,7 +508,8 @@ def run_once(verbose: bool = True) -> dict:
         bot_coholds = bot_side is not None and bot_side == want_side
         close_now, reason = _exit_check(pid, pos, cur, regime, stale, local,
                                         vol_bucket=vol["bucket"], bot_coholds=bot_coholds,
-                                        atr=atr, book_tp=book_tp)
+                                        atr=atr, book_tp=book_tp,
+                                        win_rate_mult=_win_rate_mult)
         if close_now:
             px = float(cur) if cur is not None else None
             if is_short_pos:
