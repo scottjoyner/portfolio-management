@@ -557,22 +557,37 @@ def run_once(verbose: bool = True) -> dict:
         # that immediately stopped out at -1% every few ticks, grinding P&L. Demand
         # a real move before committing capital to BTC.
         if side == "BUY" and abs(mom) >= BTC_MIN_MOM:
-            rec = record_signal(BTC, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
-                                note=f"btc-localUP-mom{mom:.4f}",
-                                price=last if last and last > 0 else None)
-            results.append({"pair": BTC, "signal": "BUY", "mom": round(mom, 5),
-                           "result": rec.get("action", "?")})
+            # Phase 10 guard: honor the agent's own universe tilt. If BTC is a
+            # proven loser (universe_tilt drop), do NOT open here — this local-
+            # momentum path otherwise bypasses the tilt check below and keeps
+            # grinding P&L on BTC (the agent's single biggest bleed, -$117).
+            _bt_tilt = tilt.get(BTC, {}).get("tilt")
+            if _bt_tilt == "drop":
+                results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
+                                "reason": "agent_drop(btc)"})
+            else:
+                rec = record_signal(BTC, "BUY", quote_size=NOTIONAL_PER_SIGNAL,
+                                    note=f"btc-localUP-mom{mom:.4f}",
+                                    price=last if last and last > 0 else None)
+                results.append({"pair": BTC, "signal": "BUY", "mom": round(mom, 5),
+                               "result": rec.get("action", "?")})
         else:
             results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
                            "reason": f"mom<{BTC_MIN_MOM}"})
     elif btc_local == "TREND_DOWN":
         side, mom, last = momentum_signal(btc_candles)
         if side == "SELL" and abs(mom) >= BTC_MIN_MOM:
-            rec = open_short(BTC, NOTIONAL_PER_SIGNAL,
-                             note=f"btc-localDOWN-mom{mom:.4f}",
-                             price=last if last and last > 0 else None)
-            results.append({"pair": BTC, "signal": "SHORT", "mom": round(mom, 5),
-                           "result": rec.get("action", "?")})
+            # Same Phase 10 guard: if BTC is a proven loser, don't short it either.
+            _bt_tilt = tilt.get(BTC, {}).get("tilt")
+            if _bt_tilt == "drop":
+                results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
+                                "reason": "agent_drop(btc)"})
+            else:
+                rec = open_short(BTC, NOTIONAL_PER_SIGNAL,
+                                 note=f"btc-localDOWN-mom{mom:.4f}",
+                                 price=last if last and last > 0 else None)
+                results.append({"pair": BTC, "signal": "SHORT", "mom": round(mom, 5),
+                               "result": rec.get("action", "?")})
         else:
             results.append({"pair": BTC, "signal": "HOLD", "mom": round(mom, 5),
                            "reason": f"mom<{BTC_MIN_MOM}"})
