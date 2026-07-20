@@ -3695,6 +3695,23 @@ class EventTraderV4:
                 return
         except Exception:
             pass
+        # ── Per-asset self-aware drop (mirrors agent universe_tilt) ──
+        # If the bot's OWN live P&L on this asset is clearly negative after a
+        # sufficient sample, stop opening new entries here. Without this the bot
+        # bleeds on the same losing pairs forever (e.g. -13% on a single asset).
+        # Conservative: only acts on >=8 closed trades AND total_pnl < -$50, so it
+        # cannot re-park the bot on thin/positive samples. Absence from the table
+        # (thin sample) is treated as 'unknown' -> allowed.
+        if self._perf_tracker is not None and product_id not in self.paper_positions:
+            try:
+                _ae = self._perf_tracker.asset_expectancy(min_trades=8)
+                _rec = _ae.get(product_id)
+                if _rec is not None and _rec["total_pnl"] < -50.0:
+                    log.info("PAPER SKIP %s: asset self-drop (bot pnl %.2f over %d trades, wr=%.0f%%)",
+                             product_id, _rec["total_pnl"], _rec["trades"], _rec["win_rate"] * 100)
+                    return
+            except Exception:
+                pass
         # Pick the best opp AMONG those that can actually clear the entry gates.
         # Previously `max(opportunities, key=_paper_signal_score)` could select an opp
         # that then failed the raw confidence/win_rate/sharpe gate (e.g. a high-win_rate

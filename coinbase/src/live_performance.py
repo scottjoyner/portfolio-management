@@ -280,6 +280,37 @@ class LivePerformanceTracker:
                     total += rec.total_pnl
         return total
 
+    def asset_expectancy(self, min_trades: int = 8) -> Dict[str, Dict[str, Any]]:
+        """Per-asset live expectancy aggregated across ALL strategies on that asset.
+
+        Returns {product_id: {trades, wins, win_rate, total_pnl, expectancy}}
+        for assets with >= min_trades closed trades. Mirrors the agent's
+        universe_tilt: lets the entry gate drop assets the bot keeps losing on
+        instead of bleeding on the same pairs forever. Thin-sample assets are
+        omitted (caller treats absence as 'unknown' -> allowed).
+        """
+        agg: Dict[str, Dict[str, float]] = {}
+        with self._lock:
+            for rec in self._records.values():
+                a = agg.setdefault(rec.product_id, {"trades": 0, "wins": 0, "pnl": 0.0})
+                a["trades"] += rec.trades
+                a["wins"] += rec.wins
+                a["pnl"] += rec.total_pnl
+        out: Dict[str, Dict[str, Any]] = {}
+        for asset, a in agg.items():
+            n = int(a["trades"])
+            if n < min_trades:
+                continue
+            wr = (a["wins"] / n) if n else 0.0
+            out[asset] = {
+                "trades": n,
+                "wins": int(a["wins"]),
+                "win_rate": wr,
+                "total_pnl": round(a["pnl"], 2),
+                "expectancy": round(a["pnl"] / n, 4),
+            }
+        return out
+
     def is_strategy_disabled(self, strategy: str) -> bool:
         with self._lock:
             return strategy in self._disabled_strategies
