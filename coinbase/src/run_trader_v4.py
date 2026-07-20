@@ -1914,10 +1914,12 @@ class EventTraderV4:
             score *= max(0.5, 1.0 - dd)
         return max(0.0, min(1.0, score))
 
-    def _paper_trade_notional(self, confidence: float) -> float:
+    def _paper_trade_notional(self, confidence: float, vol_scale: float = 1.0) -> float:
         eq = self._paper_equity()
         max_notional = eq * self.paper_max_position_pct
-        base = max_notional * max(0.25, confidence)
+        # vol_scale (<=1.0) shrinks notional in high-vol regimes so less
+        # capital is at risk when ATR is wide. Bounded callerside to [0.4,1.0].
+        base = max_notional * max(0.25, confidence) * max(0.0, min(1.0, vol_scale))
         return max(self.paper_min_trade_usd, min(base, max_notional))
 
     def _paper_state_snapshot(self) -> Dict[str, Any]:
@@ -3157,7 +3159,15 @@ class EventTraderV4:
         else:
             kelly_frac = self.paper_max_position_pct
         eq = self._paper_equity()
-        notional = self._paper_trade_notional(confidence)
+        # Vol-adaptive notional: shrink size when ATR is wide so less capital
+        # is at risk in choppy regimes. atr_14 is per-opp (opp.get). Normalize
+        # by price -> fraction; scale = 1/(1+5*atr_frac), bounded [0.4, 1.0].
+        _atr = float(opp.get("atr_14", 0.0) or 0.0)
+        _vscale = 1.0
+        if _atr > 0 and price and price > 0:
+            _atr_frac = _atr / price
+            _vscale = max(0.4, min(1.0, 1.0 / (1.0 + 5.0 * _atr_frac)))
+        notional = self._paper_trade_notional(confidence, vol_scale=_vscale)
         # Symmetmetric to the per-asset drop: scale size UP on assets where the
         # bot's OWN live P&L is proven positive (>=8 trades AND total_pnl > +$50),
         # up to a 1.5x cap. Thin/negative samples stay at 1.0.
