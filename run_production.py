@@ -96,6 +96,15 @@ PROCESSES: dict[str, dict] = {
         "logfile": LOGDIR / "llm-watchdog.log",
         "proc": None,
     },
+    "agent-watcher": {
+        "script": "scripts/hermes_agent_watch.py",
+        "args": [
+            "--interval", "20", "--quiet",
+        ],
+        "pidfile": LOGDIR / "agent-watcher.pid",
+        "logfile": LOGDIR / "agent-watcher.log",
+        "proc": None,
+    },
 }
 
 _shutdown_requested = False
