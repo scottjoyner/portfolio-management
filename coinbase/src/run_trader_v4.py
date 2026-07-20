@@ -648,6 +648,11 @@ class EventTraderV4:
         # a vetted mean-reversion signal nets only ~7bps, so a 15bps floor structurally
         # parks the bot with 0 trades. 2.0 (config schema default) admits positive-net-edge
         # entries; the $500 fee-waiver window (tier 0) makes early entries strongly positive.
+        # Per-asset self-drop: skip new entries on an asset whose live P&L is clearly
+        # negative after a sufficient sample. Lowered from -50 to -25 so losing assets are
+        # cut after ~8-10 trades instead of ~12, directly attacking the bot's broad bleed
+        # across many small-negative assets (e.g. ETH/LTC/ALLO at -$20..-$41 each).
+        self.paper_asset_drop_pnl: float = -25.0
         # Mode-aware state file: paper and live/approval books NEVER share a
         # ledger. This prevents a paper state from being loaded into a live run
         # (or vice versa) — a real money hazard at go-live.
@@ -3722,7 +3727,7 @@ class EventTraderV4:
             pass
         # ── Per-asset self-aware size: drop losers, boost winners ──
         # Uses the bot's OWN live P&L (asset_expectancy). Two symmetric actions:
-        #  • DROP: clearly negative (>=8 trades AND total_pnl < -$50) -> skip entry.
+        #  • DROP: clearly negative (>=8 trades AND total_pnl < paper_asset_drop_pnl) -> skip entry.
         #  • BOOST: clearly positive (>=8 trades AND total_pnl > +$50) -> up to 1.5x size.
         # Thin/near-zero samples are ignored (treated as 'unknown' -> allowed, 1.0x),
         # so this cannot re-park the bot. Without the drop half the bot bleeds on the
@@ -3733,7 +3738,7 @@ class EventTraderV4:
                 _ae = self._perf_tracker.asset_expectancy(min_trades=8)
                 _rec = _ae.get(product_id)
                 if _rec is not None:
-                    if _rec["total_pnl"] < -50.0:
+                    if _rec["total_pnl"] < self.paper_asset_drop_pnl:
                         log.info("PAPER SKIP %s: asset self-drop (bot pnl %.2f over %d trades, wr=%.0f%%)",
                                  product_id, _rec["total_pnl"], _rec["trades"], _rec["win_rate"] * 100)
                         return
