@@ -2940,7 +2940,8 @@ class EventTraderV4:
         except Exception as e:  # pragma: no cover - durability is best-effort
             log.debug("trade event persist skipped for %s: %s", product_id, e)
 
-    def _paper_open_position(self, product_id: str, price: float, opp: Dict[str, Any]) -> None:
+    def _paper_open_position(self, product_id: str, price: float, opp: Dict[str, Any],
+                              asset_size_mult: float = 1.0) -> None:
         if price <= 0:
             return
         if len(self.paper_positions) >= self.paper_max_new_positions:
@@ -3007,6 +3008,11 @@ class EventTraderV4:
             kelly_frac = self.paper_max_position_pct
         eq = self._paper_equity()
         notional = self._paper_trade_notional(confidence)
+        # Symmetmetric to the per-asset drop: scale size UP on assets where the
+        # bot's OWN live P&L is proven positive (>=8 trades AND total_pnl > +$50),
+        # up to a 1.5x cap. Thin/negative samples stay at 1.0.
+        if asset_size_mult and asset_size_mult != 1.0:
+            notional = min(notional * asset_size_mult, eq * self.paper_max_position_pct)
         notional = min(notional, eq * kelly_frac)
         if eq < notional:
             log.info("PAPER SKIP %s: notional %.0f exceeds equity %.0f", product_id, notional, eq)
@@ -3695,21 +3701,26 @@ class EventTraderV4:
                 return
         except Exception:
             pass
-        # ── Per-asset self-aware drop (mirrors agent universe_tilt) ──
-        # If the bot's OWN live P&L on this asset is clearly negative after a
-        # sufficient sample, stop opening new entries here. Without this the bot
-        # bleeds on the same losing pairs forever (e.g. -13% on a single asset).
-        # Conservative: only acts on >=8 closed trades AND total_pnl < -$50, so it
-        # cannot re-park the bot on thin/positive samples. Absence from the table
-        # (thin sample) is treated as 'unknown' -> allowed.
+        # ── Per-asset self-aware size: drop losers, boost winners ──
+        # Uses the bot's OWN live P&L (asset_expectancy). Two symmetric actions:
+        #  • DROP: clearly negative (>=8 trades AND total_pnl < -$50) -> skip entry.
+        #  • BOOST: clearly positive (>=8 trades AND total_pnl > +$50) -> up to 1.5x size.
+        # Thin/near-zero samples are ignored (treated as 'unknown' -> allowed, 1.0x),
+        # so this cannot re-park the bot. Without the drop half the bot bleeds on the
+        # same losing pairs forever (e.g. -13% on a single asset pre-fix).
+        _asset_mult = 1.0
         if self._perf_tracker is not None and product_id not in self.paper_positions:
             try:
                 _ae = self._perf_tracker.asset_expectancy(min_trades=8)
                 _rec = _ae.get(product_id)
-                if _rec is not None and _rec["total_pnl"] < -50.0:
-                    log.info("PAPER SKIP %s: asset self-drop (bot pnl %.2f over %d trades, wr=%.0f%%)",
-                             product_id, _rec["total_pnl"], _rec["trades"], _rec["win_rate"] * 100)
-                    return
+                if _rec is not None:
+                    if _rec["total_pnl"] < -50.0:
+                        log.info("PAPER SKIP %s: asset self-drop (bot pnl %.2f over %d trades, wr=%.0f%%)",
+                                 product_id, _rec["total_pnl"], _rec["trades"], _rec["win_rate"] * 100)
+                        return
+                    if _rec["total_pnl"] > 50.0:
+                        # scale 1.0 -> 1.5 across the +$50..+$200 pnl band, capped 1.5x
+                        _asset_mult = min(1.5, 1.0 + min(_rec["total_pnl"], 200.0) / 300.0)
             except Exception:
                 pass
         # Pick the best opp AMONG those that can actually clear the entry gates.
@@ -4056,7 +4067,7 @@ class EventTraderV4:
             best["is_long_horizon"] = bool(macro_conf > 0.5 and is_aligned)
             if best["is_long_horizon"] and best.get("atr_14", 0.0) > 0:
                 best["stop_dist"] = best.get("atr_14", 0.0) * 4.0  # wider stops
-            self._paper_open_position(product_id, price, best)
+            self._paper_open_position(product_id, price, best, asset_size_mult=_asset_mult)
 
         # ── Scale-in: add to winning positions ───────────────────────
         pos = self.paper_positions.get(product_id)
