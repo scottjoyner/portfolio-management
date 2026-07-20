@@ -286,7 +286,8 @@ def record_signal(product_id: str, side: str, quote_size: float | None = None,
             "position": pos, "realized_pnl": round(led["realized_pnl"], 6)}
 
 
-def close_position(product_id: str, note: str = "close", price: float | None = None) -> dict:
+def close_position(product_id: str, note: str = "close", price: float | None = None,
+                   regime: str | None = None) -> dict:
     """Simulated SELL of the full held base at the current real quote.
     Realizes P&L vs cost basis. Paper-only. No money moves.
     `price` (optional) lets the caller pass the decision price (loop passes the
@@ -313,7 +314,8 @@ def close_position(product_id: str, note: str = "close", price: float | None = N
              "quote_size": round(base * price, 4), "exposure": round(base * price * lev, 4),
              "leverage": lev, "fill_price": price,
              "base_size": base, "commission": round(commission, 6), "live": False,
-             "note": note, "realized_pnl": round(pnl, 6)}
+             "note": note, "realized_pnl": round(pnl, 6),
+             "regime": regime or pos.get("regime") or ""}
     led["trades"].append(trade)
     led["realized_pnl"] += pnl
     led["positions"][product_id] = {"base": 0.0, "cost_basis": 0.0, "entries": pos["entries"] + 1}
@@ -368,7 +370,8 @@ def open_short(product_id: str, quote_size: float, note: str = "short",
     return {"action": "short_opened", "live": False, "trade": trade, "position": pos}
 
 
-def close_short(product_id: str, note: str = "close-short", price: float | None = None) -> dict:
+def close_short(product_id: str, note: str = "close-short", price: float | None = None,
+                regime: str | None = None) -> dict:
     """Close a simulated short: buy back at current candle mark. Realizes P&L.
     `price` (optional) lets the caller pass the decision price (loop passes the
     same candle mark used for the TP/SL decision, so execution == decision)."""
@@ -397,7 +400,8 @@ def close_short(product_id: str, note: str = "close-short", price: float | None 
              "exposure": round(magnitude * exit_px * lev, 4),
              "leverage": lev, "fill_price": exit_px,
              "base_size": round(magnitude, 8), "commission": round(commission, 6),
-             "live": False, "note": note, "realized_pnl": round(pnl, 6)}
+             "live": False, "note": note, "realized_pnl": round(pnl, 6),
+             "regime": regime or pos.get("regime") or ""}
     led["trades"].append(trade)
     led["realized_pnl"] += pnl
     led["positions"][key] = {"base": 0.0, "entry_price": 0.0, "entries": pos["entries"] + 1}

@@ -463,11 +463,13 @@ def run_once(verbose: bool = True) -> dict:
         if close_now:
             px = float(cur) if cur is not None else None
             if is_short_pos:
-                res = close_short(true_pid, note=f"exit-{regime}-{reason}", price=px)
+                res = close_short(true_pid, note=f"exit-{regime}-{reason}", price=px,
+                                  regime=regime)
                 if verbose and res.get("action") == "short_closed":
                     print(f"[close-short] {true_pid} {reason} -> pnl={res.get('realized_pnl')}")
             else:
-                res = close_position(pid, note=f"exit-{regime}-{reason}", price=px)
+                res = close_position(pid, note=f"exit-{regime}-{reason}", price=px,
+                                     regime=regime)
                 if verbose and res.get("action") == "closed":
                     print(f"[close] {pid} {reason} -> pnl={res.get('realized_pnl')}")
             closed_this_tick.add(true_pid)  # anti-churn: block same-tick re-entry
