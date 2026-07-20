@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import sys as _sys
 from pathlib import Path as _P
+import json
+from datetime import datetime
 
 # Bootstrap so `from scripts...` works whether imported by the loop (cwd=repo)
 # or run directly (python scripts/hermes_expectancy.py).
@@ -104,6 +106,82 @@ def universe_tilt(led: dict | None = None) -> dict:
         out[a] = {"agent_pnl": round(v["pnl"], 4), "agent_trades": n,
                   "agent_wr": round(wr, 1), "tilt": tilt, "reason": reason}
     return out
+
+
+def unified_tilt(min_trades: int = 8, drop_pnl: float = -25.0,
+                 boost_pnl: float = 50.0) -> dict:
+    """Cross-book tilt: merge the AGENT's own paper P&L (universe_tilt) with the
+    BOT's live per-asset P&L (LivePerformanceTracker.asset_expectancy) into ONE
+    per-asset view. This is the cross-book learning closure — each book sees the
+    other's hard-won expectancy, so a winner (or loser) discovered by one side
+    informs the other's entries without either re-deriving it.
+
+    tilt rules (symmetric, conservative):
+      • drop  — EITHER book shows clearly-negative P&L (<= drop_pnl) over >= min_trades
+      • boost — EITHER book shows clearly-positive P&L (>= boost_pnl) over >= min_trades
+                AND neither book is clearly negative
+      • keep  — otherwise (thin / mixed / near-zero)
+
+    Returns {asset: {agent_pnl, agent_trades, bot_pnl, bot_trades, tilt, reason}}.
+    Pure read — no side effects; safe to call from loops, digests, or cron.
+    """
+    agent = universe_tilt()
+    bot = {}
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(_REPO))
+        from coinbase.src.live_performance import LivePerformanceTracker
+        _t = LivePerformanceTracker()
+        bot = _t.asset_expectancy(min_trades=min_trades)
+    except Exception:
+        bot = {}
+
+    assets = set(agent) | set(bot)
+    out = {}
+    for a in assets:
+        ag = agent.get(a, {})
+        bo = bot.get(a, {})
+        ap = float(ag.get("agent_pnl", 0.0) or 0.0)
+        an = int(ag.get("agent_trades", 0) or 0)
+        bp = float(bo.get("total_pnl", 0.0) or 0.0)
+        bn = int(bo.get("trades", 0) or 0)
+        agent_neg = (an >= min_trades and ap <= drop_pnl)
+        bot_neg = (bn >= min_trades and bp <= drop_pnl)
+        agent_pos = (an >= min_trades and ap >= boost_pnl)
+        bot_pos = (bn >= min_trades and bp >= boost_pnl)
+        if agent_neg or bot_neg:
+            tilt, reason = "drop", (
+                f"neg: agent {ap:+.2f}/{an} or bot {bp:+.2f}/{bn}")
+        elif agent_pos or bot_pos:
+            tilt, reason = "boost", (
+                f"pos: agent {ap:+.2f}/{an} or bot {bp:+.2f}/{bn}")
+        else:
+            tilt, reason = "keep", (
+                f"mixed: agent {ap:+.2f}/{an}, bot {bp:+.2f}/{bn}")
+        out[a] = {
+            "agent_pnl": round(ap, 4), "agent_trades": an,
+            "bot_pnl": round(bp, 4), "bot_trades": bn,
+            "tilt": tilt, "reason": reason,
+        }
+    return out
+
+
+def write_unified_expectancy(path: str | None = None) -> dict:
+    """Compute unified_tilt() and persist to data/unified_expectancy.json so BOTH
+    books can read the cross-book view on startup (the feedback loop). The bot's
+    entry gate and the agent's tilt gate can consume this file to learn from each
+    other. Returns the tilt dict.
+    """
+    tilt = unified_tilt()
+    if path is None:
+        path = str(_REPO) + "/data/unified_expectancy.json"
+    try:
+        with open(path, "w") as fh:
+            json.dump({"generated_at": datetime.now().isoformat(),
+                       "tilt": tilt}, fh, indent=2)
+    except Exception:
+        pass
+    return tilt
 
 
 def live_ready(led: dict | None = None, min_regimes: int = 2, min_closed: int = 12) -> dict:

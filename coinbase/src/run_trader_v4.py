@@ -809,6 +809,31 @@ class EventTraderV4:
         fee_bps = self._effective_fee_bps()
         return ("WAIVED" if fee_bps <= 0.0 else "PAID", fee_bps)
 
+    # Cache the cross-book expectancy file so we don't re-read it on every asset
+    # in a scan (the digest/cron rewrites it on a schedule; mtime-gated reload).
+    _unified_cache: dict = {"mtime": 0.0, "tilt": {}}
+
+    def _unified_drop(self, product_id: str) -> bool:
+        """True if the cross-book unified expectancy (data/unified_expectancy.json,
+        written by the digest/cron from hermes_expectancy.unified_tilt) drops this
+        asset. Lets the bot learn from the AGENT's P&L without recomputing it.
+        Returns False on any read error (fail-open: never blocks trading)."""
+        try:
+            import os
+            p = "data/unified_expectancy.json"
+            if not os.path.exists(p):
+                return False
+            mtime = os.path.getmtime(p)
+            if mtime != self._unified_cache["mtime"]:
+                with open(p) as fh:
+                    blob = json.load(fh)
+                self._unified_cache["tilt"] = blob.get("tilt", {})
+                self._unified_cache["mtime"] = mtime
+            rec = self._unified_cache["tilt"].get(product_id)
+            return bool(rec and rec.get("tilt") == "drop")
+        except Exception:
+            return False
+
     def _reset_monthly_volume_if_needed(self) -> None:
         """Reset monthly volume counter when calendar month changes."""
         now = time.time()
@@ -3784,6 +3809,14 @@ class EventTraderV4:
                         _asset_mult = min(1.5, 1.0 + min(_rec["total_pnl"], 200.0) / 300.0)
             except Exception:
                 pass
+        # ── Cross-book drop (learn from the AGENT's P&L via unified_tilt file) ──
+        # The digest/cron writes data/unified_expectancy.json (agent tilt merged
+        # with bot expectancy). If the unified view drops this asset, the bot
+        # respects it too — so the agent's losers (e.g. BTC-USD) inform the bot
+        # without the bot re-deriving them. Cheap file read; no LLM, no recompute.
+        if product_id not in self.paper_positions and self._unified_drop(product_id):
+            log.info("PAPER SKIP %s: cross-book drop (unified expectancy)", product_id)
+            return
         # ── Fee-regime sizing ──
         # During the fee-waived window (first $500/mo, 0bps) the bot has pure
         # alpha — size up to capture it. Once Tier-1 fees bite (~44bps), keep

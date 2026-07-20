@@ -29,7 +29,9 @@ def _client():
     return CBClient(dry_run_cli=True)
 from scripts.hermes_overlay import overlay_state
 from scripts.hermes_news import news_sentiment
-from scripts.hermes_expectancy import expectancy_table, universe_tilt, live_ready
+from scripts.hermes_expectancy import (
+    expectancy_table, universe_tilt, live_ready, unified_tilt, write_unified_expectancy,
+)
 from scripts.hermes_agent_trader import load_ledger
 
 KILL_SWITCH = __import__("os").getenv("KILL_SWITCH", "").lower() in ("1", "true", "yes")
@@ -74,7 +76,7 @@ def digest() -> str:
     else:
         lines.append("Paper expectancy: no closed trades yet.")
 
-    # Universe tilt
+    # Universe tilt (agent's own)
     tilt = universe_tilt()
     drops = [a for a, v in tilt.items() if v["tilt"] == "drop"]
     boosts = [a for a, v in tilt.items() if v["tilt"] == "boost"]
@@ -84,8 +86,28 @@ def digest() -> str:
         if drops:
             lines.append(f"Tilt drop : {', '.join(drops)}")
 
+    # Cross-book unified tilt (agent + bot merged) — the feedback loop
+    try:
+        ut = write_unified_expectancy()  # persist so the BOT can read it
+        u_drops = [a for a, v in ut.items() if v["tilt"] == "drop"]
+        u_boosts = [a for a, v in ut.items() if v["tilt"] == "boost"]
+        lines.append("Cross-book tilt (agent+bot):")
+        if u_boosts:
+            lines.append(f"  boost: {', '.join(u_boosts)}")
+        if u_drops:
+            lines.append(f"  drop : {', '.join(u_drops)}")
+    except Exception as e:
+        lines.append(f"Cross-book tilt: unavailable ({e})")
+
     lines.append("=== end digest ===")
-    return "\n".join(lines)
+    out = "\n".join(lines)
+    # Persist the digest so it is observable without manual invocation.
+    try:
+        with open("data/learning_digest.md", "w") as fh:
+            fh.write(out + "\n")
+    except Exception:
+        pass
+    return out
 
 
 if __name__ == "__main__":
