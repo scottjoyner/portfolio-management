@@ -348,7 +348,7 @@ def run_once(verbose: bool = True) -> dict:
     from scripts.hermes_mtf import multi_timeframe_regime, vol_regime, conviction
     from scripts.hermes_overlay import overlay_state
     from scripts.hermes_signals import indicator_signal, local_regime, flow_signal
-    from scripts.hermes_expectancy import universe_tilt, expectancy_table
+    from scripts.hermes_expectancy import universe_tilt, expectancy_table, unified_tilt
     from scripts.hermes_portfolio import correlation_to_btc, exposure_ok, CORRELATED_CAP_USD
 
     client = CBClient(dry_run_cli=True)
@@ -393,8 +393,12 @@ def run_once(verbose: bool = True) -> dict:
     bot_edge = load_bot_edge()
     from scripts.hermes_agent_trader import load_ledger, close_position, close_short
     led = load_ledger()
-    # Phase 10: own-paper universe tilt (auto-drop assets the AGENT keeps losing on)
-    tilt = universe_tilt(led)
+    # Phase 10: CROSS-BOOK universe tilt (agent + bot merged). Use the
+    # unified view, NOT agent-only universe_tilt — otherwise the agent is
+    # blind to the bot's P&L and the self-learning loop stays half-wired
+    # (the bot already reads unified_tilt; the agent must too, or neither
+    # book learns from the other's wins/losses symmetrically).
+    tilt = unified_tilt()
     # Phase 11: BTC-correlation cache (gates concentration risk). Computed once
     # per run; ~15 assets × 120 candles. Skip in CRISIS/MIXED (no new entries).
     corr_cache: dict = {}
