@@ -1,0 +1,34 @@
+[Unit]
+Description=Hermes Agent paper-trader exit-only watcher (high-frequency stop-loss)
+Documentation=scripts/hermes_agent_watch.py
+After=network-online.target portfolio-trader.service
+Wants=network-online.target
+# Co-start with the main trading stack so the agent's open positions always
+# have a tight-cadence stop watcher after a reboot. The watcher is EXIT-ONLY
+# (never opens), paper-only, and honors KILL_SWITCH — safe to run alongside.
+PartOf=portfolio-trader.service
+
+[Service]
+Type=simple
+User=scott
+Group=scott
+WorkingDirectory=/home/scott/git/portfolio-management
+Environment=HOME=/home/scott
+Environment=PATH=/home/scott/.npm-global/bin:/home/scott/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/scott/git/portfolio-management/.venv/bin/python3 /home/scott/git/portfolio-management/scripts/hermes_agent_watch.py --interval 20 --quiet
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=10
+# Watcher must never be left dead silently: escalate if it keeps crashing.
+RestartSteps=5
+RestartMaxDelaySec=60
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening (mirror of portfolio-trader.service)
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

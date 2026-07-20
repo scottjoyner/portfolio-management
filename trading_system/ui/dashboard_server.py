@@ -2929,6 +2929,96 @@ def api_stairstep():
     return {"available": True, "symbols": symbols}
 
 
+# ── Competition: Hermes AGENT vs BOT (run_trader_v4) head-to-head ──
+# Both books start at a flat $10,000 paper balance. Inline computation
+# mirrors scripts/hermes_race_digest.py so the dashboard needs no subprocess.
+
+_AGENT_LEDGER = ROOT / "data" / "hermes_agent_ledger.json"
+_BOT_STATE = ROOT / "data" / "paper_trader_v4_state.json"
+
+
+def _competition_agent() -> dict:
+    if not _AGENT_LEDGER.exists():
+        return {}
+    try:
+        led = json.loads(_AGENT_LEDGER.read_text() or "{}")
+    except Exception as e:
+        logger.warning("agent ledger parse failed: %s", e)
+        return {}
+    start = float(led.get("starting_capital", 10000.0))
+    eq = float(led.get("equity", start))
+    cash = float(led.get("cash", start))
+    peak = float(led.get("peak_equity", eq))
+    closed = [t for t in led.get("trades", []) if "realized_pnl" in t]
+    wins = sum(1 for t in closed if t["realized_pnl"] >= 0)
+    losses = len(closed) - wins
+    pnl = sum(t["realized_pnl"] for t in closed)
+    dd = (eq - peak) / peak * 100.0 if peak else 0.0
+    open_pos = {k: v for k, v in led.get("positions", {}).items()
+                if v.get("base", 0) > 1e-9}
+    return {
+        "name": "HERMES AGENT", "start": start, "equity": eq, "cash": cash,
+        "peak": peak, "return_pct": (eq - start) / start * 100.0,
+        "trades": len(closed), "wins": wins, "losses": losses,
+        "win_rate": round(wins / len(closed) * 100.0, 2) if closed else 0.0,
+        "realized_pnl": round(pnl, 2), "drawdown_pct": round(dd, 2),
+        "open_positions": len(open_pos),
+    }
+
+
+def _competition_bot() -> dict:
+    if not _BOT_STATE.exists():
+        return {}
+    try:
+        b = json.loads(_BOT_STATE.read_text() or "{}")
+    except Exception as e:
+        logger.warning("bot state parse failed: %s", e)
+        return {}
+    start = float(b.get("paper_starting_capital", 10000.0))
+    cash = float(b.get("paper_cash", start))
+    eq = float(b.get("paper_equity", cash))
+    peak = float(b.get("paper_peak_equity", eq))
+    trades = b.get("paper_trades", [])
+    pnls = [t.get("realized_pnl", t.get("pnl", 0)) for t in trades
+            if "realized_pnl" in t or "pnl" in t]
+    wins = sum(1 for p in pnls if p >= 0)
+    losses = len(pnls) - wins
+    dd = (eq - peak) / peak * 100.0 if peak else 0.0
+    return {
+        "name": "BOT (run_trader_v4)", "start": start, "equity": eq, "cash": cash,
+        "peak": peak, "return_pct": (eq - start) / start * 100.0,
+        "trades": len(trades), "wins": wins, "losses": losses,
+        "win_rate": round(wins / len(trades) * 100.0, 2) if trades else 0.0,
+        "realized_pnl": round(sum(pnls), 2), "drawdown_pct": round(dd, 2),
+        "open_positions": int(b.get("paper_open_positions",
+                                    len(b.get("paper_positions", {})))),
+    }
+
+
+def api_competition() -> dict:
+    """Head-to-head: Hermes AGENT vs BOT, both from a flat $10,000 paper start."""
+    a = _competition_agent()
+    b = _competition_bot()
+    edge = None
+    leader = "unknown"
+    if a and b:
+        edge = round(a["return_pct"] - b["return_pct"], 2)
+        if edge > 0:
+            leader = "AGENT"
+        elif edge < 0:
+            leader = "BOT"
+        else:
+            leader = "TIE"
+    return {
+        "start_capital": 10000.0,
+        "agent": a,
+        "bot": b,
+        "return_spread_pts": edge,
+        "leader": leader,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 # ── Request Handler ─────────────────────────────────────────────
 
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
@@ -2987,6 +3077,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/optimizer/wash-sale": lambda: _load_json(ROOT / "data" / "wash_sale_state.json", {}),
             "/optimizer/sr-levels": lambda: _load_json(ROOT / "data" / "sr_levels.json", {}),
             "/backtests/experiments": lambda: api_backtest_experiments(),
+            "/competition": lambda: api_competition(),
+            "/api/competition": lambda: api_competition(),
         }
 
         if path in handlers:

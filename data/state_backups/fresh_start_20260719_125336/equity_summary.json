@@ -1,0 +1,16 @@
+{
+  "timestamp": 1784479997.2169707,
+  "total_equity": 10000.0,
+  "cash": {
+    "value": 10000.0,
+    "pct": 100.0
+  },
+  "core_holdings": {
+    "value": 0.0,
+    "pct": 0.0
+  },
+  "active_positions": {
+    "value": 0.0,
+    "pct": 0.0
+  }
+}

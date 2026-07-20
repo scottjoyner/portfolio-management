@@ -1,29 +1,29 @@
 {
   "judges": {
     "vibethinker": {
-      "avg_confidence": 0.8553327877796041,
-      "confidence_sum": 3135.6500000000287,
-      "cycles": 3666,
+      "avg_confidence": 0.8700132013200896,
+      "confidence_sum": 5272.279999999743,
+      "cycles": 6060,
       "judge": {
         "base_url": "http://deathstar-xps-8920.tailcb8954.ts.net:1234/v1",
-        "max_tokens": 80,
+        "max_tokens": 1024,
         "model": "vibethinker-3b",
         "name": "vibethinker",
         "resolved_model": "",
         "role": "primary",
-        "timeout_s": 45
+        "timeout_s": 90
       },
-      "last_reason": "health_alert",
+      "last_reason": "healthy",
       "last_task": "Summarize the last hour of trading health, the biggest changes, and any repeat signal patterns observed.",
-      "last_vote": "stop",
-      "updated_at": 1783474185.1485178,
+      "last_vote": "continue",
+      "updated_at": 1784497969.9411263,
       "votes": {
-        "continue": 1777,
-        "flatten_only": 24,
-        "stop": 72,
-        "warn": 1793
+        "continue": 3883,
+        "flatten_only": 26,
+        "stop": 100,
+        "warn": 2051
       }
     }
   },
-  "updated_at": 1783474185.1485178
+  "updated_at": 1784497969.9411263
 }

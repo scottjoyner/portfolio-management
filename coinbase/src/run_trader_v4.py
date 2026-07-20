@@ -1626,10 +1626,26 @@ class EventTraderV4:
             # ── Step 3: Rank opportunities ─────────────────────────
             macro = self._last_macro_signal
             opportunities = []
+            _tracker = self._perf_tracker
             for s_name, action, confidence in signals:
+                # Skip globally-disabled strategies at the source. Previously a disabled
+                # strategy (e.g. chaikin_mf) could be selected as the top signal and then
+                # silently skipped downstream in _paper_execute_impl, abandoning the whole
+                # product even when other enabled strategies agreed. Drop it here so the
+                # next-best enabled strategy can trade.
+                if _tracker is not None and _tracker.is_strategy_disabled(s_name):
+                    continue
                 ck = f"{s_name}/{base}"
                 verdict = self._bt_cache.get(ck)
-                if verdict and verdict.passed:
+                # Build the opp if we have a verdict with acceptable win_rate/sharpe.
+                # Previously this required verdict.passed (win_rate>=0.50 AND profit_factor>1.05
+                # AND dd<20% AND total_return>-20% ALL at once) — far stricter than the
+                # downstream paper gates (paper_min_win_rate=0.45, paper_min_sharpe=0.30) and
+                # nearly always False on short paper backtests, silently parking the bot with
+                # ZERO opportunities. The downstream gates already enforce the real bar, so we
+                # use the same thresholds here instead of the brittle binary `passed` flag.
+                if verdict and getattr(verdict, "win_rate", 0.0) >= self.paper_min_win_rate \
+                        and getattr(verdict, "sharpe_ratio", 0.0) > self.paper_min_sharpe:
                     macro_bearish = macro and macro.bias == "bearish" and macro.confidence > 0.3
                     macro_bullish = macro and macro.bias == "bullish" and macro.confidence > 0.3
 
@@ -2922,6 +2938,11 @@ class EventTraderV4:
             log.debug("trade event persist skipped for %s: %s", product_id, e)
 
     def _paper_open_position(self, product_id: str, price: float, opp: Dict[str, Any]) -> None:
+        # TEMP DEBUG (hermes): confirm entry + which opp reaches here
+        log.info("DBG_OPEN_ENTER %s strat=%s conf=%.3f wr=%.3f sharpe=%.2f action=%s",
+                 product_id, str(opp.get("strategy", "?")), float(opp.get("confidence", 0.0) or 0.0),
+                 float(opp.get("win_rate", 0.0) or 0.0), float(opp.get("sharpe", 0.0) or 0.0),
+                 str(opp.get("action", "?")))
         if price <= 0:
             return
         if len(self.paper_positions) >= self.paper_max_new_positions:
@@ -2980,10 +3001,16 @@ class EventTraderV4:
         notional = self._paper_trade_notional(confidence)
         notional = min(notional, eq * kelly_frac)
         if eq < notional:
+            log.info("PAPER SKIP %s: notional %.0f exceeds equity %.0f", product_id, notional, eq)
             return
         if confidence < self.paper_min_confidence:
+            log.info("PAPER SKIP %s: confidence %.3f < min %.3f (raw_opp_conf=%.3f strat=%s wr=%.3f)",
+                     product_id, confidence, self.paper_min_confidence,
+                     float(opp.get("confidence", 0.0) or 0.0), str(opp.get("strategy", "?")), win_rate)
             return
         if win_rate < self.paper_min_win_rate or sharpe < self.paper_min_sharpe:
+            log.info("PAPER SKIP %s: win_rate %.3f/sharpe %.2f below min (wr>=%.2f sh>=%.2f)",
+                     product_id, win_rate, sharpe, self.paper_min_win_rate, self.paper_min_sharpe)
             return
         edge = self._paper_edge_model(confidence, win_rate, sharpe)
         if edge["net_bps"] < self.paper_min_edge_bps:
@@ -2997,11 +3024,15 @@ class EventTraderV4:
         if str(opp.get("action", "BUY")) == "BUY":
             notional *= self._btc_momentum_multiplier()
         if notional < self.paper_min_trade_usd:
+            log.info("PAPER SKIP %s: notional %.0f < min_trade %.0f after score/btc mult",
+                     product_id, notional, self.paper_min_trade_usd)
             return
 
         leverage = min(self.max_leverage, float(opp.get("leverage", 1.0))) if self.enable_leverage else 1.0
         notional = min(notional, eq * self.paper_max_position_pct * leverage)
         if notional < self.paper_min_trade_usd:
+            log.info("PAPER SKIP %s: notional %.0f < min_trade %.0f after leverage cap",
+                     product_id, notional, self.paper_min_trade_usd)
             return
 
         _, taker_bps, maker_bps = self._fee_tier()
@@ -3025,6 +3056,7 @@ class EventTraderV4:
 
         if side_label == "SHORT":
             if eq < fee:
+                log.info("PAPER SKIP %s: SHORT fee %.2f exceeds equity %.0f", product_id, fee, eq)
                 return
         else:
             total_cost = margin_required + fee
@@ -3034,6 +3066,8 @@ class EventTraderV4:
                 qty = notional / max(fill_price, 1e-9)
                 fee = notional * (entry_fee_bps / 10_000.0)
             if notional < self.paper_min_trade_usd:
+                log.info("PAPER SKIP %s: notional %.0f < min_trade %.0f after margin/fill adjustment",
+                         product_id, notional, self.paper_min_trade_usd)
                 return
 
         # ── Portfolio risk check (uses new PortfolioRiskManager) ──────────
@@ -3632,6 +3666,12 @@ class EventTraderV4:
 
     def _paper_execute_impl(self, product_id: str, price: float, opportunities: List[Dict[str, Any]],
                             regime_cmatrix: str = "") -> None:
+        # TEMP DEBUG (hermes): surface why paper entries are skipped
+        for _dbg_o in opportunities:
+            log.info("DBG_PAPER_ENTRY %s price=%.4f action=%s strat=%s conf=%.3f wr=%.3f sharpe=%.2f atr=%.4f regime=%s",
+                     product_id, price, _dbg_o.get("action"), _dbg_o.get("strategy"),
+                     _dbg_o.get("confidence", 0), _dbg_o.get("win_rate", 0),
+                     _dbg_o.get("sharpe", 0), _dbg_o.get("atr_14", 0), _dbg_o.get("regime", ""))
         # Max drawdown circuit breaker: stop new entries when drawdown > 80%
         try:
             dd = self._paper_drawdown()
@@ -3640,7 +3680,20 @@ class EventTraderV4:
                 return
         except Exception:
             pass
-        best = max(opportunities, key=self._paper_signal_score)
+        # Pick the best opp AMONG those that can actually clear the entry gates.
+        # Previously `max(opportunities, key=_paper_signal_score)` could select an opp
+        # that then failed the raw confidence/win_rate/sharpe gate (e.g. a high-win_rate
+        # technical signal with confidence < 0.30, or a crypto_news opp with wr=0), even
+        # when the SAME product had a gate-passing opp (e.g. zscore_revert conf=0.83
+        # wr=0.75). That silently parked viable trades. Filter to gate-eligible opps
+        # first; only fall back to the raw max if none qualify (so exits/logging still work).
+        _eligible = [
+            o for o in opportunities
+            if float(o.get("confidence", 0.0) or 0.0) >= self.paper_min_confidence
+            and float(o.get("win_rate", 0.0) or 0.0) >= self.paper_min_win_rate
+            and float(o.get("sharpe", 0.0) or 0.0) >= self.paper_min_sharpe
+        ]
+        best = max(_eligible or opportunities, key=self._paper_signal_score)
         pos = self.paper_positions.get(product_id)
 
         if pos:
@@ -3655,9 +3708,18 @@ class EventTraderV4:
             vol_mult = 0.75
 
         # ── Regime gating: skip unfavorable regimes for new entries ──
+        # EXCEPTION: mean-reversion strategies are DESIGNED for low_volatility / ranging
+        # markets — that is their natural edge. Blocking them there (while the market is
+        # broadly low-vol) parked the bot with 0 trades even on high-confidence signals
+        # (e.g. zscore_revert conf=0.52 wr=0.75 on ANKR, all silently dropped here).
+        # Trend-following strategies are still correctly blocked in choppy/rangebound
+        # regimes. "unknown" is always blocked (genuinely insufficient data).
         if not pos and regime in ("unknown", "ranging", "low_volatility"):
-            log.debug("PAPER SKIP %s: unfavorable regime %s", product_id, regime)
-            return
+            _best_strat = str(best.get("strategy", ""))
+            _is_mean_rev = _best_strat in self._MEAN_REVERSION_STRATS
+            if regime == "unknown" or not _is_mean_rev:
+                log.debug("PAPER SKIP %s: unfavorable regime %s for %s", product_id, regime, _best_strat)
+                return
 
         # ── Confluence check: require ≥2 strategies agreeing ──
         if not pos:
@@ -3813,8 +3875,13 @@ class EventTraderV4:
             regime_str = str(best.get("regime", ""))
             atr_val = float(best.get("atr_14", 0.0) or 0.0)
 
-            # Skip products with unknown regime or no ATR (insufficient data)
-            if regime_str == "unknown" or atr_val <= 0:
+            # Skip products with unknown regime or no ATR (insufficient data).
+            # NOTE: only block on atr_val<=0 when the REGIME is also unknown. A known
+            # regime (e.g. low_volatility) with a numerically-zero ATR (common for
+            # sub-cent alts where ATR rounds to 0.0000) must NOT be skipped — the regime
+            # detection already succeeded, so we have enough to trade. Blocking on a
+            # zero ATR alone was silently parking every low-priced alt.
+            if regime_str == "unknown" or (atr_val <= 0 and regime_str == ""):
                 streaming = self.streaming.try_get(product_id)
                 if streaming and len(streaming.closes) >= 40:
                     log.debug("ALLOW %s: regime=%s atr=%.4f (enough streaming data, proceeding)", product_id, regime_str, atr_val)
@@ -3822,12 +3889,15 @@ class EventTraderV4:
                     log.debug("SKIP %s: regime=%s atr=%.4f (insufficient streaming data)", product_id, regime_str, atr_val)
                     return
 
-            # Gate mean-reversion strategies in trending regimes
+            # Gate mean-reversion strategies in STRONG trending regimes only.
+            # Weak uptrend/downtrend = chop = exactly where mean-reversion works, so
+            # those are now allowed (the bot already widens mean-rev stops at L1658).
+            # Strong regimes stay blocked: fading a strong trend is the dangerous case.
             best_strat = str(best.get("strategy", ""))
             if best_strat in self._MEAN_REVERSION_STRATS and regime_str in (
-                "strong_uptrend", "weak_uptrend", "strong_downtrend", "weak_downtrend",
+                "strong_uptrend", "strong_downtrend",
             ):
-                log.info("PAPER SKIP %s: %s is mean-reversion in %s regime",
+                log.info("PAPER SKIP %s: %s is mean-reversion in STRONG %s regime",
                          product_id, best_strat, regime_str)
                 return
 
@@ -3839,11 +3909,21 @@ class EventTraderV4:
                 return
 
             # Global strategy disable: skip strategies that are broadly unprofitable
-            # across all products (aggregate live win rate too low).
+            # across all products (aggregate live win rate too low). BUT allow the trade
+            # if this specific product has a strong product-specific backtest win rate —
+            # a strategy can be weak in aggregate yet edge-positive on a given pair, and
+            # the bot's own EVENT eval already vets win_rate/sharpe/edge per product. A
+            # blunt global veto was parking the bot (e.g. chaikin_mf = 22% aggregate but
+            # 100% backtest win on MET-USD). Respect product-specific evidence.
             if self._perf_tracker.is_strategy_disabled(best_strat):
-                log.info("PAPER SKIP %s: strategy %s globally disabled (poor aggregate win rate)",
-                         product_id, best_strat)
-                return
+                _opp_wr = float(best.get("win_rate", 0.0) or 0.0)
+                if _opp_wr < self.paper_min_win_rate:
+                    log.info("PAPER SKIP %s: strategy %s globally disabled (poor aggregate win rate, product wr=%.0f%%)",
+                             product_id, best_strat, _opp_wr * 100)
+                    return
+                # Product-specific win rate clears the bar: allow despite aggregate veto.
+                log.info("ALLOW %s: %s globally disabled but product wr=%.0f%% clears bar — proceeding",
+                         product_id, best_strat, _opp_wr * 100)
 
             # ── Concentration guard (anti-fragility) ───────────────────────
             # A single strategy must not be allowed to dominate the book. If its
@@ -4626,22 +4706,80 @@ class EventTraderV4:
                 "top_n": top_n,
             }
 
-            # Feed top BUY signals into paper execution
-            for r in results[:5]:
-                if r.direction != "BUY":
+            # Feed top scan signals into paper execution (BUY + SELL/short).
+            # Allow SELL when shorts are enabled; previously the bridge skipped ALL
+            # non-BUY directions, so the bot never took short entries from scans even
+            # with --enable-shorts. Widen to top 8 so genuine BUY/SELL signals aren't
+            # buried under a SELL-heavy top-5.
+            _max_feed = 8 if self.enable_shorts else 5
+            for r in results[:_max_feed]:
+                if r.direction == "BUY":
+                    _action = "BUY"
+                elif r.direction == "SELL" and self.enable_shorts:
+                    _action = "SELL"
+                else:
                     continue
                 pid = r.product_id
                 price = self._last_price.get(pid, r.price)
                 if price <= 0:
                     continue
+                # ── Bridge: populate real ATR / regime / win_rate ──
+                # Previously this fed atr_14=0.0, regime="", and win_rate=r.backtest_quality.
+                # backtest_quality is an aggregate quality score that is 0.0 whenever no
+                # strategy passes the aggregator's strict (passed AND trades>=5) filter,
+                # so feeding it as win_rate silently failed the paper_min_win_rate gate and
+                # parked the bot. We now compute real values from data the scan already has.
+                _closes = closes.get(pid, [])
+                _atr: float = 0.0
+                if len(_closes) >= 15 and pid in highs and pid in lows:
+                    _hl = highs[pid]
+                    _ll = lows[pid]
+                    _tr = [abs(_hl[i] - _ll[i]) for i in range(len(_closes))]
+                    _tr[0] = abs(_closes[0] - _closes[1]) if len(_closes) > 1 else 0.0
+                    for i in range(1, len(_closes)):
+                        _tr[i] = max(
+                            _hl[i] - _ll[i],
+                            abs(_hl[i] - _closes[i - 1]),
+                            abs(_ll[i] - _closes[i - 1]),
+                        )
+                    _win = _tr[-14:]
+                    _atr = sum(_win) / len(_win) if _win else 0.0
+                if _atr <= 0.0 and price > 0:
+                    _atr = price * 0.02  # fallback: 2% of price if ATR can't be computed
+                _trend = float(getattr(r, "trend_score", 0.0) or 0.0)
+                if _trend >= 0.05:
+                    _regime = "weak_uptrend"
+                elif _trend <= -0.05:
+                    _regime = "weak_downtrend"
+                else:
+                    _regime = "ranging"
+                # Pick the first NON-disabled strategy from the top list. Previously the
+                # bridge used top_strategies[0] only; if that strategy was globally disabled
+                # (e.g. chaikin_mf), the entire candidate was skipped even when 2-3 other
+                # enabled strategies agreed (conv often 70-85%). Fall through to an enabled one.
+                _top_strat = "aggregator"
+                _tracker = self._perf_tracker
+                for _cand in (r.top_strategies or []):
+                    _cand_s = str(_cand)
+                    if _tracker is None or not _tracker.is_strategy_disabled(_cand_s):
+                        _top_strat = _cand_s
+                        break
+                _base = pid.split("-")[0]
+                _verdict = self._aggregator._bt_cache.get(f"{_top_strat}/{_base}")
+                _raw_wr = getattr(_verdict, "win_rate", 0.0) if _verdict is not None else 0.0
+                _win_rate = float(_raw_wr or 0.0)
+                if _win_rate <= 0.0:
+                    # Fall back to conviction (fraction of strategies agreeing) — never 0
+                    # when there is a genuine signal, so the bot can still trade on consensus.
+                    _win_rate = max(0.1, float(getattr(r, "conviction", 0.1) or 0.1))
                 opp = {
-                    "action": "BUY",
-                    "confidence": abs(r.unified_score),
-                    "win_rate": max(0.0, min(1.0, r.backtest_quality)),
+                    "action": _action,
+                    "confidence": max(0.05, abs(r.unified_score)),
+                    "win_rate": max(0.0, min(1.0, _win_rate)),
                     "sharpe": 1.0,
-                    "strategy": r.top_strategies[0] if r.top_strategies else "aggregator",
-                    "atr_14": 0.0,
-                    "regime": "",
+                    "strategy": _top_strat,
+                    "atr_14": _atr,
+                    "regime": _regime,
                 }
                 if self.mode == "paper":
                     self._paper_execute(pid, price, [opp])
