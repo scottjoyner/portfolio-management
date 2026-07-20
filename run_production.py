@@ -244,6 +244,10 @@ def _start(name: str) -> subprocess.Popen:
         stdout=fh,
         stderr=subprocess.STDOUT,
         cwd=str(ROOT),
+        # Each child gets its own session/process-group so the supervisor can
+        # tear it down (and its own sub-processes) cleanly via killpg(). Without
+        # this, killing the supervisor orphans the children in the shared group.
+        start_new_session=True,
     )
     cfg["proc"] = proc
     cfg["pidfile"].write_text(str(proc.pid))
@@ -260,13 +264,22 @@ def _stop(name: str, timeout: float = 10) -> bool:
     if not proc:
         return True
     try:
-        proc.terminate()
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        sys.stdout.write(f"  {name}: force killing...\n")
-        sys.stdout.flush()
-        proc.kill()
-        proc.wait(timeout=5)
+        # Children are session leaders (start_new_session=True), so kill the whole
+        # process group to also catch any sub-processes they spawned.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            sys.stdout.write(f"  {name}: force killing group...\n")
+            sys.stdout.flush()
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
+            proc.wait(timeout=5)
     except Exception as e:
         sys.stdout.write(f"  {name}: stop error: {e}\n")
         sys.stdout.flush()
@@ -394,50 +407,59 @@ def status() -> None:
 
 def stop() -> None:
     sup_pidfile = _pidfile_path()
-    pid = None
+    sup_pid = None
     if sup_pidfile.exists():
         try:
-            pid = int(sup_pidfile.read_text().strip())
+            sup_pid = int(sup_pidfile.read_text().strip())
         except ValueError:
             pass
 
-    target_pids = []
-    if pid:
-        target_pids.append(pid)
-        os.kill(pid, signal.SIGTERM)
-        print(f"Sent SIGTERM to supervisor (PID {pid})")
+    if sup_pid:
+        try:
+            os.kill(sup_pid, signal.SIGTERM)
+            print(f"Sent SIGTERM to supervisor (PID {sup_pid})")
+        except OSError:
+            print(f"Supervisor PID {sup_pid} already gone")
+            sup_pid = None
 
-    for name in reversed(list(PROCESSES.keys())):
+    # Give the supervisor a chance to cleanly tear down its child process groups
+    # (it handles SIGTERM -> _shutdown_all -> _stop -> killpg). Racing ahead and
+    # SIGTERM-ing children directly only causes orphans, so we wait first.
+    if sup_pid:
+        for _ in range(15):
+            try:
+                os.kill(sup_pid, 0)
+                time.sleep(1)
+            except OSError:
+                break
+        try:
+            os.kill(sup_pid, 0)
+            os.kill(sup_pid, signal.SIGKILL)
+            print(f"Force killed supervisor {sup_pid}")
+        except OSError:
+            pass
+
+    # Sweep any stragglers by their pidfiles (kill the whole group, not just the
+    # session leader, in case a child respawned or the supervisor was already dead).
+    for name in PROCESSES:
         cfg = PROCESSES[name]
         pidfile = cfg["pidfile"]
         if pidfile.exists():
             try:
                 p = int(pidfile.read_text().strip())
-                target_pids.append(p)
-                os.kill(p, signal.SIGTERM)
-                print(f"Sent SIGTERM to {name} (PID {p})")
-            except (OSError, ValueError):
-                pass
-
-    # Wait for processes to die
-    for p in target_pids[:]:
-        for _ in range(10):
-            try:
-                os.kill(p, 0)
-                time.sleep(1)
-            except OSError:
-                break
+            except (ValueError, OSError):
+                p = None
+            if p:
+                try:
+                    os.killpg(os.getpgid(p), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        os.kill(p, signal.SIGKILL)
+                    except OSError:
+                        pass
+                print(f"Force killed {name} group (PID {p})")
         try:
-            os.kill(p, 0)
-            os.kill(p, signal.SIGKILL)
-            print(f"Force killed PID {p}")
-        except OSError:
-            pass
-
-    for name in PROCESSES:
-        cfg = PROCESSES[name]
-        try:
-            cfg["pidfile"].unlink(missing_ok=True)
+            pidfile.unlink(missing_ok=True)
         except OSError:
             pass
     _remove_supervisor_pid(sup_pidfile)
