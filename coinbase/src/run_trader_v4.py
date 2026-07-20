@@ -320,6 +320,13 @@ class EventTraderV4:
                                     "Min live trades before a strategy/product pair gets "
                                     "full sizing weight; below this, confidence is scaled "
                                     "down so tiny-sample 'lucky' winners can't overdrive size"),
+        "paper_strat_kill_pnl":  (float, -1000.0, 0.0, -150.0,
+                                    "Hard-kill a STRATEGY (block ALL new entries) once its "
+                                    "aggregated live P&L across every product drops below this. "
+                                    "Strategy-tier complement to the per-asset drop: a strategy "
+                                    "that has lost this much aggregate is a structural loser, not "
+                                    "one bad asset. Symmetric to paper_asset_drop_pnl but steeper "
+                                    "because it spans many products."),
     }
 
     def get_tunables(self) -> dict:
@@ -3857,7 +3864,19 @@ class EventTraderV4:
                 _st = int(_sa.get("trades", 0))
                 _sp = float(_sa.get("total_pnl", 0.0))
                 if _st >= 8:
-                    if _sp < -50.0:
+                    # Strategy-tier HARD-KILL: aggregate loser across all products.
+                    # obv_div at -$517 / 55 trades is the canonical case — it
+                    # bleeds via 55 separate product records, none individually
+                    # past the per-asset disable bar, but the STRATEGY is a
+                    # structural loser. Block all new entries for it until it
+                    # recovers above the kill floor.
+                    if _sp < self.paper_strat_kill_pnl:
+                        _strat_mult = 0.0
+                        log.info("PAPER SKIP %s: strategy '%s' hard-killed "
+                                  "(agg_pnl=%.1f < %.1f, %dt)",
+                                  product_id, _s, _sp, self.paper_strat_kill_pnl, _st)
+                        return  # do NOT open — strategy is a proven loser
+                    elif _sp < -50.0:
                         _strat_mult = 0.5
                     elif _sp > 50.0:
                         # Steeper curve so the bot's dominant winners get real size:
