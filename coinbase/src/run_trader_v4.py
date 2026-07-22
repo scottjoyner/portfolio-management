@@ -6210,8 +6210,13 @@ def main():
             level=logging.INFO,
             format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
         )
-    trader = EventTraderV4.from_cli()
-    trader.start()
+    from coinbase.src.trader_host_guard import acquire_writer_guard_from_environment
+
+    # Held until trader.start() returns (normally process shutdown). This is a
+    # local ext4 single-writer/hostname guard, not distributed fencing.
+    with acquire_writer_guard_from_environment():
+        trader = EventTraderV4.from_cli()
+        trader.start()
 
 
 if __name__ == "__main__":
