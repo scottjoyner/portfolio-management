@@ -170,6 +170,10 @@ data/paper_trader_v4_state.json
 data/paper_trader_v4_state.json.bak
 data/paper_trader_v4_state.json.bak2
 data/paper_trader_v4_state.json.bak3
+data/paper_trader_v4_state.json.pre-repair.*
+data/paper_trader_v4_state.json.reconcile-audit.*.json
+data/trader_state_corrupt
+data/trader-v4.lock
 scripts/coverage/
 scripts/experiments/
 
