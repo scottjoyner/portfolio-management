@@ -40,6 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 LOGDIR = ROOT / "logs"
 PYTHON = sys.executable
+TRADER_CORRUPTION_SENTINEL = Path("data/trader_state_corrupt")
 
 os.makedirs(LOGDIR, exist_ok=True)
 os.makedirs(ROOT / "data", exist_ok=True)
@@ -210,8 +211,26 @@ def _backoff_delay(name: str, now: float) -> float:
     return delay
 
 
-def _start(name: str) -> subprocess.Popen:
+def _trader_start_blocked(name: str) -> bool:
+    """Return whether the local corruption gate forbids this child start."""
+    return name == "trader-v4" and (ROOT / TRADER_CORRUPTION_SENTINEL).exists()
+
+
+def _start(name: str) -> subprocess.Popen | None:
     cfg = PROCESSES[name]
+    if _trader_start_blocked(name):
+        # This gate is deliberately local-host only.  Leave the trader stopped,
+        # but do not impair any other supervised component.
+        cfg["proc"] = None
+        try:
+            cfg["pidfile"].unlink(missing_ok=True)
+        except OSError:
+            pass
+        sys.stdout.write(
+            f"  {name}: BLOCKED by {TRADER_CORRUPTION_SENTINEL}; not starting\n"
+        )
+        sys.stdout.flush()
+        return None
     now = time.time()
 
     # Crash-loop backoff: if restarted too recently, wait
@@ -311,6 +330,14 @@ def supervise() -> None:
         for name in PROCESSES:
             cfg = PROCESSES[name]
             proc = cfg.get("proc")
+            if _trader_start_blocked(name):
+                # In particular, never feed a crashed trader into the restart
+                # path while the sentinel remains. Other children continue
+                # through their normal liveness and health handling.
+                continue
+            if proc is None:
+                _start(name)
+                continue
             # Reset restart counter if process has been healthy for HEALTHY_UPTIME_S
             last_ts = _last_restart_ts.get(name, 0.0)
             if last_ts > 0 and (now - last_ts) >= _HEALTHY_UPTIME_S:
