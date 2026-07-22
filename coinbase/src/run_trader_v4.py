@@ -2606,9 +2606,11 @@ class EventTraderV4:
         # occasionally omit/mis-record a pnl; the accumulator is what cash is
         # actually built from, so it is the source of truth for total P&L.
         self.paper_realized_pnl += pnl
-        self._perf_tracker.record_trade(pos.strategy, pos.product_id, pnl, pos.entry_notional, fee, pos.side,
-                                        backtest_win_rate=float(getattr(pos, "win_rate", 0.0) or 0.0,
-                                        regime=self.health_status.get("market_regime", "unknown")))
+        self._perf_tracker.record_trade(
+            pos.strategy, pos.product_id, pnl, pos.entry_notional, fee, pos.side,
+            backtest_win_rate=float(getattr(pos, "win_rate", 0.0) or 0.0),
+            regime=self.health_status.get("market_regime", "unknown"),
+        )
         win = pnl >= 0
         if win:
             self.paper_wins += 1
