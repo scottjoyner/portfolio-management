@@ -377,6 +377,42 @@ def save_records(kind: str, name: str, records: Sequence[dict]) -> int:
         return 0
 
 
+def save_records_durable(kind: str, name: str, records: Sequence[dict]) -> int:
+    """Append records and fsync both the JSONL file and its directory.
+
+    Unlike :func:`save_records`, this function deliberately propagates errors:
+    callers use it for trade events that must not be silently dropped.
+    """
+    if not records:
+        return 0
+    path = _path(kind, f"{name}.jsonl")
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    payload = b"".join(
+        (json.dumps(record, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
+        for record in records
+    )
+    with _lock:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            view = memoryview(payload)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:  # pragma: no cover - defensive OS contract guard
+                    raise OSError("short durable journal write")
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        dir_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        _metrics["record_saves"] += len(records)
+    return len(records)
+
+
 def load_records(kind: str, name: str, limit: Optional[int] = None) -> List[dict]:
     path = _path(kind, f"{name}.jsonl")
     if not os.path.exists(path):

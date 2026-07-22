@@ -3055,21 +3055,31 @@ class EventTraderV4:
                     self._feed_mgr.remove_position(pid)
                 self.paper_last_trade_ts[pid] = time.time()
 
-    def _record_trade_event(self, kind: str, product_id: str, price: float, **fields) -> None:
+    def _record_trade_event(self, kind: str, product_id: str, price: float,
+                            *, durable: bool = False, **fields) -> None:
         """Persist a labeled trade event to the durable feed cache for backtesting.
 
         Entries (entry / exit / scale_in / scale_out / reject) are written as
         JSON records to ``trade_events/<PRODUCT>.jsonl`` in the same store as the
         harvested candles (``feed_cache``, rooted at ``NAS_FEED_ROOT``). This lets
         a paper/live run double as a data factory: candles *plus* what the
-        strategy actually did and what happened next. Best-effort; never raises.
+        strategy actually did and what happened next. Normal events are
+        best-effort. Durable events fsync and propagate failures so accounting
+        events such as scale-ins cannot disappear silently.
         """
         try:
-            from data.feed_cache import save_records
+            from data.feed_cache import save_records, save_records_durable
             rec = {"ts": time.time(), "kind": kind, "product_id": product_id, "price": price}
             rec.update(fields)
-            save_records("trade_events", product_id, [rec])
-        except Exception as e:  # pragma: no cover - durability is best-effort
+            if durable:
+                if save_records_durable("trade_events", product_id, [rec]) != 1:
+                    raise OSError("durable trade event was not appended")
+            else:
+                save_records("trade_events", product_id, [rec])
+        except Exception as e:
+            if durable:
+                log.error("durable trade event persist failed for %s: %s", product_id, e)
+                raise
             log.debug("trade event persist skipped for %s: %s", product_id, e)
 
     def _paper_open_position(self, product_id: str, price: float, opp: Dict[str, Any],
@@ -4376,6 +4386,16 @@ class EventTraderV4:
                         pos.fees_paid += scale_fee
                         self.paper_cash -= margin_required + scale_fee
                         self.paper_fees_paid += scale_fee
+                        self._record_trade_event(
+                            "scale_in", product_id, price, durable=True,
+                            side=pos.side, strategy=str(pos.strategy), qty=scale_qty,
+                            notional=scale_notional, margin=margin_required,
+                            fee=scale_fee, leverage=pos.leverage,
+                            position_qty=pos.qty,
+                            position_entry_notional=pos.entry_notional,
+                            position_entry_price=pos.entry_price,
+                            position_trades=pos.trades, cash_after=self.paper_cash,
+                        )
                         log.info("SCALE IN %s: +%.4f qty (r_mult=%.1f, trade=%d/3)",
                                  product_id, scale_qty, pos.current_r_multiple, pos.trades)
 
