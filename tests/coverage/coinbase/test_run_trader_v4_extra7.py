@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from coinbase.src.run_trader_v4 import EventTraderV4, PaperPosition  # noqa: E402
 
@@ -55,6 +57,47 @@ def _opp(action="BUY", strat="ema_cross", conf=0.7, wr=0.65, sh=0.9, atr=5.0,
         "action": action, "strategy": strat, "confidence": conf, "win_rate": wr,
         "sharpe": sh, "atr_14": atr, "regime": regime, "edge_bps": edge, "price": 100.0,
     }
+
+
+def _accounting_trader():
+    """Paper trader with deterministic fills and no persistent/runtime writes."""
+    with patch.object(EventTraderV4, "_load_paper_state", return_value=None):
+        t = _mktrader(enable_leverage=True, max_leverage=2.0)
+    t.paper_cash = 10_000.0
+    t.paper_realized_pnl = 0.0
+    t.paper_fees_paid = 0.0
+    t.paper_trades = []
+    t.strategy_stats = {}
+    t._signal_type_counts = {}
+    t._save_paper_state = MagicMock()
+    t._record_trade_event = MagicMock()
+    t._push_notification = MagicMock()
+    t._update_trailing_volume = MagicMock()
+    t._paper_trade_notional = MagicMock(return_value=1_000.0)
+    t._paper_score_multiplier = MagicMock(return_value=1.0)
+    t._btc_momentum_multiplier = MagicMock(return_value=1.0)
+    t._paper_edge_model = MagicMock(return_value={
+        "probability": 0.7, "gross_bps": 200.0, "fee_bps": 100.0,
+        "latency_bps": 0.0, "net_bps": 100.0,
+    })
+    t._fee_tier = MagicMock(return_value=(1, 100.0, 100.0))
+    t._effective_fee_bps = MagicMock(return_value=100.0)
+    t._fill_model = MagicMock()
+    t._fill_model.is_maker.return_value = False
+    t._fill_model.estimate.side_effect = lambda _pid, _side, _qty, price, _vol: SimpleNamespace(
+        entry_price=price, exit_price=price, partial_fill_pct=1.0,
+    )
+    t._scalping = MagicMock()
+    return t
+
+
+def _assert_cash_invariant(t, starting_cash):
+    open_margin = sum(p.entry_notional / max(p.leverage, 1.0)
+                      for p in t.paper_positions.values())
+    open_costs = sum(p.fees_paid + p.cum_funding
+                     for p in t.paper_positions.values())
+    expected = starting_cash + t.paper_realized_pnl - open_margin - open_costs
+    assert t.paper_cash == pytest.approx(expected)
 
 
 def test_execute_impl_drawdown_breaker():
@@ -266,6 +309,33 @@ def test_execute_impl_scale_in_short():
     before = pos.qty
     t._paper_execute_impl("BTC-USD", 95.0, [_opp("SELL")])
     assert pos.qty > before
+
+
+@pytest.mark.parametrize(("action", "scale_price"), [("BUY", 110.0), ("SELL", 90.0)])
+def test_open_scale_close_preserves_cash_invariant(action, scale_price):
+    t = _accounting_trader()
+    starting_cash = t.paper_cash
+    opp = _opp(action, regime="strong_uptrend" if action == "BUY" else "strong_downtrend")
+    opp["leverage"] = 2.0
+
+    t._paper_open_position("BTC-USD", 100.0, opp)
+    pos = t.paper_positions["BTC-USD"]
+    pos.initial_stop_dist = 5.0
+    _assert_cash_invariant(t, starting_cash)
+
+    t._last_price = {"BTC-USD": scale_price}
+    t._paper_execute_impl("BTC-USD", scale_price, [opp])
+    assert pos.trades == 2
+    assert pos.fees_paid == pytest.approx(15.0)
+    _assert_cash_invariant(t, starting_cash)
+
+    t._paper_close_position(pos, scale_price, "accounting-test")
+    t.paper_positions.pop("BTC-USD")
+    _assert_cash_invariant(t, starting_cash)
+    assert t._perf_tracker.record_trade.call_args.kwargs == {
+        "backtest_win_rate": 0.65,
+        "regime": t.health_status.get("market_regime", "unknown"),
+    }
 
 
 def test_trade_events_persisted_to_feed_cache():

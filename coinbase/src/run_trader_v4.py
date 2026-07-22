@@ -4366,30 +4366,18 @@ class EventTraderV4:
                 scale_notional = self._paper_trade_notional(best.get("confidence", 0.5)) * 0.5
                 if scale_notional >= self.paper_min_trade_usd:
                     scale_fee = scale_notional * (self._effective_fee_bps() / 10_000.0)
-                    if pos.is_short:
-                        if self._paper_equity() >= scale_fee:
-                            cash_delta = scale_notional - scale_fee
-                            scale_qty = scale_notional / max(price, 1e-9)
-                            pos.qty += scale_qty
-                            pos.trades += 1
-                            pos.entry_notional += scale_notional
-                            pos.entry_price = pos.entry_notional / pos.qty
-                            self.paper_cash += cash_delta
-                            self.paper_fees_paid += scale_fee
-                            log.info("SCALE IN %s: +%.4f qty (r_mult=%.1f, trade=%d/3)",
-                                     product_id, scale_qty, pos.current_r_multiple, pos.trades)
-                    else:
-                        if self._paper_equity() >= scale_notional + scale_fee:
-                            cash_delta = -(scale_notional + scale_fee)
-                            scale_qty = scale_notional / max(price, 1e-9)
-                            pos.qty += scale_qty
-                            pos.trades += 1
-                            pos.entry_notional += scale_notional
-                            pos.entry_price = pos.entry_notional / pos.qty
-                            self.paper_cash += cash_delta
-                            self.paper_fees_paid += scale_fee
-                            log.info("SCALE IN %s: +%.4f qty (r_mult=%.1f, trade=%d/3)",
-                                     product_id, scale_qty, pos.current_r_multiple, pos.trades)
+                    margin_required = scale_notional / max(pos.leverage, 1.0)
+                    if self._paper_equity() >= margin_required + scale_fee:
+                        scale_qty = scale_notional / max(price, 1e-9)
+                        pos.qty += scale_qty
+                        pos.trades += 1
+                        pos.entry_notional += scale_notional
+                        pos.entry_price = pos.entry_notional / pos.qty
+                        pos.fees_paid += scale_fee
+                        self.paper_cash -= margin_required + scale_fee
+                        self.paper_fees_paid += scale_fee
+                        log.info("SCALE IN %s: +%.4f qty (r_mult=%.1f, trade=%d/3)",
+                                 product_id, scale_qty, pos.current_r_multiple, pos.trades)
 
         equity = self._paper_equity(self._last_price)
         self.paper_equity_curve.append(equity)
