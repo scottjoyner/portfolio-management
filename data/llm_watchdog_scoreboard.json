@@ -1,9 +1,9 @@
 {
   "judges": {
     "vibethinker": {
-      "avg_confidence": 0.8700132013200896,
-      "confidence_sum": 5272.279999999743,
-      "cycles": 6060,
+      "avg_confidence": 0.8689057403783013,
+      "confidence_sum": 5328.129999999744,
+      "cycles": 6132,
       "judge": {
         "base_url": "http://deathstar-xps-8920.tailcb8954.ts.net:1234/v1",
         "max_tokens": 1024,
@@ -13,17 +13,17 @@
         "role": "primary",
         "timeout_s": 90
       },
-      "last_reason": "healthy",
+      "last_reason": "drawdown",
       "last_task": "Summarize the last hour of trading health, the biggest changes, and any repeat signal patterns observed.",
-      "last_vote": "continue",
-      "updated_at": 1784497969.9411263,
+      "last_vote": "warn",
+      "updated_at": 1784561318.522234,
       "votes": {
-        "continue": 3883,
+        "continue": 3884,
         "flatten_only": 26,
-        "stop": 100,
-        "warn": 2051
+        "stop": 106,
+        "warn": 2116
       }
     }
   },
-  "updated_at": 1784497969.9411263
+  "updated_at": 1784561318.522234
 }

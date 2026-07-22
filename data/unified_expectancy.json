@@ -1,0 +1,213 @@
+{
+  "generated_at": "2026-07-20T12:24:02.954288",
+  "tilt": {
+    "AAVE-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -92.86,
+      "bot_trades": 11,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -92.86/11"
+    },
+    "PYR-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": 70.09,
+      "bot_trades": 10,
+      "tilt": "boost",
+      "reason": "pos: agent +0.00/0 or bot +70.09/10"
+    },
+    "FUN1-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -200.25,
+      "bot_trades": 8,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -200.25/8"
+    },
+    "DOT-USD": {
+      "agent_pnl": 5.4568,
+      "agent_trades": 2,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent +5.46/2, bot +0.00/0"
+    },
+    "AVAX-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -94.82,
+      "bot_trades": 11,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -94.82/11"
+    },
+    "LINK-USD": {
+      "agent_pnl": -14.3778,
+      "agent_trades": 4,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent -14.38/4, bot +0.00/0"
+    },
+    "DOGE-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -53.09,
+      "bot_trades": 17,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -53.09/17"
+    },
+    "LDO-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": 5.51,
+      "bot_trades": 10,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot +5.51/10"
+    },
+    "RE-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": 66.5,
+      "bot_trades": 8,
+      "tilt": "boost",
+      "reason": "pos: agent +0.00/0 or bot +66.50/8"
+    },
+    "UNI-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -51.22,
+      "bot_trades": 12,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -51.22/12"
+    },
+    "LTC-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -38.01,
+      "bot_trades": 13,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -38.01/13"
+    },
+    "HFT-USD": {
+      "agent_pnl": -25.89,
+      "agent_trades": 1,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent -25.89/1, bot +0.00/0"
+    },
+    "NCT-USD": {
+      "agent_pnl": 0.8959,
+      "agent_trades": 2,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.90/2, bot +0.00/0"
+    },
+    "EDGEX-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -6.97,
+      "bot_trades": 9,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot -6.97/9"
+    },
+    "XLM-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -24.79,
+      "bot_trades": 10,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot -24.79/10"
+    },
+    "ZEC-USD": {
+      "agent_pnl": 1.69,
+      "agent_trades": 2,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent +1.69/2, bot +0.00/0"
+    },
+    "BILL-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -1.78,
+      "bot_trades": 11,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot -1.78/11"
+    },
+    "MATH-USD": {
+      "agent_pnl": 13.3983,
+      "agent_trades": 1,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent +13.40/1, bot +0.00/0"
+    },
+    "BTC-USD": {
+      "agent_pnl": -136.738,
+      "agent_trades": 21,
+      "bot_pnl": -8.69,
+      "bot_trades": 9,
+      "tilt": "drop",
+      "reason": "neg: agent -136.74/21 or bot -8.69/9"
+    },
+    "PERP-USD": {
+      "agent_pnl": 20.8503,
+      "agent_trades": 3,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent +20.85/3, bot +0.00/0"
+    },
+    "VVV-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -24.89,
+      "bot_trades": 8,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot -24.89/8"
+    },
+    "ALLO-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -25.88,
+      "bot_trades": 10,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -25.88/10"
+    },
+    "APT-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -18.67,
+      "bot_trades": 11,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot -18.67/11"
+    },
+    "ETH-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -40.93,
+      "bot_trades": 9,
+      "tilt": "drop",
+      "reason": "neg: agent +0.00/0 or bot -40.93/9"
+    },
+    "XRP-USD": {
+      "agent_pnl": 0.0,
+      "agent_trades": 0,
+      "bot_pnl": -18.84,
+      "bot_trades": 8,
+      "tilt": "keep",
+      "reason": "mixed: agent +0.00/0, bot -18.84/8"
+    },
+    "IOTX-USD": {
+      "agent_pnl": 1.8786,
+      "agent_trades": 2,
+      "bot_pnl": 0.0,
+      "bot_trades": 0,
+      "tilt": "keep",
+      "reason": "mixed: agent +1.88/2, bot +0.00/0"
+    }
+  }
+}

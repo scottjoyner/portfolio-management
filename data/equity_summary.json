@@ -1,16 +1,16 @@
 {
-  "timestamp": 1784552522.4475644,
-  "total_equity": 10047.71,
+  "timestamp": 1784634617.9753232,
+  "total_equity": 11019.61,
   "cash": {
-    "value": 9946.45,
-    "pct": 99.0
+    "value": 11633.26,
+    "pct": 105.6
   },
   "core_holdings": {
     "value": 0.0,
     "pct": 0.0
   },
   "active_positions": {
-    "value": 101.26,
-    "pct": 1.0
+    "value": -613.65,
+    "pct": -5.6
   }
 }

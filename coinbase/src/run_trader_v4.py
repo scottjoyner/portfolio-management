@@ -603,14 +603,18 @@ class EventTraderV4:
             log.warning("MacroTrendAnalyzer init failed: %s", e)
             self._macro_rf_analyzer = None
         # Rehab state: hard-killed strategies + their escalating cooldown
-        # retries, persisted so restarts don't lose it. {strategy: {ts, retries}}
+        # retries, persisted so restarts don't lose it. Keyed by
+        # "strategy|regime" (per-regime disabling); legacy flat keys
+        # (strategy only, pre-regime) are dropped on load.
         self._killed_strats: Dict[str, Dict[str, float]] = {}
         try:
             import os as _os
             _kp = "data/bot_killed_strategies.json"
             if _os.path.exists(_kp):
                 with open(_kp) as _f:
-                    self._killed_strats = json.load(_f)
+                    _loaded = json.load(_f)
+                # Drop legacy flat keys (no "|") from before per-regime disabling.
+                self._killed_strats = {k: v for k, v in _loaded.items() if "|" in k}
         except Exception:
             self._killed_strats = {}
         self._last_macro_signal: Optional[CompositeMacroSignal] = None
@@ -2603,7 +2607,8 @@ class EventTraderV4:
         # actually built from, so it is the source of truth for total P&L.
         self.paper_realized_pnl += pnl
         self._perf_tracker.record_trade(pos.strategy, pos.product_id, pnl, pos.entry_notional, fee, pos.side,
-                                        backtest_win_rate=float(getattr(pos, "win_rate", 0.0) or 0.0))
+                                        backtest_win_rate=float(getattr(pos, "win_rate", 0.0) or 0.0,
+                                        regime=self.health_status.get("market_regime", "unknown")))
         win = pnl >= 0
         if win:
             self.paper_wins += 1
@@ -3937,32 +3942,40 @@ class EventTraderV4:
                 _sa = self._perf_tracker.strategy_aggregate(_s) if _s else {}
                 _st = int(_sa.get("trades", 0))
                 _sp = float(_sa.get("total_pnl", 0.0))
-                if _sp < self.paper_strat_kill_pnl:
+                # Regime-conditioned view: prefer per-(strategy, regime) P&L so a
+                # strategy that loses in TREND but wins in RANGE is only killed for
+                # the regime it actually loses in (not globally). Falls back to the
+                # global aggregate when this regime has <8 trades (no regime evidence).
+                _rsp = _sp
+                _rst = _st
+                if _s and regime_cmatrix:
+                    try:
+                        _rt = self._perf_tracker.strategy_regime_trades(_s, regime_cmatrix)
+                        if _rt >= 8:
+                            _rsp = float(self._perf_tracker.strategy_regime_pnl(_s, regime_cmatrix))
+                            _rst = _rt
+                    except Exception:
+                        pass
+                if _rsp < self.paper_strat_kill_pnl:
                     # Strategy-tier HARD-KILL + escalating-cooldown REHAB.
-                    # obv_div at -$517 / 55 trades is the canonical
-                    # case — it bleeds via 55 separate product records,
-                    # none individually past the per-asset disable bar, but
-                    # the STRATEGY is a structural loser. Block all new
-                    # entries for it until it recovers above the kill floor.
-                    #
-                    # REHAB: a killed strategy is re-tried after a
-                    # cooldown that DOUBLES on each re-failure
-                    # (paper_rehab_cooldown_days × 2^retries), so a
-                    # genuinely-bad strategy stays dead but a transient-
-                    # regime loser gets periodic retries. Recovery is
-                    # AUTOMATIC: if the strategy earns its aggregate
-                    # P&L back above the kill floor (via a profitable
-                    # retry), the next scan simply won't hit this branch.
+                    # Per-(strategy, regime): block new entries for this strategy
+                    # ONLY in the regime it's losing in. A genuine structural
+                    # loser (bad in all regimes) gets re-killed in each regime; a
+                    # transient-regime loser (e.g. obv_div -$517/55t in TREND but
+                    # fine in RANGE) stays alive where it works. Recovery: if the
+                    # strategy earns its P&L back above the kill floor (any regime),
+                    # the next scan simply won't hit this branch.
                     # State persists via data/bot_killed_strategies.json.
-                    _kk = self._killed_strats.get(_s)
+                    _kill_key = f"{_s}|{regime_cmatrix}" if regime_cmatrix else _s
+                    _kk = self._killed_strats.get(_kill_key)
                     if _kk is None:
-                        self._killed_strats[_s] = {"ts": time.time(), "retries": 0}
+                        self._killed_strats[_kill_key] = {"ts": time.time(), "retries": 0}
                         self._persist_killed_strats()
                         _strat_mult = 0.0
-                        log.info("PAPER SKIP %s: strategy '%s' hard-killed "
-                                  "(agg_pnl=%.1f < %.1f, %dt)",
-                                  product_id, _s, _sp, self.paper_strat_kill_pnl, _st)
-                        return  # do NOT open — strategy is a proven loser
+                        log.info("PAPER SKIP %s: strategy '%s' hard-killed in regime '%s' "
+                                  "(regime_pnl=%.1f < %.1f, %dt)",
+                                  product_id, _s, regime_cmatrix, _rsp, self.paper_strat_kill_pnl, _rst)
+                        return  # do NOT open — strategy is a proven loser in this regime
                     _cd = self.paper_rehab_cooldown_days * (2.0 ** _kk["retries"])
                     # _cd is in DAYS; time.time() diff is in SECONDS — compare
                     # in the same unit (days) or the bot would NEVER cool

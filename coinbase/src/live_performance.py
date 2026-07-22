@@ -39,6 +39,8 @@ class StrategyProductRecord:
     last_trade_ts: float = 0.0
     last_trade_side: str = ""  # "LONG" | "SHORT"
     backtest_win_rate: float = 0.0  # backtest win rate reported at entry (for live-vs-bt divergence)
+    regime_pnl: Dict[str, float] = field(default_factory=dict)  # regime -> cumulative pnl (per-regime disabling)
+    regime_trades: Dict[str, int] = field(default_factory=dict)  # regime -> trade count
     disabled: bool = False
     disable_reason: str = ""
 
@@ -91,8 +93,11 @@ class StrategyProductRecord:
         return max(0.0, (self.win_rate * r - self.loss_rate) / r)
 
     def record_trade(self, pnl: float, volume: float, fee: float, side: str,
-                     backtest_win_rate: float = 0.0) -> None:
+                     backtest_win_rate: float = 0.0, regime: str = "") -> None:
         self.trades += 1
+        if regime:
+            self.regime_pnl[regime] = self.regime_pnl.get(regime, 0.0) + pnl
+            self.regime_trades[regime] = self.regime_trades.get(regime, 0) + 1
         if backtest_win_rate > 0:
             # EMA of the backtest win rate seen at entry time
             self.backtest_win_rate = (
@@ -158,10 +163,10 @@ class LivePerformanceTracker:
 
     def record_trade(self, strategy: str, product_id: str, pnl: float,
                      volume: float, fee: float, side: str,
-                     backtest_win_rate: float = 0.0) -> StrategyProductRecord:
+                     backtest_win_rate: float = 0.0, regime: str = "") -> StrategyProductRecord:
         rec = self.get_or_create(strategy, product_id)
         with self._lock:
-            rec.record_trade(pnl, volume, fee, side, backtest_win_rate)
+            rec.record_trade(pnl, volume, fee, side, backtest_win_rate, regime)
         return rec
 
     def get(self, strategy: str, product_id: str) -> Optional[StrategyProductRecord]:
@@ -327,6 +332,31 @@ class LivePerformanceTracker:
                 "expectancy": round(a["pnl"] / n, 4),
             }
         return out
+
+    def strategy_regime_pnl(self, strategy: str, regime: str) -> float:
+        """Cumulative live P&L for a strategy IN A SPECIFIC REGIME.
+
+        Used for REGIME-CONDITIONED disabling: a strategy may be a
+        structural loser in TREND but win in RANGE (and vice-versa).
+        Killing it GLOBALLY throws away the good regime. Instead we
+        kill per-(strategy, regime) using this, so e.g. obv_div is
+        blocked in 'trending' but still allowed in 'ranging'.
+        """
+        total = 0.0
+        with self._lock:
+            for rec in self._records.values():
+                if rec.strategy == strategy:
+                    total += rec.regime_pnl.get(regime, 0.0)
+        return total
+
+    def strategy_regime_trades(self, strategy: str, regime: str) -> int:
+        """Closed-trade count for a strategy IN A SPECIFIC REGIME."""
+        n = 0
+        with self._lock:
+            for rec in self._records.values():
+                if rec.strategy == strategy:
+                    n += rec.regime_trades.get(regime, 0)
+        return n
 
     def is_strategy_disabled(self, strategy: str) -> bool:
         with self._lock:
