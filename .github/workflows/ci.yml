@@ -11,10 +11,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Validate tracked runtime artifacts
+      run: node scripts/validate-runtime-artifacts.mjs
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
 
@@ -27,8 +35,11 @@ jobs:
       run: |
         pytest tests/ trading_system/tests/unit/ --cov=trading_system --cov-report=xml
 
+    - name: Run Node tests
+      run: node --test tests/**/*.test.mjs tests/integration/*.test.mjs
+
     - name: Upload coverage
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
 
     - name: Run performance benchmarks
       run: |
@@ -43,10 +54,18 @@ jobs:
     needs: test
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Validate tracked runtime artifacts
+      run: node scripts/validate-runtime-artifacts.mjs
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
 
