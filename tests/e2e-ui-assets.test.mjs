@@ -4,14 +4,18 @@ import { readFileSync } from 'node:fs';
 
 const html = readFileSync('apps/web/src/index.html', 'utf8');
 const app = readFileSync('apps/web/src/app.js', 'utf8');
+const economics = readFileSync('apps/web/src/economics.js', 'utf8');
 const css = readFileSync('apps/web/src/styles.css', 'utf8');
-const combined = html + app + css;
+const combined = html + app + economics + css;
 
 test('daily operations console exposes the core operator workflow', () => {
   for (const section of ['overview', 'trades', 'positions', 'signals', 'race', 'agent', 'system']) {
     assert.match(html, new RegExp(`id="${section}"`));
     assert.match(html, new RegExp(`#${section}`));
   }
+  assert.match(html, /\/ui\/economics\.js/);
+  assert.match(economics, /id="economics"/);
+  assert.match(economics, /data-economic-nav/);
 });
 
 test('default view answers daily trading questions before showing the race', () => {
@@ -43,6 +47,17 @@ test('competition remains cost-adjusted and fail-closed', () => {
   }
   assert.match(app, /No trustworthy winner yet/);
   assert.match(app, /\/api\/competition/);
+});
+
+test('economic view explains forecast value, intelligence purchase, executable edge, and attribution', () => {
+  for (const token of ['economic-forecast', 'economic-intelligence', 'economic-edge', 'economic-attribution', 'economic-governance']) {
+    assert.match(economics, new RegExp(token));
+  }
+  for (const token of ['maximumIntelligenceSpendUsd', 'netExecutableEdgeUsd', 'incrementalPnlUsd', 'unreconciledQuotes']) {
+    assert.match(economics, new RegExp(token));
+  }
+  assert.match(economics, /\/api\/economics\/dashboard/);
+  assert.match(economics, /Provider-reported actual cost becomes authoritative/);
 });
 
 test('dashboard keeps paid-agent budget and live execution controls guarded', () => {
