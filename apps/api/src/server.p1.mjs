@@ -188,6 +188,100 @@ function productionPaperReadiness({ runtime, storage, audit }) {
   return { ok: blockers.length === 0, productionPaperReady: blockers.length === 0, liveTradingCertified: false, blockers, storage, runtime, audit };
 }
 
+function paidAgentOpportunity(state, opportunity) {
+  if (!opportunity) return false;
+  const job = state.researchJobs?.find(row => row.id === opportunity.researchJobId);
+  return job?.localOrRemote === 'remote'
+    || Number(opportunity.modelInferenceCost || 0) > 0
+    || Boolean(opportunity.modelQuoteId)
+    || Boolean(opportunity.economicDecisionId && state.modelUsageLedger?.some(row => row.decisionId === opportunity.economicDecisionId));
+}
+
+function validateExecutableDecision(state, decisionId, now = new Date()) {
+  const decision = state.economicDecisions?.find(row => row.id === decisionId);
+  if (!decision) return { ok: false, errors: ['economic_decision_required'] };
+  const errors = [];
+  if (decision.executionAllowed !== true) errors.push('economic_decision_blocks_execution');
+  const forecast = state.priceForecasts?.find(row => row.id === decision.forecastId);
+  const executionCost = state.executionCostSnapshots?.find(row => row.id === decision.executionCostSnapshotId);
+  const quote = decision.modelQuoteId ? state.modelUsageLedger?.find(row => row.id === decision.modelQuoteId) : null;
+  if (!forecast || forecast.status !== 'valid' || new Date(forecast.expiresAt || 0) < now) errors.push('economic_forecast_stale');
+  if (!executionCost || new Date(executionCost.validUntil || 0) < now) errors.push('economic_execution_cost_stale');
+  if (quote) {
+    if (quote.status !== 'reconciled') errors.push('model_usage_not_reconciled');
+    if (quote.reconciledAt && new Date(decision.createdAt || 0) < new Date(quote.reconciledAt)) errors.push('economic_decision_requires_post_reconciliation_refresh');
+  }
+  return { ok: errors.length === 0, errors, decision, forecast, executionCost, quote };
+}
+
+function validateIntelligencePurchase(state, body, now = new Date()) {
+  const quote = state.modelUsageLedger?.find(row => row.id === body.modelQuoteId);
+  const decision = state.economicDecisions?.find(row => row.id === body.economicDecisionId);
+  const errors = [];
+  if (!quote) errors.push('model_quote_required');
+  if (!decision) errors.push('economic_decision_required');
+  if (decision && decision.intelligenceAllowed !== true) errors.push('intelligence_purchase_not_economic');
+  if (decision && quote && decision.modelQuoteId !== quote.id) errors.push('economic_decision_model_quote_mismatch');
+  const maxAgeSeconds = Number(state.config?.maximumModelPricingAgeSeconds || 86400);
+  if (quote && new Date(quote.requestedAt || 0) < new Date(now.getTime() - maxAgeSeconds * 1000)) errors.push('model_quote_stale');
+  if (decision) {
+    const forecast = state.priceForecasts?.find(row => row.id === decision.forecastId);
+    const executionCost = state.executionCostSnapshots?.find(row => row.id === decision.executionCostSnapshotId);
+    if (!forecast || new Date(forecast.expiresAt || 0) < now) errors.push('economic_forecast_stale');
+    if (!executionCost || new Date(executionCost.validUntil || 0) < now) errors.push('economic_execution_cost_stale');
+  }
+  return { ok: errors.length === 0, errors, quote, decision };
+}
+
+async function economicMutationGate({ method, pathname, state, readBody, now = new Date() }) {
+  if (method !== 'POST' || state.config?.requireEconomicDecisionForRemoteAgent === false) return null;
+
+  const researchRequest = pathname === '/api/agents/jobs' || /^\/api\/opportunities\/[^/]+\/request-research$/.test(pathname);
+  if (researchRequest) {
+    const body = await readBody();
+    const isRemote = (body.localOrRemote || 'remote') === 'remote';
+    if (isRemote) {
+      const gate = validateIntelligencePurchase(state, body, now);
+      if (!gate.ok) return { status: 409, body: { ok: false, error: 'remote_intelligence_purchase_blocked', errors: gate.errors } };
+      body.remoteApiCost = gate.quote.estimatedCostUsd;
+      body.provider = gate.quote.provider;
+      body.model = gate.quote.model;
+      body.pricingSnapshotId = gate.quote.pricingSnapshotId;
+      body.modelQuoteId = gate.quote.id;
+      body.economicDecisionId = gate.decision.id;
+    }
+  }
+
+  const opportunityApproval = pathname.match(/^\/api\/opportunities\/([^/]+)\/approve$/);
+  if (opportunityApproval) {
+    const opportunity = state.opportunities?.find(row => row.id === decodeURIComponent(opportunityApproval[1]));
+    if (paidAgentOpportunity(state, opportunity)) {
+      const gate = validateExecutableDecision(state, opportunity?.economicDecisionId, now);
+      if (!gate.ok) return { status: 409, body: { ok: false, error: 'paid_agent_execution_blocked', errors: gate.errors, opportunityId: opportunity?.id || null } };
+    }
+  }
+
+  if (pathname === '/api/execution/execute') {
+    const body = await readBody();
+    const opportunity = body.opportunityId ? state.opportunities?.find(row => row.id === body.opportunityId) : null;
+    const paid = paidAgentOpportunity(state, opportunity)
+      || Boolean(body.modelQuoteId)
+      || String(body.tags?.competitor || body.sourceAgentId || '').toLowerCase() === 'agent';
+    if (paid) {
+      const decisionId = body.economicDecisionId || opportunity?.economicDecisionId;
+      const gate = validateExecutableDecision(state, decisionId, now);
+      if (!gate.ok) return { status: 409, body: { ok: false, error: 'paid_agent_execution_blocked', errors: gate.errors, opportunityId: opportunity?.id || null } };
+      body.economicDecisionId = gate.decision.id;
+      body.modelQuoteId = gate.decision.modelQuoteId;
+      body.forecastId = gate.decision.forecastId;
+      body.executionCostSnapshotId = gate.decision.executionCostSnapshotId;
+      body.netExecutableEdgeUsd = gate.decision.netExecutableEdgeUsd;
+      body.providerPreferences = gate.decision.providerPreferences;
+    }
+  }
+  return null;
+}
+
 async function dispatchRequest(req, options = {}) {
   const env = { ...process.env, ...(options.env || {}) };
   const runtime = validateRuntimeEnv(env);
@@ -212,6 +306,11 @@ async function dispatchRequest(req, options = {}) {
 
   const store = createOperatorStore(options);
   const method = req.method || 'GET';
+  let bodyPromise = null;
+  const readBody = () => {
+    bodyPromise ||= readJsonBody(req);
+    return bodyPromise;
+  };
 
   if (method === 'GET' && url.pathname === '/ready/production-paper') {
     const { state, error } = await loadState(store);
@@ -258,18 +357,21 @@ async function dispatchRequest(req, options = {}) {
       return withSecurityHeaders(json(audit.ok ? 200 : 409, { ...audit, requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
 
+    const mutationGate = await economicMutationGate({ method, pathname: url.pathname, state, readBody, now: options.now ? new Date(options.now) : new Date() });
+    if (mutationGate) return withSecurityHeaders(json(mutationGate.status, { ...mutationGate.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
+
     const economicRoute = await handleEconomicRoute({
       method,
       pathname: url.pathname,
       state,
       store,
-      readJsonBody: () => readJsonBody(req),
+      readJsonBody: readBody,
       env,
       fetchImpl: options.fetchImpl || globalThis.fetch,
     });
     if (economicRoute) return withSecurityHeaders(json(economicRoute.status, { ...economicRoute.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
 
-    const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
+    const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: readBody });
     if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
   }
 
