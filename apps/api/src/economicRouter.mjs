@@ -92,8 +92,13 @@ async function refreshCoinbaseEconomics(state, body = {}) {
   const quote = await adapter.getQuote(symbol);
   if (!quote || Number(quote.mid) <= 0) return { errors: ['coinbase_quote_unavailable'] };
   const quantity = Number(body.quantity || (notionalUsd / Number(quote.mid)));
+  const feeSummaryPromise = typeof adapter.getFeeSummary === 'function'
+    ? adapter.getFeeSummary()
+    : typeof adapter._cli === 'function'
+      ? adapter._cli('transaction_summary')
+      : Promise.resolve(null);
   const [feeSummary, previewResult] = await Promise.all([
-    typeof adapter.getFeeSummary === 'function' ? adapter.getFeeSummary() : Promise.resolve(null),
+    feeSummaryPromise,
     adapter.previewOrder({
       symbol,
       marketId: symbol,
