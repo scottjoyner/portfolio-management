@@ -4,18 +4,17 @@
    Compatible with the same JSON format as bridge_execution.py.
 */
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const CLI = 'coinbase';
 const KEY_FILE = join(homedir(), '.coinbase', 'api_key.json');
 
-// Auto-configure CLI if not already set up
 function ensureEnv() {
   try {
     execSync(`${CLI} env live --status`, { encoding: 'utf-8', timeout: 5000 });
-    return; // already configured
+    return;
   } catch { /* not configured */ }
   if (existsSync(KEY_FILE)) {
     try {
@@ -28,6 +27,14 @@ function run(args, parseJson = true) {
   const stdout = execSync(`${CLI} ${args}`, { encoding: 'utf-8', timeout: 30000 });
   if (!parseJson) return stdout.trim();
   try { return JSON.parse(stdout.trim()); } catch { return stdout.trim(); }
+}
+
+function runFirst(commands) {
+  let lastError = null;
+  for (const command of commands) {
+    try { return run(command); } catch (error) { lastError = error; }
+  }
+  throw lastError || new Error('no_coinbase_cli_command_succeeded');
 }
 
 function handle(action, payload = {}) {
@@ -48,9 +55,7 @@ function handle(action, payload = {}) {
       const productIds = payload.product_ids || [];
       const data = run('products best-bid-ask');
       let pricebooks = data.pricebooks || [];
-      if (productIds.length > 0) {
-        pricebooks = pricebooks.filter(p => productIds.includes(p.product_id));
-      }
+      if (productIds.length > 0) pricebooks = pricebooks.filter(p => productIds.includes(p.product_id));
       return { ok: true, data: { pricebooks } };
     }
 
@@ -124,6 +129,15 @@ function handle(action, payload = {}) {
       return { ok: true, data: fills };
     }
 
+    case 'transaction_summary': {
+      const data = runFirst([
+        'fees transaction-summary',
+        'fees get-transaction-summary',
+        'fees summary',
+      ]);
+      return { ok: true, data: typeof data === 'object' ? data : {} };
+    }
+
     case 'preview_order': {
       const side = (payload.side || 'buy').toUpperCase();
       const productId = payload.product_id;
@@ -156,7 +170,7 @@ function handle(action, payload = {}) {
       const pid = payload.product_id;
       if (!pid) return { ok: false, error: 'product_id_required' };
       const flags = [];
-      const toRfc3339 = (u) => new Date(u * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const toRfc3339 = u => new Date(u * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
       if (payload.start_unix) flags.push(`start==${toRfc3339(payload.start_unix)}`);
       if (payload.end_unix) flags.push(`end==${toRfc3339(payload.end_unix)}`);
       if (payload.granularity) flags.push(`granularity=${payload.granularity}`);
@@ -188,8 +202,8 @@ function main() {
     const cmd = JSON.parse(process.argv[2]);
     const result = handle(cmd.action, cmd.payload || {});
     console.log(JSON.stringify(result));
-  } catch (e) {
-    console.log(JSON.stringify({ ok: false, error: `bridge_error: ${e.message}` }));
+  } catch (error) {
+    console.log(JSON.stringify({ ok: false, error: `bridge_error: ${error.message}` }));
     process.exit(1);
   }
 }
