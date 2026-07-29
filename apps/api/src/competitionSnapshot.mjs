@@ -32,30 +32,6 @@ function ageSeconds(path, now) {
   }
 }
 
-function utcDay(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
-}
-
-function currentAgentCost(state, now) {
-  const rows = Array.isArray(state?.agentCostLedger) ? state.agentCostLedger : [];
-  const today = new Date(now * 1000).toISOString().slice(0, 10);
-  const relevant = rows.filter(row => {
-    const agentId = String(row?.agentId || '').toLowerCase();
-    const day = utcDay(row?.createdAt);
-    return day === today && (!agentId || ['agent', 'hermes', 'trader', 'openrouter'].some(token => agentId.includes(token)));
-  });
-  const cost = relevant.reduce(
-    (sum, row) => sum + Number(row?.remoteApiCost || 0) + Number(row?.localComputeCost || 0),
-    0,
-  );
-  return {
-    value: round(cost, 6),
-    rows: relevant.length,
-    source: relevant.length ? 'operator_agent_cost_ledger_today' : 'competition_snapshot',
-  };
-}
-
 function normalizeCompetitor(raw, side) {
   const start = finite(raw?.starting_capital_usd);
   const gross = finite(raw?.gross_equity_usd);
@@ -70,9 +46,13 @@ function normalizeCompetitor(raw, side) {
     accounting_version: finite(raw?.accounting_version),
     ranking_eligible: raw?.ranking_eligible !== false,
     history_valid_from: raw?.history_valid_from || null,
+    epoch_id: raw?.epoch_id || null,
     starting_capital_usd: start,
+    raw_lifetime_equity_usd: finite(raw?.raw_lifetime_equity_usd),
+    epoch_baseline_equity_usd: finite(raw?.epoch_baseline_equity_usd),
     gross_equity_usd: gross,
     operating_cost_usd: cost,
+    cost_source: raw?.cost_source || 'competition_snapshot',
     net_equity_usd: net,
     gross_pnl_usd: finite(raw?.gross_pnl_usd) ?? (gross !== null && start !== null ? gross - start : null),
     net_pnl_usd: finite(raw?.net_pnl_usd) ?? (net !== null && start !== null ? net - start : null),
@@ -91,11 +71,16 @@ function normalizeCompetitor(raw, side) {
   };
 }
 
-function recompute(agent, bot, sourceValid, warnings) {
+function recompute(agent, bot, sourceValid, warnings, epoch) {
   const sameStartingCapital = agent.starting_capital_usd !== null
     && bot.starting_capital_usd !== null
     && Math.abs(agent.starting_capital_usd - bot.starting_capital_usd) <= 0.01;
   if (!sameStartingCapital) warnings.push('starting_capital_mismatch');
+
+  const epochId = epoch?.epoch_id || null;
+  const sharedEpoch = Boolean(epochId && agent.epoch_id === epochId && bot.epoch_id === epochId);
+  if (!epochId) warnings.push('competition_epoch_missing');
+  else if (!sharedEpoch) warnings.push('competition_epoch_mismatch');
 
   const agentAccountingValid = agent.accounting_version === REQUIRED_AGENT_ACCOUNTING_VERSION
     && agent.ranking_eligible === true;
@@ -105,6 +90,7 @@ function recompute(agent, bot, sourceValid, warnings) {
   const valid = Boolean(
     sourceValid
     && sameStartingCapital
+    && sharedEpoch
     && agentAccountingValid
     && agent.status === 'ok'
     && bot.status === 'ok'
@@ -124,12 +110,13 @@ function recompute(agent, bot, sourceValid, warnings) {
     agent_alpha_after_cost_pct_points: valid && agent.net_return_pct !== null && bot.net_return_pct !== null
       ? round(agent.net_return_pct - bot.net_return_pct, 6)
       : null,
-    ranking_basis: 'net_equity_after_agent_operating_costs',
+    ranking_basis: 'shared_epoch_net_equity_after_agent_operating_costs',
+    epoch_id: epochId,
     required_agent_accounting_version: REQUIRED_AGENT_ACCOUNTING_VERSION,
   };
 }
 
-export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now = Date.now() / 1000 } = {}) {
+export function buildCompetitionSnapshot({ dataDir = DATA_ROOT, now = Date.now() / 1000 } = {}) {
   const path = join(dataDir, SNAPSHOT_FILE);
   const age = ageSeconds(path, now);
   const payload = readObject(path);
@@ -139,6 +126,7 @@ export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now 
       generated_at: new Date(now * 1000).toISOString(),
       status: 'unknown',
       source: { file: SNAPSHOT_FILE, freshness: 'unknown', age_seconds: age },
+      epoch: null,
       competitors: {
         agent: normalizeCompetitor(null, 'agent'),
         bot: normalizeCompetitor(null, 'bot'),
@@ -151,7 +139,8 @@ export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now 
         agent_cost_coverage_ratio: null,
         agent_break_even_gap_usd: null,
         agent_alpha_after_cost_pct_points: null,
-        ranking_basis: 'net_equity_after_agent_operating_costs',
+        ranking_basis: 'shared_epoch_net_equity_after_agent_operating_costs',
+        epoch_id: null,
         required_agent_accounting_version: REQUIRED_AGENT_ACCOUNTING_VERSION,
       },
       warnings: ['competition_snapshot_missing'],
@@ -162,23 +151,16 @@ export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now 
   if (freshness !== 'fresh') warnings.push('competition_snapshot_stale');
   const agent = normalizeCompetitor(payload?.competitors?.agent, 'agent');
   const bot = normalizeCompetitor(payload?.competitors?.bot, 'bot');
-
-  const liveCost = currentAgentCost(state, now);
-  if (liveCost.rows > 0) {
-    agent.operating_cost_usd = liveCost.value;
-    agent.net_equity_usd = agent.gross_equity_usd === null ? null : round(agent.gross_equity_usd - liveCost.value, 6);
-    agent.net_pnl_usd = agent.net_equity_usd === null || agent.starting_capital_usd === null
-      ? null
-      : round(agent.net_equity_usd - agent.starting_capital_usd, 6);
-    agent.net_return_pct = agent.net_pnl_usd === null || !agent.starting_capital_usd
-      ? null
-      : round(agent.net_pnl_usd / agent.starting_capital_usd * 100, 6);
-    agent.cost_source = liveCost.source;
-  }
-
-  const standings = recompute(agent, bot, freshness === 'fresh' && payload.status !== 'unknown', warnings);
+  const epoch = payload?.epoch && typeof payload.epoch === 'object' ? payload.epoch : null;
+  const standings = recompute(
+    agent,
+    bot,
+    freshness === 'fresh' && payload.status !== 'unknown',
+    warnings,
+    epoch,
+  );
   return {
-    schema_version: Number(payload.schema_version || 2),
+    schema_version: Number(payload.schema_version || 3),
     generated_at: new Date(now * 1000).toISOString(),
     snapshot_generated_at: payload.generated_at || null,
     status: standings.valid_for_ranking ? 'ok' : 'degraded',
@@ -187,13 +169,15 @@ export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now 
       freshness,
       age_seconds: age === null ? null : round(age, 3),
     },
+    epoch,
     competitors: { agent, bot },
     standings,
     contracts: payload.contracts || {
-      bot_equity: 'paper_cash + marked_unrealized_pnl',
-      agent_score: 'gross_equity - attributable_model_and_compute_cost',
+      bot_raw_equity: 'paper_cash + marked_unrealized_pnl',
+      epoch_normalization: 'common_start + current_raw_equity - epoch_raw_equity_baseline',
+      agent_score: 'normalized_gross_equity - post_epoch_attributable_model_and_compute_cost',
       agent_accounting: 'v2_margin_notional_quantity_leverage_once',
-      leader: 'higher_net_equity_after_costs',
+      leader: 'higher_shared_epoch_net_equity_after_costs',
     },
     warnings: [...new Set(warnings)].sort(),
   };
