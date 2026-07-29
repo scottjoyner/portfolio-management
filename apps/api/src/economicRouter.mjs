@@ -79,27 +79,49 @@ function latestForSymbol(rows = [], symbol) {
     .sort((a, b) => new Date(b.createdAt || b.asOf || b.requestedAt || 0) - new Date(a.createdAt || a.asOf || a.requestedAt || 0))[0] || null;
 }
 
+function quoteForOpportunity(rows = [], opportunityId) {
+  if (!opportunityId) return null;
+  return [...rows]
+    .filter(row => row.opportunityId === opportunityId)
+    .sort((a, b) => new Date(b.requestedAt || 0) - new Date(a.requestedAt || 0))[0] || null;
+}
+
 async function refreshCoinbaseEconomics(state, body = {}) {
   const symbol = body.symbol || 'BTC-USD';
   const side = String(body.side || 'buy').toLowerCase() === 'sell' ? 'sell' : 'buy';
   const notionalUsd = Number(body.notionalUsd || body.notional || 0);
   if (!Number.isFinite(notionalUsd) || notionalUsd <= 0) return { errors: ['execution_notional_required'] };
+
   const { getDefaultRegistry } = await import('../../../packages/adapters/src/adapterRegistry.mjs');
   const registry = getDefaultRegistry();
   const adapter = registry.getAdapterForVenue('coinbase');
   if (!adapter) return { errors: ['coinbase_adapter_unavailable'] };
-  try { await adapter.connect?.(); } catch { /* preview can still fall back safely */ }
+  try { await adapter.connect?.(); } catch { /* read-only preview may still be available */ }
+
   const quote = await adapter.getQuote(symbol);
   if (!quote || Number(quote.mid) <= 0) return { errors: ['coinbase_quote_unavailable'] };
   const quantity = Number(body.quantity || (notionalUsd / Number(quote.mid)));
-  const feeSummaryPromise = typeof adapter.getFeeSummary === 'function'
-    ? adapter.getFeeSummary()
+  const previewPayload = {
+    product_id: symbol,
+    side,
+    base_size: side === 'sell' ? String(quantity) : undefined,
+    quote_size: side === 'buy' ? String(notionalUsd) : undefined,
+  };
+
+  const rawFeeResult = typeof adapter.getFeeSummary === 'function'
+    ? await adapter.getFeeSummary()
     : typeof adapter._cli === 'function'
-      ? adapter._cli('transaction_summary')
-      : Promise.resolve(null);
-  const [feeSummary, previewResult] = await Promise.all([
-    feeSummaryPromise,
-    adapter.previewOrder({
+      ? await adapter._cli('transaction_summary')
+      : null;
+  const feeSummary = rawFeeResult?.ok === false ? null : (rawFeeResult?.data || rawFeeResult || null);
+
+  let preview = null;
+  if (typeof adapter._cli === 'function') {
+    const raw = await adapter._cli('preview_order', previewPayload);
+    if (raw?.ok && raw.data) preview = raw.data;
+  }
+  if (!preview) {
+    const parsed = await adapter.previewOrder({
       symbol,
       marketId: symbol,
       side,
@@ -107,9 +129,11 @@ async function refreshCoinbaseEconomics(state, body = {}) {
       notional: notionalUsd,
       price: quote.mid,
       slippageBps: quote.spreadBps || 0,
-    }),
-  ]);
-  if (!previewResult?.ok) return { errors: previewResult?.errors || ['coinbase_preview_unavailable'] };
+    });
+    if (!parsed?.ok) return { errors: parsed?.errors || ['coinbase_preview_unavailable'] };
+    preview = parsed.preview || {};
+  }
+
   return ingestExecutionCostSnapshot(state, {
     venue: 'coinbase',
     symbol,
@@ -118,9 +142,9 @@ async function refreshCoinbaseEconomics(state, body = {}) {
     quantity,
     referencePrice: quote.mid,
     spreadBps: quote.spreadBps,
-    liquidity: previewResult.preview?.liquidity || 'taker',
-    feeSummary: feeSummary?.data || feeSummary || {},
-    preview: previewResult.preview || {},
+    liquidity: preview.liquidity || 'taker',
+    feeSummary: feeSummary || {},
+    preview,
     source: feeSummary ? 'coinbase_preview_and_transaction_summary' : 'coinbase_preview',
   });
 }
@@ -210,22 +234,22 @@ export async function handleEconomicRoute({ method, pathname, state, store, read
   if (method === 'POST' && pathname === '/api/economics/decisions/evaluate') {
     const body = await readJsonBody();
     return mutate(store, current => {
-      const symbol = body.symbol || current.opportunities?.find(row => row.id === body.opportunityId)?.symbol;
+      const opportunity = current.opportunities?.find(row => row.id === body.opportunityId);
+      const symbol = body.symbol || opportunity?.symbol;
+      const economicModelQuote = body.modelQuote
+        || (body.modelQuoteId ? undefined : quoteForOpportunity(current.modelUsageLedger, body.opportunityId));
       const enriched = {
         ...body,
         forecast: body.forecast || (!body.forecastId ? latestForSymbol(current.priceForecasts, symbol) : undefined),
-        modelQuote: body.modelQuote || (!body.modelQuoteId ? latestForSymbol(current.modelUsageLedger, null) : undefined),
+        modelQuote: economicModelQuote,
         executionCostSnapshot: body.executionCostSnapshot || (!body.executionCostSnapshotId ? latestForSymbol(current.executionCostSnapshots, symbol) : undefined),
       };
       const result = evaluateEconomicDecision(current, enriched);
-      if (result.economicDecision && body.opportunityId) {
-        const opportunity = current.opportunities?.find(row => row.id === body.opportunityId);
-        if (opportunity) {
-          opportunity.economicDecisionId = result.economicDecision.id;
-          opportunity.economicExecutionAllowed = result.economicDecision.executionAllowed;
-          opportunity.economicDecisionBlockers = result.economicDecision.blockers;
-          opportunity.updatedAt = new Date().toISOString();
-        }
+      if (result.economicDecision && opportunity) {
+        opportunity.economicDecisionId = result.economicDecision.id;
+        opportunity.economicExecutionAllowed = result.economicDecision.executionAllowed;
+        opportunity.economicDecisionBlockers = result.economicDecision.blockers;
+        opportunity.updatedAt = new Date().toISOString();
       }
       return result;
     }, 201);
