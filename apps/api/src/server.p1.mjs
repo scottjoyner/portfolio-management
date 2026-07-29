@@ -8,6 +8,8 @@ import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } 
 import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { logRequest, recordResponse, renderPrometheusMetrics } from './metrics.mjs';
 import { verifyAuditIntegrity } from '../../../packages/audit/src/integrity.mjs';
+import { buildSystemTruth } from './systemTruth.mjs';
+import { buildCompetitionSnapshot } from './competitionSnapshot.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -52,7 +54,9 @@ async function loadState(store) {
 }
 
 function isP1Route(pathname) {
-  return pathname === '/api/accounts'
+  return pathname === '/api/system-truth'
+    || pathname === '/api/competition'
+    || pathname === '/api/accounts'
     || pathname === '/api/instruments'
     || pathname === '/api/strategy-templates'
     || pathname === '/api/paper-executions'
@@ -158,6 +162,7 @@ function makeSummary(state, store, runtime) {
       opportunityReview: true,
       agentCostLedger: true,
       budgetApprovals: true,
+      competitionConsole: true,
       liveTradingCertified: false
     }
   };
@@ -214,6 +219,16 @@ async function dispatchRequest(req, options = {}) {
       const base = await handleBaseRequest(req, { ...options, store });
       const body = JSON.parse(base.body);
       return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store, runtime), requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/system-truth') {
+      const truth = buildSystemTruth({ env, dataDir: options.dataDir, now: options.now });
+      return withSecurityHeaders(json(200, truth), req, env);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/competition') {
+      const competition = buildCompetitionSnapshot({ state, dataDir: options.dataDir, now: options.now });
+      return withSecurityHeaders(json(200, competition), req, env);
     }
 
     if (method === 'GET' && url.pathname === '/api/audit/verify') {
