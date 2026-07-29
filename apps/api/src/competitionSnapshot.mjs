@@ -4,6 +4,7 @@ import { join } from 'node:path';
 const DATA_ROOT = '/app/data';
 const SNAPSHOT_FILE = 'competition_state.json';
 const STALE_AFTER_SECONDS = 180;
+const REQUIRED_AGENT_ACCOUNTING_VERSION = 2;
 
 function finite(value) {
   const parsed = Number(value);
@@ -66,6 +67,9 @@ function normalizeCompetitor(raw, side) {
     status: String(raw?.status || 'unknown'),
     source: raw?.source || 'competition_snapshot',
     age_seconds: finite(raw?.age_seconds),
+    accounting_version: finite(raw?.accounting_version),
+    ranking_eligible: raw?.ranking_eligible !== false,
+    history_valid_from: raw?.history_valid_from || null,
     starting_capital_usd: start,
     gross_equity_usd: gross,
     operating_cost_usd: cost,
@@ -92,9 +96,16 @@ function recompute(agent, bot, sourceValid, warnings) {
     && bot.starting_capital_usd !== null
     && Math.abs(agent.starting_capital_usd - bot.starting_capital_usd) <= 0.01;
   if (!sameStartingCapital) warnings.push('starting_capital_mismatch');
+
+  const agentAccountingValid = agent.accounting_version === REQUIRED_AGENT_ACCOUNTING_VERSION
+    && agent.ranking_eligible === true;
+  if (agent.accounting_version !== REQUIRED_AGENT_ACCOUNTING_VERSION) warnings.push('agent_accounting_version_invalid');
+  if (agent.ranking_eligible !== true) warnings.push('agent_history_not_ranking_eligible');
+
   const valid = Boolean(
     sourceValid
     && sameStartingCapital
+    && agentAccountingValid
     && agent.status === 'ok'
     && bot.status === 'ok'
     && agent.net_equity_usd !== null
@@ -114,6 +125,7 @@ function recompute(agent, bot, sourceValid, warnings) {
       ? round(agent.net_return_pct - bot.net_return_pct, 6)
       : null,
     ranking_basis: 'net_equity_after_agent_operating_costs',
+    required_agent_accounting_version: REQUIRED_AGENT_ACCOUNTING_VERSION,
   };
 }
 
@@ -140,6 +152,7 @@ export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now 
         agent_break_even_gap_usd: null,
         agent_alpha_after_cost_pct_points: null,
         ranking_basis: 'net_equity_after_agent_operating_costs',
+        required_agent_accounting_version: REQUIRED_AGENT_ACCOUNTING_VERSION,
       },
       warnings: ['competition_snapshot_missing'],
     };
@@ -179,6 +192,7 @@ export function buildCompetitionSnapshot({ state = {}, dataDir = DATA_ROOT, now 
     contracts: payload.contracts || {
       bot_equity: 'paper_cash + marked_unrealized_pnl',
       agent_score: 'gross_equity - attributable_model_and_compute_cost',
+      agent_accounting: 'v2_margin_notional_quantity_leverage_once',
       leader: 'higher_net_equity_after_costs',
     },
     warnings: [...new Set(warnings)].sort(),
