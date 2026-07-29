@@ -168,15 +168,36 @@ function buildForecasts(state, symbols, now) {
   return { created, skipped };
 }
 
+function isPaidAgentExecution(state, execution) {
+  const opportunity = state.opportunities?.find(row => row.id === execution.opportunityId);
+  const decisionId = execution.economicDecisionId || opportunity?.economicDecisionId;
+  const decision = state.economicDecisions?.find(row => row.id === decisionId);
+  const job = state.researchJobs?.find(row => row.id === opportunity?.researchJobId);
+  return Boolean(
+    execution.modelQuoteId
+      || execution.tags?.modelQuoteId
+      || decision?.modelQuoteId
+      || opportunity?.modelQuoteId
+      || job?.localOrRemote === 'remote'
+      || String(execution.tags?.competitor || '').toLowerCase() === 'agent',
+  );
+}
+
 function processSettlementAttribution(state, now) {
   const recorded = [];
   const pending = [];
+  const skipped = [];
   for (const execution of state.executions || []) {
+    if (!isPaidAgentExecution(state, execution)) {
+      skipped.push({ executionId: execution.id, reason: 'not_paid_agent_execution' });
+      continue;
+    }
     const result = queueOrRecordSettlementAttribution(state, execution, now);
     if (result.agentAttribution && !result.idempotent) recorded.push(result.agentAttribution);
     if (result.attributionPending) pending.push(result.attributionPending);
+    if (result.skipped) skipped.push({ executionId: execution.id, reason: result.reason });
   }
-  return { recorded, pending };
+  return { recorded, pending, skipped };
 }
 
 export async function runEconomicMaintenance(state, options = {}) {
@@ -239,6 +260,7 @@ export async function runEconomicMaintenance(state, options = {}) {
   report.attributionsPending = state.economicAttributionQueue.length;
   report.details.attributionRecorded = attribution.recorded.map(row => row.id);
   report.details.attributionPending = attribution.pending.map(row => row.id);
+  report.details.attributionSkipped = attribution.skipped;
 
   report.details.pruned = pruneEconomicState(state, state.config?.economicStateRetention || {}).removed;
   report.ok = report.warnings.length === 0;
