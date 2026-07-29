@@ -56,6 +56,7 @@ async function loadState(store) {
 function isP1Route(pathname) {
   return pathname === '/api/system-truth'
     || pathname === '/api/competition'
+    || pathname === '/api/positions'
     || pathname === '/api/accounts'
     || pathname === '/api/instruments'
     || pathname === '/api/strategy-templates'
@@ -229,6 +230,19 @@ async function dispatchRequest(req, options = {}) {
     if (method === 'GET' && url.pathname === '/api/competition') {
       const competition = buildCompetitionSnapshot({ state, dataDir: options.dataDir, now: options.now });
       return withSecurityHeaders(json(200, competition), req, env);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/positions') {
+      return withSecurityHeaders(json(200, {
+        ok: true,
+        positions: Array.isArray(state.positions) ? state.positions : [],
+        accounts: Array.isArray(state.accounts) ? state.accounts : [],
+        capitalInPlayUsd: state.capitalInPlayUsd ?? null,
+        source: 'operator_store',
+        requestId: id,
+        actor: auth.actor,
+        role: auth.role,
+      }), req, env);
     }
 
     if (method === 'GET' && url.pathname === '/api/audit/verify') {
