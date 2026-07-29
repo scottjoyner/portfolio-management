@@ -15,7 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from hermes_agent_accounting import ACCOUNTING_VERSION, new_ledger
+try:
+    from scripts.hermes_agent_accounting import ACCOUNTING_VERSION, new_ledger
+except ImportError:  # direct ``python scripts/reset_agent_competition.py``
+    from hermes_agent_accounting import ACCOUNTING_VERSION, new_ledger
 
 try:
     import fcntl
