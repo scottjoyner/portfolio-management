@@ -1,38 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 
 const html = readFileSync('apps/web/src/index.html', 'utf8');
 const app = readFileSync('apps/web/src/app.js', 'utf8');
 const css = readFileSync('apps/web/src/styles.css', 'utf8');
-const data = existsSync('apps/web/src/dashboard-data.js') ? readFileSync('apps/web/src/dashboard-data.js', 'utf8') : '';
 
-test('expanded dashboard exposes all operator navigation sections', () => {
-  for (const section of ['overview', 'portfolio', 'live-markets', 'strategies', 'backtests', 'opportunities', 'polymarket', 'agents', 'risk', 'approvals', 'paper', 'audit']) {
+test('competition console exposes the core operator workflow', () => {
+  for (const section of ['overview', 'race', 'trades', 'signals', 'learning', 'costs', 'risk', 'system']) {
     assert.match(html, new RegExp(`id="${section}"`));
     assert.match(html, new RegExp(`#${section}`));
   }
 });
 
-test('dashboard uses cockpit layout rather than flat admin layout', () => {
+test('competition console uses a cockpit layout', () => {
   for (const token of ['app-frame', 'sidebar', 'command-bar', 'market-strip', 'command-queue', 'risk-stack', 'cockpit-hero']) {
     assert.match(html + css + app, new RegExp(token));
   }
 });
 
-test('dashboard renders opportunity risk and cost fields', () => {
-  for (const token of ['totalMoneyRisked', 'maxLoss', 'potentialUpside', 'grossExpectedValue', 'netExpectedValue', 'agentResearchCost', 'modelInferenceCost']) {
-    assert.match(app + data, new RegExp(token));
+test('dashboard ranks net results after paid-agent costs', () => {
+  for (const token of ['net_equity_usd', 'operating_cost_usd', 'agent_cost_coverage_ratio', 'agent_break_even_gap_usd', 'valid_for_ranking']) {
+    assert.match(app, new RegExp(token));
   }
+  assert.match(app, /\/api\/competition/);
+  assert.match(app, /\/api\/agents\/costs/);
 });
 
-test('dashboard surfaces budget approval workflow', () => {
-  for (const token of ['budget-approval-rows', 'request-budget-approval', '/api/agents/budget-approvals', 'budgetApprovalId', 'Pending budget approvals']) {
+test('dashboard surfaces guarded budget controls', () => {
+  for (const token of ['budget-approval-rows', 'request-budget-approval', '/api/agents/budget-approvals']) {
     assert.match(html + app, new RegExp(token.replaceAll('/', '\\/')));
   }
+  assert.match(html, /disabled title=/);
 });
 
 test('dashboard keeps live execution visibly blocked', () => {
-  assert.match(html, /live blocked/i);
   assert.match(html, /live orders blocked/i);
+  assert.match(html, /paper \/ guarded/i);
 });
