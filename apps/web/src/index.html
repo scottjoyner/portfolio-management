@@ -3,72 +3,166 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Portfolio OS — Operator Console</title>
+  <meta name="color-scheme" content="dark" />
+  <title>Portfolio OS — Trading Competition</title>
   <link rel="stylesheet" href="/ui/styles.css" />
 </head>
 <body>
-  <div id="app">
-    <header id="topbar">
-      <div class="topbar-brand">
-        <span class="brand-dot">PM</span>
-        <div><strong>Portfolio OS</strong><span class="label">paper console</span></div>
+<div id="app" class="app-frame">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">PM</span>
+      <div><strong>Portfolio OS</strong><small>competition console</small></div>
+    </div>
+    <nav id="nav-tabs" aria-label="Primary">
+      <a href="#overview" class="nav-active">Overview</a>
+      <a href="#race">Race</a>
+      <a href="#trades">Trades</a>
+      <a href="#signals">Signals</a>
+      <a href="#learning">Learning</a>
+      <a href="#costs">Agent Costs</a>
+      <a href="#risk">Risk</a>
+      <a href="#system">System</a>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="safety-pill">PAPER / GUARDED</span>
+      <small>Live orders blocked</small>
+      <small>Local operator execution (non-canonical)</small>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <header class="command-bar">
+      <div>
+        <p class="eyebrow">HEAD-TO-HEAD TRADING LAB</p>
+        <h1>Bot vs. paid agent</h1>
       </div>
-      <div class="topbar-center" id="topbar-status">
-        <span class="status-dot live"></span>
-        <span id="topbar-uptime">Connected</span>
-        <span class="label" id="topbar-refresh-time"></span>
-      </div>
-      <div class="topbar-actions">
-        <button id="btn-refresh" title="Refresh all data">Refresh</button>
-        <button id="btn-kill-switch" class="btn-danger" title="Toggle kill switch">Kill</button>
+      <div class="command-status">
+        <span id="connection-dot" class="status-dot"></span>
+        <span id="connection-label">Connecting</span>
+        <span id="last-refresh">—</span>
+        <button id="refresh-button" type="button">Refresh</button>
       </div>
     </header>
 
-    <div id="layout">
-      <aside id="sidebar">
-        <nav id="nav-tabs">
-          <a href="#dashboard" class="nav-active">Dashboard</a>
-          <a href="#portfolio">Portfolio</a>
-          <a href="#markets">Markets</a>
-          <a href="#signals">Signals</a>
-          <a href="#opportunities">Opportunities</a>
-          <a href="#execution">Execution</a>
-          <a href="#kalshi">Kalshi</a>
-          <a href="#polymarket">Polymarket</a>
-          <a href="#audit">Audit</a>
-          <a href="#sweeper">Sweeper</a>
-          <a href="#adapters">Adapters</a>
-          <a href="#secrets">Secrets</a>
-          <a href="#settings">Settings</a>
-        </nav>
-        <div id="sidebar-stats">
-          <div class="stat-line"><span class="label">Executions</span><strong id="s-exec-count">0</strong></div>
-          <div class="stat-line"><span class="label">Opportunities</span><strong id="s-opp-count">0</strong></div>
-          <div class="stat-line"><span class="label">Positions</span><strong id="s-pos-count">0</strong></div>
-          <div class="stat-line"><span class="label">Audit Events</span><strong id="s-audit-count">0</strong></div>
-        </div>
-      </aside>
+    <section class="market-strip" aria-label="Competition status">
+      <span id="race-validity" class="badge badge-warn">Ranking unavailable</span>
+      <strong id="race-leader">Waiting for authoritative ledgers</strong>
+      <span id="race-edge">—</span>
+      <span id="race-cost-coverage">Agent cost coverage —</span>
+    </section>
 
-      <main id="content">
-        <section id="live-ticker" class="ticker-bar">
-          <div class="ticker-bar-inner" id="ticker-inner">Loading prices…</div>
-        </section>
-        <section id="activity-feed-panel">
-          <div class="panel-header">
-            <span class="eyebrow">Live Feed</span>
-            <span id="feed-count" class="label">0 events</span>
+    <section id="alert-stack" class="alert-stack" aria-live="polite"></section>
+
+    <section id="overview" class="view active-view">
+      <div class="cockpit-hero">
+        <article class="competitor-card agent-card">
+          <div class="card-title"><span>Paid Agent</span><span id="agent-status" class="badge">unknown</span></div>
+          <strong id="agent-net-equity" class="hero-value">—</strong>
+          <span class="hero-label">Net equity after API/compute cost</span>
+          <div class="metric-grid">
+            <div><small>Gross P&amp;L</small><b id="agent-gross-pnl">—</b></div>
+            <div><small>Model cost</small><b id="agent-cost">—</b></div>
+            <div><small>Net return</small><b id="agent-return">—</b></div>
+            <div><small>Max drawdown</small><b id="agent-dd">—</b></div>
+            <div><small>Win rate</small><b id="agent-win">—</b></div>
+            <div><small>Round trips</small><b id="agent-trades">—</b></div>
           </div>
-          <div id="activity-feed"><div class="feed-empty">Waiting for events…</div></div>
-        </section>
+        </article>
 
-        <section id="kpi-strip" class="kpi-strip"></section>
+        <div class="versus">
+          <span>VS</span>
+          <strong id="head-to-head-alpha">—</strong>
+          <small>agent alpha after cost</small>
+        </div>
 
-        <section id="tab-content">
-          <div class="tab-placeholder">Select a tab from the sidebar</div>
-        </section>
-      </main>
-    </div>
-  </div>
-  <script type="module" src="/ui/app.js"></script>
+        <article class="competitor-card bot-card">
+          <div class="card-title"><span>Deterministic Bot</span><span id="bot-status" class="badge">unknown</span></div>
+          <strong id="bot-net-equity" class="hero-value">—</strong>
+          <span class="hero-label">Canonical paper equity</span>
+          <div class="metric-grid">
+            <div><small>Gross P&amp;L</small><b id="bot-gross-pnl">—</b></div>
+            <div><small>Fees paid</small><b id="bot-fees">—</b></div>
+            <div><small>Net return</small><b id="bot-return">—</b></div>
+            <div><small>Max drawdown</small><b id="bot-dd">—</b></div>
+            <div><small>Win rate</small><b id="bot-win">—</b></div>
+            <div><small>Round trips</small><b id="bot-trades">—</b></div>
+          </div>
+        </article>
+      </div>
+
+      <div class="overview-grid">
+        <article class="panel command-queue">
+          <div class="panel-head"><h2>What needs attention</h2><span id="queue-count">0</span></div>
+          <div id="command-queue"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head"><h2>Recent activity</h2><span id="activity-count">0</span></div>
+          <div id="activity-feed"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="race" class="view">
+      <div class="panel">
+        <div class="panel-head"><h2>Authoritative scorecard</h2><span>Net equity is the ranking basis</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Competitor</th><th>Gross equity</th><th>Operating cost</th><th>Net equity</th><th>Net P&amp;L</th><th>Return</th><th>Drawdown</th><th>Win rate</th></tr></thead>
+          <tbody id="race-table"></tbody>
+        </table></div>
+        <div id="race-contract" class="contract-note"></div>
+      </div>
+    </section>
+
+    <section id="trades" class="view">
+      <div class="panel"><div class="panel-head"><h2>Execution ledger</h2><span id="trade-count">0</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Time</th><th>Owner</th><th>Symbol</th><th>Side</th><th>Status</th><th>Notional</th><th>Confidence</th></tr></thead><tbody id="trade-rows"></tbody></table></div>
+      </div>
+    </section>
+
+    <section id="signals" class="view">
+      <div class="panel"><div class="panel-head"><h2>Signal comparison</h2><span id="signal-count">0</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Source</th><th>Symbol</th><th>Recommendation</th><th>Confidence</th><th>Gross EV</th><th>Agent cost</th><th>Net EV</th><th>Status</th></tr></thead><tbody id="signal-rows"></tbody></table></div>
+      </div>
+    </section>
+
+    <section id="learning" class="view">
+      <div class="panel"><div class="panel-head"><h2>Learning and promotion evidence</h2><span>Audit before autonomy</span></div>
+        <div id="learning-content" class="card-list"></div>
+      </div>
+    </section>
+
+    <section id="costs" class="view">
+      <div class="cost-grid">
+        <article class="panel"><div class="panel-head"><h2>Agent economics</h2></div><div id="cost-kpis" class="metric-grid large"></div></article>
+        <article class="panel"><div class="panel-head"><h2>Budget approvals</h2><span id="budget-approval-count">0</span></div>
+          <div id="budget-approval-rows" class="card-list"></div>
+          <button id="request-budget-approval" type="button" disabled title="Use the API workflow with explicit market and amount">Request budget from opportunity</button>
+        </article>
+      </div>
+    </section>
+
+    <section id="risk" class="view">
+      <div class="risk-stack">
+        <article class="panel"><div class="panel-head"><h2>Risk posture</h2></div><div id="risk-content"></div></article>
+        <article class="panel"><div class="panel-head"><h2>Competition validity</h2></div><div id="validity-content"></div></article>
+      </div>
+    </section>
+
+    <section id="system" class="view">
+      <div id="system-truth" class="truth-grid">
+        <article><small>Mode</small><b id="truth-mode">unknown</b></article>
+        <article><small>Feed</small><b id="truth-feed">unknown</b></article>
+        <article><small>Cache</small><b id="truth-cache">unknown</b></article>
+        <article><small>Services</small><b id="truth-services">unknown</b></article>
+        <article><small>Paper book</small><b id="truth-paper-book">unknown</b></article>
+        <article><small>Execution</small><b id="truth-execution-decision">unknown</b></article>
+        <article><small>Terminal</small><b id="truth-terminal">unknown</b></article>
+      </div>
+      <div class="panel"><div class="panel-head"><h2>System warnings</h2></div><div id="system-warnings" class="card-list"></div></div>
+    </section>
+  </main>
+</div>
+<script type="module" src="/ui/app.js"></script>
 </body>
 </html>
