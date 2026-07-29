@@ -1,6 +1,6 @@
 {
   "paper_starting_capital": 10000.0,
-  "paper_cash": 11633.263314740525,
+  "paper_cash": 9171.627113823339,
   "paper_positions": [
     {
       "product_id": "SPA-USD",
@@ -2337,7 +2337,7 @@
     }
   ],
   "paper_realized_pnl": -223.7371630791766,
-  "paper_fees_paid": 258.4829613428747,
+  "paper_fees_paid": 258.84296134287473,
   "paper_wins": 21,
   "paper_losses": 109,
   "paper_last_trade_ts": {
@@ -3427,8 +3427,8 @@
     1784627009.1759644,
     1784627009.4787064
   ],
-  "paper_trailing_volume_30d": 115674.83474900716,
-  "paper_monthly_volume": 118030.72124271568,
+  "paper_trailing_volume_30d": 115974.83473441502,
+  "paper_monthly_volume": 118330.72124271568,
   "paper_month_ts": 1784556337.6740985,
   "strategy_stats": {
     "williams_r": {
@@ -3976,7 +3976,38 @@
       "SHORT": 2
     }
   },
-  "core_holdings": [],
+  "core_holdings": [
+    {
+      "product_id": "ETH-USD",
+      "qty": 0.05326458650701495,
+      "cost_basis": 1877.42,
+      "total_cost": 100.12,
+      "total_qty": 0.05326458650701495,
+      "trades": 1,
+      "last_buy_ts": 1784834646.7088373,
+      "created_ts": 1784834646.7088373
+    },
+    {
+      "product_id": "SOL-USD",
+      "qty": 1.3227513227513228,
+      "cost_basis": 75.6,
+      "total_cost": 100.12,
+      "total_qty": 1.3227513227513228,
+      "trades": 1,
+      "last_buy_ts": 1784834646.7091217,
+      "created_ts": 1784834646.7091217
+    },
+    {
+      "product_id": "BTC-USD",
+      "qty": 0.0015438765071708433,
+      "cost_basis": 64772.02,
+      "total_cost": 100.12,
+      "total_qty": 0.0015438765071708433,
+      "trades": 1,
+      "last_buy_ts": 1784834646.7091932,
+      "created_ts": 1784834646.7091932
+    }
+  ],
   "state_schema_version": 2,
   "mode": "paper"
 }

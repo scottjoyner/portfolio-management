@@ -1,12 +1,12 @@
 {
-  "ts": 1784634382.8988683,
+  "ts": 1784835186.7118883,
   "overall": {
-    "trades": 130,
+    "trades": 131,
     "wins": 21,
-    "losses": 109,
-    "win_rate": 0.1615,
-    "realized_pnl": -223.74,
-    "fees_paid": 258.48,
+    "losses": 110,
+    "win_rate": 0.1603,
+    "realized_pnl": -236.23,
+    "fees_paid": 259.78,
     "peak_equity": 11937.54
   },
   "strategies": {
@@ -252,24 +252,25 @@
       "avg_hold_secs": 5644.5
     },
     "supertrend": {
-      "trades": 4,
+      "trades": 5,
       "wins": 1,
-      "losses": 3,
-      "win_rate": 0.25,
-      "volume": 3515.72,
-      "pnl": -16.49,
-      "avg_win": -16.49,
-      "avg_loss": 5.5,
+      "losses": 4,
+      "win_rate": 0.2,
+      "volume": 4134.32,
+      "pnl": -28.98,
+      "avg_win": -28.98,
+      "avg_loss": 7.24,
       "profit_factor": -1.0,
-      "buy_signals": 2,
+      "buy_signals": 3,
       "sell_signals": 3,
       "exit_reasons": {
         "multi_signal:sell=100%": 2,
         "multi_signal:buy=100%": 1,
-        "minute_tighten:ratio=0.09_r=0.5": 1
+        "minute_tighten:ratio=0.09_r=0.5": 1,
+        "minute_tighten:ratio=2.41_r=-0.0": 1
       },
-      "avg_entry_conf": 0.653,
-      "avg_hold_secs": 5586.2
+      "avg_entry_conf": 0.652,
+      "avg_hold_secs": 46198.7
     }
   }
 }

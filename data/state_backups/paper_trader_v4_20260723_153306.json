@@ -1,60 +1,37 @@
 {
   "paper_starting_capital": 10000.0,
-  "paper_cash": 11633.263314740525,
+  "paper_cash": 9141.149088497024,
   "paper_positions": [
     {
-      "product_id": "SPA-USD",
-      "side": "SHORT",
-      "qty": 274688.7257574247,
-      "entry_price": 0.002211,
-      "entry_ts": 1784626411.5126076,
+      "product_id": "INDEX-USD",
+      "side": "LONG",
+      "qty": 1146.0045892827436,
+      "entry_price": 0.280927,
+      "entry_ts": 1784835111.4273565,
       "strategy": "supertrend",
-      "confidence": 0.6642857142857144,
-      "win_rate": 0.7857142857142857,
+      "confidence": 0.6500000000000001,
+      "win_rate": 0.75,
       "sharpe": 1.0,
-      "fees_paid": 0.607336772649666,
-      "highest_price": 0.002234,
-      "lowest_price": 0.002212,
-      "entry_notional": 607.336772649666,
-      "leverage": 2.0,
+      "fees_paid": 0.3219436312534333,
+      "highest_price": 0.2809,
+      "lowest_price": 0.2809,
+      "entry_notional": 321.9436312534333,
+      "leverage": 1.0,
       "cum_funding": 0.0,
       "trades": 1,
-      "liq_price": 0.002274380952380953,
+      "liq_price": 0.0,
       "long_horizon": false,
-      "stop_price": 0.0022587857142857145,
-      "target_price": 0.0021371428571428566,
-      "initial_stop_dist": 4.678571428571469e-05,
+      "stop_price": 0.26315,
+      "target_price": 0.30929999999999996,
+      "initial_stop_dist": 0.01775,
       "breakeven_set": false,
       "trailing_activated": false,
       "trailing_take_price": 0.0,
-      "regime": "weak_downtrend",
-      "atr_14": 1.8714285714285876e-05
+      "regime": "weak_uptrend",
+      "atr_14": 0.0070999999999999995
     }
   ],
   "paper_trades": [
-    {
-      "ts": 1784560467.1944745,
-      "product_id": "UP-USD",
-      "side": "BUY",
-      "qty": 10433.915752724879,
-      "price": 0.05872,
-      "fee": 1.531985765183212,
-      "pnl": 0.0,
-      "reason": "entry:rsi_revert",
-      "strategy": "rsi_revert"
-    },
-    {
-      "ts": 1784560509.9626102,
-      "product_id": "SUI-USD",
-      "side": "BUY",
-      "qty": 689.200594735184,
-      "price": 0.759976,
-      "fee": 1.3094397779611655,
-      "pnl": -3.6982193773222067,
-      "reason": "multi_signal:buy=100%",
-      "strategy": "zscore_revert",
-      "regime": "low_volatility"
-    },
     {
       "ts": 1784560511.611572,
       "product_id": "LRC-USD",
@@ -2334,12 +2311,35 @@
       "pnl": 0.0,
       "reason": "entry:supertrend",
       "strategy": "supertrend"
+    },
+    {
+      "ts": 1784835060.2007728,
+      "product_id": "SPA-USD",
+      "side": "BUY",
+      "qty": 274688.7257574247,
+      "price": 0.002252,
+      "fee": 0.6185990104057205,
+      "pnl": -12.488173539109864,
+      "reason": "minute_tighten:ratio=2.41_r=-0.0",
+      "strategy": "supertrend",
+      "regime": "weak_downtrend"
+    },
+    {
+      "ts": 1784835111.427792,
+      "product_id": "INDEX-USD",
+      "side": "BUY",
+      "qty": 1146.0045892827436,
+      "price": 0.2809,
+      "fee": 0.3219436312534333,
+      "pnl": 0.0,
+      "reason": "entry:supertrend",
+      "strategy": "supertrend"
     }
   ],
-  "paper_realized_pnl": -223.7371630791766,
-  "paper_fees_paid": 258.4829613428747,
+  "paper_realized_pnl": -236.22533661828646,
+  "paper_fees_paid": 259.78350398453387,
   "paper_wins": 21,
-  "paper_losses": 109,
+  "paper_losses": 110,
   "paper_last_trade_ts": {
     "EURC-USDC": 1784559162.9082437,
     "CHZ-USD": 1784573744.290538,
@@ -2420,18 +2420,11 @@
     "ATH-USD": 1784618804.430433,
     "LA-USD": 1784618537.3494473,
     "DNT-USD": 1784626350.9306235,
-    "SPA-USD": 1784626411.5126204
+    "SPA-USD": 1784835060.203851,
+    "INDEX-USD": 1784835111.4273684
   },
   "paper_peak_equity": 11937.539037838007,
   "paper_equity_curve": [
-    9100.489827133088,
-    9100.489827133088,
-    9100.489827133088,
-    9100.406297860689,
-    9100.406297860689,
-    9100.406297860689,
-    9100.406297860689,
-    9100.155710043497,
     9100.155710043497,
     9100.155710043497,
     9100.155710043497,
@@ -2923,17 +2916,17 @@
     11632.988626014767,
     11626.945474048103,
     11626.945474048103,
-    11626.945474048103
+    11626.945474048103,
+    9763.91420486946,
+    9763.91420486946,
+    9763.91420486946,
+    9763.91420486946,
+    9763.91420486946,
+    9763.86129481655,
+    9441.45807052267,
+    9441.51098057558
   ],
   "paper_equity_tss": [
-    1784568092.295399,
-    1784568092.610236,
-    1784568092.916095,
-    1784568271.0606349,
-    1784568271.374249,
-    1784568271.6794307,
-    1784568271.986193,
-    1784568307.2303212,
     1784568307.5378797,
     1784568307.8448899,
     1784568308.152033,
@@ -3425,10 +3418,18 @@
     1784626475.152925,
     1784627008.5715644,
     1784627009.1759644,
-    1784627009.4787064
+    1784627009.4787064,
+    1784835061.3133044,
+    1784835064.7466521,
+    1784835067.523838,
+    1784835067.524067,
+    1784835067.524293,
+    1784835094.7082355,
+    1784835111.4306087,
+    1784835171.5841403
   ],
-  "paper_trailing_volume_30d": 115674.83474900716,
-  "paper_monthly_volume": 118030.72124271568,
+  "paper_trailing_volume_30d": 116894.57245643005,
+  "paper_monthly_volume": 119271.26388437484,
   "paper_month_ts": 1784556337.6740985,
   "strategy_stats": {
     "williams_r": {
@@ -3877,28 +3878,31 @@
       ]
     },
     "supertrend": {
-      "trades": 4,
+      "trades": 5,
       "wins": 1,
-      "losses": 3,
-      "volume": 3515.720972225034,
-      "pnl": -16.48959844954605,
+      "losses": 4,
+      "volume": 4134.319982630755,
+      "pnl": -28.977771988655917,
       "exit_reasons": {
         "multi_signal:sell=100%": 2,
         "multi_signal:buy=100%": 1,
-        "minute_tighten:ratio=0.09_r=0.5": 1
+        "minute_tighten:ratio=0.09_r=0.5": 1,
+        "minute_tighten:ratio=2.41_r=-0.0": 1
       },
       "entry_confidences": [
         0.639,
         0.658,
         0.659,
         0.643,
-        0.664
+        0.664,
+        0.65
       ],
       "hold_times": [
         3593.6,
         8537.8,
         2697.4,
-        7515.9
+        7515.9,
+        208648.7
       ]
     }
   },
@@ -3970,13 +3974,44 @@
       "SHORT": 2
     },
     "supertrend": {
-      "BUY": 2,
+      "BUY": 3,
       "SELL": 3,
       "LONG": 2,
-      "SHORT": 2
+      "SHORT": 3
     }
   },
-  "core_holdings": [],
+  "core_holdings": [
+    {
+      "product_id": "ETH-USD",
+      "qty": 0.05326458650701495,
+      "cost_basis": 1877.42,
+      "total_cost": 100.12,
+      "total_qty": 0.05326458650701495,
+      "trades": 1,
+      "last_buy_ts": 1784834646.7088373,
+      "created_ts": 1784834646.7088373
+    },
+    {
+      "product_id": "SOL-USD",
+      "qty": 1.3227513227513228,
+      "cost_basis": 75.6,
+      "total_cost": 100.12,
+      "total_qty": 1.3227513227513228,
+      "trades": 1,
+      "last_buy_ts": 1784834646.7091217,
+      "created_ts": 1784834646.7091217
+    },
+    {
+      "product_id": "BTC-USD",
+      "qty": 0.0015438765071708433,
+      "cost_basis": 64772.02,
+      "total_cost": 100.12,
+      "total_qty": 0.0015438765071708433,
+      "trades": 1,
+      "last_buy_ts": 1784834646.7091932,
+      "created_ts": 1784834646.7091932
+    }
+  ],
   "state_schema_version": 2,
   "mode": "paper"
 }
