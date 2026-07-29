@@ -14,6 +14,8 @@
     "cli": "node apps/cli/src/index.mjs",
     "api": "node apps/api/src/server.p1.mjs",
     "web": "node apps/api/src/server.p1.mjs",
+    "economics:once": "node scripts/run-economic-maintenance.mjs --once",
+    "economics:worker": "node scripts/run-economic-maintenance.mjs",
     "migrations:validate": "node scripts/validate-migrations.mjs",
     "migrations:dry-run": "node scripts/migrate-postgres.mjs --dry-run",
     "migrations:up": "node scripts/migrate-postgres.mjs",
