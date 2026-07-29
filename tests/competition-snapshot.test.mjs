@@ -6,9 +6,7 @@ import { join } from 'node:path';
 
 import { buildCompetitionSnapshot } from '../apps/api/src/competitionSnapshot.mjs';
 
-test('competition snapshot deducts current-day agent API cost and recomputes the leader', async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), 'competition-'));
-  const now = Date.parse('2026-07-29T12:00:00Z') / 1000;
+async function writeSnapshot(dataDir, agentOverrides = {}) {
   await writeFile(join(dataDir, 'competition_state.json'), JSON.stringify({
     schema_version: 2,
     generated_at: '2026-07-29T12:00:00Z',
@@ -17,11 +15,15 @@ test('competition snapshot deducts current-day agent API cost and recomputes the
       agent: {
         label: 'OpenRouter Agent',
         status: 'ok',
+        accounting_version: 2,
+        ranking_eligible: true,
+        history_valid_from: '2026-07-29T12:00:00Z',
         starting_capital_usd: 10000,
         gross_equity_usd: 10120,
         operating_cost_usd: 0,
         net_equity_usd: 10120,
         net_return_pct: 1.2,
+        ...agentOverrides,
       },
       bot: {
         label: 'EventTraderV4 Bot',
@@ -35,6 +37,12 @@ test('competition snapshot deducts current-day agent API cost and recomputes the
     },
     warnings: [],
   }));
+}
+
+test('competition snapshot deducts current-day agent API cost and recomputes the leader', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'competition-'));
+  const now = Date.parse('2026-07-29T12:00:00Z') / 1000;
+  await writeSnapshot(dataDir);
 
   const state = {
     agentCostLedger: [
@@ -50,6 +58,18 @@ test('competition snapshot deducts current-day agent API cost and recomputes the
   assert.equal(out.standings.leader, 'bot');
   assert.equal(out.standings.agent_minus_bot_usd, -15);
   assert.equal(out.standings.agent_cost_coverage_ratio, 4.8);
+  assert.equal(out.standings.required_agent_accounting_version, 2);
+});
+
+test('competition snapshot refuses legacy or invalidated agent history', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'competition-'));
+  const now = Date.parse('2026-07-29T12:00:00Z') / 1000;
+  await writeSnapshot(dataDir, { accounting_version: 1, ranking_eligible: false });
+  const out = buildCompetitionSnapshot({ dataDir, now });
+  assert.equal(out.standings.valid_for_ranking, false);
+  assert.equal(out.standings.leader, 'unknown');
+  assert.ok(out.warnings.includes('agent_accounting_version_invalid'));
+  assert.ok(out.warnings.includes('agent_history_not_ranking_eligible'));
 });
 
 test('competition snapshot fails closed when the file is missing', async () => {
