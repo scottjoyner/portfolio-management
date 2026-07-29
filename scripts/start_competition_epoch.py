@@ -20,13 +20,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from competition_scoreboard import load_agent_cost, load_bot_book
-from reset_agent_competition import (
-    DEFAULT_ARCHIVE,
-    DEFAULT_LEDGER,
-    DEFAULT_LOCK as DEFAULT_AGENT_LOCK,
-    archive_and_reset,
-)
+try:
+    from scripts.competition_scoreboard import load_agent_cost, load_bot_book
+    from scripts.reset_agent_competition import (
+        DEFAULT_ARCHIVE,
+        DEFAULT_LEDGER,
+        DEFAULT_LOCK as DEFAULT_AGENT_LOCK,
+        archive_and_reset,
+    )
+except ImportError:  # direct ``python scripts/start_competition_epoch.py``
+    from competition_scoreboard import load_agent_cost, load_bot_book
+    from reset_agent_competition import (
+        DEFAULT_ARCHIVE,
+        DEFAULT_LEDGER,
+        DEFAULT_LOCK as DEFAULT_AGENT_LOCK,
+        archive_and_reset,
+    )
 
 try:
     import fcntl
