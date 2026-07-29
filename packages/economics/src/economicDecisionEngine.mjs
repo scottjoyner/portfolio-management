@@ -76,6 +76,14 @@ function pricingNumber(value) {
   return parsed != null && parsed >= 0 ? parsed : 0;
 }
 
+function latest(rows = [], fields = ['createdAt', 'fetchedAt', 'requestedAt', 'asOf']) {
+  return [...rows].sort((a, b) => {
+    const aValue = fields.map(field => a?.[field]).find(Boolean) || 0;
+    const bValue = fields.map(field => b?.[field]).find(Boolean) || 0;
+    return new Date(bValue) - new Date(aValue);
+  })[0] || null;
+}
+
 export function ensureEconomicState(state) {
   state.modelPricingSnapshots ||= [];
   state.modelUsageLedger ||= [];
@@ -83,7 +91,15 @@ export function ensureEconomicState(state) {
   state.executionCostSnapshots ||= [];
   state.economicDecisions ||= [];
   state.agentAttributionRecords ||= [];
+  state.economicAttributionQueue ||= [];
   state.forecastOutcomes ||= [];
+  state.economicMaintenance ||= {
+    status: 'never_run',
+    lastRunAt: null,
+    lastSuccessAt: null,
+    warnings: [],
+    counters: {},
+  };
   return state;
 }
 
@@ -117,9 +133,11 @@ export function ingestModelPricingCatalog(state, payload = {}, now = new Date().
   ensureEconomicState(state);
   const normalized = normalizeOpenRouterCatalog(payload.catalog ?? payload, now, payload.source || 'openrouter_models_api');
   if (!normalized.models.length) return { errors: ['model_pricing_catalog_empty'] };
+  const previous = latestPricingSnapshot(state, normalized.provider);
   const snapshot = {
     id: nextRecordId('pricing', state.modelPricingSnapshots),
     ...normalized,
+    replacesSnapshotId: previous?.id || null,
   };
   state.modelPricingSnapshots.push(snapshot);
   state.audit?.push?.({
@@ -128,7 +146,7 @@ export function ingestModelPricingCatalog(state, payload = {}, now = new Date().
     actor: payload.actor || 'economic-decision-engine',
     at: now,
     details: snapshot.id,
-    payload: { provider: snapshot.provider, modelCount: snapshot.modelCount },
+    payload: { provider: snapshot.provider, modelCount: snapshot.modelCount, replacesSnapshotId: snapshot.replacesSnapshotId },
   });
   return { pricingSnapshot: snapshot };
 }
@@ -163,6 +181,12 @@ function localModelQuote(body = {}) {
   };
 }
 
+export function effectiveModelCostUsd(quote) {
+  if (!quote) return 0;
+  if (quote.status === 'reconciled' && finite(quote.actualCostUsd, null) != null) return nonNegative(quote.actualCostUsd, 0);
+  return nonNegative(quote.estimatedCostUsd, 0);
+}
+
 export function quoteModelRequest(state, body = {}, now = new Date().toISOString()) {
   ensureEconomicState(state);
   const localOrRemote = body.localOrRemote === 'local' ? 'local' : 'remote';
@@ -171,7 +195,6 @@ export function quoteModelRequest(state, body = {}, now = new Date().toISOString
 
   let quote;
   let snapshot = null;
-  let pricing = null;
   if (localOrRemote === 'local') {
     quote = localModelQuote(body);
   } else {
@@ -180,11 +203,12 @@ export function quoteModelRequest(state, body = {}, now = new Date().toISOString
       : latestPricingSnapshot(state, body.provider || 'openrouter');
     if (!snapshot) return { errors: ['model_pricing_snapshot_required'] };
     const fetchedAt = timestamp(snapshot.fetchedAt);
+    const referenceNow = timestamp(now) || new Date();
     const maxAgeSeconds = nonNegative(body.maxPricingAgeSeconds, 86400);
-    if (!fetchedAt || (Date.now() - fetchedAt.getTime()) / 1000 > maxAgeSeconds) return { errors: ['model_pricing_snapshot_stale'] };
+    if (!fetchedAt || (referenceNow.getTime() - fetchedAt.getTime()) / 1000 > maxAgeSeconds) return { errors: ['model_pricing_snapshot_stale'] };
     const modelRecord = findModelPricing(snapshot, model);
     if (!modelRecord) return { errors: ['model_pricing_not_found'] };
-    pricing = modelRecord.pricing;
+    const pricing = modelRecord.pricing;
 
     const promptTokens = nonNegative(body.promptTokens, 0);
     const completionTokens = nonNegative(body.completionTokens ?? body.maxCompletionTokens, 0);
@@ -225,6 +249,8 @@ export function quoteModelRequest(state, body = {}, now = new Date().toISOString
           request: round(pricing.request, 8),
           image: round(pricing.image, 8),
         },
+        data_collection: body.dataCollection || 'deny',
+        ...(body.zeroDataRetention === true ? { zdr: true } : {}),
       },
     };
   }
@@ -245,15 +271,20 @@ export function quoteModelRequest(state, body = {}, now = new Date().toISOString
     imageUnits: nonNegative(body.imageUnits, 0),
     estimatedCostUsd: quote.estimatedCostUsd,
     actualCostUsd: null,
+    authoritativeCostUsd: quote.estimatedCostUsd,
+    costSource: 'pre_call_estimate',
     costVarianceUsd: null,
     pricingBreakdown: quote.pricingBreakdown,
     providerPreferences: quote.providerPreferences,
     opportunityId: body.opportunityId || null,
     decisionId: body.decisionId || null,
+    researchJobId: body.researchJobId || null,
+    purpose: body.purpose || null,
     requestedAt: now,
     reconciledAt: null,
     generationId: null,
     usage: null,
+    failureReason: null,
   };
   state.modelUsageLedger.push(record);
   return { modelQuote: record };
@@ -264,24 +295,34 @@ export function reconcileModelUsage(state, body = {}, now = new Date().toISOStri
   const quote = state.modelUsageLedger.find(row => row.id === body.quoteId);
   if (!quote) return { errors: ['model_quote_not_found'] };
   const usage = body.usage || body.response?.usage || {};
-  const actualCost = finite(body.actualCostUsd ?? usage.cost, null);
+  const actualCost = finite(body.actualCostUsd ?? usage.cost ?? usage.total_cost, null);
   if (actualCost == null || actualCost < 0) return { errors: ['actual_model_cost_required'] };
+  const generationId = body.generationId || body.response?.id || quote.generationId;
+  if (quote.status === 'reconciled') {
+    const sameGeneration = !generationId || !quote.generationId || generationId === quote.generationId;
+    const sameCost = Math.abs(Number(quote.actualCostUsd || 0) - actualCost) < 1e-8;
+    if (!sameGeneration || !sameCost) return { errors: ['model_usage_reconciliation_conflict'] };
+    return { modelUsage: quote, idempotent: true };
+  }
+
   const promptDetails = usage.prompt_tokens_details || {};
   const completionDetails = usage.completion_tokens_details || {};
   quote.status = 'reconciled';
-  quote.generationId = body.generationId || body.response?.id || quote.generationId;
+  quote.generationId = generationId;
   quote.actualCostUsd = round(actualCost, 8);
+  quote.authoritativeCostUsd = quote.actualCostUsd;
+  quote.costSource = 'provider_reported_actual';
   quote.costVarianceUsd = round(actualCost - Number(quote.estimatedCostUsd || 0), 8);
-  quote.promptTokensActual = nonNegative(usage.prompt_tokens, 0);
-  quote.completionTokensActual = nonNegative(usage.completion_tokens, 0);
-  quote.reasoningTokensActual = nonNegative(completionDetails.reasoning_tokens, 0);
-  quote.cacheReadTokensActual = nonNegative(promptDetails.cached_tokens, 0);
+  quote.promptTokensActual = nonNegative(usage.prompt_tokens ?? usage.tokens_prompt, 0);
+  quote.completionTokensActual = nonNegative(usage.completion_tokens ?? usage.tokens_completion, 0);
+  quote.reasoningTokensActual = nonNegative(completionDetails.reasoning_tokens ?? usage.native_tokens_reasoning, 0);
+  quote.cacheReadTokensActual = nonNegative(promptDetails.cached_tokens ?? usage.native_tokens_cached, 0);
   quote.cacheWriteTokensActual = nonNegative(promptDetails.cache_write_tokens, 0);
-  quote.upstreamInferenceCostUsd = finite(usage.cost_details?.upstream_inference_cost, null);
+  quote.upstreamInferenceCostUsd = finite(usage.cost_details?.upstream_inference_cost ?? usage.upstream_inference_cost, null);
   quote.usage = usage;
   quote.reconciledAt = now;
 
-  const costRow = state.agentCostLedger?.find(row => row.modelQuoteId === quote.id || (quote.decisionId && row.decisionId === quote.decisionId));
+  const costRow = state.agentCostLedger?.find(row => row.modelQuoteId === quote.id || (quote.decisionId && row.economicDecisionId === quote.decisionId));
   if (costRow) {
     costRow.remoteApiCost = quote.localOrRemote === 'remote' ? quote.actualCostUsd : 0;
     costRow.localComputeCost = quote.localOrRemote === 'local' ? quote.actualCostUsd : 0;
@@ -289,6 +330,29 @@ export function reconcileModelUsage(state, body = {}, now = new Date().toISOStri
     costRow.pricingSnapshotId = quote.pricingSnapshotId;
     costRow.modelQuoteId = quote.id;
     costRow.costReconciledAt = now;
+    costRow.costSource = quote.costSource;
+  }
+  const job = state.researchJobs?.find(row => row.modelQuoteId === quote.id || row.id === quote.researchJobId);
+  if (job) {
+    job.generationId = quote.generationId;
+    job.actualCostUsd = quote.actualCostUsd;
+    job.costReconciledAt = now;
+    job.status = body.jobStatus || 'completed';
+    job.completedAt ||= now;
+  }
+
+  for (const decision of state.economicDecisions) {
+    if (decision.modelQuoteId !== quote.id || new Date(decision.createdAt || 0) >= new Date(now)) continue;
+    decision.executionAllowed = false;
+    decision.supersededByReconciliation = true;
+    decision.supersededAt = now;
+    decision.blockers = [...new Set([...(decision.blockers || []), 'economic_decision_requires_post_reconciliation_refresh'])];
+    const opportunity = state.opportunities?.find(row => row.economicDecisionId === decision.id);
+    if (opportunity) {
+      opportunity.economicExecutionAllowed = false;
+      opportunity.economicDecisionBlockers = decision.blockers;
+      opportunity.updatedAt = now;
+    }
   }
   return { modelUsage: quote };
 }
@@ -315,8 +379,9 @@ export function buildPriceForecast(state, body = {}, now = new Date().toISOStrin
 
   const latestObservation = observations.at(-1);
   const latestDate = timestamp(latestObservation.timestamp);
+  const referenceNow = timestamp(now) || new Date();
   const maxDataAgeSeconds = nonNegative(body.maxDataAgeSeconds, 180);
-  if (latestDate && (new Date(now).getTime() - latestDate.getTime()) / 1000 > maxDataAgeSeconds) return { errors: ['forecast_market_data_stale'] };
+  if (latestDate && (referenceNow.getTime() - latestDate.getTime()) / 1000 > maxDataAgeSeconds) return { errors: ['forecast_market_data_stale'] };
 
   const prices = observations.map(row => row.price);
   const returns = [];
@@ -363,7 +428,7 @@ export function buildPriceForecast(state, body = {}, now = new Date().toISOStrin
     : volatilityBps >= 120
       ? Math.abs(expectedReturnBps) >= 40 ? 'high_volatility_trend' : 'high_volatility_range'
       : Math.abs(expectedReturnBps) >= 25 ? 'moderate_trend' : 'low_volatility_range';
-  const generatedAt = timestamp(now) || new Date();
+  const generatedAt = referenceNow;
   const ttlSeconds = Math.max(30, nonNegative(body.ttlSeconds, Math.min(300, horizonMinutes * 60 * 0.1)));
 
   const forecast = {
@@ -385,6 +450,7 @@ export function buildPriceForecast(state, body = {}, now = new Date().toISOStrin
     modelVersion: body.modelVersion || 'deterministic-price-ensemble-v1',
     calibrationError: finite(body.calibrationError, null),
     expiresAt: new Date(generatedAt.getTime() + ttlSeconds * 1000).toISOString(),
+    targetObservedAt: new Date(generatedAt.getTime() + horizonMinutes * 60_000).toISOString(),
     components: {
       naiveReturn: 0,
       momentumReturn: round(momentumReturn * horizonScale, 8),
@@ -396,6 +462,7 @@ export function buildPriceForecast(state, body = {}, now = new Date().toISOStrin
     sourceSnapshotIds: Array.isArray(body.sourceSnapshotIds) ? body.sourceSnapshotIds : [],
     opportunityId: body.opportunityId || null,
     createdAt: now,
+    outcomeRecordedAt: null,
   };
   state.priceForecasts.push(forecast);
   return { priceForecast: forecast };
@@ -405,6 +472,8 @@ export function recordForecastOutcome(state, body = {}, now = new Date().toISOSt
   ensureEconomicState(state);
   const forecast = state.priceForecasts.find(row => row.id === body.forecastId);
   if (!forecast) return { errors: ['price_forecast_not_found'] };
+  const existing = state.forecastOutcomes.find(row => row.forecastId === forecast.id);
+  if (existing) return { forecastOutcome: existing, idempotent: true };
   const actualPrice = finite(body.actualPrice, null);
   if (actualPrice == null || actualPrice <= 0) return { errors: ['actual_price_required'] };
   const actualUp = actualPrice > forecast.currentPrice ? 1 : 0;
@@ -423,9 +492,42 @@ export function recordForecastOutcome(state, body = {}, now = new Date().toISOSt
     insideP10P90: actualPrice >= forecast.p10Price && actualPrice <= forecast.p90Price,
     regime: forecast.regime,
     modelVersion: forecast.modelVersion,
+    sourceSnapshotId: body.sourceSnapshotId || null,
   };
   state.forecastOutcomes.push(outcome);
+  forecast.outcomeRecordedAt = outcome.observedAt;
   return { forecastOutcome: outcome };
+}
+
+export function matureForecastOutcomes(state, now = new Date().toISOString()) {
+  ensureEconomicState(state);
+  const nowMs = new Date(now).getTime();
+  const created = [];
+  const pending = [];
+  for (const forecast of state.priceForecasts) {
+    if (state.forecastOutcomes.some(row => row.forecastId === forecast.id)) continue;
+    const targetMs = new Date(forecast.targetObservedAt || forecast.expiresAt || 0).getTime();
+    if (!targetMs || targetMs > nowMs) continue;
+    const candidates = [...(state.marketDataSnapshots || [])]
+      .filter(row => row.symbol === forecast.symbol)
+      .filter(row => finite(row.mid ?? row.price ?? row.close ?? ((Number(row.bid) + Number(row.ask)) / 2), null) != null)
+      .filter(row => new Date(row.timestamp || row.asOf || row.createdAt || 0).getTime() >= targetMs)
+      .sort((a, b) => new Date(a.timestamp || a.asOf || a.createdAt || 0) - new Date(b.timestamp || b.asOf || b.createdAt || 0));
+    const snapshot = candidates[0];
+    if (!snapshot) {
+      pending.push({ forecastId: forecast.id, symbol: forecast.symbol, blocker: 'post_horizon_market_price_required' });
+      continue;
+    }
+    const price = finite(snapshot.mid ?? snapshot.price ?? snapshot.close ?? ((Number(snapshot.bid) + Number(snapshot.ask)) / 2), null);
+    const result = recordForecastOutcome(state, {
+      forecastId: forecast.id,
+      actualPrice: price,
+      observedAt: snapshot.timestamp || snapshot.asOf || snapshot.createdAt || now,
+      sourceSnapshotId: snapshot.id || null,
+    }, now);
+    if (result.forecastOutcome && !result.idempotent) created.push(result.forecastOutcome);
+  }
+  return { forecastOutcomes: created, pendingForecastOutcomes: pending };
 }
 
 export function summarizeForecastCalibration(state) {
@@ -492,6 +594,8 @@ export function ingestExecutionCostSnapshot(state, body = {}, now = new Date().t
     side: body.side || null,
     liquidity,
     notionalUsd: round(notionalUsd, 6),
+    quantity: round(quantity, 12),
+    referencePrice: round(referencePrice, 8),
     makerFeeRate: makerRate,
     takerFeeRate: takerRate,
     appliedFeeRate: feeRate,
@@ -505,6 +609,10 @@ export function ingestExecutionCostSnapshot(state, body = {}, now = new Date().t
     estimatedFillPrice: fillPrice,
     previewId: preview.preview_id || preview.previewId || null,
     feePricingTier: feeTier.pricing_tier || feeTier.pricingTier || null,
+    commissionDetail: preview.commission_detail_total || preview.commissionDetailTotal || null,
+    previewErrors: preview.errs || preview.errors || [],
+    rawPreview: preview,
+    rawFeeSummary: feeSummary,
     validUntil,
     source: body.source || 'coinbase_preview_and_fee_tier',
     createdAt: now,
@@ -533,9 +641,11 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
   const forecastFresh = forecast.status === 'valid' && new Date(forecast.expiresAt || 0).getTime() >= nowMs;
   const executionCostFresh = new Date(executionCost.validUntil || 0).getTime() >= nowMs;
   const quoteFresh = !modelQuote || new Date(modelQuote.requestedAt || 0).getTime() >= nowMs - nonNegative(body.maxQuoteAgeSeconds, 900) * 1000;
+  const modelUsageReconciled = !modelQuote || modelQuote.status === 'reconciled';
   const notionalUsd = nonNegative(body.notionalUsd ?? executionCost.notionalUsd, 0);
   const predictedEdgeUsd = finite(body.predictedEdgeUsd, notionalUsd * Number(forecast.expectedReturnBps || 0) / 10000);
-  const modelCostUsd = nonNegative(modelQuote?.estimatedCostUsd, 0);
+  const modelCostUsd = effectiveModelCostUsd(modelQuote);
+  const modelCostSource = modelQuote?.status === 'reconciled' ? 'provider_reported_actual' : modelQuote ? 'pre_call_estimate' : 'none';
   const executionCostsUsd = nonNegative(executionCost.totalExecutionCostUsd, 0);
   const uncertaintyReserveUsd = nonNegative(body.uncertaintyReserveUsd, notionalUsd * Number(forecast.expectedVolatilityBps || 0) / 10000 * nonNegative(body.uncertaintyReserveFraction, 0.25));
   const latencyDecayUsd = nonNegative(body.latencyDecayUsd, executionCost.latencyDecayUsd || 0);
@@ -548,7 +658,7 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
       - latencyDecayUsd
       - uncertaintyReserveUsd,
   );
-  const requiredCostCoverageMultiple = Math.max(1, nonNegative(body.requiredCostCoverageMultiple, 3));
+  const requiredCostCoverageMultiple = Math.max(1, nonNegative(body.requiredCostCoverageMultiple ?? state.config?.requiredIntelligenceCostCoverageMultiple, 3));
   const expectedUpliftCoverage = modelCostUsd > 0 ? expectedDecisionImprovementUsd / modelCostUsd : null;
   const intelligenceAllowed = !body.requestRemoteModel || (
     quoteFresh
@@ -559,6 +669,8 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
   const minimumNetEdgeUsd = nonNegative(body.minimumNetEdgeUsd, 0);
   const executionAllowed = forecastFresh
     && executionCostFresh
+    && quoteFresh
+    && modelUsageReconciled
     && intelligenceAllowed
     && netExecutableEdgeUsd > minimumNetEdgeUsd;
 
@@ -571,6 +683,7 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
   if (!forecastFresh) blockers.push('forecast_stale_or_invalid');
   if (!executionCostFresh) blockers.push('execution_cost_snapshot_stale');
   if (!quoteFresh) blockers.push('model_quote_stale');
+  if (modelQuote && !modelUsageReconciled) blockers.push('model_usage_not_reconciled');
   if (!intelligenceAllowed) blockers.push('intelligence_purchase_not_economic');
   if (netExecutableEdgeUsd <= minimumNetEdgeUsd) blockers.push('net_executable_edge_insufficient');
 
@@ -581,9 +694,11 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
     forecastId: forecast.id || null,
     modelQuoteId: modelQuote?.id || null,
     executionCostSnapshotId: executionCost.id || null,
+    decisionPhase: modelQuote && !modelUsageReconciled ? 'intelligence_purchase' : 'execution',
     predictedEdgeUsd: round(predictedEdgeUsd, 6),
     executionCostsUsd: round(executionCostsUsd, 6),
     modelCostUsd: round(modelCostUsd, 8),
+    modelCostSource,
     uncertaintyReserveUsd: round(uncertaintyReserveUsd, 6),
     latencyDecayUsd: round(latencyDecayUsd, 6),
     netExecutableEdgeUsd: round(netExecutableEdgeUsd, 6),
@@ -594,6 +709,7 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
     expectedUpliftCoverage: round(expectedUpliftCoverage, 6),
     intelligenceAllowed,
     executionAllowed,
+    modelUsageReconciled,
     selectedTier,
     providerPreferences: selectedTier.endsWith('remote') ? modelQuote?.providerPreferences || null : null,
     blockers,
@@ -601,6 +717,7 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
     executionCostFresh,
     quoteFresh,
     createdAt: now,
+    supersededByReconciliation: false,
   };
   state.economicDecisions.push(decision);
   if (modelQuote && !modelQuote.decisionId) modelQuote.decisionId = decision.id;
@@ -609,6 +726,8 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
 
 export function recordAgentAttribution(state, body = {}, now = new Date().toISOString()) {
   ensureEconomicState(state);
+  const existing = body.executionId ? state.agentAttributionRecords.find(row => row.executionId === body.executionId) : null;
+  if (existing) return { agentAttribution: existing, idempotent: true };
   const agentCostUsd = nonNegative(body.agentCostUsd, 0);
   const realizedPnlUsd = finite(body.realizedPnlUsd, null);
   const counterfactualPnlUsd = finite(body.counterfactualPnlUsd, null);
@@ -637,9 +756,80 @@ export function recordAgentAttribution(state, body = {}, now = new Date().toISOS
     harmfulOverride: changedDecision && incrementalValueUsd < 0,
     profitableOverride: changedDecision && incrementalValueUsd > 0,
     observedAt: body.observedAt || now,
+    source: body.source || 'settlement_outcome',
   };
   state.agentAttributionRecords.push(record);
+  state.economicAttributionQueue = state.economicAttributionQueue.filter(row => row.executionId !== record.executionId);
   return { agentAttribution: record };
+}
+
+function fillPnl(execution) {
+  const direct = finite(execution?.realizedPnlUsd ?? execution?.realizedPnl ?? execution?.pnlUsd, null);
+  if (direct != null) return direct;
+  const values = (execution?.fills || []).map(fill => finite(fill.realizedPnlUsd ?? fill.realizedPnl ?? fill.pnlUsd, null)).filter(value => value != null);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function executionSettled(execution) {
+  if (['settled', 'closed'].includes(String(execution?.status || '').toLowerCase())) return true;
+  const fills = execution?.fills || [];
+  return fills.length > 0 && fills.every(fill => fill.settlementStatus === 'settled');
+}
+
+export function queueOrRecordSettlementAttribution(state, execution, now = new Date().toISOString()) {
+  ensureEconomicState(state);
+  if (!execution?.id || !executionSettled(execution)) return { skipped: true, reason: 'execution_not_settled' };
+  if (state.agentAttributionRecords.some(row => row.executionId === execution.id)) return { skipped: true, reason: 'attribution_exists' };
+  const opportunity = state.opportunities?.find(row => row.id === execution.opportunityId) || null;
+  const decision = state.economicDecisions.find(row => row.id === (execution.economicDecisionId || opportunity?.economicDecisionId)) || null;
+  const quoteIds = [execution.modelQuoteId, decision?.modelQuoteId, opportunity?.modelQuoteId].filter(Boolean);
+  const agentCostUsd = quoteIds.reduce((sum, id) => sum + effectiveModelCostUsd(state.modelUsageLedger.find(row => row.id === id)), 0);
+  const realizedPnlUsd = fillPnl(execution) ?? finite(opportunity?.realizedPnlUsd, null);
+  const counterfactualPnlUsd = finite(
+    execution.counterfactualPnlUsd
+      ?? execution.tags?.counterfactualPnlUsd
+      ?? opportunity?.counterfactualPnlUsd
+      ?? opportunity?.botCounterfactualPnlUsd,
+    null,
+  );
+  if (realizedPnlUsd != null && counterfactualPnlUsd != null) {
+    return recordAgentAttribution(state, {
+      opportunityId: opportunity?.id || execution.opportunityId || null,
+      executionId: execution.id,
+      decisionId: decision?.id || null,
+      modelQuoteIds: quoteIds,
+      botAction: execution.tags?.botAction || opportunity?.botAction || 'hold',
+      agentAction: execution.tags?.agentAction || opportunity?.recommendation || execution.side || 'unknown',
+      finalAction: execution.side || opportunity?.recommendation || 'unknown',
+      realizedPnlUsd,
+      counterfactualPnlUsd,
+      agentCostUsd,
+      observedAt: now,
+      source: 'automatic_settlement_attribution',
+    }, now);
+  }
+
+  const blockers = [];
+  if (realizedPnlUsd == null) blockers.push('realized_pnl_required');
+  if (counterfactualPnlUsd == null) blockers.push('counterfactual_pnl_required');
+  let pending = state.economicAttributionQueue.find(row => row.executionId === execution.id);
+  if (!pending) {
+    pending = {
+      id: nextRecordId('attribution-pending', state.economicAttributionQueue),
+      executionId: execution.id,
+      opportunityId: opportunity?.id || execution.opportunityId || null,
+      decisionId: decision?.id || null,
+      modelQuoteIds: quoteIds,
+      blockers,
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.economicAttributionQueue.push(pending);
+  } else {
+    pending.blockers = blockers;
+    pending.updatedAt = now;
+  }
+  return { attributionPending: pending };
 }
 
 export function summarizeAgentAttribution(state) {
@@ -652,6 +842,7 @@ export function summarizeAgentAttribution(state) {
   const harmful = changed.filter(row => row.harmfulOverride);
   return {
     observations: rows.length,
+    pendingAttribution: state.economicAttributionQueue.length,
     changedDecisions: changed.length,
     changeRate: rows.length ? round(changed.length / rows.length, 6) : null,
     incrementalPnlUsd: round(incrementalValue, 6),
@@ -666,9 +857,29 @@ export function summarizeAgentAttribution(state) {
   };
 }
 
+export function pruneEconomicState(state, limits = {}) {
+  ensureEconomicState(state);
+  const keep = {
+    modelPricingSnapshots: Math.max(2, nonNegative(limits.modelPricingSnapshots, 30)),
+    modelUsageLedger: Math.max(100, nonNegative(limits.modelUsageLedger, 5000)),
+    priceForecasts: Math.max(100, nonNegative(limits.priceForecasts, 5000)),
+    forecastOutcomes: Math.max(100, nonNegative(limits.forecastOutcomes, 5000)),
+    executionCostSnapshots: Math.max(100, nonNegative(limits.executionCostSnapshots, 5000)),
+    economicDecisions: Math.max(100, nonNegative(limits.economicDecisions, 5000)),
+    agentAttributionRecords: Math.max(100, nonNegative(limits.agentAttributionRecords, 5000)),
+    economicAttributionQueue: Math.max(100, nonNegative(limits.economicAttributionQueue, 1000)),
+  };
+  const removed = {};
+  for (const [key, maximum] of Object.entries(keep)) {
+    const rows = state[key] || [];
+    removed[key] = Math.max(0, rows.length - maximum);
+    if (rows.length > maximum) state[key] = rows.slice(-maximum);
+  }
+  return { removed };
+}
+
 export function economicDashboard(state) {
   ensureEconomicState(state);
-  const latest = rows => [...rows].sort((a, b) => new Date(b.createdAt || b.fetchedAt || b.requestedAt || 0) - new Date(a.createdAt || a.fetchedAt || a.requestedAt || 0))[0] || null;
   return {
     pricing: {
       latestSnapshot: latestPricingSnapshot(state),
@@ -680,6 +891,7 @@ export function economicDashboard(state) {
       latest: latest(state.priceForecasts),
       recent: [...state.priceForecasts].slice(-20).reverse(),
       calibration: summarizeForecastCalibration(state),
+      pendingOutcomes: state.priceForecasts.filter(row => !state.forecastOutcomes.some(outcome => outcome.forecastId === row.id)).length,
     },
     executionCosts: {
       latest: latest(state.executionCostSnapshots),
@@ -690,7 +902,12 @@ export function economicDashboard(state) {
       recent: [...state.economicDecisions].slice(-20).reverse(),
       allowed: state.economicDecisions.filter(row => row.executionAllowed).length,
       blocked: state.economicDecisions.filter(row => !row.executionAllowed).length,
+      awaitingReconciliation: state.economicDecisions.filter(row => row.blockers?.includes('model_usage_not_reconciled')).length,
     },
-    attribution: summarizeAgentAttribution(state),
+    attribution: {
+      ...summarizeAgentAttribution(state),
+      pending: [...state.economicAttributionQueue].slice(-20).reverse(),
+    },
+    maintenance: state.economicMaintenance,
   };
 }
