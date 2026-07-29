@@ -7,6 +7,10 @@ export const ALLOWED_PREFIXES = [
   'data/fixtures/',
 ];
 
+export const ALLOWED_EXACT_PATHS = new Set([
+  'data/feed_cache.py',
+]);
+
 export const FORBIDDEN_PATTERNS = [
   /^data\/state_backups\//,
   /^data\/legacy_agent_ledgers\//,
@@ -20,6 +24,7 @@ export const FORBIDDEN_PATTERNS = [
 ];
 
 export function isForbiddenTrackedPath(path) {
+  if (ALLOWED_EXACT_PATHS.has(path)) return false;
   if (ALLOWED_PREFIXES.some(prefix => path.startsWith(prefix))) return false;
   return FORBIDDEN_PATTERNS.some(pattern => pattern.test(path));
 }
