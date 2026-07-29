@@ -24,30 +24,60 @@ for (const asset of ['/ui/app.js', '/ui/styles.css']) {
   }
 }
 
-for (const section of ['overview', 'race', 'trades', 'signals', 'learning', 'costs', 'risk', 'system']) {
+for (const section of ['overview', 'trades', 'positions', 'signals', 'race', 'agent', 'system']) {
   if (!html.includes(`id="${section}"`) || !html.includes(`#${section}`)) {
-    console.error(`web build failed: missing competition section ${section}`);
+    console.error(`web build failed: missing daily-operations section ${section}`);
     process.exit(1);
   }
 }
 
-for (const token of ['app-frame', 'sidebar', 'command-bar', 'market-strip', 'command-queue', 'risk-stack', 'cockpit-hero']) {
+for (const token of [
+  'app-frame',
+  'sidebar',
+  'command-bar',
+  'safety-strip',
+  'daily-brief-title',
+  'command-queue',
+  'execution-pipeline',
+  'execution-list',
+  'position-rows',
+  'decision-list',
+  'competition-grid',
+]) {
   if (!combined.includes(token)) {
-    console.error(`web build failed: missing cockpit token ${token}`);
+    console.error(`web build failed: missing operator-workflow token ${token}`);
     process.exit(1);
   }
 }
 
-for (const endpoint of ['/api/competition', '/api/system-truth', '/api/agents/costs', '/api/executions', '/api/opportunities', '/api/activity-feed']) {
+for (const endpoint of [
+  '/api/competition',
+  '/api/system-truth',
+  '/api/agents/costs',
+  '/api/executions',
+  '/api/execution/events',
+  '/api/opportunities',
+  '/api/activity-feed',
+  '/api/positions',
+  '/api/market-data/live-quotes',
+]) {
   if (!app.includes(endpoint)) {
     console.error(`web build failed: missing API endpoint ${endpoint}`);
     process.exit(1);
   }
 }
 
-for (const token of ['net_equity_usd', 'operating_cost_usd', 'agent_cost_coverage_ratio', 'valid_for_ranking', 'budget-approval-rows', 'request-budget-approval']) {
+for (const token of [
+  'net_equity_usd',
+  'operating_cost_usd',
+  'agent_cost_coverage_ratio',
+  'valid_for_ranking',
+  'budget-approval-rows',
+  'request-budget-approval',
+  'Local operator execution (non-canonical)',
+]) {
   if (!combined.includes(token)) {
-    console.error(`web build failed: missing competition token ${token}`);
+    console.error(`web build failed: missing accounting or safety token ${token}`);
     process.exit(1);
   }
 }
@@ -59,4 +89,4 @@ for (const id of ['system-truth', 'truth-mode', 'truth-feed', 'truth-cache', 'tr
   }
 }
 
-console.log('web build ok: competition-first operator console validated');
+console.log('web build ok: daily trading operations console validated');
