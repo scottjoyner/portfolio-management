@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import { DEFAULT_ACCOUNTS } from './defaultOperatorState.mjs';
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
@@ -27,6 +27,14 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
     executionCostSnapshots: [],
     economicDecisions: [],
     agentAttributionRecords: [],
+    economicAttributionQueue: [],
+    economicMaintenance: {
+      status: 'never_run',
+      lastRunAt: null,
+      lastSuccessAt: null,
+      warnings: [],
+      counters: {},
+    },
     positions: [],
     capitalInPlayUsd: null,
     paperExecutions: [],
@@ -43,6 +51,23 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
       maximumModelPricingAgeSeconds: 86400,
       maximumForecastDataAgeSeconds: 180,
       requireEconomicDecisionForRemoteAgent: true,
+      economicRuntimeEnabled: false,
+      economicMaintenanceIntervalMs: 60000,
+      economicPricingRefreshSeconds: 21600,
+      economicForecastSymbols: ['BTC-USD', 'ETH-USD', 'SOL-USD'],
+      economicForecastHorizonMinutes: 15,
+      economicForecastTtlSeconds: 120,
+      economicMarketDataHistoryLimit: 720,
+      economicStateRetention: {
+        modelPricingSnapshots: 30,
+        modelUsageLedger: 5000,
+        priceForecasts: 5000,
+        forecastOutcomes: 5000,
+        executionCostSnapshots: 5000,
+        economicDecisions: 5000,
+        agentAttributionRecords: 5000,
+        economicAttributionQueue: 1000,
+      },
       capitalPolicy: {
         presetName: 'balanced',
         targets: { reserve: 0.50, core: 0.20, opportunity: 0.30 },
@@ -66,7 +91,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
 export function normalizeOperatorState(input = {}) {
   const seeded = createInitialOperatorState();
   return {
-    schemaVersion: Number(input.schemaVersion || CURRENT_SCHEMA_VERSION),
+    schemaVersion: Math.max(Number(input.schemaVersion || 0), CURRENT_SCHEMA_VERSION),
     accounts: Array.isArray(input.accounts) ? input.accounts : seeded.accounts,
     instruments: Array.isArray(input.instruments) ? input.instruments : [],
     strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : [],
@@ -87,13 +112,24 @@ export function normalizeOperatorState(input = {}) {
     executionCostSnapshots: Array.isArray(input.executionCostSnapshots) ? input.executionCostSnapshots : [],
     economicDecisions: Array.isArray(input.economicDecisions) ? input.economicDecisions : [],
     agentAttributionRecords: Array.isArray(input.agentAttributionRecords) ? input.agentAttributionRecords : [],
+    economicAttributionQueue: Array.isArray(input.economicAttributionQueue) ? input.economicAttributionQueue : [],
+    economicMaintenance: input.economicMaintenance && typeof input.economicMaintenance === 'object'
+      ? input.economicMaintenance
+      : seeded.economicMaintenance,
     positions: Array.isArray(input.positions) ? input.positions : [],
     capitalInPlayUsd: input.capitalInPlayUsd ?? input.capital_in_play_usd ?? null,
     paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : [],
     executions: Array.isArray(input.executions) ? input.executions : [],
     audit: Array.isArray(input.audit) ? input.audit : [],
     killSwitch: input.killSwitch && typeof input.killSwitch === 'object' ? input.killSwitch : seeded.killSwitch,
-    config: input.config && typeof input.config === 'object' ? { ...seeded.config, ...input.config } : seeded.config
+    config: input.config && typeof input.config === 'object'
+      ? {
+          ...seeded.config,
+          ...input.config,
+          capitalPolicy: { ...seeded.config.capitalPolicy, ...(input.config.capitalPolicy || {}) },
+          economicStateRetention: { ...seeded.config.economicStateRetention, ...(input.config.economicStateRetention || {}) },
+        }
+      : seeded.config
   };
 }
 
