@@ -3,6 +3,7 @@ import { handleRequest as handleBaseRequest } from './server.mjs';
 import { createInitialOperatorState } from '../../../packages/storage/src/operatorStore.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 import { handleOperatorRoute } from './operatorRouter.mjs';
+import { handleEconomicRoute, isEconomicRoute } from './economicRouter.mjs';
 import { authResponse, authStatus, authorizeRoute, requestId } from './auth.mjs';
 import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
 import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
@@ -54,7 +55,8 @@ async function loadState(store) {
 }
 
 function isP1Route(pathname) {
-  return pathname === '/api/system-truth'
+  return isEconomicRoute(pathname)
+    || pathname === '/api/system-truth'
     || pathname === '/api/competition'
     || pathname === '/api/positions'
     || pathname === '/api/accounts'
@@ -140,6 +142,11 @@ function makeSummary(state, store, runtime) {
       opportunities: state.opportunities?.length || 0,
       researchJobs: state.researchJobs?.length || 0,
       budgetApprovals: state.budgetApprovals?.length || 0,
+      modelPricingSnapshots: state.modelPricingSnapshots?.length || 0,
+      modelUsageQuotes: state.modelUsageLedger?.length || 0,
+      priceForecasts: state.priceForecasts?.length || 0,
+      economicDecisions: state.economicDecisions?.length || 0,
+      agentAttributionRecords: state.agentAttributionRecords?.length || 0,
       paperExecutions: state.paperExecutions.length,
       executions: execs.length,
       executions_filled: execFilled,
@@ -164,6 +171,7 @@ function makeSummary(state, store, runtime) {
       agentCostLedger: true,
       budgetApprovals: true,
       competitionConsole: true,
+      economicDecisionEngine: true,
       liveTradingCertified: false
     }
   };
@@ -249,6 +257,17 @@ async function dispatchRequest(req, options = {}) {
       const audit = verifyAuditIntegrity(state.audit || []);
       return withSecurityHeaders(json(audit.ok ? 200 : 409, { ...audit, requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
+
+    const economicRoute = await handleEconomicRoute({
+      method,
+      pathname: url.pathname,
+      state,
+      store,
+      readJsonBody: () => readJsonBody(req),
+      env,
+      fetchImpl: options.fetchImpl || globalThis.fetch,
+    });
+    if (economicRoute) return withSecurityHeaders(json(economicRoute.status, { ...economicRoute.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
     if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
