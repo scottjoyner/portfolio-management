@@ -5,36 +5,52 @@ import { readFileSync } from 'node:fs';
 const html = readFileSync('apps/web/src/index.html', 'utf8');
 const app = readFileSync('apps/web/src/app.js', 'utf8');
 const css = readFileSync('apps/web/src/styles.css', 'utf8');
+const combined = html + app + css;
 
-test('competition console exposes the core operator workflow', () => {
-  for (const section of ['overview', 'race', 'trades', 'signals', 'learning', 'costs', 'risk', 'system']) {
+test('daily operations console exposes the core operator workflow', () => {
+  for (const section of ['overview', 'trades', 'positions', 'signals', 'race', 'agent', 'system']) {
     assert.match(html, new RegExp(`id="${section}"`));
     assert.match(html, new RegExp(`#${section}`));
   }
 });
 
-test('competition console uses a cockpit layout', () => {
-  for (const token of ['app-frame', 'sidebar', 'command-bar', 'market-strip', 'command-queue', 'risk-stack', 'cockpit-hero']) {
-    assert.match(html + css + app, new RegExp(token));
+test('default view answers daily trading questions before showing the race', () => {
+  for (const token of ['daily-brief-title', 'command-queue', 'execution-pipeline', 'position-preview', 'activity-feed']) {
+    assert.match(combined, new RegExp(token));
   }
+  assert.match(html, /What the bot and agent are doing/i);
+  assert.match(app, /Trading evidence needs operator review/);
 });
 
-test('dashboard ranks net results after paid-agent costs', () => {
+test('execution view traces owner, lifecycle, orders, fills, and events', () => {
+  for (const token of ['execution-status-filter', 'execution-owner-filter', 'execution-search', 'execution-list', 'executionStages', 'executionEvents']) {
+    assert.match(combined, new RegExp(token));
+  }
+  assert.match(app, /\/api\/execution\/events/);
+});
+
+test('positions and decisions are first-class daily views', () => {
+  for (const token of ['position-rows', 'position-summary-chips', 'decision-list', 'decision-summary-chips']) {
+    assert.match(combined, new RegExp(token));
+  }
+  assert.match(app, /\/api\/positions/);
+  assert.match(app, /\/api\/market-data\/live-quotes/);
+});
+
+test('competition remains cost-adjusted and fail-closed', () => {
   for (const token of ['net_equity_usd', 'operating_cost_usd', 'agent_cost_coverage_ratio', 'agent_break_even_gap_usd', 'valid_for_ranking']) {
     assert.match(app, new RegExp(token));
   }
+  assert.match(app, /No trustworthy winner yet/);
   assert.match(app, /\/api\/competition/);
-  assert.match(app, /\/api\/agents\/costs/);
 });
 
-test('dashboard surfaces guarded budget controls', () => {
+test('dashboard keeps paid-agent budget and live execution controls guarded', () => {
   for (const token of ['budget-approval-rows', 'request-budget-approval', '/api/agents/budget-approvals']) {
-    assert.match(html + app, new RegExp(token.replaceAll('/', '\\/')));
+    assert.match(combined, new RegExp(token.replaceAll('/', '\\/')));
   }
   assert.match(html, /disabled title=/);
-});
-
-test('dashboard keeps live execution visibly blocked', () => {
   assert.match(html, /live orders blocked/i);
   assert.match(html, /paper \/ guarded/i);
+  assert.match(combined, /Local operator execution \(non-canonical\)/);
 });
