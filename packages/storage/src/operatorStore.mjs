@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 import { DEFAULT_ACCOUNTS } from './defaultOperatorState.mjs';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
@@ -20,6 +20,13 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
     budgetApprovals: [],
     agentCostLedger: [],
     marketDataSnapshots: [],
+    modelPricingSnapshots: [],
+    modelUsageLedger: [],
+    priceForecasts: [],
+    forecastOutcomes: [],
+    executionCostSnapshots: [],
+    economicDecisions: [],
+    agentAttributionRecords: [],
     positions: [],
     capitalInPlayUsd: null,
     paperExecutions: [],
@@ -32,6 +39,10 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
       maxPositionSizeUsd: 50000,
       defaultHoldingPeriodDays: 7,
       maxConcurrentTrades: 5,
+      requiredIntelligenceCostCoverageMultiple: 3,
+      maximumModelPricingAgeSeconds: 86400,
+      maximumForecastDataAgeSeconds: 180,
+      requireEconomicDecisionForRemoteAgent: true,
       capitalPolicy: {
         presetName: 'balanced',
         targets: { reserve: 0.50, core: 0.20, opportunity: 0.30 },
@@ -69,6 +80,13 @@ export function normalizeOperatorState(input = {}) {
     budgetApprovals: Array.isArray(input.budgetApprovals) ? input.budgetApprovals : [],
     agentCostLedger: Array.isArray(input.agentCostLedger) ? input.agentCostLedger : [],
     marketDataSnapshots: Array.isArray(input.marketDataSnapshots) ? input.marketDataSnapshots : [],
+    modelPricingSnapshots: Array.isArray(input.modelPricingSnapshots) ? input.modelPricingSnapshots : [],
+    modelUsageLedger: Array.isArray(input.modelUsageLedger) ? input.modelUsageLedger : [],
+    priceForecasts: Array.isArray(input.priceForecasts) ? input.priceForecasts : [],
+    forecastOutcomes: Array.isArray(input.forecastOutcomes) ? input.forecastOutcomes : [],
+    executionCostSnapshots: Array.isArray(input.executionCostSnapshots) ? input.executionCostSnapshots : [],
+    economicDecisions: Array.isArray(input.economicDecisions) ? input.economicDecisions : [],
+    agentAttributionRecords: Array.isArray(input.agentAttributionRecords) ? input.agentAttributionRecords : [],
     positions: Array.isArray(input.positions) ? input.positions : [],
     capitalInPlayUsd: input.capitalInPlayUsd ?? input.capital_in_play_usd ?? null,
     paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : [],
