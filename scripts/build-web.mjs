@@ -4,6 +4,7 @@ const required = [
   'apps/web/src/index.html',
   'apps/web/src/styles.css',
   'apps/web/src/app.js',
+  'apps/web/src/economics.js',
 ];
 
 const missing = required.filter(path => !existsSync(path));
@@ -15,9 +16,10 @@ if (missing.length) {
 const html = readFileSync(required[0], 'utf8');
 const css = readFileSync(required[1], 'utf8');
 const app = readFileSync(required[2], 'utf8');
-const combined = html + css + app;
+const economics = readFileSync(required[3], 'utf8');
+const combined = html + css + app + economics;
 
-for (const asset of ['/ui/app.js', '/ui/styles.css']) {
+for (const asset of ['/ui/app.js', '/ui/economics.js', '/ui/styles.css']) {
   if (!html.includes(asset)) {
     console.error(`web build failed: missing static asset ${asset}`);
     process.exit(1);
@@ -43,6 +45,11 @@ for (const token of [
   'position-rows',
   'decision-list',
   'competition-grid',
+  'economic-forecast',
+  'economic-intelligence',
+  'economic-edge',
+  'economic-attribution',
+  'economic-governance',
 ]) {
   if (!combined.includes(token)) {
     console.error(`web build failed: missing operator-workflow token ${token}`);
@@ -67,6 +74,15 @@ for (const endpoint of [
   }
 }
 
+for (const endpoint of [
+  '/api/economics/dashboard',
+]) {
+  if (!economics.includes(endpoint)) {
+    console.error(`web build failed: missing economics API endpoint ${endpoint}`);
+    process.exit(1);
+  }
+}
+
 for (const token of [
   'net_equity_usd',
   'operating_cost_usd',
@@ -75,6 +91,10 @@ for (const token of [
   'budget-approval-rows',
   'request-budget-approval',
   'Local operator execution (non-canonical)',
+  'maximumIntelligenceSpendUsd',
+  'netExecutableEdgeUsd',
+  'incrementalPnlUsd',
+  'unreconciledQuotes',
 ]) {
   if (!combined.includes(token)) {
     console.error(`web build failed: missing accounting or safety token ${token}`);
@@ -89,4 +109,4 @@ for (const id of ['system-truth', 'truth-mode', 'truth-feed', 'truth-cache', 'tr
   }
 }
 
-console.log('web build ok: daily trading operations console validated');
+console.log('web build ok: daily operations and economic decision console validated');
