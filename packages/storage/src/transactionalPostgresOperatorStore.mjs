@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { normalizeOperatorState } from './operatorStore.mjs';
 import { PostgresOperatorStoreP2 } from './postgresOperatorStoreP2.mjs';
+import { RuntimeJobQueue } from './runtimeJobQueue.mjs';
 
 const DEFAULT_OPERATOR_WRITE_LOCK_KEY = 0x504f5254;
 
@@ -21,8 +22,8 @@ function isTransactionControl(sql) {
  * checked-out client, suppresses nested transaction controls, and serializes
  * whole-state mutations with a transaction-scoped advisory lock.
  *
- * Targeted row repositories can still execute inside the same transaction
- * because every store.query() call resolves through AsyncLocalStorage.
+ * Targeted row repositories and the runtime job queue execute inside the same
+ * pinned transaction because store.query() resolves through AsyncLocalStorage.
  */
 export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 {
   constructor(options = {}) {
@@ -31,6 +32,20 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     this.transactionContext = new AsyncLocalStorage();
     this.operatorWriteLockKey = Number(options.operatorWriteLockKey ?? process.env.OPERATOR_WRITE_LOCK_KEY ?? DEFAULT_OPERATOR_WRITE_LOCK_KEY);
     this.transactionIsolation = options.transactionIsolation || process.env.OPERATOR_TRANSACTION_ISOLATION || 'SERIALIZABLE';
+    this.runtimeJobs = new RuntimeJobQueue(this);
+  }
+
+  async checkMigrations() {
+    const migrations = await super.checkMigrations();
+    if (!migrations.ok) return migrations;
+    const hasRuntimeQueue = migrations.applied.includes('005_runtime_job_queue')
+      || migrations.applied.includes('005_runtime_job_queue.sql');
+    if (!hasRuntimeQueue) {
+      this.migrations = { ...migrations, ok: false, reason: 'runtime_job_queue_migration_missing' };
+      return this.migrations;
+    }
+    this.migrations = migrations;
+    return this.migrations;
   }
 
   currentTransaction() {
@@ -122,6 +137,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       transactionModel: 'pinned-client-serializable',
       mutationSerialization: 'postgres-advisory-xact-lock',
       operatorWriteLockKey: this.operatorWriteLockKey,
+      runtimeJobQueue: 'lease-backed-postgres',
       activeTransaction: Boolean(this.currentTransaction()),
     };
   }
