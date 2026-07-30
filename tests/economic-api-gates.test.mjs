@@ -200,7 +200,7 @@ test('guarded OpenRouter execution reconciles actual cost and invalidates the pr
     economicDecisionId: 'decision-001',
     researchJobId: 'job-001',
     messages: [{ role: 'user', content: 'Evaluate the supplied structured market evidence.' }],
-  }, now, { env: { OPENROUTER_API_KEY: 'test-key' }, fetchImpl });
+  }, now, { env: { OPENROUTER_API_KEY: 'test-key', REMOTE_LLM_EXECUTION_ENABLED: 'true' }, fetchImpl });
 
   assert.equal(out.status, 200);
   assert.equal(out.data.modelUsage.actualCostUsd, 0.018);
