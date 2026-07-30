@@ -21,6 +21,7 @@ class FakeConnection {
         { version: '001_operator_state' },
         { version: '002_operator_product_layer' },
         { version: '004_opportunity_agent_workflow' },
+        { version: '005_runtime_job_queue' },
       ] };
     }
     if (sql.startsWith('SELECT * FROM')) return { rows: [] };
@@ -59,6 +60,28 @@ test('factory selects the transactional PostgreSQL store', () => {
   const store = createOperatorStore({ kind: 'postgres', client: new FakePool(), bootstrap: false });
   assert.ok(store instanceof TransactionalPostgresOperatorStore);
   assert.equal(store.getStatus().transactionModel, 'pinned-client-serializable');
+  assert.equal(store.getStatus().runtimeJobQueue, 'lease-backed-postgres');
+});
+
+test('transactional store rejects PostgreSQL without the runtime queue migration', async () => {
+  const connection = new FakeConnection();
+  connection.query = async (sql, params = []) => {
+    connection.calls.push({ sql, params });
+    if (sql.includes("to_regclass('public.schema_migrations')")) {
+      return { rows: [{ schema_migrations: 'schema_migrations', strategies: 'strategies', opportunities: 'opportunities' }] };
+    }
+    if (sql === 'SELECT version FROM schema_migrations ORDER BY version ASC') {
+      return { rows: [
+        { version: '002_operator_product_layer' },
+        { version: '004_opportunity_agent_workflow' },
+      ] };
+    }
+    return { rows: [] };
+  };
+  const store = new TransactionalPostgresOperatorStore({ client: connection, bootstrap: false });
+  const migrations = await store.checkMigrations();
+  assert.equal(migrations.ok, false);
+  assert.equal(migrations.reason, 'runtime_job_queue_migration_missing');
 });
 
 test('layered P0/P1/P2 save commits once on one checked-out client', async () => {
@@ -77,10 +100,9 @@ test('layered P0/P1/P2 save commits once on one checked-out client', async () =>
   assert.equal(sql.filter(statement => statement === 'COMMIT').length, 1);
   assert.equal(sql.filter(statement => statement === 'ROLLBACK').length, 0);
   assert.equal(sql.filter(statement => statement === 'BEGIN').length, 0);
-  assert.equal(sql.filter(statement => statement === 'COMMIT').length, 1);
   assert.deepEqual(connection.calls.find(call => call.sql.includes('pg_advisory_xact_lock'))?.params, [1234]);
   assert.ok(sql.some(statement => statement.includes('INSERT INTO audit_events')));
-  assert.ok(sql.some(statement => statement.includes("'economic_state'")) || sql.some(statement => statement.includes('INSERT INTO operator_flags')));
+  assert.ok(sql.some(statement => statement.includes('INSERT INTO operator_flags')));
   assert.equal(connection.released, true);
 });
 
