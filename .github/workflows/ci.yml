@@ -73,6 +73,7 @@ jobs:
           tests/test_competition_scoreboard.py \
           tests/test_hermes_agent_accounting.py \
           tests/test_hermes_agent_trader_v2.py \
+          tests/test_hermes_agent_trader_controls.py \
           tests/test_start_competition_epoch.py \
           tests/test_rebalance_engine.py \
           --import-mode=importlib \
@@ -102,19 +103,20 @@ jobs:
         python -m pip install pytest-asyncio
     - name: Measure critical accounting and competition coverage
       run: |
-        python -m pytest \
+        python -m coverage erase
+        python -m coverage run \
+          --branch \
+          --source=scripts.competition_scoreboard,scripts.hermes_agent_accounting,scripts.hermes_agent_trader,scripts.start_competition_epoch \
+          -m pytest \
           tests/test_competition_scoreboard.py \
           tests/test_hermes_agent_accounting.py \
           tests/test_hermes_agent_trader_v2.py \
+          tests/test_hermes_agent_trader_controls.py \
           tests/test_start_competition_epoch.py \
           --import-mode=importlib \
-          --cov=scripts.competition_scoreboard \
-          --cov=scripts.hermes_agent_accounting \
-          --cov=scripts.hermes_agent_trader \
-          --cov=scripts.start_competition_epoch \
-          --cov-report=term-missing \
-          --cov-report=xml \
-          --cov-fail-under=60
+          -q
+        python -m coverage report --show-missing --fail-under=60
+        python -m coverage xml
     - name: Upload focused coverage
       uses: codecov/codecov-action@v4
       with:
