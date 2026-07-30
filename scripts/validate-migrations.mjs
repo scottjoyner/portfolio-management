@@ -31,8 +31,17 @@ for (let index = 0; index < files.length; index += 1) {
 const required = new Map([
   ['001_operator_state.sql', ['CREATE TABLE IF NOT EXISTS strategies', 'CREATE TABLE IF NOT EXISTS operator_flags']],
   ['002_operator_product_layer.sql', ['CREATE TABLE IF NOT EXISTS accounts', 'CREATE TABLE IF NOT EXISTS paper_executions']],
+  ['003_audit_and_certification.sql', ['adapter_certifications', 'previous_hash', 'event_hash', 'sequence_number']],
   ['004_opportunity_agent_workflow.sql', ['CREATE TABLE IF NOT EXISTS research_jobs', 'CREATE TABLE IF NOT EXISTS opportunities']],
-  ['005_runtime_job_queue.sql', ['CREATE TABLE IF NOT EXISTS runtime_jobs', 'FOR UPDATE SKIP LOCKED']],
+  ['005_runtime_job_queue.sql', ['CREATE TABLE IF NOT EXISTS runtime_jobs']],
+  ['006_normalized_execution_runtime.sql', [
+    'CREATE TABLE IF NOT EXISTS execution_records',
+    'CREATE TABLE IF NOT EXISTS execution_events',
+    'CREATE TABLE IF NOT EXISTS execution_orders',
+    'CREATE TABLE IF NOT EXISTS execution_fills',
+    'execution_events_are_append_only',
+    'version BIGINT NOT NULL DEFAULT 1',
+  ]],
 ]);
 
 for (const [file, tokens] of required) {
@@ -42,8 +51,6 @@ for (const [file, tokens] of required) {
   }
   const sql = readFileSync(resolve(directory, file), 'utf8');
   for (const token of tokens) {
-    // FOR UPDATE SKIP LOCKED belongs to the queue repository rather than DDL.
-    if (token === 'FOR UPDATE SKIP LOCKED') continue;
     if (!sql.includes(token)) errors.push(`migration_contract_missing:${file}:${token}`);
   }
 }
@@ -51,6 +58,18 @@ for (const [file, tokens] of required) {
 const queueRepository = readFileSync(resolve('packages/storage/src/runtimeJobQueue.mjs'), 'utf8');
 for (const token of ['FOR UPDATE SKIP LOCKED', 'lease_expires_at', 'idempotency_key', "status = 'running'"]) {
   if (!queueRepository.includes(token)) errors.push(`runtime_job_queue_contract_missing:${token}`);
+}
+
+const executionRepository = readFileSync(resolve('packages/storage/src/executionRepository.mjs'), 'utf8');
+for (const token of [
+  'FOR UPDATE',
+  'execution_version_conflict',
+  'execution_transition_invalid',
+  'ON CONFLICT (idempotency_key) DO NOTHING',
+  'version = $3',
+  'execution_events',
+]) {
+  if (!executionRepository.includes(token)) errors.push(`execution_repository_contract_missing:${token}`);
 }
 
 if (errors.length) {
