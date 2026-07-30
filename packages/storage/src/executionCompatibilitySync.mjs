@@ -1,8 +1,16 @@
-import { isExecutionTransitionAllowed } from './executionRepository.mjs';
+import { EXECUTION_STATUSES, isExecutionTransitionAllowed } from './executionRepository.mjs';
 
 function finite(value, fallback = null) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizedStatus(value) {
+  const status = String(value || 'draft').toLowerCase();
+  if (EXECUTION_STATUSES.includes(status)) return status;
+  if (status === 'expired') return 'cancelled';
+  if (status === 'pending' || status === 'pending_approval' || status === 'planned') return 'draft';
+  return null;
 }
 
 function revisionFor(execution) {
@@ -20,12 +28,14 @@ function revisionFor(execution) {
 function executionInput(execution) {
   return {
     ...execution,
+    status: normalizedStatus(execution.status) || 'draft',
     idempotencyKey: execution.idempotencyKey || `compat-execution:${execution.id}`,
     notionalUsd: finite(execution.notionalUsd ?? execution.notional, null),
     requestedPrice: finite(execution.requestedPrice ?? execution.price ?? execution.entryPrice, null),
     metadata: {
       compatibilitySource: 'operator_state.executions',
       compatibilityRevision: revisionFor(execution),
+      compatibilityOriginalStatus: execution.status || null,
       preview: execution.preview || null,
       errors: execution.errors || [],
       settlement: execution.settlement || null,
@@ -42,7 +52,9 @@ async function snapshotAlreadyRecorded(repository, key) {
 async function updateSnapshot(repository, execution, current, now) {
   const revision = revisionFor(execution);
   const idempotencyKey = `compat-snapshot:${execution.id}:${revision}`;
-  if (await snapshotAlreadyRecorded(repository, idempotencyKey)) return { updated: false, idempotent: true, executionVersion: current.version };
+  if (await snapshotAlreadyRecorded(repository, idempotencyKey)) {
+    return { updated: false, idempotent: true, executionVersion: current.version };
+  }
   const nextVersion = current.version + 1;
   const metadata = executionInput(execution).metadata;
   const updated = await repository.store.query(`
@@ -101,6 +113,11 @@ async function synchronizeOne(repository, execution, now) {
   if (!execution?.id || !execution.symbol || !execution.venue || !execution.side) {
     return { executionId: execution?.id || null, skipped: true, reason: 'execution_identity_incomplete' };
   }
+  const targetStatus = normalizedStatus(execution.status);
+  if (!targetStatus) {
+    return { executionId: execution.id, skipped: true, reason: `execution_status_unsupported:${execution.status}` };
+  }
+
   let current = await repository.get(execution.id, { forUpdate: true });
   const created = !current;
   if (!current) {
@@ -108,24 +125,24 @@ async function synchronizeOne(repository, execution, now) {
       now,
       actor: 'execution-compatibility-sync',
       eventType: 'execution_imported',
-      payload: { compatibilityRevision: revisionFor(execution) },
+      payload: { compatibilityRevision: revisionFor(execution), originalStatus: execution.status || null },
     });
     current = result.execution;
   }
 
   let transitioned = null;
   let divergence = null;
-  if (current.status !== execution.status) {
-    const transitionKey = `compat-transition:${execution.id}:${current.status}:${execution.status}:${revisionFor(execution)}`;
-    if (isExecutionTransitionAllowed(current.status, execution.status)) {
+  if (current.status !== targetStatus) {
+    const transitionKey = `compat-transition:${execution.id}:${current.status}:${targetStatus}:${revisionFor(execution)}`;
+    if (isExecutionTransitionAllowed(current.status, targetStatus)) {
       transitioned = await repository.transition({
         executionId: execution.id,
-        toStatus: execution.status,
+        toStatus: targetStatus,
         expectedVersion: current.version,
         idempotencyKey: transitionKey,
-        eventType: `execution_${execution.status}`,
+        eventType: `execution_${targetStatus}`,
         actor: 'execution-compatibility-sync',
-        payload: { compatibilityRevision: revisionFor(execution) },
+        payload: { compatibilityRevision: revisionFor(execution), originalStatus: execution.status || null },
       }, { now });
       current = transitioned.execution;
     } else {
@@ -135,24 +152,27 @@ async function synchronizeOne(repository, execution, now) {
         eventType: 'execution_compatibility_divergence',
         idempotencyKey: transitionKey,
         actor: 'execution-compatibility-sync',
-        payload: { durableStatus: current.status, compatibilityStatus: execution.status },
+        payload: { durableStatus: current.status, compatibilityStatus: targetStatus, originalStatus: execution.status || null },
       }, { now });
     }
   }
 
   const snapshot = await updateSnapshot(repository, execution, current, now);
   const orders = [];
+  const importedOrderIds = new Set();
   for (let index = 0; index < (execution.orders || []).length; index += 1) {
     const order = execution.orders[index];
+    const orderId = order.id || `${execution.id}-order-${index + 1}`;
     const result = await repository.putOrder({
       ...order,
       executionId: execution.id,
-      id: order.id || `${execution.id}-order-${index + 1}`,
+      id: orderId,
       idempotencyKey: order.idempotencyKey || `compat-order:${execution.id}:${order.id || index + 1}`,
       side: order.side || execution.side,
       request: order.request || order,
       response: order.response || order.preview || null,
     }, { now });
+    if (result.order?.id) importedOrderIds.add(result.order.id);
     orders.push(result);
   }
 
@@ -164,13 +184,16 @@ async function synchronizeOne(repository, execution, now) {
       skippedFills.push({ index, reason: 'fill_quantity_or_price_invalid' });
       continue;
     }
+    const orderId = fill.orderId && importedOrderIds.has(fill.orderId) ? fill.orderId : null;
+    if (fill.orderId && !orderId) skippedFills.push({ index, reason: 'orphan_order_reference_removed', orderId: fill.orderId });
     const result = await repository.recordFill({
       ...fill,
+      orderId,
       executionId: execution.id,
       id: fill.id || `${execution.id}-fill-${index + 1}`,
       idempotencyKey: fill.idempotencyKey || `compat-fill:${execution.id}:${fill.id || fill.venueFillId || index + 1}`,
       feeUsd: fill.feeUsd ?? fill.fee,
-      metadata: { settlement: fill.settlement || null, ...(fill.metadata || {}) },
+      metadata: { settlement: fill.settlement || null, originalOrderId: fill.orderId || null, ...(fill.metadata || {}) },
     }, { now });
     fills.push(result);
   }
@@ -201,6 +224,7 @@ export async function synchronizeCompatibilityExecutions(repository, executions 
     createdCount: reports.filter(row => row.created).length,
     transitionCount: reports.filter(row => row.transitioned).length,
     divergenceCount: reports.filter(row => row.divergence).length,
+    skippedCount: reports.filter(row => row.skipped).length,
     reports,
   };
 }
