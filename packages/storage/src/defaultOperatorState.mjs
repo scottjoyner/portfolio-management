@@ -83,6 +83,21 @@ export const DEFAULT_STRATEGIES = [
       slowPeriod: 21,
     },
   },
+  {
+    id: 'strategy-paper-mean-reversion',
+    templateId: 'template-zscore-mean-reversion',
+    name: 'Paper ETH Mean Reversion Baseline',
+    version: 1,
+    status: 'draft',
+    riskLevel: 'low',
+    parameters: {
+      symbol: 'ETH-USD',
+      timeframe: '1h',
+      lookback: 20,
+      entryZ: -2,
+      exitZ: 0,
+    },
+  },
 ];
 
 export const DEFAULT_APPROVALS = [
