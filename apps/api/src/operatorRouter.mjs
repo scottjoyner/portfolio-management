@@ -109,7 +109,7 @@ async function persistMany(store, method, values = []) {
 }
 
 export async function persistRouteArtifacts(store, result = {}) {
-  if (!result) return;
+  if (!result || result.errors?.length) return;
   const bundle = result.marketDataSnapshots || result.agentCostLedger
     ? result
     : responseBundle(result);
