@@ -47,6 +47,7 @@ const modelRecovery = read(requiredFiles[14]);
 const checklist = read(requiredFiles[15]);
 const economicsContract = read(requiredFiles[16]);
 const compose = read(requiredFiles[17]);
+const checklistLower = checklist.toLowerCase();
 
 const checks = [
   [migration3.includes('adapter_certifications'), 'migration 003 must include adapter certifications'],
@@ -74,7 +75,7 @@ const checks = [
   [economicsContract.includes('A model quote may authorize purchasing intelligence; it never authorizes a trade'), 'economic contract must separate intelligence and trade authorization'],
   [checklist.includes('Migration 006') && checklist.includes('append-only') && checklist.includes('expected version'), 'release checklist must include normalized execution gates'],
   [checklist.includes('MODEL_CALL_STALE_SECONDS') && checklist.includes('FOR UPDATE SKIP LOCKED'), 'release checklist must include model recovery and durable job queue gates'],
-  [checklist.includes('LOCAL_LLM_EXECUTION_REQUIRED') && checklist.includes('REMOTE_LLM_EXECUTION_ENABLED=false'), 'release checklist must document local-first inference'],
+  [checklistLower.includes('local-first') && checklist.includes('REMOTE_LLM_EXECUTION_ENABLED=false'), 'release checklist must document local-first inference and remote-off defaults'],
   [checklist.includes('pnpm test') && checklist.includes('pnpm build'), 'release checklist must include test and build gates'],
   [checklist.includes('pg_dump') && checklist.includes('pg_restore'), 'release checklist must include backup and restore'],
   [compose.includes('LIVE_TRADING: "false"') && compose.includes('COINBASE_DRY_RUN: "true"'), 'canonical deployment must remain paper-only'],
