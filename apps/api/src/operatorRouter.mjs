@@ -60,7 +60,7 @@ async function persistMany(store, method, values = []) {
 }
 
 export async function persistRouteArtifacts(store, result = {}) {
-  if (!result || result.errors?.length) return;
+  if (!result) return;
   const bundle = {
     marketDataSnapshots: result.snapshots || result.marketDataSnapshots || [],
     budgetApprovals: [result.budgetApproval].filter(Boolean),
@@ -85,6 +85,9 @@ export async function persistRouteArtifacts(store, result = {}) {
 export async function handleOperatorRoute(args) {
   const wrappedStore = deduplicatingStore(args?.store);
   const result = await legacyHandleOperatorRoute({ ...args, store: wrappedStore });
+  if (typeof args?.store?.upsertOpportunityBundle !== 'function') {
+    await persistRouteArtifacts(wrappedStore, result?.body || result);
+  }
   handleOperatorRoute._execEngine = legacyHandleOperatorRoute._execEngine;
   handleOperatorRoute._arbitrageCache = legacyHandleOperatorRoute._arbitrageCache;
   return result;
