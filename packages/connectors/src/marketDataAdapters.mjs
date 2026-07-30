@@ -9,8 +9,8 @@ export class ConnectorError extends Error {
 
 export function normalizeNumber(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 export function nowIso(clock = () => new Date()) {
@@ -38,30 +38,83 @@ export function normalizeMarketSnapshot(raw = {}, options = {}) {
     volatilityScore: normalizeNumber(raw.volatilityScore, 50),
     status: raw.status || 'watching',
     source: raw.source || options.source || 'connector',
-    timestamp: raw.timestamp || nowIso(options.clock)
+    timestamp: raw.timestamp || nowIso(options.clock),
   };
 }
 
 export class StaticMarketDataAdapter {
-  constructor({ venue = 'static', assetClass = 'unknown', source = 'static-market-data', snapshots = [] } = {}) {
+  constructor({ venue = 'static', assetClass = 'unknown', source = 'static-market-data', snapshots = [], clock } = {}) {
     this.venue = venue;
     this.assetClass = assetClass;
     this.source = source;
     this.snapshots = snapshots;
+    this.clock = clock;
   }
 
   async listSnapshots() {
-    return this.snapshots.map(snapshot => normalizeMarketSnapshot(snapshot, { venue: this.venue, assetClass: this.assetClass, source: this.source }));
+    return this.snapshots.map(snapshot => normalizeMarketSnapshot(snapshot, {
+      venue: this.venue,
+      assetClass: this.assetClass,
+      source: this.source,
+      clock: this.clock,
+    }));
   }
 }
+
+const DEFAULT_POLYMARKET_WATCH_SNAPSHOTS = [
+  {
+    id: 'polymarket-watch-demo-rate-cut',
+    symbol: 'DEMO-FED-RATE-CUT',
+    bid: 0.47,
+    ask: 0.50,
+    volume24h: 125000,
+    liquidityScore: 72,
+    volatilityScore: 55,
+    status: 'watching',
+  },
+];
+
+const DEFAULT_PAPER_CRYPTO_SNAPSHOTS = [
+  {
+    id: 'paper-crypto-btc-usd',
+    symbol: 'BTC-USD',
+    bid: 99990,
+    ask: 100010,
+    volume24h: 1200000000,
+    liquidityScore: 92,
+    volatilityScore: 48,
+    status: 'paper_only',
+  },
+  {
+    id: 'paper-crypto-eth-usd',
+    symbol: 'ETH-USD',
+    bid: 2999,
+    ask: 3001,
+    volume24h: 650000000,
+    liquidityScore: 88,
+    volatilityScore: 52,
+    status: 'paper_only',
+  },
+  {
+    id: 'paper-crypto-sol-usd',
+    symbol: 'SOL-USD',
+    bid: 149.8,
+    ask: 150.2,
+    volume24h: 180000000,
+    liquidityScore: 79,
+    volatilityScore: 64,
+    status: 'paper_only',
+  },
+];
 
 export class PolymarketWatchAdapter extends StaticMarketDataAdapter {
   constructor(options = {}) {
     super({
       venue: 'polymarket-watch',
       assetClass: 'prediction_market',
-      source: 'polymarket-watch-adapter',
-      snapshots: options.snapshots || [],
+      source: 'polymarket-watch-adapter-demo',
+      snapshots: options.snapshots || DEFAULT_POLYMARKET_WATCH_SNAPSHOTS,
+      clock: options.clock,
     });
   }
 }
@@ -71,8 +124,9 @@ export class PaperCryptoMarketAdapter extends StaticMarketDataAdapter {
     super({
       venue: 'coinbase-paper',
       assetClass: 'crypto',
-      source: 'paper-crypto-market-adapter',
-      snapshots: options.snapshots || [],
+      source: 'paper-crypto-market-adapter-demo',
+      snapshots: options.snapshots || DEFAULT_PAPER_CRYPTO_SNAPSHOTS,
+      clock: options.clock,
     });
   }
 }
