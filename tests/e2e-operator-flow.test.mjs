@@ -41,7 +41,7 @@ test('operator UI assets are served over HTTP and use API-backed dashboard data'
     const app = await request(baseUrl, '/ui/app.js');
     assert.equal(app.response.status, 200);
     assert.match(app.body, /netExpectedValue/);
-    assert.match(app.body, /\/api\/opportunity-dashboard/);
+    assert.match(app.body, /\/api\/opportunities/);
     assert.doesNotMatch(app.body, /dashboard-data\.js/);
 
     const economics = await request(baseUrl, '/ui/economics.js');
