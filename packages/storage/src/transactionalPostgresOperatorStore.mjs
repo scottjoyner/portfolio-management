@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { ExecutionRepository } from './executionRepository.mjs';
 import { normalizeOperatorState } from './operatorStore.mjs';
 import { PostgresOperatorStoreP2 } from './postgresOperatorStoreP2.mjs';
 import { RuntimeJobQueue } from './runtimeJobQueue.mjs';
@@ -14,6 +15,10 @@ function isTransactionControl(sql) {
   return ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(command(sql));
 }
 
+function hasMigration(applied = [], version) {
+  return applied.includes(version) || applied.includes(`${version}.sql`);
+}
+
 /**
  * Production PostgreSQL store.
  *
@@ -22,29 +27,31 @@ function isTransactionControl(sql) {
  * checked-out client, suppresses nested transaction controls, and serializes
  * whole-state mutations with a transaction-scoped advisory lock.
  *
- * Targeted row repositories and the runtime job queue execute inside the same
- * pinned transaction because store.query() resolves through AsyncLocalStorage.
+ * Targeted row repositories, normalized executions, and the runtime job queue
+ * execute inside the same pinned transaction because store.query() resolves
+ * through AsyncLocalStorage.
  */
 export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 {
   constructor(options = {}) {
     super(options);
-    // Preserve the public readiness/storage contract while exposing the exact
-    // implementation through getStatus().implementation.
     this.kind = 'postgres';
     this.implementation = 'postgres-transactional-p2';
     this.transactionContext = new AsyncLocalStorage();
     this.operatorWriteLockKey = Number(options.operatorWriteLockKey ?? process.env.OPERATOR_WRITE_LOCK_KEY ?? DEFAULT_OPERATOR_WRITE_LOCK_KEY);
     this.transactionIsolation = options.transactionIsolation || process.env.OPERATOR_TRANSACTION_ISOLATION || 'SERIALIZABLE';
     this.runtimeJobs = new RuntimeJobQueue(this);
+    this.executionRepository = new ExecutionRepository(this);
   }
 
   async checkMigrations() {
     const migrations = await super.checkMigrations();
     if (!migrations.ok) return migrations;
-    const hasRuntimeQueue = migrations.applied.includes('005_runtime_job_queue')
-      || migrations.applied.includes('005_runtime_job_queue.sql');
-    if (!hasRuntimeQueue) {
+    if (!hasMigration(migrations.applied, '005_runtime_job_queue')) {
       this.migrations = { ...migrations, ok: false, reason: 'runtime_job_queue_migration_missing' };
+      return this.migrations;
+    }
+    if (!hasMigration(migrations.applied, '006_normalized_execution_runtime')) {
+      this.migrations = { ...migrations, ok: false, reason: 'normalized_execution_migration_missing' };
       return this.migrations;
     }
     this.migrations = migrations;
@@ -59,8 +66,6 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     const transaction = this.currentTransaction();
     if (!transaction?.client) return super.query(sql, params);
 
-    // The inherited P0/P1/P2 save layers each contain their own transaction
-    // controls. They are intentionally no-ops inside the outer pinned session.
     if (isTransactionControl(sql)) {
       return { rows: [], rowCount: 0, command: command(sql), nestedTransactionControlSuppressed: true };
     }
@@ -107,8 +112,6 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   async save(nextState) {
     const state = normalizeOperatorState(nextState);
     return this.withTransaction(async () => {
-      // Calling the inherited layered save is safe here: nested BEGIN/COMMIT
-      // statements are suppressed and every query uses this pinned client.
       const saved = await super.save(state);
       this.state = saved;
       return saved;
@@ -117,15 +120,36 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
 
   async mutate(mutator) {
     return this.withTransaction(async () => {
-      // The advisory lock is acquired before loading, which prevents two API
-      // or worker processes from reading the same revision and overwriting one
-      // another with competing whole-state snapshots.
       const state = await super.load();
       const result = await mutator(state);
       await super.save(state);
       this.state = state;
       return result;
     });
+  }
+
+  async createExecutionRecord(input, options) {
+    return this.executionRepository.create(input, options);
+  }
+
+  async transitionExecutionRecord(input, options) {
+    return this.executionRepository.transition(input, options);
+  }
+
+  async appendExecutionEvent(input, options) {
+    return this.executionRepository.appendEvent(input, options);
+  }
+
+  async putExecutionOrder(input, options) {
+    return this.executionRepository.putOrder(input, options);
+  }
+
+  async recordExecutionFill(input, options) {
+    return this.executionRepository.recordFill(input, options);
+  }
+
+  async loadExecutionBundle(executionId) {
+    return this.executionRepository.loadBundle(executionId);
   }
 
   async close() {
@@ -143,6 +167,8 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       mutationSerialization: 'postgres-advisory-xact-lock',
       operatorWriteLockKey: this.operatorWriteLockKey,
       runtimeJobQueue: 'lease-backed-postgres',
+      executionPersistence: 'normalized-optimistic-postgres',
+      executionEvents: 'append-only-postgres',
       activeTransaction: Boolean(this.currentTransaction()),
     };
   }
