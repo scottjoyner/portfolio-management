@@ -28,7 +28,10 @@ function isTransactionControl(sql) {
 export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 {
   constructor(options = {}) {
     super(options);
-    this.kind = 'postgres-transactional';
+    // Preserve the public readiness/storage contract while exposing the exact
+    // implementation through getStatus().implementation.
+    this.kind = 'postgres';
+    this.implementation = 'postgres-transactional-p2';
     this.transactionContext = new AsyncLocalStorage();
     this.operatorWriteLockKey = Number(options.operatorWriteLockKey ?? process.env.OPERATOR_WRITE_LOCK_KEY ?? DEFAULT_OPERATOR_WRITE_LOCK_KEY);
     this.transactionIsolation = options.transactionIsolation || process.env.OPERATOR_TRANSACTION_ISOLATION || 'SERIALIZABLE';
@@ -134,6 +137,8 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   getStatus() {
     return {
       ...super.getStatus(),
+      kind: 'postgres',
+      implementation: this.implementation,
       transactionModel: 'pinned-client-serializable',
       mutationSerialization: 'postgres-advisory-xact-lock',
       operatorWriteLockKey: this.operatorWriteLockKey,
