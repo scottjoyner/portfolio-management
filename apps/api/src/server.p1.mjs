@@ -124,12 +124,12 @@ function isP1Route(pathname) {
 
 function makeSummary(state, store, runtime) {
   const execs = state.executions || [];
-  const execFilled = execs.filter(e => e.status === 'filled').length;
-  const execPending = execs.filter(e => e.status === 'draft' || e.status === 'submitted').length;
-  const execFailed = execs.filter(e => e.status === 'failed').length;
-  const execFills = execs.flatMap(e => e.fills || []);
-  const execSettled = execFills.filter(f => f.settlementStatus === 'settled').length;
-  const execPendingSettlement = execFills.filter(f => f.settlementStatus === 'pending' || !f.settlementStatus).length;
+  const execFilled = execs.filter(execution => execution.status === 'filled').length;
+  const execPending = execs.filter(execution => execution.status === 'draft' || execution.status === 'submitted').length;
+  const execFailed = execs.filter(execution => execution.status === 'failed').length;
+  const execFills = execs.flatMap(execution => execution.fills || []);
+  const execSettled = execFills.filter(fill => fill.settlementStatus === 'settled').length;
+  const execPendingSettlement = execFills.filter(fill => fill.settlementStatus === 'pending' || !fill.settlementStatus).length;
 
   return {
     counts: {
@@ -156,7 +156,7 @@ function makeSummary(state, store, runtime) {
       settlement_settled: execSettled,
       settlement_pending: execPendingSettlement,
       positions: state.positions.length,
-      auditEvents: state.audit.length
+      auditEvents: state.audit.length,
     },
     killSwitch: state.killSwitch,
     storage: storeStatus(store),
@@ -172,8 +172,8 @@ function makeSummary(state, store, runtime) {
       budgetApprovals: true,
       competitionConsole: true,
       economicDecisionEngine: true,
-      liveTradingCertified: false
-    }
+      liveTradingCertified: false,
+    },
   };
 }
 
@@ -183,6 +183,8 @@ function productionPaperReadiness({ runtime, storage, audit }) {
   if (storage.kind !== 'postgres-p1' && storage.kind !== 'postgres') blockers.push('postgres_storage_required');
   if (!storage.durable || !storage.sql) blockers.push('sql_durable_storage_required');
   if (!storage.migrations?.ok) blockers.push('postgres_migrations_not_ready');
+  if (storage.kind === 'postgres' && storage.executionPersistence !== 'normalized-optimistic-postgres') blockers.push('normalized_execution_storage_required');
+  if (storage.kind === 'postgres' && storage.runtimeJobQueue !== 'lease-backed-postgres') blockers.push('lease_backed_runtime_jobs_required');
   if (audit && !audit.ok) blockers.push(`audit_integrity_${audit.reason}`);
   if (runtime.safeSummary?.LIVE_TRADING === 'true') blockers.push('live_trading_must_be_false');
   return { ok: blockers.length === 0, productionPaperReady: blockers.length === 0, liveTradingCertified: false, blockers, storage, runtime, audit };
@@ -239,7 +241,9 @@ async function economicMutationGate({ method, pathname, state, readBody, now = n
   const researchRequest = pathname === '/api/agents/jobs' || /^\/api\/opportunities\/[^/]+\/request-research$/.test(pathname);
   if (researchRequest) {
     const body = await readBody();
-    const isRemote = (body.localOrRemote || 'remote') === 'remote';
+    body.localOrRemote ||= 'local';
+    body.status ||= 'queued';
+    const isRemote = body.localOrRemote === 'remote';
     if (isRemote) {
       const gate = validateIntelligencePurchase(state, body, now);
       if (!gate.ok) return { status: 409, body: { ok: false, error: 'remote_intelligence_purchase_blocked', errors: gate.errors } };
@@ -289,7 +293,9 @@ async function dispatchRequest(req, options = {}) {
   const url = new URL(req.url || '/', 'http://localhost');
 
   if ((req.method || 'GET') === 'OPTIONS') return preflightResponse(req, env);
-  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics.prom') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
+  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics.prom') {
+    return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
+  }
 
   const csrf = csrfStatus(req, env);
   if (!csrf.ok) return securityResponse(csrf.status, csrf.error, id, req, env);
@@ -321,7 +327,15 @@ async function dispatchRequest(req, options = {}) {
 
   if (url.pathname === '/api/operator/summary' || isP1Route(url.pathname)) {
     const { state, error } = await loadState(store);
-    if (error) return withSecurityHeaders(json(503, { ok: false, error: 'operator_store_unavailable', reason: error.message, storage: storeStatus(store), requestId: id }), req, env);
+    if (error) {
+      return withSecurityHeaders(json(503, {
+        ok: false,
+        error: 'operator_store_unavailable',
+        reason: error.message,
+        storage: storeStatus(store),
+        requestId: id,
+      }), req, env);
+    }
 
     if (method === 'GET' && url.pathname === '/api/operator/summary') {
       const base = await handleBaseRequest(req, { ...options, store });
@@ -357,8 +371,16 @@ async function dispatchRequest(req, options = {}) {
       return withSecurityHeaders(json(audit.ok ? 200 : 409, { ...audit, requestId: id, actor: auth.actor, role: auth.role }), req, env);
     }
 
-    const mutationGate = await economicMutationGate({ method, pathname: url.pathname, state, readBody, now: options.now ? new Date(options.now) : new Date() });
-    if (mutationGate) return withSecurityHeaders(json(mutationGate.status, { ...mutationGate.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    const mutationGate = await economicMutationGate({
+      method,
+      pathname: url.pathname,
+      state,
+      readBody,
+      now: options.now ? new Date(options.now) : new Date(),
+    });
+    if (mutationGate) {
+      return withSecurityHeaders(json(mutationGate.status, { ...mutationGate.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    }
 
     const economicRoute = await handleEconomicRoute({
       method,
@@ -368,8 +390,11 @@ async function dispatchRequest(req, options = {}) {
       readJsonBody: readBody,
       env,
       fetchImpl: options.fetchImpl || globalThis.fetch,
+      now: options.now instanceof Date ? options.now.toISOString() : options.now || new Date().toISOString(),
     });
-    if (economicRoute) return withSecurityHeaders(json(economicRoute.status, { ...economicRoute.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    if (economicRoute) {
+      return withSecurityHeaders(json(economicRoute.status, { ...economicRoute.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
+    }
 
     const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: readBody });
     if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
@@ -392,7 +417,7 @@ export async function handleRequest(req, options = {}) {
 export async function startServer(port = Number(process.env.PORT || 3000), options = {}) {
   assertRuntimeEnv({ ...process.env, ...(options.env || {}) });
   const store = createOperatorStore(options);
-  const s = http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const out = await handleRequest(req, { ...options, store });
       res.writeHead(out.status, out.headers);
@@ -402,14 +427,14 @@ export async function startServer(port = Number(process.env.PORT || 3000), optio
       res.end(JSON.stringify({ ok: false, error: error.message || 'internal_error' }, null, 2));
     }
   });
-  s.listen(port);
+  server.listen(port);
   const { startAutoRotate } = await import('./secrets.mjs');
   startAutoRotate({
     getConfig: () => store.state?.config || {},
     mutate: fn => store.mutate(fn),
     intervalMs: Number(process.env.SECRET_AUTO_ROTATE_MS || 86_400_000),
   });
-  return s;
+  return server;
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) startServer();
