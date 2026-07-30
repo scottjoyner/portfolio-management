@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import {
   DEFAULT_ACCOUNTS,
   DEFAULT_APPROVALS,
+  DEFAULT_BACKTESTS,
   DEFAULT_INSTRUMENTS,
   DEFAULT_STRATEGIES,
   DEFAULT_STRATEGY_TEMPLATES,
@@ -15,6 +16,8 @@ function seedRows(rows, now) {
     ...row,
     createdAt: row.createdAt || now,
     updatedAt: row.updatedAt || now,
+    startedAt: row.startedAt || row.createdAt || now,
+    completedAt: row.status === 'completed' ? (row.completedAt || row.updatedAt || now) : row.completedAt,
   }));
 }
 
@@ -25,7 +28,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
     instruments: seedRows(DEFAULT_INSTRUMENTS, now),
     strategyTemplates: seedRows(DEFAULT_STRATEGY_TEMPLATES, now),
     strategies: seedRows(DEFAULT_STRATEGIES, now),
-    backtests: [],
+    backtests: seedRows(DEFAULT_BACKTESTS, now),
     approvals: seedRows(DEFAULT_APPROVALS, now),
     opportunities: [],
     riskBreakdowns: [],
@@ -111,7 +114,7 @@ export function normalizeOperatorState(input = {}) {
     instruments: Array.isArray(input.instruments) ? input.instruments : seeded.instruments,
     strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : seeded.strategyTemplates,
     strategies: Array.isArray(input.strategies) ? input.strategies : seeded.strategies,
-    backtests: Array.isArray(input.backtests) ? input.backtests : [],
+    backtests: Array.isArray(input.backtests) ? input.backtests : seeded.backtests,
     approvals: Array.isArray(input.approvals) ? input.approvals : seeded.approvals,
     opportunities: Array.isArray(input.opportunities) ? input.opportunities : [],
     riskBreakdowns: Array.isArray(input.riskBreakdowns) ? input.riskBreakdowns : [],
@@ -176,7 +179,16 @@ export class MemoryOperatorStore {
   }
 
   getStatus() {
-    return { kind: this.kind, durable: this.durable, schemaVersion: this.state.schemaVersion };
+    return {
+      kind: this.kind,
+      durable: this.durable,
+      schemaVersion: this.state.schemaVersion,
+      ...(this.sql !== undefined ? { sql: this.sql } : {}),
+      ...(this.migrations !== undefined ? { migrations: this.migrations } : {}),
+      ...(this.implementation ? { implementation: this.implementation } : {}),
+      ...(this.executionPersistence ? { executionPersistence: this.executionPersistence } : {}),
+      ...(this.runtimeJobQueue ? { runtimeJobQueue: this.runtimeJobQueue } : {}),
+    };
   }
 }
 
@@ -191,9 +203,7 @@ export class FileOperatorStore extends MemoryOperatorStore {
 
   ensureFile() {
     mkdirSync(dirname(this.filePath), { recursive: true });
-    if (!existsSync(this.filePath) && this.bootstrap) {
-      this.writeState(createInitialOperatorState());
-    }
+    if (!existsSync(this.filePath) && this.bootstrap) this.writeState(createInitialOperatorState());
   }
 
   readState() {
@@ -224,7 +234,7 @@ export class FileOperatorStore extends MemoryOperatorStore {
   }
 
   getStatus() {
-    return { kind: this.kind, durable: this.durable, schemaVersion: this.state.schemaVersion, path: this.filePath };
+    return { ...super.getStatus(), path: this.filePath };
   }
 }
 
