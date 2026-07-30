@@ -13,19 +13,32 @@ class FakePgClient {
   async query(sql, params = []) {
     this.queries.push({ sql, params });
     if (sql.includes("to_regclass('public.schema_migrations')")) {
-      return { rows: [{ schema_migrations: 'schema_migrations', strategies: 'strategies' }] };
+      return { rows: [{ schema_migrations: 'schema_migrations', strategies: 'strategies', opportunities: 'opportunities' }] };
     }
-    if (sql.startsWith('SELECT version FROM schema_migrations')) return { rows: [{ version: '001_operator_state' }] };
+    if (sql.startsWith('SELECT version FROM schema_migrations')) {
+      return { rows: [
+        { version: '001_operator_state' },
+        { version: '002_operator_product_layer' },
+        { version: '003_audit_and_certification' },
+        { version: '004_opportunity_agent_workflow' },
+      ] };
+    }
     if (sql === 'BEGIN') { this.inTransaction = true; return { rows: [] }; }
     if (sql === 'COMMIT') { this.inTransaction = false; return { rows: [] }; }
     if (sql === 'ROLLBACK') { this.inTransaction = false; return { rows: [] }; }
 
-    if (sql.startsWith('SELECT * FROM strategies')) return { rows: this.tables.strategies.map(s => ({ id: s.id, name: s.name, version: s.version, status: s.status, risk_level: s.riskLevel, parameters_json: s.parameters, created_at: s.createdAt, updated_at: s.updatedAt })) };
-    if (sql.startsWith('SELECT * FROM backtest_runs')) return { rows: this.tables.backtests.map(b => ({ id: b.id, strategy_id: b.strategyId, status: b.status, assumptions_json: b.assumptions, metrics_json: b.metrics, equity_curve_json: b.equityCurve, trades_json: b.trades, started_at: b.startedAt, completed_at: b.completedAt })) };
-    if (sql.startsWith('SELECT * FROM approvals')) return { rows: this.tables.approvals.map(a => ({ id: a.id, strategy_id: a.strategyId, status: a.status, tier: a.tier, reason: a.reason, created_at: a.createdAt, reviewed_at: a.reviewedAt, reviewer: a.reviewer })) };
+    if (sql.startsWith('SELECT * FROM strategies')) return { rows: this.tables.strategies.map(strategy => ({ id: strategy.id, name: strategy.name, version: strategy.version, status: strategy.status, risk_level: strategy.riskLevel, parameters_json: strategy.parameters, created_at: strategy.createdAt, updated_at: strategy.updatedAt })) };
+    if (sql.startsWith('SELECT * FROM backtest_runs')) return { rows: this.tables.backtests.map(backtest => ({ id: backtest.id, strategy_id: backtest.strategyId, status: backtest.status, assumptions_json: backtest.assumptions, metrics_json: backtest.metrics, equity_curve_json: backtest.equityCurve, trades_json: backtest.trades, started_at: backtest.startedAt, completed_at: backtest.completedAt })) };
+    if (sql.startsWith('SELECT * FROM approvals')) return { rows: this.tables.approvals.map(approval => ({ id: approval.id, strategy_id: approval.strategyId, status: approval.status, tier: approval.tier, reason: approval.reason, created_at: approval.createdAt, reviewed_at: approval.reviewedAt, reviewer: approval.reviewer })) };
     if (sql.startsWith('SELECT * FROM positions')) return { rows: [] };
-    if (sql.startsWith('SELECT * FROM audit_events')) return { rows: this.tables.audit.map(a => ({ id: a.id, action: a.action, actor: a.actor, at: a.at, details: a.details, payload_json: a.payload || {} })) };
+    if (sql.startsWith('SELECT * FROM audit_events')) return { rows: this.tables.audit.map(event => ({ id: event.id, action: event.action, actor: event.actor, at: event.at, details: event.details, payload_json: event.payload || {} })) };
     if (sql.includes("FROM operator_flags WHERE key = 'kill_switch'")) return { rows: [{ key: 'kill_switch', value_json: this.tables.killSwitch, updated_at: this.tables.killSwitch.updatedAt }] };
+    if (sql.startsWith('SELECT * FROM market_data_snapshots')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM agent_budgets')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM research_jobs')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM opportunities')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM risk_breakdowns')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM agent_cost_ledger')) return { rows: [] };
 
     if (sql.startsWith('DELETE FROM')) {
       const table = sql.replace('DELETE FROM ', '').trim();
@@ -71,7 +84,12 @@ test('postgres store reports migration status with injected client', async () =>
   const store = new PostgresOperatorStore({ client: new FakePgClient() });
   const migrations = await store.checkMigrations();
   assert.equal(migrations.ok, true);
-  assert.deepEqual(migrations.applied, ['001_operator_state']);
+  assert.deepEqual(migrations.applied, [
+    '001_operator_state',
+    '002_operator_product_layer',
+    '003_audit_and_certification',
+    '004_opportunity_agent_workflow',
+  ]);
   assert.equal(store.getStatus().kind, 'postgres');
   assert.equal(store.getStatus().sql, true);
 });
@@ -86,7 +104,7 @@ test('postgres store loads and saves operator state through client mapping', asy
   await store.save(loaded);
   const reloaded = await store.load();
   assert.equal(reloaded.killSwitch.enabled, true);
-  assert.ok(reloaded.strategies.some(s => s.id === 'strategy-pg-test'));
-  assert.ok(client.queries.some(q => q.sql === 'BEGIN'));
-  assert.ok(client.queries.some(q => q.sql === 'COMMIT'));
+  assert.ok(reloaded.strategies.some(strategy => strategy.id === 'strategy-pg-test'));
+  assert.ok(client.queries.some(query => query.sql === 'BEGIN'));
+  assert.ok(client.queries.some(query => query.sql === 'COMMIT'));
 });
