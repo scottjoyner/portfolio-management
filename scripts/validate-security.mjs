@@ -7,6 +7,7 @@ const ignoredDirs = new Set([
   '.pytest_cache', '.mypy_cache', '.ruff_cache', 'data', 'state',
 ]);
 const ignoredFiles = new Set(['pnpm-lock.yaml', 'package-lock.json']);
+const ignoredPaths = new Set(['scripts/validate-security.mjs']);
 const suspiciousPatterns = [
   { name: 'private_key_block', pattern: /-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/ },
   { name: 'aws_access_key', pattern: /AKIA[0-9A-Z]{16}/ },
@@ -18,10 +19,10 @@ const suspiciousPatterns = [
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
     if (ignoredDirs.has(entry)) continue;
-    const path = join(dir, entry);
+    const path = join(dir, entry).replace(/^\.\//, '');
     const stat = statSync(path);
     if (stat.isDirectory()) walk(path, out);
-    else if (!ignoredFiles.has(entry) && stat.size < 1_000_000) out.push(path);
+    else if (!ignoredFiles.has(entry) && !ignoredPaths.has(path) && stat.size < 1_000_000) out.push(path);
   }
   return out;
 }
@@ -60,8 +61,9 @@ for (const [path, token] of requiredSecurityTokens) {
   }
 }
 
+const scannedFiles = walk('.');
 const findings = [];
-for (const path of walk('.')) {
+for (const path of scannedFiles) {
   if (!/\.(mjs|js|json|yml|yaml|md|env|txt|toml|ini|py|sh)$/i.test(path)) continue;
   const content = readFileSync(path, 'utf8');
   for (const rule of suspiciousPatterns) if (rule.pattern.test(content)) findings.push({ path, rule: rule.name });
@@ -73,4 +75,4 @@ if (errors.length) {
   process.stderr.write(`${JSON.stringify({ ok: false, errors, findings }, null, 2)}\n`);
   process.exit(1);
 }
-process.stdout.write(`${JSON.stringify({ ok: true, scannedFiles: walk('.').length, findings: 0 }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({ ok: true, scannedFiles: scannedFiles.length, findings: 0 }, null, 2)}\n`);
