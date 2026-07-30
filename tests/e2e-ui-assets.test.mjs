@@ -6,7 +6,8 @@ const html = readFileSync('apps/web/src/index.html', 'utf8');
 const app = readFileSync('apps/web/src/app.js', 'utf8');
 const economics = readFileSync('apps/web/src/economics.js', 'utf8');
 const css = readFileSync('apps/web/src/styles.css', 'utf8');
-const combined = html + app + economics + css;
+const economicsCss = readFileSync('apps/web/src/economics.css', 'utf8');
+const combined = html + app + economics + css + economicsCss;
 
 test('daily operations console exposes the core operator workflow', () => {
   for (const section of ['overview', 'trades', 'positions', 'signals', 'race', 'agent', 'system']) {
@@ -16,6 +17,7 @@ test('daily operations console exposes the core operator workflow', () => {
   assert.match(html, /\/ui\/economics\.js/);
   assert.match(economics, /id="economics"/);
   assert.match(economics, /data-economic-nav/);
+  assert.match(economics, /\/ui\/economics\.css/);
 });
 
 test('default view answers daily trading questions before showing the race', () => {
@@ -49,15 +51,57 @@ test('competition remains cost-adjusted and fail-closed', () => {
   assert.match(app, /\/api\/competition/);
 });
 
-test('economic view explains forecast value, intelligence purchase, executable edge, and attribution', () => {
-  for (const token of ['economic-forecast', 'economic-intelligence', 'economic-edge', 'economic-attribution', 'economic-governance']) {
+test('economic view exposes the complete two-phase lifecycle', () => {
+  for (const token of [
+    'economic-lifecycle',
+    'economic-summary',
+    'economic-forecast',
+    'economic-intelligence',
+    'economic-edge',
+    'economic-maintenance',
+    'economic-attribution',
+    'economic-governance',
+    'economic-decisions',
+  ]) {
     assert.match(economics, new RegExp(token));
   }
-  for (const token of ['maximumIntelligenceSpendUsd', 'netExecutableEdgeUsd', 'incrementalPnlUsd', 'unreconciledQuotes']) {
+  for (const token of [
+    'maximumIntelligenceSpendUsd',
+    'netExecutableEdgeUsd',
+    'incrementalPnlUsd',
+    'unreconciledQuotes',
+    'modelUsageReconciled',
+    'pendingAttribution',
+    'decisionPhase',
+    'modelCostSource',
+  ]) {
     assert.match(economics, new RegExp(token));
   }
   assert.match(economics, /\/api\/economics\/dashboard/);
   assert.match(economics, /Provider-reported actual cost becomes authoritative/);
+  assert.match(economics, /pre-call purchase decision never authorizes the trade/i);
+});
+
+test('economics UI exposes guarded maintenance actions but no unscoped intelligence purchase', () => {
+  assert.match(economics, /\/api\/economics\/maintenance\/run/);
+  assert.match(economics, /\/api\/economics\/model-pricing\/refresh/);
+  assert.match(economics, /Run maintenance/);
+  assert.match(economics, /Refresh pricing/);
+  assert.doesNotMatch(economics, /\/api\/economics\/intelligence\/execute/);
+});
+
+test('economic evidence is surfaced in the daily safety strip and attention queue', () => {
+  assert.match(economics, /strip-economics/);
+  assert.match(economics, /data-economic-attention/);
+  assert.match(economics, /Economic engine needs/);
+  assert.match(economicsCss, /economic-enabled\.safety-strip/);
+});
+
+test('economics layout remains responsive and readable', () => {
+  assert.match(economicsCss, /economic-summary-grid/);
+  assert.match(economicsCss, /economic-lifecycle/);
+  assert.match(economicsCss, /economic-table-wrap/);
+  assert.match(economicsCss, /@media \(max-width: 620px\)/);
 });
 
 test('dashboard keeps paid-agent budget and live execution controls guarded', () => {
