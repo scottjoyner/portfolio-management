@@ -7,6 +7,7 @@ import {
 } from './server.p1Legacy.mjs';
 import { assertRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
+import { startAutoRotate, stopAutoRotate } from './secrets.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -63,7 +64,7 @@ export async function handleRequest(req, options = {}) {
   return legacyHandleRequest(req, options);
 }
 
-export async function startServer(port = Number(process.env.PORT || 3000), options = {}) {
+export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
   assertRuntimeEnv({ ...process.env, ...(options.env || {}) });
   const store = createOperatorStore(options);
   const server = http.createServer(async (req, res) => {
@@ -77,12 +78,12 @@ export async function startServer(port = Number(process.env.PORT || 3000), optio
     }
   });
   server.listen(port);
-  const { startAutoRotate } = await import('./secrets.mjs');
   startAutoRotate({
     getConfig: () => store.state?.config || {},
     mutate: fn => store.mutate(fn),
     intervalMs: Number(process.env.SECRET_AUTO_ROTATE_MS || 86_400_000),
   });
+  server.once('close', stopAutoRotate);
   return server;
 }
 
