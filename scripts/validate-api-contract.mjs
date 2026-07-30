@@ -7,6 +7,7 @@ const files = {
   openapi: 'docs/openapi.p0p1.json',
   server: 'apps/api/src/server.p1.mjs',
   operatorRouter: 'apps/api/src/operatorRouter.mjs',
+  operatorRouterLegacy: 'apps/api/src/operatorRouterLegacy.mjs',
   economicRouter: 'apps/api/src/economicRouter.mjs',
   intelligence: 'apps/api/src/intelligenceExecution.mjs',
 };
@@ -21,9 +22,13 @@ if (errors.length) {
 const operatorContract = readFileSync(files.operatorContract, 'utf8');
 const economicContract = readFileSync(files.economicContract, 'utf8');
 const openapi = JSON.parse(readFileSync(files.openapi, 'utf8'));
-const implementation = [files.server, files.operatorRouter, files.economicRouter, files.intelligence]
-  .map(path => readFileSync(path, 'utf8'))
-  .join('\n');
+const implementation = [
+  files.server,
+  files.operatorRouter,
+  files.operatorRouterLegacy,
+  files.economicRouter,
+  files.intelligence,
+].map(path => readFileSync(path, 'utf8')).join('\n');
 
 const operatorRoutes = [
   '/health', '/ready', '/ready/production-paper', '/metrics', '/metrics.prom',
