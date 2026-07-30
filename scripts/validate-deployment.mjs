@@ -27,18 +27,28 @@ const transactionalStore = readFileSync('packages/storage/src/transactionalPostg
 const jobQueue = readFileSync('packages/storage/src/runtimeJobQueue.mjs', 'utf8');
 const providerRegistry = readFileSync('packages/intelligence/src/providerRegistry.mjs', 'utf8');
 
-function serviceBlock(name, nextName) {
-  const startToken = `  ${name}:\n`;
+function section(startToken, endToken) {
   const start = compose.indexOf(startToken);
   if (start < 0) return '';
-  const endToken = nextName ? `\n  ${nextName}:\n` : '\nvolumes:\n';
   const end = compose.indexOf(endToken, start + startToken.length);
   return compose.slice(start, end < 0 ? compose.length : end);
 }
 
+function serviceBlock(name, nextName) {
+  return section(`  ${name}:\n`, nextName ? `\n  ${nextName}:\n` : '\nvolumes:\n');
+}
+
+const appSecurity = section('x-app-security: &app-security\n', '\nservices:\n');
 const postgresService = serviceBlock('postgres', 'migrate');
 const apiService = serviceBlock('api', 'economic-worker');
 const workerService = serviceBlock('economic-worker', 'postgres-backup');
+const inheritedAppNetworks = appSecurity.includes('networks:')
+  && appSecurity.includes('- backend')
+  && appSecurity.includes('- inference-egress');
+const apiHasRequiredNetworks = (apiService.includes('- backend') && apiService.includes('- inference-egress'))
+  || (apiService.includes('<<: *app-security') && inheritedAppNetworks);
+const workerHasRequiredNetworks = (workerService.includes('- backend') && workerService.includes('- inference-egress'))
+  || (workerService.includes('<<: *app-security') && inheritedAppNetworks);
 
 const checks = [
   [dockerfile.includes('HEALTHCHECK'), 'Dockerfile must define a health check'],
@@ -57,10 +67,10 @@ const checks = [
   [compose.includes('backend:\n    internal: true'), 'database backend network must be internal'],
   [compose.includes('inference-egress:'), 'API and worker need controlled inference egress'],
   [Boolean(postgresService), 'production compose must define a postgres service'],
-  [!/^\s{4}ports:/m.test(postgresService), 'PostgreSQL must not publish a host port'],
+  [!/^^\s{4}ports:/m.test(postgresService), 'PostgreSQL must not publish a host port'],
   [/^\s{4}ports:/m.test(apiService), 'API service must publish only the configured operator port'],
-  [apiService.includes('- backend') && apiService.includes('- inference-egress'), 'API must join database and inference networks'],
-  [workerService.includes('- backend') && workerService.includes('- inference-egress'), 'worker must join database and inference networks'],
+  [apiHasRequiredNetworks, 'API must join database and inference networks'],
+  [workerHasRequiredNetworks, 'worker must join database and inference networks'],
   [compose.includes('read_only: true'), 'application containers must use read-only root filesystems'],
   [compose.includes('cap_drop:\n    - ALL'), 'application containers must drop Linux capabilities'],
   [compose.includes('no-new-privileges:true'), 'containers must set no-new-privileges'],
