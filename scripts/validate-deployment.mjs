@@ -27,6 +27,19 @@ const transactionalStore = readFileSync('packages/storage/src/transactionalPostg
 const jobQueue = readFileSync('packages/storage/src/runtimeJobQueue.mjs', 'utf8');
 const providerRegistry = readFileSync('packages/intelligence/src/providerRegistry.mjs', 'utf8');
 
+function serviceBlock(name, nextName) {
+  const startToken = `  ${name}:\n`;
+  const start = compose.indexOf(startToken);
+  if (start < 0) return '';
+  const endToken = nextName ? `\n  ${nextName}:\n` : '\nvolumes:\n';
+  const end = compose.indexOf(endToken, start + startToken.length);
+  return compose.slice(start, end < 0 ? compose.length : end);
+}
+
+const postgresService = serviceBlock('postgres', 'migrate');
+const apiService = serviceBlock('api', 'economic-worker');
+const workerService = serviceBlock('economic-worker', 'postgres-backup');
+
 const checks = [
   [dockerfile.includes('HEALTHCHECK'), 'Dockerfile must define a health check'],
   [dockerfile.includes('apps/api/src/server.p1.mjs'), 'Dockerfile must start the Node operator API'],
@@ -43,7 +56,11 @@ const checks = [
   [compose.includes('LOCAL_LLM_NODES_JSON'), 'production compose must expose fleet-aware node configuration'],
   [compose.includes('backend:\n    internal: true'), 'database backend network must be internal'],
   [compose.includes('inference-egress:'), 'API and worker need controlled inference egress'],
-  [!compose.match(/postgres:[\s\S]{0,1500}\n\s+ports:/), 'PostgreSQL must not publish a host port'],
+  [Boolean(postgresService), 'production compose must define a postgres service'],
+  [!/^\s{4}ports:/m.test(postgresService), 'PostgreSQL must not publish a host port'],
+  [/^\s{4}ports:/m.test(apiService), 'API service must publish only the configured operator port'],
+  [apiService.includes('- backend') && apiService.includes('- inference-egress'), 'API must join database and inference networks'],
+  [workerService.includes('- backend') && workerService.includes('- inference-egress'), 'worker must join database and inference networks'],
   [compose.includes('read_only: true'), 'application containers must use read-only root filesystems'],
   [compose.includes('cap_drop:\n    - ALL'), 'application containers must drop Linux capabilities'],
   [compose.includes('no-new-privileges:true'), 'containers must set no-new-privileges'],
@@ -52,7 +69,7 @@ const checks = [
   [envExample.includes('x1-370') && envExample.includes('xwing') && envExample.includes('macbook-air'), 'production env example must include the intended fleet topology'],
   [migrations.includes('pg_advisory_lock') && migrations.includes('checksum'), 'migration runner must lock and checksum migrations'],
   [transactionalStore.includes('BEGIN ISOLATION LEVEL') && transactionalStore.includes('pg_advisory_xact_lock'), 'operator store must use pinned serializable transactions'],
-  [transactionalStore.includes('005_runtime_job_queue'), 'operator store readiness must require the runtime queue migration'],
+  [transactionalStore.includes('005_runtime_job_queue') && transactionalStore.includes('006_normalized_execution_runtime'), 'operator store readiness must require runtime and execution migrations'],
   [jobQueue.includes('FOR UPDATE SKIP LOCKED') && jobQueue.includes('lease_expires_at'), 'runtime queue must claim jobs with leases'],
   [worker.includes('runtimeJobs') && worker.includes('heartbeat'), 'economic worker must use the durable lease queue'],
   [providerRegistry.includes('/chat/completions') && providerRegistry.includes('/models'), 'local provider must use the common OpenAI-compatible contract'],
