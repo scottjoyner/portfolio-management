@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const required = [
   'apps/web/src/index.html',
@@ -12,6 +13,15 @@ const missing = required.filter(path => !existsSync(path));
 if (missing.length) {
   console.error('web build failed: missing files', missing);
   process.exit(1);
+}
+
+for (const script of ['apps/web/src/app.js', 'apps/web/src/economics.js']) {
+  const checked = spawnSync(process.execPath, ['--check', script], { encoding: 'utf8' });
+  if (checked.status !== 0) {
+    console.error(`web build failed: JavaScript syntax error in ${script}`);
+    console.error(checked.stderr || checked.stdout);
+    process.exit(1);
+  }
 }
 
 const html = readFileSync(required[0], 'utf8');
