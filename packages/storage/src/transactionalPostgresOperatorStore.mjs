@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { synchronizeCompatibilityExecutions } from './executionCompatibilitySync.mjs';
 import { ExecutionRepository } from './executionRepository.mjs';
 import { normalizeOperatorState } from './operatorStore.mjs';
 import { PostgresOperatorStoreP2 } from './postgresOperatorStoreP2.mjs';
@@ -41,6 +42,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     this.transactionIsolation = options.transactionIsolation || process.env.OPERATOR_TRANSACTION_ISOLATION || 'SERIALIZABLE';
     this.runtimeJobs = new RuntimeJobQueue(this);
     this.executionRepository = new ExecutionRepository(this);
+    this.lastExecutionSync = null;
   }
 
   async checkMigrations() {
@@ -109,10 +111,16 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
+  async synchronizeExecutions(executions = [], now = new Date().toISOString()) {
+    this.lastExecutionSync = await synchronizeCompatibilityExecutions(this.executionRepository, executions, { now });
+    return this.lastExecutionSync;
+  }
+
   async save(nextState) {
     const state = normalizeOperatorState(nextState);
     return this.withTransaction(async () => {
       const saved = await super.save(state);
+      await this.synchronizeExecutions(saved.executions || []);
       this.state = saved;
       return saved;
     });
@@ -123,6 +131,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       const state = await super.load();
       const result = await mutator(state);
       await super.save(state);
+      await this.synchronizeExecutions(state.executions || []);
       this.state = state;
       return result;
     });
@@ -169,6 +178,8 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       runtimeJobQueue: 'lease-backed-postgres',
       executionPersistence: 'normalized-optimistic-postgres',
       executionEvents: 'append-only-postgres',
+      executionCompatibilitySync: 'atomic-on-save',
+      lastExecutionSync: this.lastExecutionSync,
       activeTransaction: Boolean(this.currentTransaction()),
     };
   }
