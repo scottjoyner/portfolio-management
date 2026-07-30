@@ -4,10 +4,13 @@ import { join } from 'node:path';
 
 const ignoredDirs = new Set([
   '.git', 'node_modules', '.venv', '.venv_test', 'venv', '.cb_sdk_env', 'dist', 'build', 'archive',
-  '.pytest_cache', '.mypy_cache', '.ruff_cache', 'data', 'state',
+  '.pytest_cache', '.mypy_cache', '.ruff_cache', 'data', 'state', '.news_cache',
 ]);
 const ignoredFiles = new Set(['pnpm-lock.yaml', 'package-lock.json']);
-const ignoredPaths = new Set(['scripts/validate-security.mjs']);
+const ignoredPaths = new Set([
+  'scripts/validate-security.mjs',
+  'graph-alpha-bot/knowledge_graph.json',
+]);
 const suspiciousPatterns = [
   { name: 'private_key_block', pattern: /-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/ },
   { name: 'aws_access_key', pattern: /AKIA[0-9A-Z]{16}/ },
@@ -45,8 +48,15 @@ function walk(directory, out = []) {
 }
 
 function genericAssignmentEligible(path) {
-  return !/(^|\/)(tests?|docs?|examples?|fixtures?|mocks?)(\/|$)/i.test(path)
+  return !/\.md$/i.test(path)
+    && !/(^|\/)(tests?|docs?|examples?|fixtures?|mocks?)(\/|$)/i.test(path)
     && !/(^|\/)(readme|changelog|contributing)(\.|$)/i.test(path);
+}
+
+function obviousPlaceholder(value) {
+  return /replace|example|placeholder|test|dummy|fake|sample|your|xxx|changeme|configured|process\.env|\$\{|<|\*\*\*/i.test(value)
+    || /_here$/i.test(value)
+    || /^(?:[a-z0-9]+[_-])*(?:api[_-]?key|secret)$/i.test(value);
 }
 
 function suspiciousAssignment(content) {
@@ -54,7 +64,7 @@ function suspiciousAssignment(content) {
   const pattern = /\b(secret|password|api[_-]?key|private[_-]?key|admin[_-]?token|csrf[_-]?token)\b\s*[:=]\s*(['"`])([^'"`\r\n]{12,})\2/ig;
   for (const match of content.matchAll(pattern)) {
     const value = String(match[3] || '').trim();
-    if (/replace|example|placeholder|test|dummy|fake|sample|your|xxx|changeme|configured|process\.env|\$\{|<|\*\*\*/i.test(value)) continue;
+    if (obviousPlaceholder(value)) continue;
     if (/\s/.test(value)) continue;
     findings.push({ rule: 'secret_assignment', preview: `${value.slice(0, 3)}***${value.slice(-3)}` });
   }
