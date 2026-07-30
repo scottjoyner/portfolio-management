@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ignoredDirs = new Set([
-  '.git', 'node_modules', '.venv', 'venv', 'dist', 'build', 'archive',
+  '.git', 'node_modules', '.venv', 'venv', '.cb_sdk_env', 'dist', 'build', 'archive',
   '.pytest_cache', '.mypy_cache', '.ruff_cache', 'data', 'state',
 ]);
 const ignoredFiles = new Set(['pnpm-lock.yaml', 'package-lock.json']);
@@ -15,14 +15,31 @@ const suspiciousPatterns = [
   { name: 'openai_key', pattern: /sk-[A-Za-z0-9_-]{32,}/ },
   { name: 'coinbase_private_key', pattern: /-----BEGIN EC PRIVATE KEY-----/ },
 ];
+const skipped = [];
 
-function walk(dir, out = []) {
-  for (const entry of readdirSync(dir)) {
+function walk(directory, out = []) {
+  let entries;
+  try {
+    entries = readdirSync(directory);
+  } catch (error) {
+    skipped.push({ path: directory, reason: error.code || error.message });
+    return out;
+  }
+  for (const entry of entries) {
     if (ignoredDirs.has(entry)) continue;
-    const path = join(dir, entry).replace(/^\.\//, '');
-    const stat = statSync(path);
-    if (stat.isDirectory()) walk(path, out);
-    else if (!ignoredFiles.has(entry) && !ignoredPaths.has(path) && stat.size < 1_000_000) out.push(path);
+    const path = join(directory, entry).replace(/^\.\//, '');
+    try {
+      const link = lstatSync(path);
+      if (link.isSymbolicLink()) {
+        skipped.push({ path, reason: 'symbolic_link' });
+        continue;
+      }
+      const stat = statSync(path);
+      if (stat.isDirectory()) walk(path, out);
+      else if (!ignoredFiles.has(entry) && !ignoredPaths.has(path) && stat.size < 1_000_000) out.push(path);
+    } catch (error) {
+      skipped.push({ path, reason: error.code || error.message });
+    }
   }
   return out;
 }
@@ -72,7 +89,7 @@ for (const path of scannedFiles) {
 
 if (findings.length) errors.push(...findings.map(row => `secret_like_content:${row.path}:${row.rule}`));
 if (errors.length) {
-  process.stderr.write(`${JSON.stringify({ ok: false, errors, findings }, null, 2)}\n`);
+  process.stderr.write(`${JSON.stringify({ ok: false, errors, findings, skipped }, null, 2)}\n`);
   process.exit(1);
 }
-process.stdout.write(`${JSON.stringify({ ok: true, scannedFiles: scannedFiles.length, findings: 0 }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({ ok: true, scannedFiles: scannedFiles.length, findings: 0, skipped }, null, 2)}\n`);
