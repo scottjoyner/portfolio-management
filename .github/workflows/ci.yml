@@ -6,28 +6,54 @@ on:
   pull_request:
     branches: [main, develop]
 
-jobs:
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    env:
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  validation:
+    name: validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
     - uses: actions/checkout@v4
-
     - name: Set up Node
       uses: actions/setup-node@v4
       with:
         node-version: '22'
+    - name: Enable package manager
+      run: corepack enable
+    - name: Run complete static production build contract
+      run: pnpm build
 
-    - name: Validate tracked runtime artifacts
-      run: node scripts/validate-runtime-artifacts.mjs
+  node-tests:
+    name: node-tests-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Run deterministic Node test shard
+      env:
+        NODE_TEST_SHARD_INDEX: ${{ matrix.shard }}
+        NODE_TEST_SHARD_TOTAL: 4
+      run: node scripts/run-node-test-shard.mjs
 
-    - name: Validate web build contract
-      run: node scripts/build-web.mjs
-
+  python-critical:
+    name: python-critical
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+    steps:
+    - uses: actions/checkout@v4
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -36,13 +62,11 @@ jobs:
         cache-dependency-path: |
           requirements.txt
           deploy/requirements.venv-lock.txt
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
-
     - name: Run merge-critical Python tests
       run: |
         python -m pytest \
@@ -54,22 +78,15 @@ jobs:
           --import-mode=importlib \
           -q
 
-    - name: Run complete Node test suite
-      run: |
-        mapfile -d '' files < <(find tests -type f -name '*.test.mjs' -print0)
-        node --test "${files[@]}"
-
   coverage-gate:
     name: coverage-gate
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    needs: test
+    timeout-minutes: 25
+    needs: python-critical
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -78,13 +95,11 @@ jobs:
         cache-dependency-path: |
           requirements.txt
           deploy/requirements.venv-lock.txt
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
-
     - name: Measure critical accounting and competition coverage
       run: |
         python -m pytest \
@@ -100,7 +115,6 @@ jobs:
           --cov-report=term-missing \
           --cov-report=xml \
           --cov-fail-under=60
-
     - name: Upload focused coverage
       uses: codecov/codecov-action@v4
       with:
@@ -114,10 +128,8 @@ jobs:
     continue-on-error: true
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -126,13 +138,11 @@ jobs:
         cache-dependency-path: |
           requirements.txt
           deploy/requirements.venv-lock.txt
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
-
     - name: Run broad legacy suite for diagnostics
       run: |
         python -m pytest tests/ trading_system/tests/unit/ \
@@ -145,28 +155,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
-    needs: test
+    needs: [python-critical, node-tests]
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
         cache: pip
         cache-dependency-path: deploy/requirements.venv-lock.txt
-
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
-
     - name: Run performance benchmarks
       run: python performance_benchmarks/run_all_tests.py
-
     - name: Generate report
       if: always()
       run: python performance_benchmarks/cli_report_generator.py --output=benchmark-report.html
