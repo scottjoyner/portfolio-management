@@ -20,8 +20,10 @@ class FakeConnection {
       return { rows: [
         { version: '001_operator_state' },
         { version: '002_operator_product_layer' },
+        { version: '003_audit_and_certification' },
         { version: '004_opportunity_agent_workflow' },
         { version: '005_runtime_job_queue' },
+        { version: '006_normalized_execution_runtime' },
       ] };
     }
     if (sql.startsWith('SELECT * FROM')) return { rows: [] };
@@ -61,6 +63,9 @@ test('factory selects the transactional PostgreSQL store', () => {
   assert.ok(store instanceof TransactionalPostgresOperatorStore);
   assert.equal(store.getStatus().transactionModel, 'pinned-client-serializable');
   assert.equal(store.getStatus().runtimeJobQueue, 'lease-backed-postgres');
+  assert.equal(store.getStatus().executionPersistence, 'normalized-optimistic-postgres');
+  assert.equal(store.getStatus().executionEvents, 'append-only-postgres');
+  assert.ok(store.executionRepository);
 });
 
 test('transactional store rejects PostgreSQL without the runtime queue migration', async () => {
@@ -82,6 +87,28 @@ test('transactional store rejects PostgreSQL without the runtime queue migration
   const migrations = await store.checkMigrations();
   assert.equal(migrations.ok, false);
   assert.equal(migrations.reason, 'runtime_job_queue_migration_missing');
+});
+
+test('transactional store rejects PostgreSQL without normalized execution migration', async () => {
+  const connection = new FakeConnection();
+  connection.query = async (sql, params = []) => {
+    connection.calls.push({ sql, params });
+    if (sql.includes("to_regclass('public.schema_migrations')")) {
+      return { rows: [{ schema_migrations: 'schema_migrations', strategies: 'strategies', opportunities: 'opportunities' }] };
+    }
+    if (sql === 'SELECT version FROM schema_migrations ORDER BY version ASC') {
+      return { rows: [
+        { version: '002_operator_product_layer' },
+        { version: '004_opportunity_agent_workflow' },
+        { version: '005_runtime_job_queue' },
+      ] };
+    }
+    return { rows: [] };
+  };
+  const store = new TransactionalPostgresOperatorStore({ client: connection, bootstrap: false });
+  const migrations = await store.checkMigrations();
+  assert.equal(migrations.ok, false);
+  assert.equal(migrations.reason, 'normalized_execution_migration_missing');
 });
 
 test('layered P0/P1/P2 save commits once on one checked-out client', async () => {
