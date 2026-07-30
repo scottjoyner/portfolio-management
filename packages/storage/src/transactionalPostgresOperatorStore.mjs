@@ -25,6 +25,29 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function parseJson(value, fallback = {}) {
+  if (value == null) return fallback;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function mapExecutionEvent(row) {
+  return {
+    id: row.event_id,
+    executionId: row.execution_id,
+    sequenceNumber: Number(row.sequence_number),
+    type: row.event_type,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    executionVersion: Number(row.execution_version),
+    actor: row.actor,
+    idempotencyKey: row.idempotency_key,
+    payload: parseJson(row.payload_json),
+    createdAt: row.created_at,
+    timestamp: row.created_at,
+  };
+}
+
 /**
  * Production PostgreSQL store.
  *
@@ -114,21 +137,33 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
-  publishExecutionReadModel(state) {
+  async loadExecutionEventsForReadModel(limit = Number(process.env.EXECUTION_READ_MODEL_EVENT_LIMIT || 5000)) {
+    const boundedLimit = Math.max(1, Math.min(50000, Math.floor(Number(limit) || 5000)));
+    const result = await this.query(
+      'SELECT * FROM execution_events ORDER BY sequence_number DESC LIMIT $1',
+      [boundedLimit],
+    );
+    return (result.rows || []).map(mapExecutionEvent).reverse();
+  }
+
+  publishExecutionReadModel(state, events = []) {
     const executions = Array.isArray(state?.executions) ? clone(state.executions) : [];
+    const durableEvents = Array.isArray(events) ? clone(events) : [];
+    const finalEvent = durableEvents.at(-1);
     globalThis.__PORTFOLIO_EXECUTION_READ_MODEL__ = {
       source: 'postgres-transactional-operator-state',
-      revision: `${Date.now()}:${executions.length}:${executions.map(row => `${row.id}:${row.status}:${row.updatedAt || row.lastHeartbeatAt || ''}`).join('|')}`,
+      revision: `${Date.now()}:${executions.length}:${finalEvent?.sequenceNumber || 0}:${executions.map(row => `${row.id}:${row.status}:${row.updatedAt || row.lastHeartbeatAt || ''}`).join('|')}`,
       publishedAt: new Date().toISOString(),
       executions,
-      events: Array.isArray(state?.executionEvents) ? clone(state.executionEvents) : [],
+      events: durableEvents,
     };
   }
 
   async load() {
     const state = await super.load();
+    const events = await this.loadExecutionEventsForReadModel();
     this.state = state;
-    this.publishExecutionReadModel(state);
+    this.publishExecutionReadModel(state, events);
     return state;
   }
 
@@ -142,8 +177,9 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     return this.withTransaction(async () => {
       const saved = await super.save(state);
       await this.synchronizeExecutions(saved.executions || []);
+      const events = await this.loadExecutionEventsForReadModel();
       this.state = saved;
-      this.publishExecutionReadModel(saved);
+      this.publishExecutionReadModel(saved, events);
       return saved;
     });
   }
@@ -154,8 +190,9 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       const result = await mutator(state);
       await super.save(state);
       await this.synchronizeExecutions(state.executions || []);
+      const events = await this.loadExecutionEventsForReadModel();
       this.state = state;
-      this.publishExecutionReadModel(state);
+      this.publishExecutionReadModel(state, events);
       return result;
     });
   }
@@ -202,7 +239,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       executionPersistence: 'normalized-optimistic-postgres',
       executionEvents: 'append-only-postgres',
       executionCompatibilitySync: 'atomic-on-save',
-      executionReadModel: 'postgres-published-compatibility',
+      executionReadModel: 'postgres-published-compatibility-with-events',
       lastExecutionSync: this.lastExecutionSync,
       activeTransaction: Boolean(this.currentTransaction()),
     };
