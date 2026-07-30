@@ -4,6 +4,41 @@ import {
 } from '../../../packages/economics/src/economicDecisionEngine.mjs';
 import { createIntelligenceProviderRegistry } from '../../../packages/intelligence/src/providerRegistry.mjs';
 
+let cachedRegistry = null;
+let cachedRegistryKey = null;
+let cachedFetchImpl = null;
+
+function registryKey(env) {
+  return JSON.stringify({
+    nodes: env.LOCAL_LLM_NODES_JSON || '',
+    endpoints: env.LOCAL_LLM_ENDPOINTS || '',
+    localApiKey: env.LOCAL_LLM_API_KEY ? 'configured' : 'none',
+    remoteEnabled: env.REMOTE_LLM_EXECUTION_ENABLED || 'false',
+    openRouterKey: env.OPENROUTER_API_KEY ? 'configured' : 'none',
+    defaultPrefill: env.LOCAL_LLM_DEFAULT_PREFILL_TPS || '',
+    defaultDecode: env.LOCAL_LLM_DEFAULT_DECODE_TPS || '',
+    defaultWatts: env.LOCAL_LLM_DEFAULT_WATTS || '',
+    electricity: env.LOCAL_LLM_ELECTRICITY_RATE_PER_KWH || '',
+    depreciation: env.LOCAL_LLM_HARDWARE_DEPRECIATION_PER_HOUR || '',
+  });
+}
+
+function registryFor(env, fetchImpl) {
+  const key = registryKey(env);
+  if (!cachedRegistry || cachedRegistryKey !== key || cachedFetchImpl !== fetchImpl) {
+    cachedRegistry = createIntelligenceProviderRegistry({ env, fetchImpl });
+    cachedRegistryKey = key;
+    cachedFetchImpl = fetchImpl;
+  }
+  return cachedRegistry;
+}
+
+export function resetIntelligenceProviderRegistry() {
+  cachedRegistry = null;
+  cachedRegistryKey = null;
+  cachedFetchImpl = null;
+}
+
 function messagesFrom(body = {}) {
   if (Array.isArray(body.messages) && body.messages.length) return body.messages;
   if (body.prompt) return [{ role: 'user', content: String(body.prompt) }];
@@ -86,6 +121,7 @@ function markRunning(state, body, now, env) {
       provider: quote.provider,
       model: quote.model,
       localNodeId: quote.localNodeId || null,
+      localNodeName: quote.localNodeName || null,
       messages,
       providerPreferences: quote.providerPreferences || null,
       maxCompletionTokens: Number(body.maxCompletionTokens || quote.completionTokens || 0) || undefined,
@@ -153,7 +189,7 @@ function reconcileExecution(state, prepared, providerResult, now) {
 }
 
 export async function discoverLocalIntelligenceNodes({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const registry = createIntelligenceProviderRegistry({ env, fetchImpl });
+  const registry = registryFor(env, fetchImpl);
   const nodes = await registry.health();
   return {
     status: nodes.some(node => node.ok) ? 200 : 503,
@@ -167,7 +203,7 @@ export async function discoverLocalIntelligenceNodes({ env = process.env, fetchI
 }
 
 export async function quoteLocalIntelligence({ store, body = {}, env = process.env, fetchImpl = globalThis.fetch, now = new Date().toISOString() }) {
-  const registry = createIntelligenceProviderRegistry({ env, fetchImpl });
+  const registry = registryFor(env, fetchImpl);
   const routed = await registry.routeLocal(body);
   if (routed.errors) return resultFromErrors(routed.errors, { nodes: routed.nodes });
   const route = routed.route;
@@ -204,9 +240,8 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
   const preparedResult = await store.mutate(state => markRunning(state, body, now, env));
   if (preparedResult.errors) return resultFromErrors(preparedResult.errors);
   const prepared = preparedResult.execution;
-  const registry = createIntelligenceProviderRegistry({ env, fetchImpl });
-  const quoteSnapshot = await store.load().then(state => quoteRecordForExecution(state, body));
-  const provider = registry.providerForQuote(quoteSnapshot);
+  const registry = registryFor(env, fetchImpl);
+  const provider = registry.providerForQuote(prepared);
   if (!provider) {
     const error = prepared.localOrRemote === 'local' ? 'local_node_unavailable_requote_required' : 'intelligence_provider_unavailable';
     await store.mutate(state => markFailed(state, prepared, error, new Date().toISOString()));
