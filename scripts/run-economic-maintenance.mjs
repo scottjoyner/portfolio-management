@@ -129,15 +129,10 @@ process.on('SIGTERM', () => { shutdown('SIGTERM').finally(() => process.exit(0))
 
 await run();
 if (!once) {
+  // Keep this interval referenced: it is the worker's supervised process loop.
   timer = setInterval(() => {
     if (!stopping) run().catch(() => {});
   }, intervalMs);
-  timer.unref?.();
-  // Keep the process alive even though the timer is unref'd so shutdown signals
-  // can drain the active lease and close the PostgreSQL pool cleanly.
-  await new Promise(resolve => {
-    process.once('beforeExit', resolve);
-  });
 } else {
   await store.close?.().catch(() => {});
 }
