@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 
 import { createOperatorStore } from '../packages/storage/src/operatorStoreFactory.mjs';
 import { runEconomicMaintenance } from '../apps/api/src/economicMaintenance.mjs';
+import { recoverStaleModelCalls } from '../apps/api/src/modelCallRecovery.mjs';
 
 function hasFlag(name) {
   return process.argv.slice(2).includes(name);
@@ -32,7 +33,14 @@ function maintenanceJobKey(now = new Date()) {
 }
 
 async function executeMaintenance() {
-  const result = await store.mutate(state => runEconomicMaintenance(state, { env: process.env }));
+  const result = await store.mutate(async state => {
+    const modelCallRecovery = recoverStaleModelCalls(state, {
+      env: process.env,
+      actor: workerId,
+    });
+    const maintenance = await runEconomicMaintenance(state, { env: process.env });
+    return { ...maintenance, modelCallRecovery };
+  });
   return { worker: 'economic-maintenance', workerId, intervalMs, ...result };
 }
 
@@ -63,7 +71,15 @@ async function runLeased() {
   try {
     heartbeat = setInterval(() => {
       queue.heartbeat({ jobId: job.id, workerId, leaseSeconds }).catch(error => {
-        print({ ok: false, worker: 'economic-maintenance', workerId, jobId: job.id, warning: 'job_heartbeat_failed', error: String(error?.message || error), at: new Date().toISOString() });
+        print({
+          ok: false,
+          worker: 'economic-maintenance',
+          workerId,
+          jobId: job.id,
+          warning: 'job_heartbeat_failed',
+          error: String(error?.message || error),
+          at: new Date().toISOString(),
+        });
       });
     }, Math.max(10000, Math.floor(leaseSeconds * 1000 / 3)));
     heartbeat.unref?.();
@@ -120,7 +136,12 @@ async function shutdown(signal) {
   stopping = true;
   if (timer) clearInterval(timer);
   print({ worker: 'economic-maintenance', workerId, status: 'stopping', signal, at: new Date().toISOString() });
-  if (activeRun) await Promise.race([activeRun, sleep(Math.max(1000, Number(process.env.ECONOMIC_SHUTDOWN_GRACE_MS || 30000)))]);
+  if (activeRun) {
+    await Promise.race([
+      activeRun,
+      sleep(Math.max(1000, Number(process.env.ECONOMIC_SHUTDOWN_GRACE_MS || 30000))),
+    ]);
+  }
   await store.close?.().catch(() => {});
 }
 
@@ -129,7 +150,6 @@ process.on('SIGTERM', () => { shutdown('SIGTERM').finally(() => process.exit(0))
 
 await run();
 if (!once) {
-  // Keep this interval referenced: it is the worker's supervised process loop.
   timer = setInterval(() => {
     if (!stopping) run().catch(() => {});
   }, intervalMs);
