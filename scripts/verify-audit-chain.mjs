@@ -12,5 +12,9 @@ try {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error.message || String(error) }, null, 2)}\n`);
   process.exitCode = 1;
 } finally {
-  await store.close?.().catch?.(() => {});
+  try {
+    await store.close?.();
+  } catch {
+    // Verification result remains authoritative; shutdown errors are non-destructive.
+  }
 }
