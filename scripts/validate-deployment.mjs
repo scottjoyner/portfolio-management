@@ -67,7 +67,7 @@ const checks = [
   [compose.includes('backend:\n    internal: true'), 'database backend network must be internal'],
   [compose.includes('inference-egress:'), 'API and worker need controlled inference egress'],
   [Boolean(postgresService), 'production compose must define a postgres service'],
-  [!/^^\s{4}ports:/m.test(postgresService), 'PostgreSQL must not publish a host port'],
+  [!/^\s{4}ports:/m.test(postgresService), 'PostgreSQL must not publish a host port'],
   [/^\s{4}ports:/m.test(apiService), 'API service must publish only the configured operator port'],
   [apiHasRequiredNetworks, 'API must join database and inference networks'],
   [workerHasRequiredNetworks, 'worker must join database and inference networks'],
