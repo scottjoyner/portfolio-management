@@ -20,6 +20,11 @@ function hasMigration(applied = [], version) {
   return applied.includes(version) || applied.includes(`${version}.sql`);
 }
 
+function clone(value) {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
 /**
  * Production PostgreSQL store.
  *
@@ -67,11 +72,9 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   async query(sql, params = []) {
     const transaction = this.currentTransaction();
     if (!transaction?.client) return super.query(sql, params);
-
     if (isTransactionControl(sql)) {
       return { rows: [], rowCount: 0, command: command(sql), nestedTransactionControlSuppressed: true };
     }
-
     try {
       return await transaction.client.query(sql, params);
     } catch (error) {
@@ -111,6 +114,24 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
+  publishExecutionReadModel(state) {
+    const executions = Array.isArray(state?.executions) ? clone(state.executions) : [];
+    globalThis.__PORTFOLIO_EXECUTION_READ_MODEL__ = {
+      source: 'postgres-transactional-operator-state',
+      revision: `${Date.now()}:${executions.length}:${executions.map(row => `${row.id}:${row.status}:${row.updatedAt || row.lastHeartbeatAt || ''}`).join('|')}`,
+      publishedAt: new Date().toISOString(),
+      executions,
+      events: Array.isArray(state?.executionEvents) ? clone(state.executionEvents) : [],
+    };
+  }
+
+  async load() {
+    const state = await super.load();
+    this.state = state;
+    this.publishExecutionReadModel(state);
+    return state;
+  }
+
   async synchronizeExecutions(executions = [], now = new Date().toISOString()) {
     this.lastExecutionSync = await synchronizeCompatibilityExecutions(this.executionRepository, executions, { now });
     return this.lastExecutionSync;
@@ -122,6 +143,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       const saved = await super.save(state);
       await this.synchronizeExecutions(saved.executions || []);
       this.state = saved;
+      this.publishExecutionReadModel(saved);
       return saved;
     });
   }
@@ -133,6 +155,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       await super.save(state);
       await this.synchronizeExecutions(state.executions || []);
       this.state = state;
+      this.publishExecutionReadModel(state);
       return result;
     });
   }
@@ -179,6 +202,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       executionPersistence: 'normalized-optimistic-postgres',
       executionEvents: 'append-only-postgres',
       executionCompatibilitySync: 'atomic-on-save',
+      executionReadModel: 'postgres-published-compatibility',
       lastExecutionSync: this.lastExecutionSync,
       activeTransaction: Boolean(this.currentTransaction()),
     };
