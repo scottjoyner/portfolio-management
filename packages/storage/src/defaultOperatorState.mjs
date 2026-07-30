@@ -70,7 +70,7 @@ export const DEFAULT_STRATEGY_TEMPLATES = [
 
 export const DEFAULT_STRATEGIES = [
   {
-    id: 'strategy-paper-seed',
+    id: 'strategy-ema-cross-v1',
     templateId: 'template-ema-crossover',
     name: 'Paper BTC EMA Baseline',
     version: 1,
@@ -84,7 +84,7 @@ export const DEFAULT_STRATEGIES = [
     },
   },
   {
-    id: 'strategy-paper-mean-reversion',
+    id: 'strategy-mean-reversion-v1',
     templateId: 'template-zscore-mean-reversion',
     name: 'Paper ETH Mean Reversion Baseline',
     version: 1,
@@ -100,11 +100,37 @@ export const DEFAULT_STRATEGIES = [
   },
 ];
 
+export const DEFAULT_BACKTESTS = [
+  {
+    id: 'backtest-ema-cross-v1',
+    strategyId: 'strategy-ema-cross-v1',
+    status: 'completed',
+    assumptions: {
+      initialCapitalUsd: 100000,
+      feeBps: 5,
+      slippageBps: 10,
+      dataSource: 'deterministic-paper-seed',
+    },
+    metrics: {
+      totalReturnPct: 3.05,
+      maxDrawdownPct: 1.02,
+      sharpe: 1.11,
+      totalTrades: 14,
+      winRatePct: 57.14,
+    },
+    equityCurve: [100000, 100500, 99800, 101700, 103050],
+    trades: [
+      { timestamp: '2026-01-02T10:00:00.000Z', symbol: 'BTC-USD', side: 'buy', quantity: 1, price: 100 },
+      { timestamp: '2026-01-03T15:00:00.000Z', symbol: 'BTC-USD', side: 'sell', quantity: 1, price: 103.05 },
+    ],
+  },
+];
+
 export const DEFAULT_APPROVALS = [
   {
     id: 'approval-paper-seed',
-    strategyId: 'strategy-paper-seed',
-    backtestId: null,
+    strategyId: 'strategy-ema-cross-v1',
+    backtestId: 'backtest-ema-cross-v1',
     status: 'pending_review',
     tier: 'canary',
     reason: 'Seeded paper strategy requires explicit operator approval.',
