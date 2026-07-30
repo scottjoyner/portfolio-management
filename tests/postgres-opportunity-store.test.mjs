@@ -55,6 +55,21 @@ test('Postgres store saves opportunity agent workflow tables', async () => {
   const client = new FakePgClient();
   const state = createInitialOperatorState();
   ensureOpportunityState(state);
+  state.marketDataSnapshots.push({
+    id: 'md-store-test-eth',
+    symbol: 'ETH-USD',
+    venue: 'coinbase-paper',
+    assetClass: 'crypto',
+    bid: 2999,
+    ask: 3001,
+    spreadBps: 6.67,
+    volume24h: 1000000,
+    liquidityScore: 80,
+    volatilityScore: 40,
+    status: 'paper_only',
+    source: 'postgres-opportunity-store-test',
+    timestamp: '2026-05-30T00:00:00.000Z',
+  });
   const job = createResearchJob(state, {
     agentId: 'store-test-agent',
     model: 'local-test-model',
@@ -64,7 +79,7 @@ test('Postgres store saves opportunity agent workflow tables', async () => {
     totalTokens: 1500,
     runtimeSeconds: 90,
     approvedBudgetOverride: true,
-    marketScope: 'ETH-USD'
+    marketScope: 'ETH-USD',
   });
   assert.ok(job.job.id);
   const created = createOpportunity(state, {
@@ -84,7 +99,7 @@ test('Postgres store saves opportunity agent workflow tables', async () => {
     estimatedFees: 2,
     estimatedSlippage: 3,
     agentResearchCost: 1,
-    modelInferenceCost: 1
+    modelInferenceCost: 1,
   });
   assert.ok(created.opportunity.id);
   decideOpportunity(state, created.opportunity.id, { status: 'approved', reviewer: 'store-test' });
