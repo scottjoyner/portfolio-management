@@ -6,6 +6,7 @@ const files = {
   economicContract: 'docs/API_CONTRACT_ECONOMICS.md',
   openapi: 'docs/openapi.p0p1.json',
   server: 'apps/api/src/server.p1.mjs',
+  serverLegacy: 'apps/api/src/server.p1Legacy.mjs',
   operatorRouter: 'apps/api/src/operatorRouter.mjs',
   operatorRouterLegacy: 'apps/api/src/operatorRouterLegacy.mjs',
   economicRouter: 'apps/api/src/economicRouter.mjs',
@@ -24,6 +25,7 @@ const economicContract = readFileSync(files.economicContract, 'utf8');
 const openapi = JSON.parse(readFileSync(files.openapi, 'utf8'));
 const implementation = [
   files.server,
+  files.serverLegacy,
   files.operatorRouter,
   files.operatorRouterLegacy,
   files.economicRouter,
