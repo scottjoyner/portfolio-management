@@ -5,6 +5,7 @@ const required = [
   'apps/web/src/styles.css',
   'apps/web/src/app.js',
   'apps/web/src/economics.js',
+  'apps/web/src/economics.css',
 ];
 
 const missing = required.filter(path => !existsSync(path));
@@ -17,13 +18,18 @@ const html = readFileSync(required[0], 'utf8');
 const css = readFileSync(required[1], 'utf8');
 const app = readFileSync(required[2], 'utf8');
 const economics = readFileSync(required[3], 'utf8');
-const combined = html + css + app + economics;
+const economicsCss = readFileSync(required[4], 'utf8');
+const combined = html + css + app + economics + economicsCss;
 
 for (const asset of ['/ui/app.js', '/ui/economics.js', '/ui/styles.css']) {
   if (!html.includes(asset)) {
     console.error(`web build failed: missing static asset ${asset}`);
     process.exit(1);
   }
+}
+if (!economics.includes('/ui/economics.css')) {
+  console.error('web build failed: economics stylesheet is not loaded');
+  process.exit(1);
 }
 
 for (const section of ['overview', 'trades', 'positions', 'signals', 'race', 'agent', 'system']) {
@@ -45,11 +51,16 @@ for (const token of [
   'position-rows',
   'decision-list',
   'competition-grid',
+  'economic-lifecycle',
+  'economic-summary',
   'economic-forecast',
   'economic-intelligence',
   'economic-edge',
+  'economic-maintenance',
   'economic-attribution',
   'economic-governance',
+  'economic-decisions',
+  'strip-economics',
 ]) {
   if (!combined.includes(token)) {
     console.error(`web build failed: missing operator-workflow token ${token}`);
@@ -76,6 +87,8 @@ for (const endpoint of [
 
 for (const endpoint of [
   '/api/economics/dashboard',
+  '/api/economics/maintenance/run',
+  '/api/economics/model-pricing/refresh',
 ]) {
   if (!economics.includes(endpoint)) {
     console.error(`web build failed: missing economics API endpoint ${endpoint}`);
@@ -95,6 +108,9 @@ for (const token of [
   'netExecutableEdgeUsd',
   'incrementalPnlUsd',
   'unreconciledQuotes',
+  'modelUsageReconciled',
+  'pendingAttribution',
+  'Provider-reported actual cost becomes authoritative',
 ]) {
   if (!combined.includes(token)) {
     console.error(`web build failed: missing accounting or safety token ${token}`);
@@ -109,4 +125,4 @@ for (const id of ['system-truth', 'truth-mode', 'truth-feed', 'truth-cache', 'tr
   }
 }
 
-console.log('web build ok: daily operations and economic decision console validated');
+console.log('web build ok: daily operations and economic lifecycle console validated');
