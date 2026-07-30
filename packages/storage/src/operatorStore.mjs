@@ -1,18 +1,32 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { DEFAULT_ACCOUNTS } from './defaultOperatorState.mjs';
+import {
+  DEFAULT_ACCOUNTS,
+  DEFAULT_APPROVALS,
+  DEFAULT_INSTRUMENTS,
+  DEFAULT_STRATEGIES,
+  DEFAULT_STRATEGY_TEMPLATES,
+} from './defaultOperatorState.mjs';
 
 export const CURRENT_SCHEMA_VERSION = 5;
+
+function seedRows(rows, now) {
+  return rows.map(row => ({
+    ...row,
+    createdAt: row.createdAt || now,
+    updatedAt: row.updatedAt || now,
+  }));
+}
 
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
-    accounts: DEFAULT_ACCOUNTS.map(account => ({ ...account, updatedAt: account.updatedAt || now })),
-    instruments: [],
-    strategyTemplates: [],
-    strategies: [],
+    accounts: seedRows(DEFAULT_ACCOUNTS, now),
+    instruments: seedRows(DEFAULT_INSTRUMENTS, now),
+    strategyTemplates: seedRows(DEFAULT_STRATEGY_TEMPLATES, now),
+    strategies: seedRows(DEFAULT_STRATEGIES, now),
     backtests: [],
-    approvals: [],
+    approvals: seedRows(DEFAULT_APPROVALS, now),
     opportunities: [],
     riskBreakdowns: [],
     researchJobs: [],
@@ -51,6 +65,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
       maximumModelPricingAgeSeconds: 86400,
       maximumForecastDataAgeSeconds: 180,
       requireEconomicDecisionForRemoteAgent: true,
+      modelCallStaleSeconds: 300,
       economicRuntimeEnabled: false,
       economicMaintenanceIntervalMs: 60000,
       economicPricingRefreshSeconds: 21600,
@@ -83,8 +98,8 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
       polymarketApiKey: '',
       polymarketWalletAddress: '',
       polymarketPrivateKey: '',
-      updatedAt: null
-    }
+      updatedAt: null,
+    },
   };
 }
 
@@ -93,11 +108,11 @@ export function normalizeOperatorState(input = {}) {
   return {
     schemaVersion: Math.max(Number(input.schemaVersion || 0), CURRENT_SCHEMA_VERSION),
     accounts: Array.isArray(input.accounts) ? input.accounts : seeded.accounts,
-    instruments: Array.isArray(input.instruments) ? input.instruments : [],
-    strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : [],
-    strategies: Array.isArray(input.strategies) ? input.strategies : [],
+    instruments: Array.isArray(input.instruments) ? input.instruments : seeded.instruments,
+    strategyTemplates: Array.isArray(input.strategyTemplates) ? input.strategyTemplates : seeded.strategyTemplates,
+    strategies: Array.isArray(input.strategies) ? input.strategies : seeded.strategies,
     backtests: Array.isArray(input.backtests) ? input.backtests : [],
-    approvals: Array.isArray(input.approvals) ? input.approvals : [],
+    approvals: Array.isArray(input.approvals) ? input.approvals : seeded.approvals,
     opportunities: Array.isArray(input.opportunities) ? input.opportunities : [],
     riskBreakdowns: Array.isArray(input.riskBreakdowns) ? input.riskBreakdowns : [],
     researchJobs: Array.isArray(input.researchJobs) ? input.researchJobs : [],
@@ -129,7 +144,7 @@ export function normalizeOperatorState(input = {}) {
           capitalPolicy: { ...seeded.config.capitalPolicy, ...(input.config.capitalPolicy || {}) },
           economicStateRetention: { ...seeded.config.economicStateRetention, ...(input.config.economicStateRetention || {}) },
         }
-      : seeded.config
+      : seeded.config,
   };
 }
 
