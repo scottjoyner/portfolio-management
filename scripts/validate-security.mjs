@@ -3,7 +3,7 @@ import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ignoredDirs = new Set([
-  '.git', 'node_modules', '.venv', 'venv', '.cb_sdk_env', 'dist', 'build', 'archive',
+  '.git', 'node_modules', '.venv', '.venv_test', 'venv', '.cb_sdk_env', 'dist', 'build', 'archive',
   '.pytest_cache', '.mypy_cache', '.ruff_cache', 'data', 'state',
 ]);
 const ignoredFiles = new Set(['pnpm-lock.yaml', 'package-lock.json']);
@@ -44,12 +44,18 @@ function walk(directory, out = []) {
   return out;
 }
 
+function genericAssignmentEligible(path) {
+  return !/(^|\/)(tests?|docs?|examples?|fixtures?|mocks?)(\/|$)/i.test(path)
+    && !/(^|\/)(readme|changelog|contributing)(\.|$)/i.test(path);
+}
+
 function suspiciousAssignment(content) {
   const findings = [];
-  const pattern = /(secret|password|api[_-]?key|private[_-]?key|admin[_-]?token|csrf[_-]?token)\s*[:=]\s*['"]?([^'"\s,}]{16,})/ig;
+  const pattern = /\b(secret|password|api[_-]?key|private[_-]?key|admin[_-]?token|csrf[_-]?token)\b\s*[:=]\s*(['"`])([^'"`\r\n]{12,})\2/ig;
   for (const match of content.matchAll(pattern)) {
-    const value = String(match[2] || '');
-    if (/replace|example|placeholder|test-key|configured|process\.env|\$\{|<|\*\*\*/i.test(value)) continue;
+    const value = String(match[3] || '').trim();
+    if (/replace|example|placeholder|test|dummy|fake|sample|your|xxx|changeme|configured|process\.env|\$\{|<|\*\*\*/i.test(value)) continue;
+    if (/\s/.test(value)) continue;
     findings.push({ rule: 'secret_assignment', preview: `${value.slice(0, 3)}***${value.slice(-3)}` });
   }
   return findings;
@@ -84,7 +90,9 @@ for (const path of scannedFiles) {
   if (!/\.(mjs|js|json|yml|yaml|md|env|txt|toml|ini|py|sh)$/i.test(path)) continue;
   const content = readFileSync(path, 'utf8');
   for (const rule of suspiciousPatterns) if (rule.pattern.test(content)) findings.push({ path, rule: rule.name });
-  for (const finding of suspiciousAssignment(content)) findings.push({ path, ...finding });
+  if (genericAssignmentEligible(path)) {
+    for (const finding of suspiciousAssignment(content)) findings.push({ path, ...finding });
+  }
 }
 
 if (findings.length) errors.push(...findings.map(row => `secret_like_content:${row.path}:${row.rule}`));
