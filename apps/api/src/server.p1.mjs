@@ -19,6 +19,7 @@ const JSON_TYPE = 'application/json; charset=utf-8';
 const POLICY_ROUTE = '/api/economics/intelligence/policy';
 const MODEL_QUOTE_ROUTE = '/api/economics/model-quotes';
 const INTELLIGENCE_EXECUTE_ROUTE = '/api/economics/intelligence/execute';
+const SESSION_UI_ASSET = '<script src="/ui/operator-session.js"></script>';
 const POLICY_UI_ASSET = '<script type="module" src="/ui/intelligence-policy.js"></script>';
 
 export { createInitialState };
@@ -67,8 +68,11 @@ function jsonFrom(response, status, body) {
 
 function withPolicyUiAsset(response, method, pathname) {
   if (method !== 'GET' || !['/', '/ui/index.html'].includes(pathname) || response.status !== 200) return response;
-  if (!String(response.headers?.['content-type'] || '').includes('text/html') || response.body.includes(POLICY_UI_ASSET)) return response;
-  return { ...response, body: response.body.replace('</body>', `${POLICY_UI_ASSET}\n</body>`) };
+  if (!String(response.headers?.['content-type'] || '').includes('text/html')) return response;
+  let body = response.body;
+  if (!body.includes(SESSION_UI_ASSET)) body = body.replace('</head>', `${SESSION_UI_ASSET}\n</head>`);
+  if (!body.includes(POLICY_UI_ASSET)) body = body.replace('</body>', `${POLICY_UI_ASSET}\n</body>`);
+  return body === response.body ? response : { ...response, body };
 }
 
 function requestEnvironment(options = {}) {
