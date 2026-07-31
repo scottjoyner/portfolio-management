@@ -15,40 +15,81 @@ class EVMChainAdapter:
     rpc_url: str
     chain_id: int
     _w3: Web3 | None = field(default=None, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     @property
     def w3(self) -> Web3:
+        if self._closed:
+            raise RuntimeError("EVM chain adapter is closed")
         if self._w3 is None:
             self._w3 = Web3(Web3.HTTPProvider(self.rpc_url))
         return self._w3
 
     def is_connected(self) -> bool:
-        return self.w3.is_connected()
+        """Return False for unavailable, blocked, or closed providers."""
+        if self._closed:
+            return False
+        try:
+            return bool(self.w3.is_connected())
+        except Exception as exc:
+            log.debug("EVM connectivity probe failed for %s: %s", self.rpc_url, exc)
+            return False
 
-    def get_block(self, block_identifier: BlockIdentifier = "latest", full_transactions: bool = False) -> dict[str, Any]:
+    def get_block(
+        self,
+        block_identifier: BlockIdentifier = "latest",
+        full_transactions: bool = False,
+    ) -> dict[str, Any]:
         return dict(self.w3.eth.get_block(block_identifier, full_transactions))
 
     def get_block_number(self) -> int:
         return self.w3.eth.block_number
 
-    def get_balance(self, address: str, block: BlockIdentifier = "latest") -> int:
+    def get_balance(
+        self,
+        address: str,
+        block: BlockIdentifier = "latest",
+    ) -> int:
         return self.w3.eth.get_balance(Web3.to_checksum_address(address), block)
 
-    def call_contract(self, contract_address: str, abi: list[dict[str, Any]], fn_name: str, *args: Any, block: BlockIdentifier = "latest") -> Any:
+    def call_contract(
+        self,
+        contract_address: str,
+        abi: list[dict[str, Any]],
+        fn_name: str,
+        *args: Any,
+        block: BlockIdentifier = "latest",
+    ) -> Any:
         checksum = Web3.to_checksum_address(contract_address)
         contract = self.w3.eth.contract(address=checksum, abi=abi)
         fn = getattr(contract.functions, fn_name)
         return fn(*args).call(block_identifier=block)
 
-    def get_logs(self, from_block: int, to_block: int, address: str | None = None, topics: list[str] | None = None) -> list[dict[str, Any]]:
-        filter_params: FilterParams = {"fromBlock": from_block, "toBlock": to_block}
+    def get_logs(
+        self,
+        from_block: int,
+        to_block: int,
+        address: str | None = None,
+        topics: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        filter_params: FilterParams = {
+            "fromBlock": from_block,
+            "toBlock": to_block,
+        }
         if address:
             filter_params["address"] = Web3.to_checksum_address(address)
         if topics:
             filter_params["topics"] = topics
-        return [dict(log) for log in self.w3.eth.get_logs(filter_params)]
+        return [dict(item) for item in self.w3.eth.get_logs(filter_params)]
 
-    def build_transaction(self, to: str, value: int = 0, data: str | bytes | HexStr = "", gas: int | None = None, gas_price: int | None = None) -> TxParams:
+    def build_transaction(
+        self,
+        to: str,
+        value: int = 0,
+        data: str | bytes | HexStr = "",
+        gas: int | None = None,
+        gas_price: int | None = None,
+    ) -> TxParams:
         tx_data = cast(bytes | HexStr, data)
         tx: TxParams = {
             "to": Web3.to_checksum_address(to),
@@ -58,7 +99,13 @@ class EVMChainAdapter:
         }
         addr = Web3.to_checksum_address(to)
         if gas is None:
-            gas = self.w3.eth.estimate_gas({"to": addr, "value": Wei(value), "data": cast(bytes | HexStr, data)})
+            gas = self.w3.eth.estimate_gas(
+                {
+                    "to": addr,
+                    "value": Wei(value),
+                    "data": cast(bytes | HexStr, data),
+                }
+            )
         tx["gas"] = Wei(gas)
         if gas_price is None:
             gas_price = self.w3.eth.gas_price
@@ -69,17 +116,51 @@ class EVMChainAdapter:
         tx_hash = self.w3.eth.send_raw_transaction(signed_tx)
         return tx_hash.hex()
 
-    def wait_for_receipt(self, tx_hash: str | HexStr, timeout: int = 120, poll_latency: float = 0.5) -> dict[str, Any]:
-        receipt = self.w3.eth.wait_for_transaction_receipt(cast(HexStr, tx_hash), timeout=timeout, poll_latency=poll_latency)
+    def wait_for_receipt(
+        self,
+        tx_hash: str | HexStr,
+        timeout: int = 120,
+        poll_latency: float = 0.5,
+    ) -> dict[str, Any]:
+        receipt = self.w3.eth.wait_for_transaction_receipt(
+            cast(HexStr, tx_hash),
+            timeout=timeout,
+            poll_latency=poll_latency,
+        )
         return dict(receipt)
 
-    def estimate_gas(self, to: str, value: int = 0, data: str | bytes | HexStr = "") -> int:
-        return self.w3.eth.estimate_gas({"to": Web3.to_checksum_address(to), "value": Wei(value), "data": cast(bytes | HexStr, data)})
+    def estimate_gas(
+        self,
+        to: str,
+        value: int = 0,
+        data: str | bytes | HexStr = "",
+    ) -> int:
+        return self.w3.eth.estimate_gas(
+            {
+                "to": Web3.to_checksum_address(to),
+                "value": Wei(value),
+                "data": cast(bytes | HexStr, data),
+            }
+        )
 
     def gas_price(self) -> int:
         return self.w3.eth.gas_price
 
     def close(self) -> None:
-        if self._w3 is not None:
-            self._w3.provider = None  # type: ignore[assignment]
-            self._w3 = None
+        if self._closed:
+            return
+
+        provider = self._w3.provider if self._w3 is not None else None
+        disconnect = getattr(provider, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect()
+            except Exception as exc:
+                log.debug(
+                    "EVM provider disconnect failed for %s: %s",
+                    self.rpc_url,
+                    exc,
+                )
+
+        self._w3 = None
+        self._closed = True
