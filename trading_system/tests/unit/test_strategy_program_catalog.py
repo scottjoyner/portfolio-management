@@ -1,4 +1,9 @@
-from strategies.catalog.advanced import CATALOG_100, IMPLEMENTATION_MAP, advanced_specs
+from strategies.catalog.advanced import (
+    CATALOG_100,
+    EXCHANGE_BOT_NAMES,
+    IMPLEMENTATION_MAP,
+    advanced_specs,
+)
 from strategies.catalog.config_schema import StrategyConfig, StrategyRuntimeFlags
 from strategies.registry.registry import load_strategies
 
@@ -10,7 +15,8 @@ def test_catalog_has_exactly_100_named_strategies():
 
 def test_advanced_specs_has_complete_contract():
     specs = advanced_specs()
-    assert len(specs) == 100
+    assert len(specs) == len(CATALOG_100) + len(EXCHANGE_BOT_NAMES)
+    assert len({spec.strategy_id for spec in specs}) == len(specs)
     for spec in specs:
         assert spec.strategy_id
         assert spec.risk_tier.startswith("TIER_")
@@ -19,12 +25,16 @@ def test_advanced_specs_has_complete_contract():
 
 
 def test_implemented_specs_are_backed_by_concrete_registry_strategies():
-    concrete_ids = {s.strategy_id for s in load_strategies() if not hasattr(s, "spec")}
+    concrete_implementations = {
+        type(strategy).__name__
+        for strategy in load_strategies()
+        if not hasattr(strategy, "spec")
+    }
     specs = advanced_specs()
     for spec in specs:
         if spec.implementation_status == "implemented":
             assert spec.mapped_implementation is not None
-            assert spec.mapped_implementation in concrete_ids
+            assert spec.mapped_implementation in concrete_implementations
     assert len(IMPLEMENTATION_MAP) >= 10
 
 
@@ -61,7 +71,9 @@ def test_generic_spec_strategy_exposes_contract_hooks():
     assert "data_requirements" in metadata
     hint = strategy.sizing_hints({})
     assert hint["max_capital_fraction"] == strategy.spec.max_capital_fraction
-    signal = strategy.generate_signal({"product_id": "BTC-USD", "score": 0.9, "threshold": 0.1})
+    signal = strategy.generate_signal(
+        {"product_id": "BTC-USD", "score": 0.9, "threshold": 0.1}
+    )
     assert signal is not None
     intents = strategy.order_intents(signal, {})
     assert intents and intents[0]["edge_floor_bps"] == strategy.spec.min_net_edge_bps
@@ -96,9 +108,24 @@ def test_strategy_config_rejects_live_enablement_for_research_and_expert_tiers()
 
 def test_generic_spec_strategy_disables_for_risk_halts_and_stale_inputs():
     strategy = next(s for s in load_strategies() if hasattr(s, "spec"))
-    assert strategy.generate_signal({"score": 0.9, "threshold": 0.1, "risk_halt": True}) is None
-    assert strategy.generate_signal({"score": 0.9, "threshold": 0.1, "stale_data": True}) is None
-    assert strategy.generate_signal({"score": 0.9, "threshold": 0.1, "latency_ms": 500}) is None
+    assert (
+        strategy.generate_signal(
+            {"score": 0.9, "threshold": 0.1, "risk_halt": True}
+        )
+        is None
+    )
+    assert (
+        strategy.generate_signal(
+            {"score": 0.9, "threshold": 0.1, "stale_data": True}
+        )
+        is None
+    )
+    assert (
+        strategy.generate_signal(
+            {"score": 0.9, "threshold": 0.1, "latency_ms": 500}
+        )
+        is None
+    )
 
 
 def test_strategy_config_rejects_unsupported_tiers_models_and_cap_ceilings():
@@ -119,8 +146,15 @@ def test_strategy_config_rejects_unsupported_tiers_models_and_cap_ceilings():
     )
     for kwargs in [
         dict(risk_tier="TIER_UNKNOWN", sizing_model="fixed_fraction"),
-        dict(risk_tier="TIER_2_MODERATE_RISK", sizing_model="unknown_model"),
-        dict(risk_tier="TIER_5_RESEARCH_ONLY", sizing_model="fixed_fraction", max_capital_fraction=0.5),
+        dict(
+            risk_tier="TIER_2_MODERATE_RISK",
+            sizing_model="unknown_model",
+        ),
+        dict(
+            risk_tier="TIER_5_RESEARCH_ONLY",
+            sizing_model="fixed_fraction",
+            max_capital_fraction=0.5,
+        ),
     ]:
         payload = {**common, **kwargs}
         try:
