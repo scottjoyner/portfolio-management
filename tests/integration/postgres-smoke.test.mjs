@@ -5,13 +5,10 @@ import ExecutionEngine from '../../packages/execution/src/executionEngine.mjs';
 import { TransactionalPostgresOperatorStore } from '../../packages/storage/src/transactionalPostgresOperatorStore.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL;
+const integrationTest = DATABASE_URL ? test : test.skip;
 const NOW = '2026-07-31T18:00:00.000Z';
 const EXECUTION_ID = `postgres-smoke-execution-${process.pid}`;
 const JOB_KEY = `postgres-smoke-job-${process.pid}`;
-
-function requireDatabase() {
-  assert.ok(DATABASE_URL, 'DATABASE_URL is required for the PostgreSQL integration smoke test');
-}
 
 function executionFixture() {
   return {
@@ -43,8 +40,7 @@ function executionFixture() {
   };
 }
 
-test('migration 006 survives a store restart and hydrates a fresh execution engine', async () => {
-  requireDatabase();
+integrationTest('migration 006 survives a store restart and hydrates a fresh execution engine', async () => {
   delete globalThis.__PORTFOLIO_EXECUTION_READ_MODEL__;
 
   const firstStore = new TransactionalPostgresOperatorStore({ databaseUrl: DATABASE_URL });
@@ -104,8 +100,7 @@ test('migration 006 survives a store restart and hydrates a fresh execution engi
   }
 });
 
-test('lease-backed runtime jobs enqueue, claim, heartbeat, and complete on real PostgreSQL', async () => {
-  requireDatabase();
+integrationTest('lease-backed runtime jobs enqueue, claim, heartbeat, and complete on real PostgreSQL', async () => {
   const store = new TransactionalPostgresOperatorStore({ databaseUrl: DATABASE_URL });
   try {
     const queued = await store.runtimeJobs.enqueue({
