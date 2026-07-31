@@ -7,6 +7,7 @@ const requiredFiles = [
   '.env.production.example',
   'scripts/migrate-postgres.mjs',
   'scripts/run-economic-maintenance.mjs',
+  'scripts/check-economic-worker-health.mjs',
   'packages/storage/src/transactionalPostgresOperatorStore.mjs',
   'packages/storage/src/runtimeJobQueue.mjs',
   'packages/intelligence/src/providerRegistry.mjs',
@@ -23,6 +24,7 @@ const compose = readFileSync('docker-compose.production.yml', 'utf8');
 const envExample = readFileSync('.env.production.example', 'utf8');
 const migrations = readFileSync('scripts/migrate-postgres.mjs', 'utf8');
 const worker = readFileSync('scripts/run-economic-maintenance.mjs', 'utf8');
+const workerHealth = readFileSync('scripts/check-economic-worker-health.mjs', 'utf8');
 const transactionalStore = readFileSync('packages/storage/src/transactionalPostgresOperatorStore.mjs', 'utf8');
 const jobQueue = readFileSync('packages/storage/src/runtimeJobQueue.mjs', 'utf8');
 const providerRegistry = readFileSync('packages/intelligence/src/providerRegistry.mjs', 'utf8');
@@ -78,6 +80,8 @@ const checks = [
   [/^\s{4}ports:/m.test(apiService), 'API service must publish only the configured operator port'],
   [apiHasRequiredNetworks, 'API must join database and inference networks'],
   [workerHasRequiredNetworks, 'worker must join database and inference networks'],
+  [workerService.includes('scripts/check-economic-worker-health.mjs') && !workerService.includes('disable: true'), 'economic worker must expose a heartbeat-based container healthcheck'],
+  [compose.includes('ECONOMIC_WORKER_HEALTH_FILE') && compose.includes('ECONOMIC_WORKER_HEALTH_MAX_AGE_MS'), 'worker health file and maximum age must be configurable'],
   [compose.includes('read_only: true'), 'application containers must use read-only root filesystems'],
   [compose.includes('cap_drop:\n    - ALL'), 'application containers must drop Linux capabilities'],
   [compose.includes('no-new-privileges:true'), 'containers must set no-new-privileges'],
@@ -92,6 +96,8 @@ const checks = [
   [transactionalStore.includes('005_runtime_job_queue') && transactionalStore.includes('006_normalized_execution_runtime'), 'operator store readiness must require runtime and execution migrations'],
   [jobQueue.includes('FOR UPDATE SKIP LOCKED') && jobQueue.includes('lease_expires_at'), 'runtime queue must claim jobs with leases'],
   [worker.includes('runtimeJobs') && worker.includes('heartbeat'), 'economic worker must use the durable lease queue'],
+  [worker.includes('writeHealth') && worker.includes('processHealthy'), 'economic worker must publish process-level heartbeat state'],
+  [workerHealth.includes('economic_worker_heartbeat_stale') && workerHealth.includes('economic_worker_last_run_failed'), 'worker healthcheck must detect stale and failed workers'],
   [providerRegistry.includes('/chat/completions') && providerRegistry.includes('/models'), 'local provider must use the common OpenAI-compatible contract'],
   [providerRegistry.includes('REMOTE_LLM_EXECUTION_ENABLED'), 'remote provider must remain explicitly gated'],
 ];
@@ -112,4 +118,5 @@ process.stdout.write(`${JSON.stringify({
   remoteInferenceDefault: false,
   remoteInferenceConfigurable: true,
   localInferenceDefaultRequired: true,
+  workerHeartbeatHealthcheck: true,
 }, null, 2)}\n`);
