@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { completeAuditChain } from './auditChain.mjs';
 import { synchronizeCompatibilityExecutions } from './executionCompatibilitySync.mjs';
 import { ExecutionRepository } from './executionRepository.mjs';
 import { normalizeOperatorState } from './operatorStore.mjs';
@@ -29,6 +30,16 @@ function parseJson(value, fallback = {}) {
   if (value == null) return fallback;
   if (typeof value === 'object') return value;
   try { return JSON.parse(value); } catch { return fallback; }
+}
+
+function iso(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+function hasAuditMetadata(event = {}) {
+  return event.eventHash != null || event.sequenceNumber != null || event.previousHash != null;
 }
 
 function mapExecutionEvent(row) {
@@ -137,6 +148,51 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
+  async loadPersistedAuditChain() {
+    const result = await this.query(
+      `SELECT id, action, actor, at, details, payload_json,
+              previous_hash, event_hash, sequence_number
+       FROM audit_events
+       ORDER BY sequence_number ASC NULLS LAST, at ASC, id ASC`,
+    );
+    const events = (result.rows || []).map(row => ({
+      id: row.id,
+      action: row.action,
+      actor: row.actor || 'system',
+      at: iso(row.at),
+      details: row.details || null,
+      payload: parseJson(row.payload_json),
+      previousHash: row.previous_hash,
+      eventHash: row.event_hash,
+      sequenceNumber: row.sequence_number == null ? null : Number(row.sequence_number),
+    }));
+    const metadataCount = events.filter(hasAuditMetadata).length;
+    if (metadataCount > 0 && metadataCount !== events.length) {
+      throw new Error('audit_chain_partial_metadata_missing');
+    }
+    return completeAuditChain(events);
+  }
+
+  async loadStateWithAuditMetadata() {
+    const state = await super.load();
+    const persistedAudit = await this.loadPersistedAuditChain();
+    return normalizeOperatorState({
+      ...state,
+      audit: persistedAudit.length ? persistedAudit : state.audit,
+    });
+  }
+
+  assertAuditAppendOnly(persisted = [], next = []) {
+    if (next.length < persisted.length) throw new Error('audit_chain_append_only_violation');
+    for (let index = 0; index < persisted.length; index += 1) {
+      const existing = persisted[index];
+      const candidate = next[index];
+      if (!candidate || candidate.id !== existing.id || candidate.eventHash !== existing.eventHash) {
+        throw new Error(`audit_chain_append_only_violation:${existing.id || index}`);
+      }
+    }
+  }
+
   async persistAuditChain(events = []) {
     for (const event of events) {
       if (!event?.id || !event.eventHash || !Number.isInteger(Number(event.sequenceNumber))) {
@@ -174,12 +230,14 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   }
 
   async load() {
-    const state = await super.load();
-    await this.withTransaction(() => this.persistAuditChain(state.audit || []));
-    const events = await this.loadExecutionEventsForReadModel();
-    this.state = state;
-    this.publishExecutionReadModel(state, events);
-    return state;
+    return this.withTransaction(async () => {
+      const state = await this.loadStateWithAuditMetadata();
+      await this.persistAuditChain(state.audit || []);
+      const events = await this.loadExecutionEventsForReadModel();
+      this.state = state;
+      this.publishExecutionReadModel(state, events);
+      return state;
+    });
   }
 
   async synchronizeExecutions(executions = [], now = new Date().toISOString()) {
@@ -190,6 +248,8 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   async save(nextState) {
     const state = normalizeOperatorState(nextState);
     return this.withTransaction(async () => {
+      const persistedAudit = await this.loadPersistedAuditChain();
+      this.assertAuditAppendOnly(persistedAudit, state.audit || []);
       const saved = await super.save(state);
       await this.persistAuditChain(saved.audit || []);
       await this.synchronizeExecutions(saved.executions || []);
@@ -202,9 +262,11 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
 
   async mutate(mutator) {
     return this.withTransaction(async () => {
-      const state = await super.load();
+      const state = await this.loadStateWithAuditMetadata();
+      const persistedAudit = state.audit || [];
       const result = await mutator(state);
       const normalized = normalizeOperatorState(state);
+      this.assertAuditAppendOnly(persistedAudit, normalized.audit || []);
       await super.save(normalized);
       await this.persistAuditChain(normalized.audit || []);
       await this.synchronizeExecutions(normalized.executions || []);
@@ -256,6 +318,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       runtimeJobQueue: 'lease-backed-postgres',
       executionPersistence: 'normalized-optimistic-postgres',
       executionEvents: 'append-only-postgres',
+      auditEvents: 'hash-chained-append-only-postgres',
       executionCompatibilitySync: 'atomic-on-save',
       executionReadModel: 'postgres-published-compatibility-with-events',
       lastExecutionSync: this.lastExecutionSync,
