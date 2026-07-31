@@ -40,6 +40,7 @@ function serviceBlock(name, nextName) {
 
 const appSecurity = section('x-app-security: &app-security\n', '\nservices:\n');
 const postgresService = serviceBlock('postgres', 'migrate');
+const migrateService = serviceBlock('migrate', 'api');
 const apiService = serviceBlock('api', 'economic-worker');
 const workerService = serviceBlock('economic-worker', 'postgres-backup');
 const inheritedAppNetworks = appSecurity.includes('networks:')
@@ -50,6 +51,9 @@ const apiHasRequiredNetworks = (apiService.includes('- backend') && apiService.i
 const workerHasRequiredNetworks = (workerService.includes('- backend') && workerService.includes('- inference-egress'))
   || (workerService.includes('<<: *app-security') && inheritedAppNetworks);
 
+const remoteDefault = 'REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}';
+const localDefault = 'LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}';
+const openRouterKey = 'OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}';
 const checks = [
   [dockerfile.includes('HEALTHCHECK'), 'Dockerfile must define a health check'],
   [dockerfile.includes('apps/api/src/server.p1.mjs'), 'Dockerfile must start the Node operator API'],
@@ -61,8 +65,11 @@ const checks = [
   [compose.includes('OPERATOR_AUTH_REQUIRED: "true"'), 'production compose must require operator authentication'],
   [compose.includes('CSRF_REQUIRED: "true"'), 'production compose must require CSRF'],
   [compose.includes('LIVE_TRADING: "false"'), 'production compose must keep live trading disabled'],
-  [compose.includes('REMOTE_LLM_EXECUTION_ENABLED: "false"'), 'production compose must disable remote LLM execution by default'],
-  [compose.includes('LOCAL_LLM_EXECUTION_REQUIRED: "true"'), 'production compose must require local inference'],
+  [compose.includes(remoteDefault), 'production compose must default remote LLM execution off while allowing explicit enablement'],
+  [compose.includes(openRouterKey), 'production compose must pass an optional host-managed OpenRouter key'],
+  [apiService.includes('*openrouter-environment') && workerService.includes('*openrouter-environment'), 'API and worker must receive the same remote inference gate'],
+  [!migrateService.includes('*openrouter-environment') && !migrateService.includes('OPENROUTER_API_KEY'), 'migration service must not receive the OpenRouter credential'],
+  [compose.includes(localDefault), 'production compose must default to required local inference while allowing remote-only configuration'],
   [compose.includes('LOCAL_LLM_NODES_JSON'), 'production compose must expose fleet-aware node configuration'],
   [compose.includes('backend:\n    internal: true'), 'database backend network must be internal'],
   [compose.includes('inference-egress:'), 'API and worker need controlled inference egress'],
@@ -76,6 +83,9 @@ const checks = [
   [compose.includes('no-new-privileges:true'), 'containers must set no-new-privileges'],
   [compose.includes('COINBASE_DRY_RUN: "true"'), 'Coinbase must default to dry-run'],
   [envExample.includes('LOCAL_LLM_NODES_JSON='), 'production env example must document local fleet nodes'],
+  [envExample.includes('LOCAL_LLM_EXECUTION_REQUIRED=true'), 'production env example must document the local inference gate'],
+  [envExample.includes('REMOTE_LLM_EXECUTION_ENABLED=false'), 'production env example must document the disabled remote default'],
+  [envExample.includes('OPENROUTER_API_KEY='), 'production env example must document the optional OpenRouter credential'],
   [envExample.includes('x1-370') && envExample.includes('xwing') && envExample.includes('macbook-air'), 'production env example must include the intended fleet topology'],
   [migrations.includes('pg_advisory_lock') && migrations.includes('checksum'), 'migration runner must lock and checksum migrations'],
   [transactionalStore.includes('BEGIN ISOLATION LEVEL') && transactionalStore.includes('pg_advisory_xact_lock'), 'operator store must use pinned serializable transactions'],
@@ -95,4 +105,11 @@ if (errors.length) {
   process.stderr.write(`${JSON.stringify({ ok: false, errors }, null, 2)}\n`);
   process.exit(1);
 }
-process.stdout.write(`${JSON.stringify({ ok: true, deployment: 'docker-compose.production.yml', liveTradingCertified: false, remoteInferenceDefault: false, localInferenceRequired: true }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({
+  ok: true,
+  deployment: 'docker-compose.production.yml',
+  liveTradingCertified: false,
+  remoteInferenceDefault: false,
+  remoteInferenceConfigurable: true,
+  localInferenceDefaultRequired: true,
+}, null, 2)}\n`);
