@@ -9,9 +9,21 @@ import { assertRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 import { startAutoRotate, stopAutoRotate } from './secrets.mjs';
 import {
+  authResponse,
+  authStatus,
+  authorizeRoute,
+  requestId,
+} from './auth.mjs';
+import {
+  csrfStatus,
+  securityResponse,
+  withSecurityHeaders,
+} from './security.mjs';
+import {
   evaluateRemoteIntelligencePolicy,
   intelligenceRoutingPolicyView,
   normalizeIntelligenceRoutingPolicy,
+  updateIntelligenceRoutingPolicy,
   validateIntelligenceRoutingPolicy,
 } from './intelligencePolicy.mjs';
 
@@ -66,6 +78,14 @@ function jsonFrom(response, status, body) {
   };
 }
 
+function json(status, body) {
+  return {
+    status,
+    headers: { 'content-type': JSON_TYPE },
+    body: JSON.stringify(body, null, 2),
+  };
+}
+
 function withPolicyUiAsset(response, method, pathname) {
   if (method !== 'GET' || !['/', '/ui/index.html'].includes(pathname) || response.status !== 200) return response;
   if (!String(response.headers?.['content-type'] || '').includes('text/html')) return response;
@@ -83,65 +103,64 @@ async function policyState(store) {
   return typeof store?.load === 'function' ? store.load() : store?.state || createInitialState();
 }
 
-async function policyAuthProbe(req, options) {
-  return legacyHandleRequest(replacementRequest(req, {}, '/api/config', 'GET'), options);
+function authorizePolicyRequest(req, options) {
+  const env = requestEnvironment(options);
+  const id = requestId(req.headers || {});
+  const csrf = csrfStatus(req, env);
+  if (!csrf.ok) return { response: securityResponse(csrf.status, csrf.error, id, req, env) };
+  const auth = authStatus(req, env);
+  if (!auth.ok) return { response: withSecurityHeaders(authResponse(auth.status, auth.error, id), req, env) };
+  const authorization = authorizeRoute(auth, req, POLICY_ROUTE);
+  if (!authorization.ok) {
+    return { response: withSecurityHeaders(authResponse(authorization.status, authorization.error, id), req, env) };
+  }
+  return { env, id, auth };
+}
+
+function policyJson(req, env, id, status, body) {
+  return withSecurityHeaders(json(status, { ...body, requestId: id }), req, env);
 }
 
 async function handlePolicyRequest(req, options, store, method) {
-  const env = requestEnvironment(options);
+  const security = authorizePolicyRequest(req, options);
+  if (security.response) return security.response;
+  const { env, id, auth } = security;
+
   if (method === 'GET') {
-    const authenticated = await legacyHandleRequest(replacementRequest(req, {}, '/api/config', 'GET'), options);
-    if (authenticated.status >= 400) return authenticated;
-    const metadata = parsedBody(authenticated);
     const view = intelligenceRoutingPolicyView(await policyState(store), env, options.now || new Date());
-    return jsonFrom(authenticated, 200, {
-      ok: true,
-      ...view,
-      requestId: metadata.requestId,
-      actor: metadata.actor,
-      role: metadata.role,
-    });
+    return policyJson(req, env, id, 200, { ok: true, ...view, actor: auth.actor, role: auth.role });
   }
 
   if (!['PUT', 'POST'].includes(method)) {
-    const authenticated = await policyAuthProbe(req, options);
-    if (authenticated.status >= 400) return authenticated;
-    return jsonFrom(authenticated, 405, { ok: false, error: 'method_not_allowed' });
+    return policyJson(req, env, id, 405, { ok: false, error: 'method_not_allowed', actor: auth.actor, role: auth.role });
   }
 
   const body = await readBody(req);
   const validation = validateIntelligenceRoutingPolicy(body);
   if (!validation.ok) {
-    const authenticated = await policyAuthProbe(req, options);
-    if (authenticated.status >= 400) return authenticated;
-    const metadata = parsedBody(authenticated);
-    return jsonFrom(authenticated, 400, {
+    return policyJson(req, env, id, 400, {
       ok: false,
       errors: validation.errors,
-      requestId: metadata.requestId,
-      actor: metadata.actor,
-      role: metadata.role,
+      actor: auth.actor,
+      role: auth.role,
     });
   }
 
-  const policy = normalizeIntelligenceRoutingPolicy({
+  const now = requestNow(options);
+  const persisted = await store.mutate(state => updateIntelligenceRoutingPolicy(state, {
     ...body,
-    updatedAt: requestNow(options),
-    updatedBy: body.updatedBy || 'operator',
-  });
-  const persisted = await legacyHandleRequest(replacementRequest(req, {
-    intelligenceRoutingPolicy: policy,
-  }, '/api/config', 'POST'), options);
-  if (persisted.status >= 400) return persisted;
-  const metadata = parsedBody(persisted);
+    updatedBy: auth.actor,
+  }, now));
+  if (persisted?.errors?.length) {
+    return policyJson(req, env, id, 400, {
+      ok: false,
+      errors: persisted.errors,
+      actor: auth.actor,
+      role: auth.role,
+    });
+  }
   const view = intelligenceRoutingPolicyView(await policyState(store), env, options.now || new Date());
-  return jsonFrom(persisted, 200, {
-    ok: true,
-    ...view,
-    requestId: metadata.requestId,
-    actor: metadata.actor,
-    role: metadata.role,
-  });
+  return policyJson(req, env, id, 200, { ok: true, ...view, actor: auth.actor, role: auth.role });
 }
 
 async function markQuoteRoutingDecision(store, quoteId, decision, status = null) {
