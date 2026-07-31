@@ -3,6 +3,10 @@ import {
   reconcileModelUsage,
 } from '../../../packages/economics/src/economicDecisionEngine.mjs';
 import { createIntelligenceProviderRegistry } from '../../../packages/intelligence/src/providerRegistry.mjs';
+import {
+  executeOpenRouter,
+  RemoteUsagePendingError,
+} from './openRouterExecution.mjs';
 
 let cachedRegistry = null;
 let cachedRegistryKey = null;
@@ -159,6 +163,7 @@ function markFailed(state, prepared, error, now, options = {}) {
   const costRow = job ? state.agentCostLedger?.find(row => row.jobId === job.id) : null;
   const providerOutcome = options.providerOutcome || (prepared.localOrRemote === 'remote' ? 'uncertain' : 'local_failed');
   const generationId = options.generationId || null;
+  const responseSummary = options.responseSummary || null;
   const remoteNotStarted = prepared.localOrRemote === 'remote' && providerOutcome === 'not_started';
   const remoteKnownGeneration = prepared.localOrRemote === 'remote' && providerOutcome === 'generation_usage_pending';
   const remoteUncertain = prepared.localOrRemote === 'remote' && providerOutcome === 'uncertain';
@@ -194,6 +199,7 @@ function markFailed(state, prepared, error, now, options = {}) {
       quote.reconciliationStatus = remoteKnownGeneration ? 'pending' : 'manual_required';
       quote.reconciliationAttempts = Number(quote.reconciliationAttempts || 0);
       quote.nextReconciliationAt = remoteKnownGeneration ? now : null;
+      if (responseSummary) quote.providerResponseSummary = responseSummary;
     } else {
       quote.status = 'failed';
       quote.failureReason = failureReason;
@@ -222,6 +228,7 @@ function markFailed(state, prepared, error, now, options = {}) {
       job.requiresManualReconciliation = remoteUncertain;
       job.uncertainProviderOutcome = remoteUncertain;
       if (generationId) job.generationId = generationId;
+      if (responseSummary) job.responseSummary = responseSummary;
     }
   }
   if (costRow) {
@@ -383,16 +390,16 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
   const providerFetch = prepared.localOrRemote === 'remote'
     ? instrumentRemoteFetch(fetchImpl, env, telemetry)
     : fetchImpl;
-  const registry = registryFor(env, providerFetch);
-  const provider = registry.providerForQuote(prepared);
-  if (!provider) {
-    const error = prepared.localOrRemote === 'local' ? 'local_node_unavailable_requote_required' : 'intelligence_provider_unavailable';
+  const registry = prepared.localOrRemote === 'local' ? registryFor(env, providerFetch) : null;
+  const provider = prepared.localOrRemote === 'local' ? registry.providerForQuote(prepared) : null;
+  if (prepared.localOrRemote === 'local' && !provider) {
+    const error = 'local_node_unavailable_requote_required';
     const failed = await store.mutate(state => markFailed(
       state,
       prepared,
       error,
       new Date().toISOString(),
-      { providerOutcome: prepared.localOrRemote === 'remote' ? 'not_started' : 'local_failed' },
+      { providerOutcome: 'local_failed' },
     ));
     return resultFromErrors(failed.errors || [error], failed);
   }
@@ -413,24 +420,40 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
 
   let providerResult;
   try {
-    providerResult = await provider.execute(prepared);
+    providerResult = prepared.localOrRemote === 'remote'
+      ? await executeOpenRouter({ request: prepared, env, fetchImpl: providerFetch })
+      : await provider.execute(prepared);
   } catch (error) {
     const message = String(error?.message || error);
+    const knownGenerationId = error instanceof RemoteUsagePendingError
+      ? error.generationId
+      : telemetry.generationId;
     const providerOutcome = prepared.localOrRemote === 'remote'
-      ? classifyRemoteFailure(telemetry)
+      ? knownGenerationId
+        ? 'generation_usage_pending'
+        : classifyRemoteFailure(telemetry)
       : 'local_failed';
+    const responseSummary = error instanceof RemoteUsagePendingError
+      ? {
+          generationId: error.generationId,
+          finishReasons: (error.choices || []).map(choice => choice.finish_reason).filter(Boolean),
+          choiceCount: Array.isArray(error.choices) ? error.choices.length : 0,
+          provider: 'openrouter',
+          model: error.model || prepared.model,
+        }
+      : null;
     const failed = await store.mutate(state => markFailed(
       state,
       prepared,
       message,
       new Date().toISOString(),
-      { providerOutcome, generationId: telemetry.generationId },
+      { providerOutcome, generationId: knownGenerationId, responseSummary },
     ));
     return resultFromErrors(failed.errors || [message], {
       modelQuoteId: prepared.quoteId,
       providerAttemptId: prepared.providerAttemptId,
       providerOutcome,
-      generationId: telemetry.generationId || null,
+      generationId: knownGenerationId || null,
       retryable: failed.retryable === true,
       automaticReconciliationScheduled: failed.automaticReconciliationScheduled === true,
       requiresManualReconciliation: failed.requiresManualReconciliation === true,
