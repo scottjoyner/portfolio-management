@@ -17,8 +17,15 @@ const requiredFiles = [
   'packages/intelligence/src/providerRegistry.mjs',
   'apps/api/src/intelligenceExecution.mjs',
   'apps/api/src/modelCallRecovery.mjs',
+  'scripts/check-economic-worker-health.mjs',
+  'scripts/ci-production-runtime-smoke.mjs',
+  'scripts/validate-operational-readiness.mjs',
+  'tests/integration/postgres-smoke.test.mjs',
   'docs/FIRST_PROD_RELEASE_CHECKLIST.md',
   'docs/API_CONTRACT_ECONOMICS.md',
+  'docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md',
+  'docs/RELEASE_READINESS_MATRIX.md',
+  '.github/workflows/ci.yml',
   'docker-compose.production.yml',
 ];
 const errors = [];
@@ -44,9 +51,16 @@ const replay = read(requiredFiles[11]);
 const providers = read(requiredFiles[12]);
 const intelligenceExecution = read(requiredFiles[13]);
 const modelRecovery = read(requiredFiles[14]);
-const checklist = read(requiredFiles[15]);
-const economicsContract = read(requiredFiles[16]);
-const compose = read(requiredFiles[17]);
+const workerHealth = read(requiredFiles[15]);
+const runtimeSmoke = read(requiredFiles[16]);
+const operationalValidator = read(requiredFiles[17]);
+const postgresSmoke = read(requiredFiles[18]);
+const checklist = read(requiredFiles[19]);
+const economicsContract = read(requiredFiles[20]);
+const deploymentRunbook = read(requiredFiles[21]);
+const readinessMatrix = read(requiredFiles[22]);
+const workflow = read(requiredFiles[23]);
+const compose = read(requiredFiles[24]);
 const checklistLower = checklist.toLowerCase();
 
 const checks = [
@@ -76,12 +90,22 @@ const checks = [
   [checklist.includes('Migration 006') && checklist.includes('append-only') && checklist.includes('expected version'), 'release checklist must include normalized execution gates'],
   [checklist.includes('MODEL_CALL_STALE_SECONDS') && checklist.includes('FOR UPDATE SKIP LOCKED'), 'release checklist must include model recovery and durable job queue gates'],
   [checklistLower.includes('local-first') && checklist.includes('REMOTE_LLM_EXECUTION_ENABLED=false'), 'release checklist must document local-first inference and remote-off defaults'],
-  [checklist.includes('pnpm test') && checklist.includes('pnpm build'), 'release checklist must include test and build gates'],
+  [checklist.includes('npm test') && checklist.includes('npm run build') && checklist.includes('npm run operational:validate'), 'release checklist must include locked test, build, and operational validation gates'],
+  [checklist.includes('postgres-readiness-<sha>') && checklist.includes('release-readiness'), 'release checklist must require exact-head PostgreSQL and aggregate CI evidence'],
   [checklist.includes('pg_dump') && checklist.includes('pg_restore'), 'release checklist must include backup and restore'],
+  [postgresSmoke.includes('RUN_POSTGRES_INTEGRATION') && postgresSmoke.includes('006_normalized_execution_runtime'), 'real PostgreSQL integration must be explicit and verify migration 006'],
+  [postgresSmoke.includes('fresh execution engine') && postgresSmoke.includes('runtimeJobs.heartbeat'), 'PostgreSQL integration must verify restart hydration and durable job heartbeat'],
+  [runtimeSmoke.includes('policyPersistedAcrossRestart') && runtimeSmoke.includes('productionPaperReady'), 'production runtime smoke must verify persistent policy and readiness after restart'],
+  [workerHealth.includes('economic_worker_heartbeat_stale') && workerHealth.includes('economic_worker_last_run_failed'), 'worker health must detect stale and failed process state'],
+  [operationalValidator.includes('backupRestoreEvidence') && operationalValidator.includes('rollbackRunbook'), 'operational validator must preserve backup/restore and rollback evidence'],
+  [deploymentRunbook.includes('Stop conditions before deployment') && deploymentRunbook.includes('Rollback decision triggers'), 'deployment runbook must define stop and rollback decisions'],
+  [readinessMatrix.includes('Provider-call idempotency') && readinessMatrix.includes('Blocking — manual'), 'readiness matrix must retain engineering and host-only blockers'],
+  [workflow.includes('postgres-integration:') && workflow.includes('release-readiness:') && workflow.includes('pg_restore'), 'CI must include PostgreSQL, aggregate readiness, and restore proof'],
   [compose.includes('LIVE_TRADING: "false"') && compose.includes('COINBASE_DRY_RUN: "true"'), 'canonical deployment must remain paper-only'],
   [compose.includes('LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}'), 'canonical deployment must require local inference by default'],
   [compose.includes('REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}') && compose.includes('REMOTE_LLM_EXECUTION_ENABLED: "false"'), 'canonical deployment must keep remote inference off by default while allowing explicit opt-in'],
   [compose.includes('OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}'), 'canonical deployment must pass an operator-supplied OpenRouter key without embedding it in source'],
+  [compose.includes('scripts/check-economic-worker-health.mjs'), 'canonical deployment must enforce worker heartbeat health'],
   [compose.includes('MODEL_CALL_STALE_SECONDS') && compose.includes('ECONOMIC_JOB_MAX_ATTEMPTS'), 'canonical deployment must pass recovery and retry controls'],
 ];
 for (const [ok, message] of checks) if (!ok) errors.push(message);
@@ -99,4 +123,9 @@ process.stdout.write(`${JSON.stringify({
   remoteInferenceDefault: false,
   remoteInferenceConfigurable: true,
   normalizedExecutionRequired: true,
+  postgresRestartHydrationRequired: true,
+  authenticatedBrowserRestartSmokeRequired: true,
+  backupRestoreEvidenceRequired: true,
+  workerHeartbeatRequired: true,
+  rollbackRunbookRequired: true,
 }, null, 2)}\n`);
