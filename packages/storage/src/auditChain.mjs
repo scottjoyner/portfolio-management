@@ -32,6 +32,50 @@ export function buildAuditEvent(event, previous = null) {
   return { ...next, eventHash: hashAuditEvent(next) };
 }
 
+function hasChainMetadata(event = {}) {
+  return event.previousHash != null || event.eventHash != null || event.sequenceNumber != null;
+}
+
+/**
+ * Complete legacy/unhashed audit events without silently repairing tampered
+ * chain metadata. Existing valid hashes are preserved; a partially populated
+ * or conflicting chain fails closed.
+ */
+export function completeAuditChain(events = []) {
+  const completed = [];
+  let previous = null;
+  for (const input of events || []) {
+    const event = { ...input, payload: input?.payload || {} };
+    if (!hasChainMetadata(event)) {
+      const built = buildAuditEvent(event, previous);
+      completed.push(built);
+      previous = built;
+      continue;
+    }
+
+    const expectedSequence = previous ? Number(previous.sequenceNumber) + 1 : 1;
+    const expectedPreviousHash = previous?.eventHash || null;
+    const sequenceNumber = Number(event.sequenceNumber);
+    const previousHash = event.previousHash || null;
+    if (!Number.isInteger(sequenceNumber) || sequenceNumber !== expectedSequence) {
+      throw new Error(`audit_chain_sequence_conflict:${event.id || 'unknown'}`);
+    }
+    if (previousHash !== expectedPreviousHash) {
+      throw new Error(`audit_chain_previous_hash_conflict:${event.id || 'unknown'}`);
+    }
+    if (!event.eventHash) {
+      throw new Error(`audit_chain_event_hash_missing:${event.id || 'unknown'}`);
+    }
+    const expectedHash = hashAuditEvent(event);
+    if (event.eventHash !== expectedHash) {
+      throw new Error(`audit_chain_event_hash_conflict:${event.id || 'unknown'}`);
+    }
+    completed.push(event);
+    previous = event;
+  }
+  return completed;
+}
+
 export function verifyAuditChain(events = []) {
   const ordered = [...events].sort((a, b) => Number(a.sequenceNumber || 0) - Number(b.sequenceNumber || 0));
   const issues = [];
