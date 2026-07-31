@@ -79,7 +79,9 @@ const checks = [
   [checklist.includes('pnpm test') && checklist.includes('pnpm build'), 'release checklist must include test and build gates'],
   [checklist.includes('pg_dump') && checklist.includes('pg_restore'), 'release checklist must include backup and restore'],
   [compose.includes('LIVE_TRADING: "false"') && compose.includes('COINBASE_DRY_RUN: "true"'), 'canonical deployment must remain paper-only'],
-  [compose.includes('REMOTE_LLM_EXECUTION_ENABLED: "false"') && compose.includes('LOCAL_LLM_EXECUTION_REQUIRED: "true"'), 'canonical deployment must remain local-first'],
+  [compose.includes('LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}'), 'canonical deployment must require local inference by default'],
+  [compose.includes('REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}') && compose.includes('REMOTE_LLM_EXECUTION_ENABLED: "false"'), 'canonical deployment must keep remote inference off by default while allowing explicit opt-in'],
+  [compose.includes('OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}'), 'canonical deployment must pass an operator-supplied OpenRouter key without embedding it in source'],
   [compose.includes('MODEL_CALL_STALE_SECONDS') && compose.includes('ECONOMIC_JOB_MAX_ATTEMPTS'), 'canonical deployment must pass recovery and retry controls'],
 ];
 for (const [ok, message] of checks) if (!ok) errors.push(message);
@@ -88,4 +90,13 @@ if (errors.length) {
   process.stderr.write(`${JSON.stringify({ ok: false, errors }, null, 2)}\n`);
   process.exit(1);
 }
-process.stdout.write(`${JSON.stringify({ ok: true, certificationTarget: 'production-paper', liveTradingCertified: false, migrationsRequired: 6, localInferenceRequired: true, normalizedExecutionRequired: true }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({
+  ok: true,
+  certificationTarget: 'production-paper',
+  liveTradingCertified: false,
+  migrationsRequired: 6,
+  localInferenceDefaultRequired: true,
+  remoteInferenceDefault: false,
+  remoteInferenceConfigurable: true,
+  normalizedExecutionRequired: true,
+}, null, 2)}\n`);
