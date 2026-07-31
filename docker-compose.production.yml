@@ -40,6 +40,8 @@ x-app-environment: &app-environment
   ECONOMIC_JOB_RETRY_SECONDS: ${ECONOMIC_JOB_RETRY_SECONDS:-60}
   ECONOMIC_JOB_MAX_ATTEMPTS: ${ECONOMIC_JOB_MAX_ATTEMPTS:-5}
   ECONOMIC_SHUTDOWN_GRACE_MS: ${ECONOMIC_SHUTDOWN_GRACE_MS:-30000}
+  ECONOMIC_WORKER_HEALTH_FILE: ${ECONOMIC_WORKER_HEALTH_FILE:-/tmp/economic-worker-health.json}
+  ECONOMIC_WORKER_HEALTH_MAX_AGE_MS: ${ECONOMIC_WORKER_HEALTH_MAX_AGE_MS:-180000}
   OPERATOR_TRANSACTION_ISOLATION: SERIALIZABLE
   OPERATOR_WRITE_LOCK_KEY: ${OPERATOR_WRITE_LOCK_KEY:-1347375700}
 
@@ -172,7 +174,11 @@ services:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      disable: true
+      test: ["CMD", "node", "scripts/check-economic-worker-health.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     mem_limit: ${WORKER_MEMORY_LIMIT:-6g}
     cpus: ${WORKER_CPU_LIMIT:-6}
     <<: *app-security
