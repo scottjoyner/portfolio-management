@@ -57,6 +57,12 @@ const workerHasRequiredNetworks = (workerService.includes('- backend') && worker
 const remoteDefault = 'REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}';
 const localDefault = 'LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}';
 const openRouterKey = 'OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}';
+const reconciliationControls = [
+  'OPENROUTER_RECONCILIATION_TIMEOUT_MS: ${OPENROUTER_RECONCILIATION_TIMEOUT_MS:-10000}',
+  'OPENROUTER_RECONCILIATION_RETRY_MS: ${OPENROUTER_RECONCILIATION_RETRY_MS:-30000}',
+  'OPENROUTER_RECONCILIATION_MAX_RETRY_MS: ${OPENROUTER_RECONCILIATION_MAX_RETRY_MS:-3600000}',
+  'OPENROUTER_RECONCILIATION_MAX_ATTEMPTS: ${OPENROUTER_RECONCILIATION_MAX_ATTEMPTS:-8}',
+];
 const checks = [
   [dockerfile.includes('HEALTHCHECK'), 'Dockerfile must define a health check'],
   [dockerfile.includes('apps/api/src/server.p1.mjs'), 'Dockerfile must start the Node operator API'],
@@ -71,7 +77,8 @@ const checks = [
   [compose.includes('LIVE_TRADING: "false"'), 'production compose must keep live trading disabled'],
   [compose.includes(remoteDefault), 'production compose must default remote LLM execution off while allowing explicit enablement'],
   [compose.includes(openRouterKey), 'production compose must pass an optional host-managed OpenRouter key'],
-  [apiService.includes('*openrouter-environment') && workerService.includes('*openrouter-environment'), 'API and worker must receive the same remote inference gate'],
+  [reconciliationControls.every(value => compose.includes(value)), 'production compose must expose bounded OpenRouter reconciliation controls'],
+  [apiService.includes('*openrouter-environment') && workerService.includes('*openrouter-environment'), 'API and worker must receive the same remote inference and reconciliation gate'],
   [!migrateService.includes('*openrouter-environment') && !migrateService.includes('OPENROUTER_API_KEY'), 'migration service must not receive the OpenRouter credential'],
   [compose.includes(localDefault), 'production compose must default to required local inference while allowing remote-only configuration'],
   [compose.includes('LOCAL_LLM_NODES_JSON'), 'production compose must expose fleet-aware node configuration'],
@@ -92,12 +99,15 @@ const checks = [
   [envExample.includes('LOCAL_LLM_EXECUTION_REQUIRED=true'), 'production env example must document the local inference gate'],
   [envExample.includes('REMOTE_LLM_EXECUTION_ENABLED=false'), 'production env example must document the disabled remote default'],
   [envExample.includes('OPENROUTER_API_KEY='), 'production env example must document the optional OpenRouter credential'],
+  [reconciliationControls.every(value => envExample.includes(value.split(':')[0].replace(/:$/, '') + '=')), 'production env example must document OpenRouter reconciliation controls'],
   [envExample.includes('x1-370') && envExample.includes('xwing') && envExample.includes('macbook-air'), 'production env example must include the intended fleet topology'],
   [migrations.includes('pg_advisory_lock') && migrations.includes('checksum'), 'migration runner must lock and checksum migrations'],
   [transactionalStore.includes('BEGIN ISOLATION LEVEL') && transactionalStore.includes('pg_advisory_xact_lock'), 'operator store must use pinned serializable transactions'],
+  [transactionalStore.includes('queryTail') && transactionalStore.includes('pinned-client-serialized'), 'operator store must serialize queries on its pinned PostgreSQL client'],
   [transactionalStore.includes('005_runtime_job_queue') && transactionalStore.includes('006_normalized_execution_runtime'), 'operator store readiness must require runtime and execution migrations'],
   [jobQueue.includes('FOR UPDATE SKIP LOCKED') && jobQueue.includes('lease_expires_at'), 'runtime queue must claim jobs with leases'],
   [worker.includes('runtimeJobs') && worker.includes('heartbeat'), 'economic worker must use the durable lease queue'],
+  [worker.includes('openRouterUsageReconciliation') && worker.includes('preparePendingOpenRouterReconciliations'), 'economic worker must apply delayed OpenRouter usage reconciliation'],
   [worker.includes('writeHealth') && worker.includes('processHealthy'), 'economic worker must publish process-level heartbeat state'],
   [workerHealth.includes('economic_worker_heartbeat_stale') && workerHealth.includes('economic_worker_last_run_failed'), 'worker healthcheck must detect stale and failed workers'],
   [providerRegistry.includes('/chat/completions') && providerRegistry.includes('/models'), 'local provider must use the common OpenAI-compatible contract'],
@@ -119,6 +129,7 @@ process.stdout.write(`${JSON.stringify({
   liveTradingCertified: false,
   remoteInferenceDefault: false,
   remoteInferenceConfigurable: true,
+  boundedRemoteReconciliation: true,
   localInferenceDefaultRequired: true,
   workerHeartbeatHealthcheck: true,
   lockedNodeDependencies: true,
