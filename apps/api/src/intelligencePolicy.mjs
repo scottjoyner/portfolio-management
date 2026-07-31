@@ -91,6 +91,13 @@ export function intelligenceRoutingPolicyView(state = {}, env = process.env, now
   };
 }
 
+function approvedLegacyQuote(state, quoteId) {
+  if (!quoteId || state.config?.intelligenceRoutingPolicy) return false;
+  const quote = state.modelUsageLedger?.find(row => row.id === quoteId);
+  if (!quote || quote.routingPolicyDecision) return false;
+  return Boolean(state.economicDecisions?.some(decision => decision.modelQuoteId === quoteId && decision.intelligenceAllowed === true));
+}
+
 export function evaluateRemoteIntelligencePolicy(state = {}, input = {}, env = process.env, now = new Date()) {
   const policy = normalizeIntelligenceRoutingPolicy(state.config?.intelligenceRoutingPolicy);
   const capabilities = intelligenceDeploymentCapabilities(env);
@@ -102,14 +109,15 @@ export function evaluateRemoteIntelligencePolicy(state = {}, input = {}, env = p
     : estimatedCostUsd > 0
       ? expectedDecisionImprovementUsd / estimatedCostUsd
       : Number.POSITIVE_INFINITY;
+  const legacyApprovedQuote = approvedLegacyQuote(state, input.excludeQuoteId);
   const blockers = [];
 
-  if (policy.mode === 'local_only') blockers.push('intelligence_policy_local_only');
+  if (policy.mode === 'local_only' && !legacyApprovedQuote) blockers.push('intelligence_policy_local_only');
   if (!capabilities.remoteExecutionEnabled) blockers.push('remote_llm_execution_disabled');
   if (!capabilities.openRouterKeyConfigured) blockers.push('openrouter_api_key_required');
   if (estimatedCostUsd > policy.remoteSpendCapUsdPerRequest) blockers.push('remote_request_spend_cap_exceeded');
   if (spend.committedUsd + estimatedCostUsd > policy.remoteSpendCapUsdPerDay) blockers.push('remote_daily_spend_cap_exceeded');
-  if (policy.mode === 'economic_auto') {
+  if (policy.mode === 'economic_auto' && !legacyApprovedQuote) {
     if (expectedDecisionImprovementUsd == null || expectedDecisionImprovementUsd < 0) blockers.push('expected_remote_decision_improvement_required');
     if (valueCoverage != null && valueCoverage < policy.minimumRemoteValueCoverage) blockers.push('remote_value_coverage_below_policy');
   }
@@ -119,6 +127,7 @@ export function evaluateRemoteIntelligencePolicy(state = {}, input = {}, env = p
     blockers,
     policy,
     capabilities,
+    legacyApprovedQuote,
     estimatedCostUsd: round(estimatedCostUsd, 8),
     expectedDecisionImprovementUsd: expectedDecisionImprovementUsd == null ? null : round(expectedDecisionImprovementUsd, 8),
     valueCoverage: Number.isFinite(valueCoverage) ? round(valueCoverage, 6) : valueCoverage,
