@@ -74,7 +74,7 @@ function quoteForOpportunity(rows = [], opportunityId) {
     .sort((a, b) => new Date(b.requestedAt || 0) - new Date(a.requestedAt || 0))[0] || null;
 }
 
-async function refreshCoinbaseEconomics(state, body = {}) {
+async function fetchCoinbaseEconomics(body = {}) {
   const symbol = body.symbol || 'BTC-USD';
   const side = String(body.side || 'buy').toLowerCase() === 'sell' ? 'sell' : 'buy';
   const notionalUsd = Number(body.notionalUsd || body.notional || 0);
@@ -122,19 +122,45 @@ async function refreshCoinbaseEconomics(state, body = {}) {
     preview = parsed.preview || {};
   }
 
-  return ingestExecutionCostSnapshot(state, {
-    venue: 'coinbase',
-    symbol,
-    side,
-    notionalUsd,
-    quantity,
-    referencePrice: quote.mid,
-    spreadBps: quote.spreadBps,
-    liquidity: preview.liquidity || 'taker',
-    feeSummary: feeSummary || {},
-    preview,
-    source: feeSummary ? 'coinbase_preview_and_transaction_summary' : 'coinbase_preview',
-  });
+  return {
+    snapshotInput: {
+      venue: 'coinbase',
+      symbol,
+      side,
+      notionalUsd,
+      quantity,
+      referencePrice: quote.mid,
+      spreadBps: quote.spreadBps,
+      liquidity: preview.liquidity || 'taker',
+      feeSummary: feeSummary || {},
+      preview,
+      source: feeSummary ? 'coinbase_preview_and_transaction_summary' : 'coinbase_preview',
+    },
+  };
+}
+
+async function fetchMaintenanceEvidence(body = {}, env = process.env, fetchImpl = globalThis.fetch) {
+  let catalog = body.catalog;
+  let quotes = body.quotes;
+
+  if (!catalog) {
+    try {
+      catalog = await fetchOpenRouterCatalog(env, fetchImpl);
+    } catch (error) {
+      return { errors: [`pricing_refresh_failed:${String(error?.message || error)}`] };
+    }
+  }
+
+  if (!quotes) {
+    try {
+      const { fetchQuotes } = await import('../../../packages/execution/src/paperSweeper.mjs');
+      quotes = await fetchQuotes();
+    } catch (error) {
+      return { errors: [`market_quote_refresh_failed:${String(error?.message || error)}`] };
+    }
+  }
+
+  return { catalog, quotes };
 }
 
 export function isEconomicRoute(pathname) {
@@ -217,12 +243,13 @@ export async function handleEconomicRoute({ method, pathname, state, store, read
 
   if (method === 'POST' && pathname === '/api/economics/maintenance/run') {
     const body = await readJsonBody();
+    const evidence = await fetchMaintenanceEvidence(body, env, fetchImpl);
+    if (evidence.errors) return { status: 503, body: { ok: false, errors: evidence.errors } };
     return mutate(store, current => runEconomicMaintenance(current, {
       now,
       env,
-      fetchImpl,
-      catalog: body.catalog,
-      quotes: body.quotes,
+      catalog: evidence.catalog,
+      quotes: evidence.quotes,
     }));
   }
 
@@ -244,7 +271,14 @@ export async function handleEconomicRoute({ method, pathname, state, store, read
 
   if (method === 'POST' && pathname === '/api/economics/coinbase/refresh') {
     const body = await readJsonBody();
-    return mutate(store, current => refreshCoinbaseEconomics(current, body), 201);
+    let evidence;
+    try {
+      evidence = await fetchCoinbaseEconomics(body);
+    } catch (error) {
+      return { status: 503, body: { ok: false, errors: [`coinbase_refresh_failed:${String(error?.message || error)}`] } };
+    }
+    if (evidence.errors) return { status: 400, body: { ok: false, errors: evidence.errors } };
+    return mutate(store, current => ingestExecutionCostSnapshot(current, evidence.snapshotInput, now), 201);
   }
 
   if (method === 'POST' && pathname === '/api/economics/decisions/evaluate') {
