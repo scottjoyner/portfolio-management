@@ -9,12 +9,10 @@ ENV COINBASE_PYTHON_PATH=python3
 RUN apt-get update -qq && apt-get install -y -qq python3 python3-pip --no-install-recommends && rm -rf /var/lib/apt/lists/*
 RUN pip3 install --break-system-packages --quiet --no-cache-dir pandas==2.2.0 numpy==1.26.2 pyyaml==6.0.1 requests==2.31.0 websockets==12.0 psycopg2-binary==2.9.9 yfinance==0.2.54
 RUN pip3 install --break-system-packages --quiet --no-cache-dir coinbase-advanced-trade-python python-dotenv 2>/dev/null || true
-
-RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
 RUN npm install -g @coinbase/coinbase-cli 2>/dev/null || true
 
-COPY package.json pnpm-lock.yaml* ./
-RUN pnpm install --prod --frozen-lockfile=false 2>/dev/null || pnpm install --prod
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
 
 COPY apps ./apps
 COPY packages ./packages
