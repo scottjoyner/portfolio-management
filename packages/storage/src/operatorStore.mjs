@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { completeAuditChain } from './auditChain.mjs';
 import {
   DEFAULT_ACCOUNTS,
   DEFAULT_APPROVALS,
@@ -139,7 +138,7 @@ export function normalizeOperatorState(input = {}) {
     capitalInPlayUsd: input.capitalInPlayUsd ?? input.capital_in_play_usd ?? null,
     paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : [],
     executions: Array.isArray(input.executions) ? input.executions : [],
-    audit: completeAuditChain(Array.isArray(input.audit) ? input.audit : []),
+    audit: Array.isArray(input.audit) ? input.audit : [],
     killSwitch: input.killSwitch && typeof input.killSwitch === 'object' ? input.killSwitch : seeded.killSwitch,
     config: input.config && typeof input.config === 'object'
       ? {
