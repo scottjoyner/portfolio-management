@@ -14,17 +14,18 @@ jobs:
   validation:
     name: validation
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v4
     - name: Set up Node
       uses: actions/setup-node@v4
       with:
         node-version: '22'
-    - name: Enable package manager
-      run: corepack enable
+        cache: npm
+    - name: Verify locked dependencies
+      run: npm ci --ignore-scripts
     - name: Run complete static production build contract
-      run: pnpm build
+      run: npm run build
 
   node-tests:
     name: node-tests-${{ matrix.shard }}
@@ -49,7 +50,7 @@ jobs:
   postgres-integration:
     name: postgres-integration
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-bookworm
@@ -83,6 +84,31 @@ jobs:
       run: npm run migrations:up | tee postgres-migration-second.json
     - name: Verify migration 006, restart hydration, append-only events, and durable leases
       run: npm run test:integration:postgres | tee postgres-integration.tap
+    - name: Run authenticated production runtime and browser restart smoke
+      run: npm run smoke:production-runtime
+    - name: Verify logical backup and restore
+      env:
+        POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+      run: |
+        set -euo pipefail
+        docker exec "$POSTGRES_CONTAINER_ID" pg_dump \
+          --username portfolio \
+          --dbname portfolio \
+          --format custom \
+          --no-owner \
+          --file /tmp/portfolio-smoke.dump
+        docker exec "$POSTGRES_CONTAINER_ID" createdb --username portfolio portfolio_restore
+        docker exec "$POSTGRES_CONTAINER_ID" pg_restore \
+          --username portfolio \
+          --dbname portfolio_restore \
+          --exit-on-error \
+          /tmp/portfolio-smoke.dump
+        migration_count="$(docker exec "$POSTGRES_CONTAINER_ID" psql --username portfolio --dbname portfolio_restore --tuples-only --no-align --command "SELECT count(*) FROM schema_migrations WHERE version = '006_normalized_execution_runtime'")"
+        execution_count="$(docker exec "$POSTGRES_CONTAINER_ID" psql --username portfolio --dbname portfolio_restore --tuples-only --no-align --command "SELECT count(*) FROM execution_records")"
+        test "$migration_count" = "1"
+        test "$execution_count" -ge "1"
+        printf 'migration_006=%s\nexecution_records=%s\n' "$migration_count" "$execution_count" | tee postgres-restore-evidence.txt
+        docker cp "$POSTGRES_CONTAINER_ID:/tmp/portfolio-smoke.dump" ./portfolio-smoke.dump
     - name: Upload PostgreSQL readiness evidence
       if: always()
       uses: actions/upload-artifact@v4
@@ -92,6 +118,9 @@ jobs:
           postgres-migration-first.json
           postgres-migration-second.json
           postgres-integration.tap
+          production-runtime-smoke.json
+          postgres-restore-evidence.txt
+          portfolio-smoke.dump
         if-no-files-found: error
         retention-days: 14
 
