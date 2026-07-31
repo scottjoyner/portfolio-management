@@ -14,6 +14,7 @@ function finite(value, fallback) {
 }
 
 function round(value, digits = 4) {
+  if (!Number.isFinite(value)) return value;
   const scale = 10 ** digits;
   return Math.round(value * scale) / scale;
 }
@@ -58,9 +59,11 @@ export function intelligenceDeploymentCapabilities(env = process.env) {
   };
 }
 
-export function remoteSpendSummary(state = {}, now = new Date()) {
+export function remoteSpendSummary(state = {}, now = new Date(), excludeQuoteId = null) {
   const day = new Date(now).toISOString().slice(0, 10);
-  const rows = (state.modelUsageLedger || []).filter(row => row.localOrRemote === 'remote' && String(row.requestedAt || row.createdAt || '').slice(0, 10) === day);
+  const rows = (state.modelUsageLedger || []).filter(row => row.id !== excludeQuoteId
+    && row.localOrRemote === 'remote'
+    && String(row.requestedAt || row.createdAt || '').slice(0, 10) === day);
   const committedStatuses = new Set(['quoted', 'running', 'usage_pending', 'reconciled']);
   const cost = row => Number(row.status === 'reconciled' ? row.actualCostUsd : row.authoritativeCostUsd ?? row.estimatedCostUsd) || 0;
   return {
@@ -85,6 +88,42 @@ export function intelligenceRoutingPolicyView(state = {}, env = process.env, now
       remoteAllowed: policy.mode !== 'local_only' && capabilities.openRouterAvailable,
       automaticComparisonEnabled: policy.mode === 'economic_auto',
     },
+  };
+}
+
+export function evaluateRemoteIntelligencePolicy(state = {}, input = {}, env = process.env, now = new Date()) {
+  const policy = normalizeIntelligenceRoutingPolicy(state.config?.intelligenceRoutingPolicy);
+  const capabilities = intelligenceDeploymentCapabilities(env);
+  const estimatedCostUsd = Math.max(0, finite(input.estimatedCostUsd, 0));
+  const expectedDecisionImprovementUsd = finite(input.expectedDecisionImprovementUsd, null);
+  const spend = remoteSpendSummary(state, now, input.excludeQuoteId || null);
+  const valueCoverage = expectedDecisionImprovementUsd == null
+    ? null
+    : estimatedCostUsd > 0
+      ? expectedDecisionImprovementUsd / estimatedCostUsd
+      : Number.POSITIVE_INFINITY;
+  const blockers = [];
+
+  if (policy.mode === 'local_only') blockers.push('intelligence_policy_local_only');
+  if (!capabilities.remoteExecutionEnabled) blockers.push('remote_llm_execution_disabled');
+  if (!capabilities.openRouterKeyConfigured) blockers.push('openrouter_api_key_required');
+  if (estimatedCostUsd > policy.remoteSpendCapUsdPerRequest) blockers.push('remote_request_spend_cap_exceeded');
+  if (spend.committedUsd + estimatedCostUsd > policy.remoteSpendCapUsdPerDay) blockers.push('remote_daily_spend_cap_exceeded');
+  if (policy.mode === 'economic_auto') {
+    if (expectedDecisionImprovementUsd == null || expectedDecisionImprovementUsd < 0) blockers.push('expected_remote_decision_improvement_required');
+    if (valueCoverage != null && valueCoverage < policy.minimumRemoteValueCoverage) blockers.push('remote_value_coverage_below_policy');
+  }
+
+  return {
+    allowed: blockers.length === 0,
+    blockers,
+    policy,
+    capabilities,
+    estimatedCostUsd: round(estimatedCostUsd, 8),
+    expectedDecisionImprovementUsd: expectedDecisionImprovementUsd == null ? null : round(expectedDecisionImprovementUsd, 8),
+    valueCoverage: Number.isFinite(valueCoverage) ? round(valueCoverage, 6) : valueCoverage,
+    committedTodayUsd: spend.committedUsd,
+    projectedCommittedTodayUsd: round(spend.committedUsd + estimatedCostUsd, 8),
   };
 }
 
