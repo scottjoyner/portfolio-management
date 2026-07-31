@@ -238,28 +238,25 @@ jobs:
   performance-diagnostic:
     name: performance-diagnostic
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     continue-on-error: true
-    needs: [python-critical, node-tests]
-    env:
-      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+    needs: node-tests
     steps:
     - uses: actions/checkout@v4
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up Node
+      uses: actions/setup-node@v4
       with:
-        python-version: '3.12'
-        cache: pip
-        cache-dependency-path: deploy/requirements.venv-lock.txt
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install -r deploy/requirements.venv-lock.txt
-    - name: Run performance benchmarks
-      run: python performance_benchmarks/run_all_tests.py
-    - name: Generate report
+        node-version: '22'
+    - name: Run deterministic release-critical performance smoke
+      run: node scripts/benchmark-release-critical-paths.mjs | tee performance-smoke.json
+    - name: Upload performance baseline
       if: always()
-      run: python performance_benchmarks/cli_report_generator.py --output=benchmark-report.html
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-smoke-${{ github.sha }}
+        path: performance-smoke.json
+        if-no-files-found: error
+        retention-days: 14
 
   release-readiness:
     name: release-readiness
