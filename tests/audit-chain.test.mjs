@@ -69,7 +69,7 @@ test('audit completion rejects conflicting persisted metadata', () => {
   );
 });
 
-test('operator-store normalization hashes newly appended audit events', async () => {
+test('generic stores preserve missing audit metadata for integrity checks', async () => {
   const store = new MemoryOperatorStore(createInitialOperatorState());
   await store.mutate(state => {
     state.audit.push({
@@ -81,9 +81,8 @@ test('operator-store normalization hashes newly appended audit events', async ()
     });
   });
   const state = await store.load();
-  assert.equal(state.audit[0].sequenceNumber, 1);
-  assert.match(state.audit[0].eventHash, /^[a-f0-9]{64}$/);
-  assert.equal(verifyAuditChain(state.audit).ok, true);
+  assert.equal(state.audit[0].sequenceNumber, undefined);
+  assert.equal(state.audit[0].eventHash, undefined);
 });
 
 test('row repository insertAudit appends hash chain fields', async () => {
