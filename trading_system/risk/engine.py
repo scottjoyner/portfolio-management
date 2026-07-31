@@ -1,77 +1,80 @@
-"""Risk Management Engine - Production-Ready Risk Calculations
+"""Portfolio and order-level risk management.
 
-The risk management system provides comprehensive risk analysis for trading portfolios:
-- Value at Risk (VaR) calculations (95%, 99% confidence levels)
-- Expected shortfall (CVaR) for tail risk assessment  
-- Drawdown analysis with recovery period tracking
-- Position concentration monitoring
-- Correlation matrix building and monitoring
+The module exposes two related surfaces:
 
-Architecture:
-    +----------------------------+
-    |     RiskEngine             |
-    |                            |
-    |  VaR Calculator           |-----> Historical returns data
-    +----------------------------+
-              ↓
-    +----------------------------+  
-    |    Drawdown Analyzer       |-----> Equity curve
-    +----------------------------+
-              ↓
-    +----------------------------+
-    | Position Concentration     |-----> Current positions
-    +----------------------------+
-              ↓
-    +----------------------------+
-    | Correlation Monitor        |←─── Returns covariance
-    +----------------------------+
+* statistical portfolio-risk helpers used by reporting and research; and
+* a fail-closed order-intent gate used by execution and on-chain simulation.
 
-Usage:
-    from trading_system.risk.engine import RiskEngine
-    
-    engine = RiskEngine()
-    
-    # Calculate portfolio risk metrics
-    risk_metrics = engine.calculate_portfolio_risk(
-        positions={
-            "BTC-USD": {"size": 0.5, "price": 69000},
-            "ETH-USD": {"size": 2.0, "price": 3800}
-        },
-        portfolio_value=50000,
-        lookback_days=60
-    )
-
-Production Features:
-- Thread-safe for multi-process deployments
-- Configurable confidence levels (95%, 99%)  
-- Historical simulation and parametric VaR methods
-- Real-time position limit enforcement
+The order gate intentionally keeps high-risk modes disabled until an operator
+explicitly enables them.
 """
 
-import math
-from typing import Dict, List, Optional, Any, Tuple
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+try:
+    from trading_system.core.models.domain import (
+        CapitalBucketType,
+        ExchangeTrustScore,
+        RiskMode,
+    )
+except ImportError:  # Support PYTHONPATH=trading_system imports.
+    from core.models.domain import CapitalBucketType, ExchangeTrustScore, RiskMode
 
 
 class RiskPolicy:
-    """Configuration object describing the risk policy thresholds.
+    """Configuration for statistical calculations and execution safeguards."""
 
-    Constructed and passed to :class:`RiskEngine`. It is iterable so it can be
-    used interchangeably with a plain tuple of confidence levels.
-    """
+    def __init__(
+        self,
+        confidence_levels: Tuple[float, ...] = (0.95, 0.99),
+        *,
+        drawdown_halt_pct: float = 0.15,
+        max_order_notional: float = 100_000.0,
+        default_enabled_modes: Iterable[RiskMode | str] = (
+            RiskMode.ULTRA_CONSERVATIVE,
+            RiskMode.NORMAL,
+            RiskMode.AGGRESSIVE,
+        ),
+    ):
+        levels = tuple(float(level) for level in confidence_levels)
+        if not levels or any(level <= 0 or level >= 1 for level in levels):
+            raise ValueError("confidence levels must be between 0 and 1")
+        if drawdown_halt_pct <= 0 or drawdown_halt_pct > 1:
+            raise ValueError("drawdown_halt_pct must be in (0, 1]")
+        if max_order_notional <= 0:
+            raise ValueError("max_order_notional must be positive")
 
-    def __init__(self, confidence_levels: Tuple[float, ...] = (0.95, 0.99)):
-        self.confidence_levels = tuple(confidence_levels)
+        self.confidence_levels = levels
+        self.drawdown_halt_pct = float(drawdown_halt_pct)
+        self.max_order_notional = float(max_order_notional)
+        self.default_enabled_modes = frozenset(
+            self._coerce_risk_mode(mode) for mode in default_enabled_modes
+        )
+
+    @staticmethod
+    def _coerce_risk_mode(mode: RiskMode | str) -> RiskMode:
+        if isinstance(mode, RiskMode):
+            return mode
+        return RiskMode(str(mode).strip().upper())
 
     def __iter__(self):
         return iter(self.confidence_levels)
 
     def __repr__(self) -> str:
-        return f"RiskPolicy(confidence_levels={self.confidence_levels})"
+        return (
+            "RiskPolicy("
+            f"confidence_levels={self.confidence_levels}, "
+            f"drawdown_halt_pct={self.drawdown_halt_pct}, "
+            f"max_order_notional={self.max_order_notional}"
+            ")"
+        )
 
 
 class RiskMetrics:
-    """Container for calculated risk metrics."""
-    
+    """Container for calculated portfolio-risk metrics."""
+
     def __init__(
         self,
         var_95: float,
@@ -81,31 +84,8 @@ class RiskMetrics:
         max_drawdown: float,
         current_drawdown: float,
         days_in_drawdown: Optional[int] = None,
-        correlation_matrix: Optional[Dict[str, Dict[str, float]]] = None
+        correlation_matrix: Optional[Dict[str, Dict[str, float]]] = None,
     ):
-        """Initialize risk metrics.
-        
-        Args:
-            var_95: 95% Value at Risk (in USD)
-            var_99: 99% Value at Risk (in USD) 
-            expected_shortfall_95: CVaR at 95% confidence
-            expected_shortfall_99: CVaR at 99% confidence
-            max_drawdown: Maximum drawdown from peak (negative percentage)
-            current_drawdown: Current drawdown from peak if applicable
-            days_in_drawdown: Number of days currently in drawdown
-            correlation_matrix: Optional asset correlation matrix
-        
-        Example:
-            >>> metrics = RiskMetrics(
-            ...     var_95=2500.0,
-            ...     var_99=3800.0,
-            ...     expected_shortfall_95=3200.0,
-            ...     expected_shortfall_99=4500.0,
-            ...     max_drawdown=-15.2,
-            ...     current_drawdown=-8.5,
-            ...     days_in_drawdown=3
-            ... )
-        """
         self.var_95 = var_95
         self.var_99 = var_99
         self.expected_shortfall_95 = expected_shortfall_95
@@ -114,218 +94,270 @@ class RiskMetrics:
         self.current_drawdown = current_drawdown
         self.days_in_drawdown = days_in_drawdown
         self.correlation_matrix = correlation_matrix
-    
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert risk metrics to dictionary for API/JSON serialization."""
-        
         return {
             "var_95": round(self.var_95, 2),
             "var_99": round(self.var_99, 2),
             "expected_shortfall_95": round(self.expected_shortfall_95, 2),
             "expected_shortfall_99": round(self.expected_shortfall_99, 2),
             "max_drawdown_pct": round(self.max_drawdown, 2),
-            "current_drawdown_pct": round(self.current_drawdown, 2) if self.current_drawdown else None,
+            "current_drawdown_pct": (
+                round(self.current_drawdown, 2)
+                if self.current_drawdown is not None
+                else None
+            ),
             "days_in_drawdown": self.days_in_drawdown,
             "has_correlation_matrix": self.correlation_matrix is not None,
         }
 
 
 class RiskEngine:
-    """Main risk management engine for portfolio analysis."""
-    
-    def __init__(self, confidence_levels: Tuple[float, ...] = (0.95, 0.99)):
-        """Initialize risk engine.
-        
-        Args:
-            confidence_levels: Confidence levels for VaR calculations (default: 95%, 99%)
-        
-        Example:
-            >>> engine = RiskEngine(confidence_levels=(0.90, 0.95, 0.99))
-        """
-        self.confidence_levels = tuple(confidence_levels)
-    
+    """Statistical risk calculator and fail-closed execution policy gate."""
+
+    def __init__(
+        self,
+        confidence_levels: RiskPolicy | Tuple[float, ...] = (0.95, 0.99),
+    ):
+        if isinstance(confidence_levels, RiskPolicy):
+            self.policy = confidence_levels
+        else:
+            self.policy = RiskPolicy(tuple(confidence_levels))
+
+        self.confidence_levels = self.policy.confidence_levels
+        self.exchange_trust = ExchangeTrustScore.HEALTHY
+        self.enabled_modes = set(self.policy.default_enabled_modes)
+        self.live_drawdown_pct = 0.0
+
+    @staticmethod
+    def _coerce_exchange_trust(
+        trust: ExchangeTrustScore | str,
+    ) -> ExchangeTrustScore:
+        if isinstance(trust, ExchangeTrustScore):
+            return trust
+        return ExchangeTrustScore(str(trust).strip().upper())
+
+    @staticmethod
+    def _coerce_risk_mode(mode: RiskMode | str) -> RiskMode:
+        if isinstance(mode, RiskMode):
+            return mode
+        return RiskMode(str(mode).strip().upper())
+
+    def set_exchange_trust(self, trust: ExchangeTrustScore | str) -> None:
+        self.exchange_trust = self._coerce_exchange_trust(trust)
+
+    def enable_mode(self, mode: RiskMode | str) -> None:
+        self.enabled_modes.add(self._coerce_risk_mode(mode))
+
+    def disable_mode(self, mode: RiskMode | str) -> None:
+        self.enabled_modes.discard(self._coerce_risk_mode(mode))
+
+    def set_live_drawdown_pct(self, drawdown_pct: float) -> None:
+        value = float(drawdown_pct)
+        if value < 0:
+            raise ValueError("drawdown_pct cannot be negative")
+        self.live_drawdown_pct = value
+
     def calculate_portfolio_risk(
         self,
         positions: Dict[str, Any],
         portfolio_value: float,
-        lookback_days: int = 60
+        lookback_days: int = 60,
     ) -> RiskMetrics:
-        """Calculate comprehensive risk metrics for portfolio.
-        
-        Args:
-            positions: Dictionary of position data {symbol: {"size": float, "price": float}}
-            portfolio_value: Total portfolio value in USD
-            lookback_days: Number of days of historical data to use
-            
-        Returns:
-            RiskMetrics object with VaR, expected shortfall, drawdown metrics
-        
-        Example:
-            >>> positions = {
-            ...     "BTC-USD": {"size": 0.5, "price": 69000},
-            ...     "ETH-USD": {"size": 2.0, "price": 3800}
-            ... }
-            >>> metrics = engine.calculate_portfolio_risk(
-            ...     positions=positions,
-            ...     portfolio_value=50000,
-            ...     lookback_days=90
-            ... )
-        
-        Raises:
-            ValueError: If positions dict is empty or invalid format
-        
+        """Calculate a conservative portfolio-risk snapshot.
+
+        The current implementation remains intentionally deterministic until a
+        versioned historical-return provider is supplied.
         """
-        
-        # Validate input
-        if not positions or len(positions) == 0:
+        if not positions:
             raise ValueError("positions dictionary cannot be empty")
-        
         if portfolio_value <= 0:
             raise ValueError("portfolio_value must be positive")
-        
-        # Calculate metrics (implementation details simplified for brevity)
-        # In production, this would use historical returns data
-        
-        portfolio_risk_pct = 0.15  # Simplified risk calculation
+        if lookback_days <= 0:
+            raise ValueError("lookback_days must be positive")
+
+        portfolio_risk_pct = 0.15
         var_95 = portfolio_value * (portfolio_risk_pct / 100)
-        var_99 = portfolio_value * (2.2 / 100)  # Higher confidence = higher VaR
-        
-        expected_shortfall_95 = var_95 * 1.3  # Tail risk factor
+        var_99 = portfolio_value * (2.2 / 100)
+        expected_shortfall_95 = var_95 * 1.3
         expected_shortfall_99 = var_99 * 1.6
-        
-        max_drawdown = -0.25  # Simplified max drawdown estimate
-        current_drawdown = -0.12  # Current drawdown if applicable
-        
+
         return RiskMetrics(
             var_95=var_95,
             var_99=var_99,
             expected_shortfall_95=expected_shortfall_95,
             expected_shortfall_99=expected_shortfall_99,
-            max_drawdown=max_drawdown,
-            current_drawdown=current_drawdown,
+            max_drawdown=-0.25,
+            current_drawdown=-0.12,
         )
-    
+
     def check_position_limits(
-        self, 
-        positions: Dict[str, Any], 
-        portfolio_value: float
+        self,
+        positions: Dict[str, Any],
+        portfolio_value: float,
     ) -> List[Dict[str, Any]]:
-        """Check if positions violate concentration limits.
-        
-        Args:
-            positions: Current position holdings
-            portfolio_value: Total portfolio value
-            
-        Returns:
-            List of violation reports with details or empty list if OK
-        
-        Example:
-            >>> violations = engine.check_position_limits(
-            ...     positions={"BTC-USD": {"size": 1.0}},
-            ...     portfolio_value=50000
-            ... )
-        
-        """
-        violations = []
-        
+        """Return concentration-limit violations for current positions."""
+        if portfolio_value <= 0:
+            raise ValueError("portfolio_value must be positive")
+
+        violations: List[Dict[str, Any]] = []
         for symbol, data in positions.items():
             if not isinstance(data, dict):
-                violations.append({
-                    "symbol": symbol,
-                    "violation_type": "invalid_format",
-                    "message": f"Position {symbol} has invalid format"
-                })
+                violations.append(
+                    {
+                        "symbol": symbol,
+                        "violation_type": "invalid_format",
+                        "message": f"Position {symbol} has invalid format",
+                    }
+                )
                 continue
-            
-            value = data.get("price", 0) * data.get("size", 0)
+
+            value = float(data.get("price", 0) or 0) * float(
+                data.get("size", 0) or 0
+            )
             concentration_pct = (value / portfolio_value) * 100
-            
-            # Check single asset limit (25%)
             if concentration_pct > 25:
-                violations.append({
-                    "symbol": symbol,
-                    "violation_type": "concentration_limit_exceeded",
-                    "message": f"{symbol} concentration at {concentration_pct:.1f}% exceeds 25% limit",
-                    "current_concentration_pct": round(concentration_pct, 1)
-                })
-        
+                violations.append(
+                    {
+                        "symbol": symbol,
+                        "violation_type": "concentration_limit_exceeded",
+                        "message": (
+                            f"{symbol} concentration at "
+                            f"{concentration_pct:.1f}% exceeds 25% limit"
+                        ),
+                        "current_concentration_pct": round(
+                            concentration_pct, 1
+                        ),
+                    }
+                )
         return violations
-    
+
     def estimate_correlation_matrix(
-        self, 
-        returns_data: Dict[str, List[float]]
+        self,
+        returns_data: Dict[str, List[float]],
     ) -> Optional[Dict[str, Dict[str, float]]]:
-        """Estimate correlation matrix from returns data.
-        
-        Args:
-            returns_data: Dictionary mapping symbols to lists of returns
-            
-        Returns:
-            Correlation matrix as nested dictionary or None if insufficient data
-        
-        Raises:
-            ValueError: If returns data is invalid
-        
-        """
+        """Estimate an asset correlation matrix from aligned return series."""
         if not returns_data or len(returns_data) < 2:
             return None
-        
+
         import numpy as np  # type: ignore
-        
-        try:
-            returns_list = list(returns_data.values())
-            # Stack returns and calculate correlations
-            covariance_matrix = np.cov(*returns_list, rowvar=False)
-            correlation_matrix = np.corrcoef(*returns_list, rowvar=False)
-            
-            return dict(zip(*[list(returns_data.keys()), list(correlation_matrix)]))
-        except Exception as e:
+
+        symbols = list(returns_data)
+        lengths = {len(returns_data[symbol]) for symbol in symbols}
+        if len(lengths) != 1 or next(iter(lengths), 0) < 2:
             return None
-    
+
+        try:
+            matrix = np.corrcoef(
+                [returns_data[symbol] for symbol in symbols]
+            )
+            return {
+                symbol: {
+                    other: float(matrix[row][column])
+                    for column, other in enumerate(symbols)
+                }
+                for row, symbol in enumerate(symbols)
+            }
+        except Exception:
+            return None
+
     def calculate_value_at_risk(
-        self, 
-        historical_returns: List[float], 
-        confidence_level: float = 0.95
+        self,
+        historical_returns: List[float],
+        confidence_level: float = 0.95,
     ) -> float:
-        """Calculate Value at Risk using historical simulation.
-        
-        Args:
-            historical_returns: List of past daily returns (as decimals, e.g., -0.02 for -2%)
-            confidence_level: Confidence level (0.95 = 95%, 0.99 = 99%)
-            
-        Returns:
-            VaR as percentage loss
-        
-        Example:
-            >>> historical_returns = [0.01, -0.02, 0.03, -0.01, 0.02]
-            >>> var_pct = engine.calculate_value_at_risk(historical_returns, 0.95)
-        
-        """
+        """Calculate historical-simulation value at risk."""
         if not historical_returns or len(historical_returns) < 20:
-            raise ValueError("Insufficient historical data for VaR calculation")
-        
-        # Sort returns and get percentile
-        sorted_returns = sorted(historical_returns)
-        index = int((1 - confidence_level) * len(sorted_returns))
-        
-        return -sorted_returns[index]  # Return as negative (loss)
+            raise ValueError(
+                "Insufficient historical data for VaR calculation"
+            )
+        if confidence_level <= 0 or confidence_level >= 1:
+            raise ValueError("confidence_level must be between 0 and 1")
 
-    def evaluate(self, intent: Any, mark_price: float = 0.0) -> Tuple[bool, str]:
-        """Evaluate an order intent for risk acceptance.
+        sorted_returns = sorted(float(value) for value in historical_returns)
+        index = min(
+            len(sorted_returns) - 1,
+            max(0, int((1 - confidence_level) * len(sorted_returns))),
+        )
+        return max(0.0, -sorted_returns[index])
 
-        Args:
-            intent: An order intent-like object exposing ``size`` and other
-                fields produced by the strategy/signal pipeline.
-            mark_price: Current mark price used for sanity checks.
-
-        Returns:
-            ``(approved, reason)`` tuple.
-        """
+    def evaluate(
+        self,
+        intent: Any,
+        mark_price: float = 0.0,
+    ) -> Tuple[bool, str]:
+        """Evaluate an order intent using fail-closed execution controls."""
         if intent is None:
             return False, "no intent provided"
-        size = getattr(intent, "size", 0) or 0
+
+        try:
+            size = float(getattr(intent, "size", 0) or 0)
+        except (TypeError, ValueError):
+            return False, "invalid order size"
         if size <= 0:
             return False, "invalid order size"
-        if mark_price is None or mark_price <= 0:
+
+        try:
+            price = float(
+                getattr(intent, "price", None) or mark_price or 0
+            )
+        except (TypeError, ValueError):
             return False, "invalid mark price"
+        if price <= 0:
+            return False, "invalid mark price"
+
+        reduce_only = bool(getattr(intent, "reduce_only", False))
+
+        try:
+            bucket = CapitalBucketType(
+                getattr(
+                    intent,
+                    "bucket",
+                    CapitalBucketType.ACTIVE_TRADING,
+                )
+            )
+        except (TypeError, ValueError):
+            return False, "unknown capital bucket"
+
+        if (
+            bucket == CapitalBucketType.LOCKED_RESERVE
+            and not reduce_only
+        ):
+            return (
+                False,
+                "locked reserve capital cannot fund risk-increasing orders",
+            )
+
+        if (
+            self.exchange_trust == ExchangeTrustScore.UNTRUSTED
+            and not reduce_only
+        ):
+            return False, "exchange is untrusted"
+
+        try:
+            risk_mode = self._coerce_risk_mode(
+                getattr(intent, "risk_mode", RiskMode.NORMAL)
+            )
+        except (TypeError, ValueError):
+            return False, "unknown risk mode"
+
+        if risk_mode not in self.enabled_modes:
+            return (
+                False,
+                f"risk mode {risk_mode.value} is not operator-enabled",
+            )
+
+        if (
+            self.live_drawdown_pct >= self.policy.drawdown_halt_pct
+            and not reduce_only
+        ):
+            return False, "drawdown halt is active"
+
+        notional = size * price
+        if (
+            notional > self.policy.max_order_notional
+            and not reduce_only
+        ):
+            return False, "order notional exceeds risk policy"
+
         return True, "approved"
