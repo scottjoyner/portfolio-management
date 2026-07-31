@@ -23,8 +23,7 @@ async function post(store, path, body, env = {}, fetchImpl = globalThis.fetch) {
     env: {
       OPERATOR_AUTH_REQUIRED: 'false',
       MODE: 'mock',
-      REMOTE_LLM_EXECUTION_ENABLED: 'true',
-      OPENROUTER_API_KEY: 'test-openrouter-key',
+      REMOTE_LLM_EXECUTION_ENABLED: 'false',
       ...env,
     },
     fetchImpl,
@@ -79,8 +78,6 @@ test('automatic routing falls back to the local fleet when remote quoting is una
     completionTokens: 20,
     expectedDecisionImprovementUsd: 1,
   }, {
-    REMOTE_LLM_EXECUTION_ENABLED: 'false',
-    OPENROUTER_API_KEY: '',
     LOCAL_LLM_NODES_JSON: localFleet(),
   }, localHealth);
 
@@ -94,6 +91,7 @@ test('automatic routing falls back to the local fleet when remote quoting is una
 
 test('research job inherits the selected quote route when locality is omitted', async () => {
   const state = createInitialState('2026-07-31T07:00:00.000Z');
+  state.config.requireEconomicDecisionForRemoteAgent = false;
   state.config.intelligenceRoutingPolicy = {
     mode: 'openrouter_allowed',
     remoteSpendCapUsdPerDay: 2,
@@ -111,17 +109,9 @@ test('research job inherits the selected quote route when locality is omitted', 
     estimatedCostUsd: 0.02,
     requestedAt: '2026-07-31T07:00:00.000Z',
   }];
-  state.economicDecisions = [{
-    id: 'decision-selected-remote',
-    modelQuoteId: 'quote-selected-remote',
-    intelligenceAllowed: true,
-    executionAllowed: false,
-    createdAt: '2026-07-31T07:00:00.000Z',
-  }];
 
   const result = await post(new MemoryOperatorStore(state), '/api/agents/jobs', {
     modelQuoteId: 'quote-selected-remote',
-    economicDecisionId: 'decision-selected-remote',
     promptTokens: 100,
     completionTokens: 20,
     totalTokens: 120,
