@@ -47,7 +47,7 @@ function messagesFrom(body = {}) {
 
 function errorStatus(errors = []) {
   if (errors.some(error => error.endsWith('_not_found'))) return 404;
-  if (errors.some(error => error.includes('disabled') || error.includes('required') || error.includes('mismatch') || error.includes('already_') || error.includes('requote'))) return 409;
+  if (errors.some(error => error.includes('disabled') || error.includes('required') || error.includes('mismatch') || error.includes('already_') || error.includes('requote') || error.includes('reconciliation') || error.includes('consumed'))) return 409;
   if (errors.some(error => error.includes('unavailable') || error.includes('timeout') || error.includes('no_healthy'))) return 503;
   return 400;
 }
@@ -71,7 +71,8 @@ function validateExecution(state, body, env) {
   const errors = [];
   if (!quote) errors.push('model_quote_not_found');
   if (!decision) errors.push('economic_decision_not_found');
-  if (quote && !['quoted', 'failed', 'usage_pending'].includes(quote.status)) errors.push('model_quote_already_consumed');
+  if (quote?.status === 'usage_pending') errors.push('model_usage_pending_reconciliation');
+  else if (quote && quote.status !== 'quoted') errors.push('model_quote_already_consumed');
   if (decision && decision.intelligenceAllowed !== true) errors.push('intelligence_purchase_not_economic');
   if (quote && decision && decision.modelQuoteId !== quote.id) errors.push('economic_decision_model_quote_mismatch');
   if (!messages.length) errors.push('model_messages_required');
@@ -87,16 +88,22 @@ function markRunning(state, body, now, env) {
   const job = body.researchJobId ? state.researchJobs?.find(row => row.id === body.researchJobId) : null;
   if (body.researchJobId && !job) return { errors: ['research_job_not_found'] };
   const costRow = job ? state.agentCostLedger?.find(row => row.jobId === job.id) : null;
+  const providerAttemptId = quote.providerAttemptId || `provider-attempt:${quote.id}`;
 
   quote.researchJobId = job?.id || quote.researchJobId || null;
   quote.status = 'running';
   quote.startedAt = now;
+  quote.providerAttemptId = providerAttemptId;
+  quote.providerAttemptStartedAt = now;
   quote.failureReason = null;
+  quote.requiresManualReconciliation = false;
+  quote.uncertainProviderOutcome = false;
   if (job) {
     job.status = 'running';
     job.startedAt ||= now;
     job.completedAt = null;
     job.failureReason = null;
+    job.providerAttemptId = providerAttemptId;
     job.modelQuoteId = quote.id;
     job.economicDecisionId = decision.id;
     job.pricingSnapshotId = quote.pricingSnapshotId;
@@ -106,6 +113,7 @@ function markRunning(state, body, now, env) {
     costRow.modelQuoteId = quote.id;
     costRow.economicDecisionId = decision.id;
     costRow.pricingSnapshotId = quote.pricingSnapshotId;
+    costRow.providerAttemptId = providerAttemptId;
     costRow.remoteApiCost = quote.localOrRemote === 'remote' ? quote.estimatedCostUsd : 0;
     costRow.localComputeCost = quote.localOrRemote === 'local' ? quote.estimatedCostUsd : 0;
     costRow.costSource = 'pre_call_estimate';
@@ -117,6 +125,7 @@ function markRunning(state, body, now, env) {
       quoteId: quote.id,
       decisionId: decision.id,
       researchJobId: job?.id || null,
+      providerAttemptId,
       localOrRemote: quote.localOrRemote,
       provider: quote.provider,
       model: quote.model,
@@ -136,20 +145,40 @@ function markRunning(state, body, now, env) {
   };
 }
 
-function markFailed(state, prepared, error, now) {
+function markFailed(state, prepared, error, now, options = {}) {
   const quote = state.modelUsageLedger?.find(row => row.id === prepared.quoteId);
   const job = prepared.researchJobId ? state.researchJobs?.find(row => row.id === prepared.researchJobId) : null;
+  const costRow = job ? state.agentCostLedger?.find(row => row.jobId === job.id) : null;
+  const uncertainRemote = options.uncertainProviderOutcome === true && prepared.localOrRemote === 'remote';
+  const failureReason = uncertainRemote
+    ? 'remote_provider_outcome_uncertain_reconciliation_required'
+    : error;
+
   if (quote) {
-    quote.status = 'failed';
-    quote.failureReason = error;
+    quote.status = uncertainRemote ? 'usage_pending' : 'failed';
+    quote.failureReason = failureReason;
     quote.completedAt = now;
+    quote.retryable = false;
+    quote.requiresRequote = !uncertainRemote && prepared.localOrRemote === 'local';
+    quote.requiresManualReconciliation = uncertainRemote;
+    quote.uncertainProviderOutcome = uncertainRemote;
+    quote.providerError = error;
   }
   if (job) {
     job.status = 'failed';
-    job.failureReason = error;
+    job.failureReason = failureReason;
     job.completedAt = now;
+    job.retryable = false;
+    job.requiresRequote = !uncertainRemote && prepared.localOrRemote === 'local';
+    job.requiresManualReconciliation = uncertainRemote;
+    job.uncertainProviderOutcome = uncertainRemote;
   }
-  return { errors: [error] };
+  if (costRow && uncertainRemote) {
+    costRow.recoveryStatus = 'usage_pending_manual_reconciliation_required';
+    costRow.requiresManualReconciliation = true;
+    costRow.providerError = error;
+  }
+  return { errors: [failureReason] };
 }
 
 function reconcileExecution(state, prepared, providerResult, now) {
@@ -170,12 +199,16 @@ function reconcileExecution(state, prepared, providerResult, now) {
   quote.prefillTokensPerSecondActual = providerResult.usage?.prefill_tokens_per_second ?? null;
   quote.decodeTokensPerSecondActual = providerResult.usage?.decode_tokens_per_second ?? null;
   quote.completedAt = now;
+  quote.requiresManualReconciliation = false;
+  quote.uncertainProviderOutcome = false;
 
   const job = prepared.researchJobId ? state.researchJobs?.find(row => row.id === prepared.researchJobId) : null;
   if (job) {
     job.localNodeId = quote.localNodeId;
     job.runtimeSecondsActual = quote.runtimeSecondsActual;
     job.queueDelaySecondsActual = quote.queueDelaySecondsActual;
+    job.requiresManualReconciliation = false;
+    job.uncertainProviderOutcome = false;
     job.responseSummary = {
       generationId: providerResult.id || null,
       finishReasons: (providerResult.choices || []).map(choice => choice.finish_reason).filter(Boolean),
@@ -267,8 +300,19 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
     providerResult = await provider.execute(prepared);
   } catch (error) {
     const message = String(error?.message || error);
-    await store.mutate(state => markFailed(state, prepared, message, new Date().toISOString()));
-    return resultFromErrors([message]);
+    const uncertainProviderOutcome = prepared.localOrRemote === 'remote';
+    const failed = await store.mutate(state => markFailed(
+      state,
+      prepared,
+      message,
+      new Date().toISOString(),
+      { uncertainProviderOutcome },
+    ));
+    return resultFromErrors(failed.errors || [message], {
+      modelQuoteId: prepared.quoteId,
+      providerAttemptId: prepared.providerAttemptId,
+      requiresManualReconciliation: uncertainProviderOutcome,
+    });
   }
 
   const reconciledAt = new Date().toISOString();
