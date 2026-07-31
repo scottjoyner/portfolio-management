@@ -1,19 +1,22 @@
-# Operator Runbook — Daily Paper/Guarded Operations
+# Operator Runbook — Supervised Paper Operations
 
-This runbook covers the Portfolio OS daily operator console, guarded paper execution, paid-agent cost monitoring, and the bot-versus-agent competition. It does not certify live trading.
+This runbook covers daily Portfolio OS operation, guarded paper execution, local/OpenRouter intelligence routing, incident response, and the bot-versus-agent competition. It does **not** certify live trading.
 
-## 1. Local prerequisites
+Deployment, backup, and rollback procedures are maintained in [`DEPLOYMENT_ROLLBACK_RUNBOOK.md`](./DEPLOYMENT_ROLLBACK_RUNBOOK.md). Release gates are defined in [`RELEASE_READINESS_MATRIX.md`](./RELEASE_READINESS_MATRIX.md).
+
+## 1. Prerequisites
 
 - Node.js 22
-- pnpm 9.12.3
+- npm 10
 - Python 3.12
-- Linux recommended for `flock`-based writer safety
-- PostgreSQL only when running the Postgres-backed operator store
+- PostgreSQL 17 for the production-paper store
+- Docker Engine and Compose for the canonical deployment
+- one or more OpenAI-compatible local inference endpoints when local inference is required
 
-Install:
+Install from the committed locks:
 
 ```bash
-pnpm install
+npm ci --ignore-scripts
 python -m pip install --upgrade pip
 python -m pip install -r deploy/requirements.venv-lock.txt
 ```
@@ -21,420 +24,404 @@ python -m pip install -r deploy/requirements.venv-lock.txt
 ## 2. Validate before starting
 
 ```bash
-pnpm runtime-artifacts:validate
-pnpm test
-pnpm build
+npm test
+npm run build
+npm run operational:validate
+npm run runtime-artifacts:validate
 ```
 
-The runtime-artifact check must pass before trusting the working tree. Generated ledgers, health snapshots, state, and backups must remain outside source control.
+For a real PostgreSQL target:
 
-## 3. Start local mock/paper mode
+```bash
+DATABASE_URL=<database-url> npm run migrations:up
+DATABASE_URL=<database-url> npm run test:integration:postgres
+```
+
+Generated ledgers, state, health snapshots, reports, and backups must remain outside source control.
+
+## 3. Local mock mode
 
 ```bash
 MODE=mock \
 OPERATOR_AUTH_REQUIRED=false \
-pnpm api
+npm run api
 ```
 
-Open:
+Open `http://localhost:3000/`.
 
-```text
-http://localhost:3000/
-```
+Mock mode is suitable for UI and workflow development only. It is not production-paper certification.
 
-Default local state:
+## 4. Authenticated browser session
 
-```text
-data/operator-state.json
-```
+Production-paper mode requires bearer authentication and CSRF protection. The shipped UI includes a same-origin operator-session control.
 
-The web UI and API are served by `apps/api/src/server.p1.mjs`.
+Enter:
 
-## 4. Start with local authentication
+- an admin/operator bearer token;
+- the CSRF token for mutating requests.
 
-```bash
-MODE=mock \
-OPERATOR_AUTH_REQUIRED=true \
-OPERATOR_AUTH_TOKEN='replace-with-a-strong-token' \
-pnpm api
-```
+The browser keeps both values only in the current tab's `sessionStorage`. Closing the tab clears them. The UI must never receive or store `OPENROUTER_API_KEY`.
+
+Available API roles:
+
+- `OPERATOR_ADMIN_TOKEN`: full operator access;
+- `OPERATOR_AUTH_TOKEN`: admin-compatible operator token;
+- `OPERATOR_PAPER_TOKEN`: read access plus explicitly allowed paper workflows;
+- `OPERATOR_READONLY_TOKEN`: GET/HEAD/OPTIONS only.
 
 Direct API example:
 
 ```bash
 curl \
-  -H 'Authorization: Bearer replace-with-a-strong-token' \
+  -H 'Authorization: Bearer <operator-token>' \
   http://localhost:3000/api/operator/summary
 ```
 
-Available roles:
-
-- `OPERATOR_ADMIN_TOKEN`: full operator access.
-- `OPERATOR_AUTH_TOKEN`: admin-compatible operator token.
-- `OPERATOR_PAPER_TOKEN`: read access plus approved paper workflows.
-- `OPERATOR_READONLY_TOKEN`: GET/HEAD/OPTIONS only.
-
-The static browser UI needs an authenticated same-origin session or a trusted local proxy that adds the bearer token when auth is enabled.
-
-## 5. Start Postgres-backed mode
-
-Start PostgreSQL:
+Mutating request example:
 
 ```bash
-docker compose up -d postgres
+curl -X PUT http://localhost:3000/api/economics/intelligence/policy \
+  -H 'Authorization: Bearer <operator-token>' \
+  -H 'X-CSRF-Token: <csrf-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "mode":"local_only",
+    "remoteSpendCapUsdPerDay":2,
+    "remoteSpendCapUsdPerRequest":0.25,
+    "minimumRemoteValueCoverage":3,
+    "fallbackToLocalOnRemoteBlock":true
+  }'
 ```
 
-Apply migrations:
+## 5. PostgreSQL-backed development mode
+
+Apply migrations before starting the API:
 
 ```bash
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb \
-pnpm migrations:up
+npm run migrations:up
 ```
 
-Run the API:
+Start the API:
 
 ```bash
 MODE=mock \
 OPERATOR_STORE=postgres \
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb \
-pnpm api
+npm run api
 ```
 
-Run the opt-in integration smoke test:
+Run the real database proof:
 
 ```bash
-RUN_POSTGRES_INTEGRATION=true \
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arb \
-pnpm test:integration:postgres
+npm run test:integration:postgres
 ```
 
-## 6. First-minute operator checklist
+The test applies to a migrated database and verifies normalized execution persistence, process-boundary hydration, append-only events, and durable worker leases.
 
-Open **Today** and verify:
+## 6. First-minute checklist
 
-1. Connection is green and refresh time is recent.
-2. Trading mode is expected.
-3. Execution status is source-labelled and not unknown.
-4. Feed freshness is acceptable.
-5. Warning banners are understood.
-6. Open-position and active-execution counts are plausible.
-7. The attention queue contains no unexplained critical item.
-8. Competition is either valid or explicitly blocked.
+Open **Today** and confirm:
 
-Do not interpret a missing value as zero.
+1. the operator session is authenticated;
+2. connection and refresh indicators are current;
+3. mode is paper, not live;
+4. storage is PostgreSQL for production-paper operation;
+5. feed and market evidence are fresh;
+6. open-position and active-execution counts are plausible;
+7. no unexplained critical item appears in the attention queue;
+8. competition ranking is either valid or explicitly blocked;
+9. the economic worker container heartbeat is healthy;
+10. the intelligence-routing card matches the intended deployment capability and policy.
 
-## 7. Normal daily workflow
+Never interpret a missing value as zero.
+
+## 7. Daily operating workflow
 
 ### Today
 
-Use the default page to identify what changed and what needs attention.
-
 Review:
 
-- system brief;
-- safety strip;
+- system brief and safety strip;
 - open positions;
-- active or failed executions;
+- active, failed, or unsettled executions;
 - paid-agent epoch cost;
-- competition standing;
+- competition validity and standing;
 - signal-to-settlement funnel;
-- recent activity.
+- recent activity and warnings.
 
 ### Execution
 
-Filter active or failed records. Expand each execution and verify:
+For every active or failed record verify:
 
 - owner and strategy;
-- decision/approval/submission/fill/settlement stages;
-- order and fill counts;
-- entry/target/stop evidence;
+- opportunity and economic-decision lineage;
+- model quote and actual-cost state when paid intelligence was used;
+- approval, submission, order, fill, and settlement stages;
+- idempotency keys and version conflicts;
 - error or rejection reason;
-- event history.
+- append-only event history.
 
-Before retrying a failed execution, confirm that a duplicate order did not fill or settle elsewhere.
+Do not retry a failed execution until venue state and the normalized database agree that no order filled.
 
 ### Positions
 
-Review operator-store positions and quote enrichment. Missing cost basis or mark remains unavailable.
-
-Compare the operator row count with the separate competition-book position count. They are different sources and are not automatically reconciled.
+Compare operator-store positions with the separate competition books. These are different sources and must not be assumed reconciled. Missing cost basis or mark remains unavailable.
 
 ### Decisions
 
-Review opportunities before execution:
+Review:
 
 - recommendation and confidence;
-- rationale;
+- evidence freshness;
 - gross expected value;
-- agent/model cost;
-- net expected value;
-- approval state.
+- execution, model, and uncertainty costs;
+- net executable edge;
+- intelligence-purchase decision;
+- post-reconciliation trade decision.
 
-A positive expected value is not realized P&L.
+A pre-call model decision never authorizes a trade.
 
 ### Competition
 
-Review ranking validity before the leader. Confirm:
+Before relying on the leader confirm:
 
-- shared epoch exists;
-- books and snapshot are fresh;
-- agent accounting version is 2;
-- both books are marked and comparable;
-- agent operating cost is included.
-
-### Agent
-
-Review cost coverage, break-even gap, daily budget, pending approvals, and promotion evidence.
+- a shared epoch exists;
+- both books and the snapshot are fresh;
+- agent accounting version is current;
+- open positions are marked;
+- agent operating cost is included;
+- `valid_for_ranking` is true.
 
 ### Risk & System
 
-Review source-labelled health and any unresolved warnings. Restore authoritative evidence rather than substituting local estimates.
+Review source-labelled readiness, PostgreSQL migrations, worker heartbeat, audit integrity, local fleet health, remote capability, and all unresolved warnings.
 
-## 8. Start a fair competition epoch
+## 8. Intelligence routing
 
-Starting a new epoch archives/resets the active Hermes competition ledger. Stop both trading writers first.
+The Economics view exposes three persisted policies.
 
-### Preconditions
+### Local fleet only
 
-1. Stop EventTrader.
-2. Stop the Hermes agent.
-3. Confirm the bot paper state exists and is fresh.
-4. Close all bot positions.
-5. Confirm `data/agent_cost_ledger.json` is readable.
-6. Back up any additional operator artifacts needed outside the managed archives.
+- blocks every remote quote and provider call;
+- uses configured LM Studio/llama.cpp nodes;
+- remains the fail-closed default even when OpenRouter credentials exist.
 
-### Start
+### Economic auto-selection
+
+- compares a remote quote only when remote execution is enabled at deployment;
+- requires quantified or sufficiently observed expected decision improvement;
+- enforces per-request and daily spend caps;
+- enforces the minimum value-coverage multiple;
+- falls back to a healthy local route when the remote comparison is blocked and fallback is enabled.
+
+### OpenRouter eligible
+
+- allows an explicit remote request within hard caps;
+- still requires a valid intelligence-purchase decision;
+- still requires provider usage reconciliation;
+- still requires a new post-reconciliation decision before paper execution.
+
+Remote inference requires both:
+
+```text
+REMOTE_LLM_EXECUTION_ENABLED=true
+OPENROUTER_API_KEY=<host-managed-secret>
+```
+
+The UI policy cannot override those deployment controls.
+
+Before enabling OpenRouter:
+
+1. independently confirm account credit and provider status;
+2. keep a healthy local fallback;
+3. begin with a small daily and per-request cap;
+4. ensure unresolved `usage_pending` rows are zero or understood;
+5. run one bounded paper-only request;
+6. verify provider-reported actual cost;
+7. verify the estimate-based decision is superseded;
+8. create a fresh post-reconciliation decision.
+
+Disable remote inference when cost cannot be reconciled, credentials may be compromised, retries become repetitive, or actual cost exceeds policy.
+
+## 9. Worker health and maintenance
+
+The economic worker writes an atomic heartbeat to `ECONOMIC_WORKER_HEALTH_FILE`. Compose marks it unhealthy when:
+
+- the heartbeat is stale;
+- the last run failed;
+- the process is stopping.
+
+Inspect locally:
+
+```bash
+npm run economics:health
+```
+
+Inspect in Compose:
+
+```bash
+docker compose --env-file /secure/path/portfolio.env \
+  -f docker-compose.production.yml ps
+```
+
+A degraded maintenance cycle may remain process-healthy while exposing warnings. A thrown run failure must make process health false.
+
+## 10. Fair competition epoch
+
+Starting a new epoch archives and resets the active Hermes competition ledger. Stop both trading writers first.
+
+Preconditions:
+
+1. stop EventTrader;
+2. stop the Hermes agent;
+3. confirm the bot paper state exists and is fresh;
+4. close all bot positions;
+5. confirm the paid-agent cost ledger is readable;
+6. back up additional operator artifacts outside the repository.
+
+Start:
 
 ```bash
 python scripts/start_competition_epoch.py --yes
-```
-
-The command refuses to run when:
-
-- the EventTrader writer lock is held;
-- the bot state is stale, missing, or invalid;
-- the bot has open positions;
-- bot equity is unavailable;
-- the paid-agent cost baseline is unavailable.
-
-It writes:
-
-```text
-data/competition_epoch.json
-```
-
-It archives prior files under:
-
-```text
-data/legacy_agent_ledgers/
-data/competition_epochs/
-```
-
-Generate the first post-reset snapshot:
-
-```bash
 python scripts/competition_scoreboard.py --print-json
 ```
 
-The snapshot is written to:
+Do not restart writers until both commands complete successfully.
 
-```text
-data/competition_state.json
-```
-
-Restart the bot and agent only after the epoch command completes successfully.
-
-## 9. Competition verification commands
-
-Print the current normalized scorecard:
-
-```bash
-python scripts/competition_scoreboard.py --print-json
-```
-
-Inspect the API form:
-
-```bash
-curl http://localhost:3000/api/competition
-```
-
-A valid response must show:
-
-```json
-{
-  "standings": {
-    "valid_for_ranking": true
-  }
-}
-```
-
-When `valid_for_ranking` is false, use the response `warnings` array. Do not manually edit the snapshot to clear a warning.
-
-## 10. API smoke checks
+## 11. Core smoke checks
 
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
 curl http://localhost:3000/ready/production-paper
-curl http://localhost:3000/api/system-truth
-curl http://localhost:3000/api/competition
-curl http://localhost:3000/api/positions
-curl http://localhost:3000/api/executions
-curl http://localhost:3000/api/execution/events
-curl http://localhost:3000/api/opportunities
-curl http://localhost:3000/api/activity-feed
-curl http://localhost:3000/api/agents/costs
-curl http://localhost:3000/api/market-data/live-quotes
+curl http://localhost:3000/metrics.prom
 ```
 
-With authentication enabled, add:
+Authenticated probes:
 
 ```bash
--H 'Authorization: Bearer replace-with-a-strong-token'
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/system-truth
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/competition
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/positions
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/executions
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/execution/events
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/opportunities
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/agents/costs
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/economics/intelligence/nodes
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/economics/intelligence/policy
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/audit/verify
 ```
 
-## 11. Guarded opportunity and research workflow
-
-Request an explicit paid-research budget:
+Run the complete deployed smoke:
 
 ```bash
-curl -X POST http://localhost:3000/api/agents/budget-approvals \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "agentId":"market-research-agent",
-    "marketScope":"BTC-USD",
-    "projectedCost":5,
-    "projectedTokens":25000,
-    "requestedBy":"operator",
-    "reason":"Bounded follow-up research for an existing opportunity"
-  }'
+PORTFOLIO_BASE_URL=http://127.0.0.1:3000 \
+OPERATOR_ADMIN_TOKEN=<operator-token> \
+npm run smoke:production-paper
 ```
 
-Approve using the returned ID:
+## 12. Budgeted research workflow
 
-```bash
-curl -X POST http://localhost:3000/api/agents/budget-approvals/<id>/decision \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "status":"approved",
-    "reviewer":"operator",
-    "approvedCostLimit":5,
-    "approvedTokenLimit":25000,
-    "reason":"Bounded research approved"
-  }'
-```
+Paid requests must remain linked to an opportunity, expected-value hypothesis, budget, model quote, pricing snapshot, and economic decision.
 
-Paid requests should remain linked to an opportunity, expected-value hypothesis, budget, and lineage record.
+Request and approve a budget through the UI or guarded API. Budget approval alone does not make an uneconomic model call or trade executable.
 
-## 12. Guarded paper execution workflow
+A remote research job must inherit locality, provider, model, quote, and decision from the selected remote quote; omission must not silently convert it back to local.
 
-Create or select an approved opportunity/strategy through the operator API, then create an execution plan and submit it only through the guarded paper path.
+## 13. Guarded paper execution
+
+Create or select an approved opportunity and strategy, then use only the guarded paper path.
+
+Before approval verify:
+
+- evidence is fresh;
+- actual model usage is reconciled;
+- the economic decision is newer than reconciliation;
+- execution cost and forecast remain valid;
+- normalized execution lineage is complete;
+- the kill switch is not active.
 
 Inspect:
 
 ```bash
-curl http://localhost:3000/api/executions
-curl http://localhost:3000/api/execution/events
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/executions
+curl -H 'Authorization: Bearer <operator-token>' http://localhost:3000/api/execution/events
 ```
 
-The UI is the preferred lifecycle view because it groups records, orders, fills, and events by execution ID.
+## 14. Safety controls
 
-## 13. Safety checks
-
-### Confirm live execution remains blocked
+Stop all paper sessions:
 
 ```bash
-curl -X POST http://localhost:3000/api/execution/live/orders \
-  -H 'Content-Type: application/json' \
-  -d '{"side":"buy"}'
+curl -X POST http://localhost:3000/api/kill-switch/stop-paper \
+  -H 'Authorization: Bearer <operator-token>' \
+  -H 'X-CSRF-Token: <csrf-token>'
 ```
 
-Expected:
+Confirm live execution remains rejected. The canonical environment must keep:
 
-```json
-{
-  "ok": false,
-  "error": "live_execution_disabled"
-}
+```text
+LIVE_TRADING=false
+LIVE_TRADING_ENABLED=false
+COINBASE_DRY_RUN=true
+ALLOW_POLYMARKET_ORDER_SUBMISSION=false
+ALLOW_LIVE_SETTLEMENT_REDEMPTION=false
 ```
 
-### Verify audit integrity
+## 15. Incident response
 
-```bash
-curl http://localhost:3000/api/audit/verify
-```
+### API or readiness failure
 
-### Verify source control hygiene
+- stop new actions;
+- activate the paper kill switch when available;
+- inspect `/ready/production-paper` blockers and logs;
+- verify PostgreSQL and migrations;
+- restart the API once;
+- roll back when durable state or policy does not hydrate correctly.
 
-```bash
-pnpm runtime-artifacts:validate
-```
+### Worker heartbeat failure
 
-## 14. Incident response
+- deny new paid-research approvals;
+- inspect health JSON, logs, and `runtime_jobs`;
+- confirm leases recover without duplicate execution;
+- restart once;
+- roll back when health remains stale or jobs duplicate.
 
-### Failed or rejected execution
+### Local fleet outage
 
-1. Open **Execution** and filter `Failed / rejected`.
-2. Expand the newest record.
-3. Determine the last completed lifecycle stage.
-4. Read error/rejection evidence and event history.
-5. Check for duplicate or partially filled venue orders.
-6. Review the kill switch and System Truth.
-7. Retry only after the failure mode is understood.
+- keep the policy local-only unless remote use was deliberately deployed and budgeted;
+- verify DNS, endpoint health, exact model ID, context, and concurrency;
+- never silently substitute another model;
+- pause research when no approved healthy route exists.
 
-### Stale System Truth
+### OpenRouter outage or cap exhaustion
 
-1. Open **Risk & System**.
-2. Identify the stale source.
-3. Restore the health/feed publisher.
-4. Wait for a fresh snapshot.
-5. Do not copy operator-store values into the health snapshot manually.
+- switch to local-only or retain economic-auto with local fallback;
+- do not raise caps to clear the incident;
+- review committed cost, actual cost, and `usage_pending`;
+- retry only after provider status and credits are independently confirmed.
 
-### Competition ranking blocked
+### Unreconciled `usage_pending`
 
-1. Read `/api/competition` warnings.
-2. Confirm `data/competition_epoch.json` exists.
-3. Confirm agent and bot state are fresh.
-4. Confirm all open positions have marks.
-5. Confirm agent ledger accounting version 2 and ranking eligibility.
-6. Republish the scoreboard.
+- block dependent paid execution decisions;
+- preserve provider request/generation IDs;
+- retry reconciliation idempotently;
+- never create a second cost row or billable provider call for the same reservation.
 
-### Paid-agent cost spike
+### Duplicate execution suspected
 
-1. Pause or deny new budget approvals.
-2. Review `/api/agents/costs` and recent opportunities.
-3. Verify each cost row has a decision/market purpose.
-4. Compare gross P&L and cost coverage.
-5. Do not increase trading risk merely to chase cost break-even.
-
-## 15. Recovery controls
-
-Stop all operator paper sessions:
-
-```bash
-curl -X POST http://localhost:3000/api/kill-switch/stop-paper
-```
-
-Enable global kill switch:
-
-```bash
-curl -X POST http://localhost:3000/api/kill-switch \
-  -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"reason":"operator_incident"}'
-```
-
-Disable only after the incident is resolved:
-
-```bash
-curl -X POST http://localhost:3000/api/kill-switch \
-  -H 'Content-Type: application/json' \
-  -d '{"enabled":false,"reason":"operator_incident_resolved"}'
-```
+- activate the paper kill switch;
+- compare normalized execution, order, fill, and event records with the venue;
+- inspect every idempotency key;
+- do not retry until the authoritative state is known.
 
 ## 16. Shutdown
 
-1. Stop the Hermes and EventTrader processes through their supervisor.
-2. Stop the Node API.
-3. Preserve runtime state locally.
-4. Run `pnpm runtime-artifacts:validate` before committing repository changes.
-5. Never add runtime ledgers or backups to Git.
+1. stop Hermes and EventTrader through their supervisor;
+2. stop the economic worker and verify lease release/recovery;
+3. stop the API;
+4. preserve runtime state and logs outside source control;
+5. run `npm run runtime-artifacts:validate` before committing;
+6. never add runtime ledgers or backups to Git.
