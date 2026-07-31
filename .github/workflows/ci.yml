@@ -145,7 +145,7 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
-    - name: Run merge-critical Python tests
+    - name: Run merge-critical Python and execution-risk tests
       run: |
         python -m pytest \
           tests/test_competition_scoreboard.py \
@@ -154,6 +154,9 @@ jobs:
           tests/test_hermes_agent_trader_controls.py \
           tests/test_start_competition_epoch.py \
           tests/test_rebalance_engine.py \
+          trading_system/tests/unit/test_risk_engine.py \
+          trading_system/tests/unit/test_onchain_path_analyzer.py \
+          trading_system/tests/unit/test_chain_adapters.py \
           --import-mode=importlib \
           -q
 
