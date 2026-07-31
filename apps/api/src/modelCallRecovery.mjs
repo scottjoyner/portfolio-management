@@ -32,28 +32,47 @@ function linkedCost(state, quote, job) {
   return state.agentCostLedger?.find(row => row.modelQuoteId === quote.id || (job && row.jobId === job.id)) || null;
 }
 
-function failQuote(state, quote, now, reason) {
+function recoverQuote(state, quote, now, reason) {
   const job = linkedJob(state, quote);
   const cost = linkedCost(state, quote, job);
-  quote.status = 'failed';
-  quote.failureReason = reason;
+  const remote = quote.localOrRemote === 'remote';
+  const recoveryReason = remote ? 'remote_provider_outcome_uncertain_reconciliation_required' : reason;
+
+  quote.status = remote ? 'usage_pending' : 'failed';
+  quote.failureReason = recoveryReason;
   quote.recoveredAt = now;
   quote.completedAt = now;
-  quote.retryable = true;
-  quote.requiresRequote = quote.localOrRemote === 'local';
+  quote.retryable = !remote;
+  quote.requiresRequote = !remote;
+  quote.requiresManualReconciliation = remote;
+  quote.uncertainProviderOutcome = remote;
+
   if (job && job.status === 'running') {
     job.status = 'failed';
-    job.failureReason = reason;
+    job.failureReason = recoveryReason;
     job.recoveredAt = now;
     job.completedAt = now;
-    job.retryable = true;
-    job.requiresRequote = quote.localOrRemote === 'local';
+    job.retryable = !remote;
+    job.requiresRequote = !remote;
+    job.requiresManualReconciliation = remote;
+    job.uncertainProviderOutcome = remote;
   }
   if (cost) {
-    cost.recoveryStatus = 'failed_before_cost_reconciliation';
+    cost.recoveryStatus = remote
+      ? 'usage_pending_manual_reconciliation_required'
+      : 'failed_before_cost_reconciliation';
     cost.recoveredAt = now;
+    cost.requiresManualReconciliation = remote;
   }
-  return { quoteId: quote.id, jobId: job?.id || null, localOrRemote: quote.localOrRemote, requiresRequote: quote.requiresRequote };
+  return {
+    quoteId: quote.id,
+    jobId: job?.id || null,
+    localOrRemote: quote.localOrRemote,
+    status: quote.status,
+    retryable: quote.retryable,
+    requiresRequote: quote.requiresRequote,
+    requiresManualReconciliation: quote.requiresManualReconciliation,
+  };
 }
 
 export function recoverStaleModelCalls(state, options = {}) {
@@ -70,20 +89,30 @@ export function recoverStaleModelCalls(state, options = {}) {
 
   for (const quote of state.modelUsageLedger) {
     if (quote.status !== 'running' || ageSeconds(quote, now) <= staleSeconds) continue;
-    recoveredQuotes.push(failQuote(state, quote, now, reason));
+    recoveredQuotes.push(recoverQuote(state, quote, now, reason));
   }
 
   for (const job of state.researchJobs) {
     if (job.status !== 'running' || ageSeconds(job, now) <= staleSeconds) continue;
     const quote = state.modelUsageLedger.find(row => row.id === job.modelQuoteId || row.researchJobId === job.id);
     if (quote && quote.status !== 'running') continue;
+    const remote = job.localOrRemote === 'remote';
     job.status = 'failed';
-    job.failureReason = reason;
+    job.failureReason = remote ? 'remote_provider_outcome_uncertain_reconciliation_required' : reason;
     job.recoveredAt = now;
     job.completedAt = now;
-    job.retryable = true;
-    job.requiresRequote = job.localOrRemote === 'local';
-    recoveredJobs.push({ jobId: job.id, modelQuoteId: job.modelQuoteId || null, localOrRemote: job.localOrRemote, requiresRequote: job.requiresRequote });
+    job.retryable = !remote;
+    job.requiresRequote = !remote;
+    job.requiresManualReconciliation = remote;
+    job.uncertainProviderOutcome = remote;
+    recoveredJobs.push({
+      jobId: job.id,
+      modelQuoteId: job.modelQuoteId || null,
+      localOrRemote: job.localOrRemote,
+      retryable: job.retryable,
+      requiresRequote: job.requiresRequote,
+      requiresManualReconciliation: job.requiresManualReconciliation,
+    });
   }
 
   const report = {
