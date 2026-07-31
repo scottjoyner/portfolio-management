@@ -132,4 +132,4 @@ test('research job inherits the selected quote route when locality is omitted', 
   assert.equal(result.data.job.localOrRemote, 'remote');
   assert.equal(result.data.job.provider, 'openrouter');
   assert.equal(result.data.job.model, 'example/value-model');
-}
+});
