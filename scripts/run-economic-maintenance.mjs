@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { hostname } from 'node:os';
+import { dirname } from 'node:path';
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs';
 
 import { createOperatorStore } from '../packages/storage/src/operatorStoreFactory.mjs';
 import {
@@ -30,10 +32,48 @@ const intervalMs = Math.max(10000, Number(process.env.ECONOMIC_MAINTENANCE_INTER
 const leaseSeconds = Math.max(60, Number(process.env.ECONOMIC_JOB_LEASE_SECONDS || 300));
 const retryDelaySeconds = Math.max(5, Number(process.env.ECONOMIC_JOB_RETRY_SECONDS || 60));
 const workerId = process.env.ECONOMIC_WORKER_ID || `${hostname()}:${process.pid}`;
+const healthFile = process.env.ECONOMIC_WORKER_HEALTH_FILE || '/tmp/economic-worker-health.json';
 const store = createOperatorStore();
 let stopping = false;
 let activeRun = null;
 let timer = null;
+
+function healthSummary(result = {}) {
+  return {
+    ok: result.ok !== false,
+    skipped: result.skipped === true,
+    reason: result.reason || null,
+    runtimeJobId: result.runtimeJob?.id || null,
+    runtimeJobStatus: result.runtimeJob?.status || null,
+    warningCount: Array.isArray(result.warnings) ? result.warnings.length : 0,
+  };
+}
+
+function writeHealth(update = {}) {
+  const payload = {
+    worker: 'economic-maintenance',
+    workerId,
+    pid: process.pid,
+    intervalMs,
+    leaseSeconds,
+    updatedAt: new Date().toISOString(),
+    ...update,
+  };
+  try {
+    mkdirSync(dirname(healthFile), { recursive: true });
+    const temporary = `${healthFile}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, healthFile);
+  } catch (error) {
+    process.stderr.write(`${JSON.stringify({
+      ok: false,
+      warning: 'economic_worker_health_write_failed',
+      healthFile,
+      error: String(error?.message || error),
+      at: new Date().toISOString(),
+    })}\n`);
+  }
+}
 
 function maintenanceJobKey(now = new Date()) {
   const bucket = Math.floor(now.getTime() / intervalMs);
@@ -190,20 +230,48 @@ async function runFallback() {
 
 async function run() {
   if (activeRun) return { ok: false, skipped: true, reason: 'economic_maintenance_already_running', workerId };
+  const startedAt = new Date().toISOString();
+  writeHealth({
+    processHealthy: true,
+    status: 'running',
+    lastAttemptAt: startedAt,
+    lastCompletedAt: null,
+    lastRunOutcome: 'running',
+  });
   activeRun = (async () => {
     try {
       const result = store.runtimeJobs ? await runLeased() : await runFallback();
+      const completedAt = new Date().toISOString();
+      writeHealth({
+        processHealthy: true,
+        status: 'idle',
+        lastAttemptAt: startedAt,
+        lastCompletedAt: completedAt,
+        lastRunOutcome: result.ok === false ? 'degraded' : result.skipped ? 'skipped' : 'ok',
+        lastResult: healthSummary(result),
+      });
       print(result);
       return result;
     } catch (error) {
+      const failedAt = new Date().toISOString();
       const failure = {
         ok: false,
         worker: 'economic-maintenance',
         workerId,
         error: String(error?.message || error),
         runtimeJob: error.runtimeJob || null,
-        at: new Date().toISOString(),
+        at: failedAt,
       };
+      writeHealth({
+        processHealthy: false,
+        status: 'error',
+        lastAttemptAt: startedAt,
+        lastCompletedAt: failedAt,
+        lastFailureAt: failedAt,
+        lastRunOutcome: 'failed',
+        lastError: failure.error,
+        lastResult: healthSummary(failure),
+      });
       print(failure);
       if (once) process.exitCode = 1;
       return failure;
@@ -218,6 +286,13 @@ async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
   if (timer) clearInterval(timer);
+  writeHealth({
+    processHealthy: true,
+    status: 'stopping',
+    stoppingSignal: signal,
+    lastCompletedAt: new Date().toISOString(),
+    lastRunOutcome: 'stopping',
+  });
   print({ worker: 'economic-maintenance', workerId, status: 'stopping', signal, at: new Date().toISOString() });
   if (activeRun) {
     await Promise.race([
@@ -227,6 +302,14 @@ async function shutdown(signal) {
   }
   await store.close?.().catch(() => {});
 }
+
+writeHealth({
+  processHealthy: true,
+  status: 'starting',
+  startedAt: new Date().toISOString(),
+  lastCompletedAt: new Date().toISOString(),
+  lastRunOutcome: 'starting',
+});
 
 process.on('SIGINT', () => { shutdown('SIGINT').finally(() => process.exit(0)); });
 process.on('SIGTERM', () => { shutdown('SIGTERM').finally(() => process.exit(0)); });
