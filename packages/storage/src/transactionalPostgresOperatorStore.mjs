@@ -109,12 +109,18 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     if (isTransactionControl(sql)) {
       return { rows: [], rowCount: 0, command: command(sql), nestedTransactionControlSuppressed: true };
     }
-    try {
-      return await transaction.client.query(sql, params);
-    } catch (error) {
-      this.lastError = error;
-      throw error;
-    }
+
+    const execute = async () => {
+      try {
+        return await transaction.client.query(sql, params);
+      } catch (error) {
+        this.lastError = error;
+        throw error;
+      }
+    };
+    const pending = (transaction.queryTail || Promise.resolve()).then(execute);
+    transaction.queryTail = pending.catch(() => {});
+    return pending;
   }
 
   async withTransaction(operation, options = {}) {
@@ -131,16 +137,19 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       startedAt: new Date().toISOString(),
       isolation,
       writeLockKey: lockWrites ? this.operatorWriteLockKey : null,
+      queryTail: Promise.resolve(),
     };
 
     try {
       await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
       if (lockWrites) await client.query('SELECT pg_advisory_xact_lock($1)', [this.operatorWriteLockKey]);
       const result = await this.transactionContext.run(context, () => operation(client, context));
+      await context.queryTail;
       await client.query('COMMIT');
       return result;
     } catch (error) {
       this.lastError = error;
+      await context.queryTail.catch(() => {});
       await client.query('ROLLBACK').catch(() => {});
       throw error;
     } finally {
@@ -321,6 +330,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       kind: 'postgres',
       implementation: this.implementation,
       transactionModel: 'pinned-client-serializable',
+      queryScheduling: 'pinned-client-serialized',
       mutationSerialization: 'postgres-advisory-xact-lock',
       operatorWriteLockKey: this.operatorWriteLockKey,
       runtimeJobQueue: 'lease-backed-postgres',
