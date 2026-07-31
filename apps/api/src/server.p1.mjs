@@ -19,6 +19,7 @@ const JSON_TYPE = 'application/json; charset=utf-8';
 const POLICY_ROUTE = '/api/economics/intelligence/policy';
 const MODEL_QUOTE_ROUTE = '/api/economics/model-quotes';
 const INTELLIGENCE_EXECUTE_ROUTE = '/api/economics/intelligence/execute';
+const POLICY_UI_ASSET = '<script type="module" src="/ui/intelligence-policy.js"></script>';
 
 export { createInitialState };
 
@@ -62,6 +63,12 @@ function jsonFrom(response, status, body) {
     headers: { ...(response.headers || {}), 'content-type': JSON_TYPE },
     body: JSON.stringify(body, null, 2),
   };
+}
+
+function withPolicyUiAsset(response, method, pathname) {
+  if (method !== 'GET' || !['/', '/ui/index.html'].includes(pathname) || response.status !== 200) return response;
+  if (!String(response.headers?.['content-type'] || '').includes('text/html') || response.body.includes(POLICY_UI_ASSET)) return response;
+  return { ...response, body: response.body.replace('</body>', `${POLICY_UI_ASSET}\n</body>`) };
 }
 
 function requestEnvironment(options = {}) {
@@ -287,7 +294,8 @@ export async function handleRequest(req, options = {}) {
     return legacyHandleRequest(replacementRequest(req, body), delegatedOptions);
   }
 
-  return legacyHandleRequest(req, delegatedOptions);
+  const out = await legacyHandleRequest(req, delegatedOptions);
+  return withPolicyUiAsset(out, method, url.pathname);
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
