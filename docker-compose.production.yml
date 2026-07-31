@@ -43,7 +43,11 @@ x-app-environment: &app-environment
   OPERATOR_TRANSACTION_ISOLATION: SERIALIZABLE
   OPERATOR_WRITE_LOCK_KEY: ${OPERATOR_WRITE_LOCK_KEY:-1347375700}
 
+x-remote-safety-default: &remote-safety-default
+  REMOTE_LLM_EXECUTION_ENABLED: "false"
+
 x-openrouter-environment: &openrouter-environment
+  <<: *remote-safety-default
   REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_APP_URL: ${OPENROUTER_APP_URL:-}
