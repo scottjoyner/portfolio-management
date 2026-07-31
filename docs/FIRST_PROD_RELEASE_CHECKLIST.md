@@ -15,6 +15,8 @@ Included:
 - local-first LM Studio/llama.cpp intelligence routing;
 - optional, explicitly gated OpenRouter execution;
 - a persisted UI policy for local-only, economic-auto, and OpenRouter-eligible routing;
+- at-most-once remote provider attempts with uncertain outcomes quarantined;
+- delayed generation-metadata reconciliation for known OpenRouter generations;
 - normalized optimistic execution records;
 - append-only execution events, durable orders, and durable fills;
 - compatibility synchronization and restart hydration for the paper execution engine;
@@ -99,7 +101,7 @@ DATABASE_URL=<database-url> npm run test:integration:postgres
 - Execution events are append-only and protected by a PostgreSQL trigger that rejects update or delete operations.
 - Migrations are checksum-protected and serialized by a PostgreSQL advisory lock.
 - Applying migrations a second time must be idempotent and preserve every checksum.
-- `TransactionalPostgresOperatorStore` uses one checked-out client, `SERIALIZABLE` isolation, and an advisory transaction lock.
+- `TransactionalPostgresOperatorStore` uses one checked-out client, `SERIALIZABLE` isolation, an advisory transaction lock, and serialized queries on the pinned client.
 - `/ready/production-paper` rejects PostgreSQL without migrations 005 and 006.
 - A real PostgreSQL test must persist an execution, close the store, open a fresh store, publish the durable read model, and hydrate a fresh execution engine.
 - The integration test must enqueue, claim, heartbeat, and complete a real `runtime_jobs` row.
@@ -149,6 +151,14 @@ OpenRouter has two independent controls:
 
 `REMOTE_LLM_EXECUTION_ENABLED=false` remains the canonical default. Remote execution is configurable, not fixed on. Every remote request remains subject to a per-request cap, daily cap, value-coverage policy when automatic, and the existing intelligence-purchase gate.
 
+Remote provider attempts are fail-closed and at-most-once under uncertainty:
+
+- a response-level HTTP failure that proves generation did not begin may restore the quote for a controlled retry;
+- a known generation ID with incomplete usage enters `usage_pending` and is reconciled through generation metadata without issuing another POST;
+- a transport-uncertain attempt without a generation ID enters manual reconciliation and cannot be retried automatically;
+- metadata reconciliation uses bounded exponential backoff and becomes explicit manual review after exhaustion;
+- every second execution attempt against a pending or consumed quote is rejected.
+
 ## Economic gates
 
 - A pre-call decision may authorize intelligence purchase but never trade execution.
@@ -166,7 +176,8 @@ OpenRouter has two independent controls:
 - Running jobs have an owner and expiring lease.
 - Workers heartbeat long jobs, recover expired leases, apply bounded retries, and dead-letter terminal failures.
 - Multiple economic worker instances cannot execute the same interval job.
-- The maintenance lease also runs stale model-call recovery.
+- The maintenance lease also runs stale model-call recovery and due OpenRouter usage reconciliation.
+- External generation metadata and market/provider requests complete before the serializable mutation begins.
 - A `running` model call older than `MODEL_CALL_STALE_SECONDS` fails closed.
 - Recovered local calls require a new node quote before retry; `usage_pending` records remain available for later billing reconciliation.
 - The worker writes an atomic process heartbeat; a stale heartbeat or failed run must make the Compose container unhealthy.
@@ -208,7 +219,7 @@ OpenRouter has two independent controls:
 - Application root filesystems are read-only and Linux capabilities are dropped.
 - Required secrets have no committed defaults.
 - `LIVE_TRADING=false`, `LIVE_TRADING_ENABLED=false`, `COINBASE_DRY_RUN=true`, `ALLOW_POLYMARKET_ORDER_SUBMISSION=false`, and `ALLOW_LIVE_SETTLEMENT_REDEMPTION=false` remain fixed.
-- Worker lease, retry, shutdown, stale-call, and heartbeat thresholds are explicitly passed into containers.
+- Worker lease, retry, shutdown, stale-call, reconciliation, and heartbeat thresholds are explicitly passed into containers.
 - CI and the deployment host must exercise `pg_dump` and `pg_restore` into a clean database.
 - A pre-deploy backup must exist outside the PostgreSQL data volume.
 - The prior image/digest and a tested restore target must be recorded before go-live.
@@ -241,7 +252,5 @@ OpenRouter has two independent controls:
 
 The PR remains draft until these are closed or safely removed from release scope:
 
-- provider-call idempotency that prevents a retry from issuing a second billable call;
-- delayed, idempotent `usage_pending` reconciliation retries;
 - remaining broad whole-state compatibility rewrites replaced by targeted optimistic PostgreSQL mutations;
 - deterministic bot replay for automatic paid-agent counterfactual attribution.
