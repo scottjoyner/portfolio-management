@@ -21,7 +21,7 @@ x-app-environment: &app-environment
   REQUIRE_MANUAL_APPROVAL: "true"
   REQUIRE_APPROVED_MARKET_PAIR: "true"
   REMOTE_LLM_EXECUTION_ENABLED: "false"
-  LOCAL_LLM_EXECUTION_REQUIRED: "true"
+  LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}
   LOCAL_LLM_ENDPOINTS: ${LOCAL_LLM_ENDPOINTS:-}
   LOCAL_LLM_NODES_JSON: ${LOCAL_LLM_NODES_JSON:-}
   LOCAL_LLM_API_KEY: ${LOCAL_LLM_API_KEY:-}
@@ -43,6 +43,12 @@ x-app-environment: &app-environment
   ECONOMIC_SHUTDOWN_GRACE_MS: ${ECONOMIC_SHUTDOWN_GRACE_MS:-30000}
   OPERATOR_TRANSACTION_ISOLATION: SERIALIZABLE
   OPERATOR_WRITE_LOCK_KEY: ${OPERATOR_WRITE_LOCK_KEY:-1347375700}
+
+x-openrouter-environment: &openrouter-environment
+  REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_APP_URL: ${OPENROUTER_APP_URL:-}
+  OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Portfolio OS}
 
 x-app-security: &app-security
   init: true
@@ -129,7 +135,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      <<: *app-environment
+      <<: [*app-environment, *openrouter-environment]
       PORT: "3000"
     command: ["pnpm", "api"]
     depends_on:
@@ -154,7 +160,7 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
-      <<: *app-environment
+      <<: [*app-environment, *openrouter-environment]
       ECONOMIC_WORKER_ID: ${ECONOMIC_WORKER_ID:-economic-worker-1}
     command: ["pnpm", "economics:worker"]
     depends_on:
