@@ -137,6 +137,20 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
+  async persistAuditChain(events = []) {
+    for (const event of events) {
+      if (!event?.id || !event.eventHash || !Number.isInteger(Number(event.sequenceNumber))) {
+        throw new Error(`audit_chain_persistence_metadata_missing:${event?.id || 'unknown'}`);
+      }
+      await this.query(
+        `UPDATE audit_events
+         SET previous_hash = $2, event_hash = $3, sequence_number = $4
+         WHERE id = $1`,
+        [event.id, event.previousHash || null, event.eventHash, Number(event.sequenceNumber)],
+      );
+    }
+  }
+
   async loadExecutionEventsForReadModel(limit = Number(process.env.EXECUTION_READ_MODEL_EVENT_LIMIT || 5000)) {
     const boundedLimit = Math.max(1, Math.min(50000, Math.floor(Number(limit) || 5000)));
     const result = await this.query(
@@ -161,6 +175,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
 
   async load() {
     const state = await super.load();
+    await this.withTransaction(() => this.persistAuditChain(state.audit || []));
     const events = await this.loadExecutionEventsForReadModel();
     this.state = state;
     this.publishExecutionReadModel(state, events);
@@ -176,6 +191,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     const state = normalizeOperatorState(nextState);
     return this.withTransaction(async () => {
       const saved = await super.save(state);
+      await this.persistAuditChain(saved.audit || []);
       await this.synchronizeExecutions(saved.executions || []);
       const events = await this.loadExecutionEventsForReadModel();
       this.state = saved;
@@ -188,11 +204,13 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     return this.withTransaction(async () => {
       const state = await super.load();
       const result = await mutator(state);
-      await super.save(state);
-      await this.synchronizeExecutions(state.executions || []);
+      const normalized = normalizeOperatorState(state);
+      await super.save(normalized);
+      await this.persistAuditChain(normalized.audit || []);
+      await this.synchronizeExecutions(normalized.executions || []);
       const events = await this.loadExecutionEventsForReadModel();
-      this.state = state;
-      this.publishExecutionReadModel(state, events);
+      this.state = normalized;
+      this.publishExecutionReadModel(normalized, events);
       return result;
     });
   }
