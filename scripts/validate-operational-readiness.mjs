@@ -7,10 +7,13 @@ const requiredFiles = [
   'Dockerfile',
   'docker-compose.production.yml',
   '.github/workflows/ci.yml',
+  'apps/api/src/intelligenceExecution.mjs',
+  'apps/api/src/openRouterUsageReconciliation.mjs',
   'scripts/ci-production-runtime-smoke.mjs',
   'scripts/smoke-production-paper.mjs',
   'scripts/check-economic-worker-health.mjs',
   'tests/integration/postgres-smoke.test.mjs',
+  'tests/openrouter-at-most-once.test.mjs',
   'tests/fixtures/openai-compatible-node.mjs',
   'docs/FIRST_PROD_RELEASE_CHECKLIST.md',
   'docs/OPERATOR_RUNBOOK_P0_P1.md',
@@ -30,10 +33,13 @@ const packageJson = read('package.json');
 const dockerfile = read('Dockerfile');
 const compose = read('docker-compose.production.yml');
 const workflow = read('.github/workflows/ci.yml');
+const intelligenceExecution = read('apps/api/src/intelligenceExecution.mjs');
+const openRouterReconciliation = read('apps/api/src/openRouterUsageReconciliation.mjs');
 const runtimeSmoke = read('scripts/ci-production-runtime-smoke.mjs');
 const productionSmoke = read('scripts/smoke-production-paper.mjs');
 const workerHealth = read('scripts/check-economic-worker-health.mjs');
 const postgresSmoke = read('tests/integration/postgres-smoke.test.mjs');
+const openRouterTests = read('tests/openrouter-at-most-once.test.mjs');
 const checklist = read('docs/FIRST_PROD_RELEASE_CHECKLIST.md');
 const operatorRunbook = read('docs/OPERATOR_RUNBOOK_P0_P1.md');
 const deploymentRunbook = read('docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md');
@@ -58,12 +64,18 @@ const checks = [
   [runtimeSmoke.includes('policyPersistedAcrossRestart') && runtimeSmoke.includes('localFleetAfterRestart'), 'production runtime smoke must prove policy and fleet behavior after restart'],
   [productionSmoke.includes('/ui/operator-session.js') && productionSmoke.includes('/api/economics/intelligence/policy'), 'deployed smoke must inspect browser session and routing policy surfaces'],
   [workerHealth.includes('economic_worker_heartbeat_stale') && workerHealth.includes('economic_worker_last_run_failed'), 'worker health must detect stale and failed scheduler state'],
+  [intelligenceExecution.includes('providerAttemptId') && intelligenceExecution.includes('model_usage_pending_reconciliation'), 'remote execution must reserve provider attempts and reject pending reuse'],
+  [intelligenceExecution.includes("providerOutcome === 'not_started'") && intelligenceExecution.includes("providerOutcome === 'uncertain'"), 'remote failures must distinguish safe retry from uncertain provider outcome'],
+  [openRouterReconciliation.includes('/api/v1/generation') && openRouterReconciliation.includes('retry_scheduled') && openRouterReconciliation.includes('exhausted'), 'known OpenRouter generations must use bounded delayed metadata reconciliation'],
+  [openRouterTests.includes('never posts twice') && openRouterTests.includes('transport-uncertain') && openRouterTests.includes('eventually require manual reconciliation'), 'remote provider tests must prove at-most-once and bounded reconciliation behavior'],
   [checklist.includes('postgres-integration') && checklist.includes('release-readiness'), 'release checklist must name the blocking CI evidence'],
+  [checklist.includes('at-most-once') && checklist.includes('generation metadata'), 'release checklist must document remote at-most-once and generation reconciliation gates'],
   [operatorRunbook.includes('sessionStorage') || deploymentRunbook.includes('sessionStorage'), 'operator documentation must explain same-tab browser credential handling'],
   [deploymentRunbook.includes('Stop conditions before deployment') && deploymentRunbook.includes('Rollback decision triggers'), 'deployment runbook must contain explicit stop and rollback conditions'],
   [deploymentRunbook.includes('Local fleet unavailable') && deploymentRunbook.includes('OpenRouter unavailable or spend cap exhausted'), 'deployment runbook must cover both inference outage modes'],
   [deploymentRunbook.includes('usage_pending') && deploymentRunbook.includes('Duplicate execution suspected'), 'deployment runbook must cover billing reconciliation and duplicate execution incidents'],
-  [readinessMatrix.includes('Open engineering blocker') && readinessMatrix.includes('Provider-call idempotency'), 'readiness matrix must preserve unresolved engineering blockers'],
+  [readinessMatrix.includes('Remote provider at-most-once') && readinessMatrix.includes('Delayed `usage_pending` reconciliation'), 'readiness matrix must record remote provider recovery as blocking automated evidence'],
+  [readinessMatrix.includes('Remaining whole-state rewrites') && readinessMatrix.includes('Deterministic paid-agent counterfactual replay'), 'readiness matrix must preserve the remaining engineering blockers'],
   [readinessMatrix.includes('Blocking — manual') && readinessMatrix.includes('Rollback rehearsal'), 'readiness matrix must preserve host-only certification gates'],
 ];
 for (const [ok, message] of checks) if (!ok) errors.push(message);
@@ -80,6 +92,8 @@ process.stdout.write(`${JSON.stringify({
   postgresEvidenceArtifact: 'postgres-readiness-<sha>',
   workerHeartbeatHealthcheck: true,
   browserAuthRestartSmoke: true,
+  remoteProviderAtMostOnce: true,
+  delayedUsageReconciliation: true,
   backupRestoreEvidence: true,
   rollbackRunbook: true,
   liveTradingCertified: false,
