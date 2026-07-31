@@ -156,6 +156,23 @@ async function markQuoteRoutingDecision(store, quoteId, decision, status = null)
   });
 }
 
+async function quoteAutomaticLocal(req, options, body, policy, details = {}) {
+  const localOut = await legacyHandleRequest(replacementRequest(req, {
+    ...body,
+    localOrRemote: 'local',
+    model: body.localModel || body.model,
+  }), options);
+  if (localOut.status >= 400) return localOut;
+  const localResponse = parsedBody(localOut);
+  localResponse.routingDecision = {
+    selected: 'local',
+    automatic: true,
+    policy,
+    ...details,
+  };
+  return jsonFrom(localOut, localOut.status, localResponse);
+}
+
 async function handleModelQuoteRequest(req, options, store) {
   const body = await readBody(req);
   const env = requestEnvironment(options);
@@ -164,18 +181,27 @@ async function handleModelQuoteRequest(req, options, store) {
   const automatic = body.localOrRemote === 'auto';
 
   if (automatic && (policy.mode === 'local_only' || (policy.mode === 'openrouter_allowed' && body.preferRemote !== true))) {
-    return legacyHandleRequest(replacementRequest(req, {
-      ...body,
-      localOrRemote: 'local',
-      model: body.localModel || body.model,
-    }), options);
+    return quoteAutomaticLocal(req, options, body, policy, {
+      reason: policy.mode === 'local_only' ? 'intelligence_policy_local_only' : 'remote_not_preferred',
+    });
   }
 
   const requested = automatic
     ? { ...body, localOrRemote: 'remote', model: body.remoteModel || body.model }
     : body;
   const out = await legacyHandleRequest(replacementRequest(req, requested), options);
-  if (out.status >= 400 || requested.localOrRemote === 'local') return out;
+  if (out.status >= 400) {
+    if (automatic && policy.fallbackToLocalOnRemoteBlock) {
+      const remoteFailure = parsedBody(out);
+      return quoteAutomaticLocal(req, options, body, policy, {
+        reason: 'remote_quote_unavailable',
+        remoteStatus: out.status,
+        remoteBlockers: remoteFailure.errors || [remoteFailure.error || 'remote_quote_unavailable'],
+      });
+    }
+    return out;
+  }
+  if (requested.localOrRemote === 'local') return out;
 
   const response = parsedBody(out);
   const quote = response.modelQuote;
@@ -196,22 +222,11 @@ async function handleModelQuoteRequest(req, options, store) {
 
   await markQuoteRoutingDecision(store, quote.id, decision, automatic ? 'comparison_only' : 'policy_blocked');
   if (automatic && policy.fallbackToLocalOnRemoteBlock) {
-    const localOut = await legacyHandleRequest(replacementRequest(req, {
-      ...body,
-      localOrRemote: 'local',
-      model: body.localModel || body.model,
-    }), options);
-    if (localOut.status < 400) {
-      const localResponse = parsedBody(localOut);
-      localResponse.routingDecision = {
-        selected: 'local',
-        automatic: true,
-        remoteComparisonQuoteId: quote.id,
-        remoteBlockers: decision.blockers,
-        policy: decision.policy,
-      };
-      return jsonFrom(localOut, localOut.status, localResponse);
-    }
+    return quoteAutomaticLocal(req, options, body, decision.policy, {
+      reason: 'remote_policy_blocked',
+      remoteComparisonQuoteId: quote.id,
+      remoteBlockers: decision.blockers,
+    });
   }
 
   return jsonFrom(out, 409, {
@@ -288,6 +303,15 @@ export async function handleRequest(req, options = {}) {
 
   if (researchMutation(url.pathname, method)) {
     const body = await readBody(req);
+    if (!body.localOrRemote && body.modelQuoteId) {
+      const state = await policyState(store);
+      const quote = state.modelUsageLedger?.find(row => row.id === body.modelQuoteId);
+      if (quote && ['local', 'remote'].includes(quote.localOrRemote)) {
+        body.localOrRemote = quote.localOrRemote;
+        body.provider ||= quote.provider;
+        body.model ||= quote.model;
+      }
+    }
     body.localOrRemote ||= 'local';
     body.status ||= 'queued';
     body.requestedAt ||= requestNow(options);
