@@ -2,7 +2,10 @@
 import { hostname } from 'node:os';
 
 import { createOperatorStore } from '../packages/storage/src/operatorStoreFactory.mjs';
-import { runEconomicMaintenance } from '../apps/api/src/economicMaintenance.mjs';
+import {
+  fetchOpenRouterCatalog,
+  runEconomicMaintenance,
+} from '../apps/api/src/economicMaintenance.mjs';
 import { recoverStaleModelCalls } from '../apps/api/src/modelCallRecovery.mjs';
 
 function hasFlag(name) {
@@ -15,6 +18,11 @@ function print(value) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function positive(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 const once = hasFlag('--once');
@@ -32,14 +40,89 @@ function maintenanceJobKey(now = new Date()) {
   return `economic-maintenance:${bucket}`;
 }
 
+function pricingCatalogIsStale(state, now = new Date()) {
+  const snapshots = Array.isArray(state?.modelPricingSnapshots) ? state.modelPricingSnapshots : [];
+  const latest = [...snapshots].sort((a, b) => new Date(b.fetchedAt || 0) - new Date(a.fetchedAt || 0))[0];
+  if (!latest) return true;
+  const maximumAgeSeconds = positive(
+    process.env.ECONOMIC_PRICING_REFRESH_SECONDS,
+    positive(state?.config?.economicPricingRefreshSeconds, 21600),
+  );
+  return now.getTime() - new Date(latest.fetchedAt || 0).getTime() > maximumAgeSeconds * 1000;
+}
+
+async function fetchMarketQuotes() {
+  const { fetchQuotes } = await import('../packages/execution/src/paperSweeper.mjs');
+  return fetchQuotes();
+}
+
+async function prepareMaintenanceInputs(stateSnapshot, now = new Date()) {
+  const warnings = [];
+  let catalog = { data: [] };
+  let quotes = {};
+
+  if (pricingCatalogIsStale(stateSnapshot, now)) {
+    try {
+      catalog = await fetchOpenRouterCatalog(process.env, globalThis.fetch);
+    } catch (error) {
+      warnings.push(`pricing_refresh_failed:${String(error?.message || error)}`);
+    }
+  }
+
+  try {
+    quotes = await fetchMarketQuotes();
+  } catch (error) {
+    warnings.push(`market_quote_refresh_failed:${String(error?.message || error)}`);
+  }
+
+  return {
+    catalog,
+    quotes,
+    warnings,
+    preparedAt: new Date().toISOString(),
+  };
+}
+
+function mergePreparationWarnings(state, maintenance, warnings = []) {
+  if (!warnings.length) return maintenance;
+  maintenance.warnings = [...new Set([...(maintenance.warnings || []), ...warnings])];
+  maintenance.ok = false;
+  state.economicMaintenance = {
+    ...(state.economicMaintenance || {}),
+    status: 'degraded',
+    warnings: maintenance.warnings,
+  };
+  const audit = state.audit?.at?.(-1);
+  if (audit?.action === 'economic_maintenance_completed') {
+    audit.details = 'degraded';
+    audit.payload = state.economicMaintenance.counters || audit.payload;
+  }
+  return maintenance;
+}
+
 async function executeMaintenance() {
+  // External provider and market-data calls are deliberately completed before
+  // entering the serializable mutation. The mutation holds a transaction-scoped
+  // advisory lock and must never wait on network I/O.
+  const stateSnapshot = await store.load();
+  const prepared = await prepareMaintenanceInputs(stateSnapshot);
+
   const result = await store.mutate(async state => {
     const modelCallRecovery = recoverStaleModelCalls(state, {
       env: process.env,
       actor: workerId,
     });
-    const maintenance = await runEconomicMaintenance(state, { env: process.env });
-    return { ...maintenance, modelCallRecovery };
+    const maintenance = await runEconomicMaintenance(state, {
+      env: process.env,
+      catalog: prepared.catalog,
+      quotes: prepared.quotes,
+    });
+    mergePreparationWarnings(state, maintenance, prepared.warnings);
+    return {
+      ...maintenance,
+      modelCallRecovery,
+      externalInputsPreparedAt: prepared.preparedAt,
+    };
   });
   return { worker: 'economic-maintenance', workerId, intervalMs, ...result };
 }
