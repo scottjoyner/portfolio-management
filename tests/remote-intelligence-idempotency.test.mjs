@@ -195,7 +195,7 @@ test('an accepted generation ID in the response body is reconciled without repla
   assert.equal(applied.reconciled, 1);
   assert.equal(chatCalls, 1);
   assert.equal(usageCalls, 2);
-  assert.equal(pendingQuote.status, 'completed');
+  assert.equal(pendingQuote.status, 'reconciled');
   assert.equal(pendingQuote.actualCostUsd, 0.0042);
   assert.equal(pendingQuote.reconciliationStatus, 'reconciled');
   assert.equal(pendingState.researchJobs[0].status, 'completed');
