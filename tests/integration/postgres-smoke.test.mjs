@@ -5,7 +5,9 @@ import ExecutionEngine from '../../packages/execution/src/executionEngine.mjs';
 import { TransactionalPostgresOperatorStore } from '../../packages/storage/src/transactionalPostgresOperatorStore.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const integrationTest = DATABASE_URL ? test : test.skip;
+const RUN_POSTGRES_INTEGRATION = process.env.RUN_POSTGRES_INTEGRATION === 'true';
+if (RUN_POSTGRES_INTEGRATION && !DATABASE_URL) throw new Error('DATABASE_URL_required_for_postgres_integration');
+const integrationTest = RUN_POSTGRES_INTEGRATION ? test : test.skip;
 const NOW = '2026-07-31T18:00:00.000Z';
 const EXECUTION_ID = `postgres-smoke-execution-${process.pid}`;
 const JOB_KEY = `postgres-smoke-job-${process.pid}`;
