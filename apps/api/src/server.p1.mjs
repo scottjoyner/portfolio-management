@@ -8,8 +8,17 @@ import {
 import { assertRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
 import { startAutoRotate, stopAutoRotate } from './secrets.mjs';
+import {
+  evaluateRemoteIntelligencePolicy,
+  intelligenceRoutingPolicyView,
+  normalizeIntelligenceRoutingPolicy,
+  validateIntelligenceRoutingPolicy,
+} from './intelligencePolicy.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
+const POLICY_ROUTE = '/api/economics/intelligence/policy';
+const MODEL_QUOTE_ROUTE = '/api/economics/model-quotes';
+const INTELLIGENCE_EXECUTE_ROUTE = '/api/economics/intelligence/execute';
 
 export { createInitialState };
 
@@ -33,24 +42,241 @@ async function readBody(req) {
   try { return JSON.parse(data); } catch { throw new Error('invalid_json'); }
 }
 
-function replacementRequest(req, body, url = req.url) {
+function replacementRequest(req, body, url = req.url, method = req.method) {
   const stream = new Readable({ read() {} });
-  stream.method = req.method;
+  stream.method = method;
   stream.url = url;
   stream.headers = { ...(req.headers || {}), 'content-type': 'application/json' };
-  stream.push(JSON.stringify(body));
+  stream.push(JSON.stringify(body || {}));
   stream.push(null);
   return stream;
+}
+
+function parsedBody(response) {
+  try { return JSON.parse(response.body); } catch { return {}; }
+}
+
+function jsonFrom(response, status, body) {
+  return {
+    status,
+    headers: { ...(response.headers || {}), 'content-type': JSON_TYPE },
+    body: JSON.stringify(body, null, 2),
+  };
+}
+
+function requestEnvironment(options = {}) {
+  return { ...process.env, ...(options.env || {}) };
+}
+
+async function policyState(store) {
+  return typeof store?.load === 'function' ? store.load() : store?.state || createInitialState();
+}
+
+async function policyAuthProbe(req, options) {
+  return legacyHandleRequest(replacementRequest(req, {}, '/api/config', 'GET'), options);
+}
+
+async function handlePolicyRequest(req, options, store, method) {
+  const env = requestEnvironment(options);
+  if (method === 'GET') {
+    const authenticated = await legacyHandleRequest(replacementRequest(req, {}, '/api/config', 'GET'), options);
+    if (authenticated.status >= 400) return authenticated;
+    const metadata = parsedBody(authenticated);
+    const view = intelligenceRoutingPolicyView(await policyState(store), env, options.now || new Date());
+    return jsonFrom(authenticated, 200, {
+      ok: true,
+      ...view,
+      requestId: metadata.requestId,
+      actor: metadata.actor,
+      role: metadata.role,
+    });
+  }
+
+  if (!['PUT', 'POST'].includes(method)) {
+    const authenticated = await policyAuthProbe(req, options);
+    if (authenticated.status >= 400) return authenticated;
+    return jsonFrom(authenticated, 405, { ok: false, error: 'method_not_allowed' });
+  }
+
+  const body = await readBody(req);
+  const validation = validateIntelligenceRoutingPolicy(body);
+  if (!validation.ok) {
+    const authenticated = await policyAuthProbe(req, options);
+    if (authenticated.status >= 400) return authenticated;
+    const metadata = parsedBody(authenticated);
+    return jsonFrom(authenticated, 400, {
+      ok: false,
+      errors: validation.errors,
+      requestId: metadata.requestId,
+      actor: metadata.actor,
+      role: metadata.role,
+    });
+  }
+
+  const policy = normalizeIntelligenceRoutingPolicy({
+    ...body,
+    updatedAt: requestNow(options),
+    updatedBy: body.updatedBy || 'operator',
+  });
+  const persisted = await legacyHandleRequest(replacementRequest(req, {
+    intelligenceRoutingPolicy: policy,
+  }, '/api/config', 'POST'), options);
+  if (persisted.status >= 400) return persisted;
+  const metadata = parsedBody(persisted);
+  const view = intelligenceRoutingPolicyView(await policyState(store), env, options.now || new Date());
+  return jsonFrom(persisted, 200, {
+    ok: true,
+    ...view,
+    requestId: metadata.requestId,
+    actor: metadata.actor,
+    role: metadata.role,
+  });
+}
+
+async function markQuoteRoutingDecision(store, quoteId, decision, status = null) {
+  if (!quoteId || typeof store?.mutate !== 'function') return;
+  await store.mutate(state => {
+    const quote = state.modelUsageLedger?.find(row => row.id === quoteId);
+    if (!quote) return { errors: ['model_quote_not_found'] };
+    quote.routingPolicyDecision = decision;
+    quote.expectedDecisionImprovementUsd = decision.expectedDecisionImprovementUsd;
+    quote.routingPolicyMode = decision.policy.mode;
+    if (status) {
+      quote.status = status;
+      quote.failureReason = decision.blockers?.[0] || 'intelligence_routing_policy_blocked';
+    }
+    return { modelQuote: quote };
+  });
+}
+
+async function handleModelQuoteRequest(req, options, store) {
+  const body = await readBody(req);
+  const env = requestEnvironment(options);
+  const stateBefore = await policyState(store);
+  const policy = normalizeIntelligenceRoutingPolicy(stateBefore.config?.intelligenceRoutingPolicy);
+  const automatic = body.localOrRemote === 'auto';
+
+  if (automatic && (policy.mode === 'local_only' || (policy.mode === 'openrouter_allowed' && body.preferRemote !== true))) {
+    return legacyHandleRequest(replacementRequest(req, {
+      ...body,
+      localOrRemote: 'local',
+      model: body.localModel || body.model,
+    }), options);
+  }
+
+  const requested = automatic
+    ? { ...body, localOrRemote: 'remote', model: body.remoteModel || body.model }
+    : body;
+  const out = await legacyHandleRequest(replacementRequest(req, requested), options);
+  if (out.status >= 400 || requested.localOrRemote === 'local') return out;
+
+  const response = parsedBody(out);
+  const quote = response.modelQuote;
+  if (!quote) return out;
+  const state = await policyState(store);
+  const decision = evaluateRemoteIntelligencePolicy(state, {
+    estimatedCostUsd: quote.estimatedCostUsd,
+    expectedDecisionImprovementUsd: body.expectedDecisionImprovementUsd ?? body.expectedValueOfInformationUsd,
+    excludeQuoteId: quote.id,
+  }, env, options.now || new Date());
+
+  if (decision.allowed) {
+    await markQuoteRoutingDecision(store, quote.id, decision);
+    response.modelQuote.routingPolicyDecision = decision;
+    response.routingDecision = { selected: 'remote', automatic, ...decision };
+    return jsonFrom(out, out.status, response);
+  }
+
+  await markQuoteRoutingDecision(store, quote.id, decision, automatic ? 'comparison_only' : 'policy_blocked');
+  if (automatic && policy.fallbackToLocalOnRemoteBlock) {
+    const localOut = await legacyHandleRequest(replacementRequest(req, {
+      ...body,
+      localOrRemote: 'local',
+      model: body.localModel || body.model,
+    }), options);
+    if (localOut.status < 400) {
+      const localResponse = parsedBody(localOut);
+      localResponse.routingDecision = {
+        selected: 'local',
+        automatic: true,
+        remoteComparisonQuoteId: quote.id,
+        remoteBlockers: decision.blockers,
+        policy: decision.policy,
+      };
+      return jsonFrom(localOut, localOut.status, localResponse);
+    }
+  }
+
+  return jsonFrom(out, 409, {
+    ok: false,
+    error: 'remote_intelligence_policy_blocked',
+    errors: decision.blockers,
+    routingDecision: decision,
+    modelQuoteId: quote.id,
+    requestId: response.requestId,
+    actor: response.actor,
+    role: response.role,
+  });
+}
+
+async function handleIntelligenceExecution(req, options, store) {
+  const body = await readBody(req);
+  const state = await policyState(store);
+  const quote = state.modelUsageLedger?.find(row => row.id === body.modelQuoteId);
+  if (!quote || quote.localOrRemote !== 'remote') {
+    return legacyHandleRequest(replacementRequest(req, body), options);
+  }
+
+  const economicDecision = state.economicDecisions?.find(row => row.id === body.economicDecisionId);
+  const policyDecision = evaluateRemoteIntelligencePolicy(state, {
+    estimatedCostUsd: quote.authoritativeCostUsd ?? quote.estimatedCostUsd,
+    expectedDecisionImprovementUsd: quote.expectedDecisionImprovementUsd
+      ?? quote.routingPolicyDecision?.expectedDecisionImprovementUsd
+      ?? economicDecision?.expectedDecisionImprovementUsd,
+    excludeQuoteId: quote.id,
+  }, requestEnvironment(options), options.now || new Date());
+
+  if (!policyDecision.allowed) {
+    const authenticated = await legacyHandleRequest(replacementRequest(req, {}, '/api/economics/dashboard', 'GET'), options);
+    if (authenticated.status >= 400) return authenticated;
+    const metadata = parsedBody(authenticated);
+    return jsonFrom(authenticated, 409, {
+      ok: false,
+      error: 'remote_intelligence_policy_blocked',
+      errors: policyDecision.blockers,
+      routingDecision: policyDecision,
+      modelQuoteId: quote.id,
+      requestId: metadata.requestId,
+      actor: metadata.actor,
+      role: metadata.role,
+    });
+  }
+
+  return legacyHandleRequest(replacementRequest(req, body), options);
 }
 
 export async function handleRequest(req, options = {}) {
   const url = new URL(req.url || '/', 'http://localhost');
   const method = req.method || 'GET';
+  const store = options.store || createOperatorStore(options);
+  const delegatedOptions = options.store ? options : { ...options, store };
 
   if (method === 'GET' && url.pathname === '/metrics') {
     const alias = Object.create(req);
     alias.url = '/metrics.prom';
-    return legacyHandleRequest(alias, options);
+    return legacyHandleRequest(alias, delegatedOptions);
+  }
+
+  if (url.pathname === POLICY_ROUTE) {
+    return handlePolicyRequest(req, delegatedOptions, store, method);
+  }
+
+  if (method === 'POST' && url.pathname === MODEL_QUOTE_ROUTE) {
+    return handleModelQuoteRequest(req, delegatedOptions, store);
+  }
+
+  if (method === 'POST' && url.pathname === INTELLIGENCE_EXECUTE_ROUTE) {
+    return handleIntelligenceExecution(req, delegatedOptions, store);
   }
 
   if (researchMutation(url.pathname, method)) {
@@ -58,10 +284,10 @@ export async function handleRequest(req, options = {}) {
     body.localOrRemote ||= 'local';
     body.status ||= 'queued';
     body.requestedAt ||= requestNow(options);
-    return legacyHandleRequest(replacementRequest(req, body), options);
+    return legacyHandleRequest(replacementRequest(req, body), delegatedOptions);
   }
 
-  return legacyHandleRequest(req, options);
+  return legacyHandleRequest(req, delegatedOptions);
 }
 
 export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
