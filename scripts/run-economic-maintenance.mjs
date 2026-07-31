@@ -9,6 +9,10 @@ import {
   runEconomicMaintenance,
 } from '../apps/api/src/economicMaintenance.mjs';
 import { recoverStaleModelCalls } from '../apps/api/src/modelCallRecovery.mjs';
+import {
+  applyPendingOpenRouterReconciliations,
+  preparePendingOpenRouterReconciliations,
+} from '../apps/api/src/openRouterUsageReconciliation.mjs';
 
 function hasFlag(name) {
   return process.argv.slice(2).includes(name);
@@ -46,6 +50,9 @@ function healthSummary(result = {}) {
     runtimeJobId: result.runtimeJob?.id || null,
     runtimeJobStatus: result.runtimeJob?.status || null,
     warningCount: Array.isArray(result.warnings) ? result.warnings.length : 0,
+    usageReconciled: Number(result.openRouterUsageReconciliation?.reconciled || 0),
+    usageRetryScheduled: Number(result.openRouterUsageReconciliation?.retryScheduled || 0),
+    usageReconciliationExhausted: Number(result.openRouterUsageReconciliation?.exhausted || 0),
   };
 }
 
@@ -100,6 +107,7 @@ async function prepareMaintenanceInputs(stateSnapshot, now = new Date()) {
   const warnings = [];
   let catalog = { data: [] };
   let quotes = {};
+  let openRouterUsage = { attempted: 0, results: [], preparedAt: now.toISOString() };
 
   if (pricingCatalogIsStale(stateSnapshot, now)) {
     try {
@@ -115,9 +123,21 @@ async function prepareMaintenanceInputs(stateSnapshot, now = new Date()) {
     warnings.push(`market_quote_refresh_failed:${String(error?.message || error)}`);
   }
 
+  try {
+    openRouterUsage = await preparePendingOpenRouterReconciliations({
+      state: stateSnapshot,
+      env: process.env,
+      fetchImpl: globalThis.fetch,
+      now,
+    });
+  } catch (error) {
+    warnings.push(`openrouter_usage_reconciliation_prepare_failed:${String(error?.message || error)}`);
+  }
+
   return {
     catalog,
     quotes,
+    openRouterUsage,
     warnings,
     preparedAt: new Date().toISOString(),
   };
@@ -141,13 +161,19 @@ function mergePreparationWarnings(state, maintenance, warnings = []) {
 }
 
 async function executeMaintenance() {
-  // External provider and market-data calls are deliberately completed before
-  // entering the serializable mutation. The mutation holds a transaction-scoped
-  // advisory lock and must never wait on network I/O.
+  // Every external provider and market-data request is completed before entering
+  // the serializable mutation. The transaction-scoped advisory lock must never
+  // be held while waiting on network I/O.
   const stateSnapshot = await store.load();
   const prepared = await prepareMaintenanceInputs(stateSnapshot);
 
   const result = await store.mutate(async state => {
+    const openRouterUsageReconciliation = applyPendingOpenRouterReconciliations(
+      state,
+      prepared.openRouterUsage,
+      process.env,
+      new Date(),
+    );
     const modelCallRecovery = recoverStaleModelCalls(state, {
       env: process.env,
       actor: workerId,
@@ -157,9 +183,12 @@ async function executeMaintenance() {
       catalog: prepared.catalog,
       quotes: prepared.quotes,
     });
+    maintenance.details ||= {};
+    maintenance.details.openRouterUsageReconciliation = openRouterUsageReconciliation;
     mergePreparationWarnings(state, maintenance, prepared.warnings);
     return {
       ...maintenance,
+      openRouterUsageReconciliation,
       modelCallRecovery,
       externalInputsPreparedAt: prepared.preparedAt,
     };
