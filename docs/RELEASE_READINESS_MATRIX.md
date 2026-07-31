@@ -27,6 +27,8 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 | OpenRouter deployment gate | Blocking — automated and manual | deployment validator plus host environment review | Remote execution defaults off and requires both explicit enablement and a host-managed key. |
 | UI routing policy | Blocking — automated and manual | runtime smoke plus operator screenshot/release note | Local-only, economic-auto, and OpenRouter-eligible modes persist; hard caps are visible. |
 | Remote cost controls | Blocking — automated | intelligence routing tests | Per-request cap, daily cap, minimum value coverage, and local fallback fail closed. |
+| Remote provider at-most-once | Blocking — automated | `openrouter-at-most-once.test.mjs` | Confirmed non-started HTTP failures may retry; known or uncertain provider attempts cannot issue a second billable POST. |
+| Delayed `usage_pending` reconciliation | Blocking — automated | provider reconciliation tests and economic worker | Known generation IDs reconcile through metadata lookup with bounded backoff; exhaustion becomes explicit manual review. |
 | Logical backup and restore | Blocking — automated and manual | `portfolio-smoke.dump`, restore evidence, host pre-deploy restore | A dump restores into a clean database with migration 006 and execution data intact. |
 | Worker liveness | Blocking — automated and manual | deployment validator, Compose health, host `docker inspect` | Worker heartbeat is fresh; stale or failed runs make the container unhealthy. |
 | Locked Node dependencies | Blocking — automated | `npm ci`, deployment validator | Production image installs from `package-lock.json` with `npm ci`. |
@@ -36,8 +38,6 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 | Reverse proxy/TLS | Blocking — manual | host configuration evidence | API binds as intended; TLS and access controls are active at the trusted ingress. |
 | Host resource sizing | Blocking — manual | release record | PostgreSQL, API, and worker memory/CPU limits fit the deployment host. |
 | Rollback rehearsal | Blocking — manual | `DEPLOYMENT_ROLLBACK_RUNBOOK.md` release record | Prior image and restored backup pass readiness and smoke in a disposable rollback target. |
-| Provider-call idempotency | Open engineering blocker | code/tests | A retry cannot issue a second billable provider call for the same reserved request. |
-| Delayed `usage_pending` reconciliation | Open engineering blocker | code/tests | Provider usage can be retried idempotently until actual cost is authoritative. |
 | Remaining whole-state rewrites | Open engineering blocker | PostgreSQL mutation review/tests | Operational mutations use targeted optimistic rows instead of broad compatibility replacement. |
 | Deterministic paid-agent counterfactual replay | Open engineering blocker | replay/attribution tests | Automatic attribution compares paid-agent decisions with a reproducible bot counterfactual. |
 | Legacy Python suite | Diagnostic | `legacy-python-diagnostic` | Failures are triaged; any release-path regression is promoted to blocking. |
