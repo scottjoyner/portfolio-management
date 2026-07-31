@@ -23,6 +23,17 @@ except ImportError:  # Support PYTHONPATH=trading_system imports.
     from core.models.domain import CapitalBucketType, ExchangeTrustScore, RiskMode
 
 
+def _enum_value(value: Any) -> Any:
+    """Return a canonical value across duplicate package import paths.
+
+    CI and some runtime entrypoints can import the same enum module as both
+    ``core.models.domain`` and ``trading_system.core.models.domain``. Those
+    enum classes are not identical even though their values are. Boundary
+    code therefore compares and coerces using the stable serialized value.
+    """
+    return getattr(value, "value", value)
+
+
 class RiskPolicy:
     """Configuration for statistical calculations and execution safeguards."""
 
@@ -55,9 +66,7 @@ class RiskPolicy:
 
     @staticmethod
     def _coerce_risk_mode(mode: RiskMode | str) -> RiskMode:
-        if isinstance(mode, RiskMode):
-            return mode
-        return RiskMode(str(mode).strip().upper())
+        return RiskMode(str(_enum_value(mode)).strip().upper())
 
     def __iter__(self):
         return iter(self.confidence_levels)
@@ -133,15 +142,11 @@ class RiskEngine:
     def _coerce_exchange_trust(
         trust: ExchangeTrustScore | str,
     ) -> ExchangeTrustScore:
-        if isinstance(trust, ExchangeTrustScore):
-            return trust
-        return ExchangeTrustScore(str(trust).strip().upper())
+        return ExchangeTrustScore(str(_enum_value(trust)).strip().upper())
 
     @staticmethod
     def _coerce_risk_mode(mode: RiskMode | str) -> RiskMode:
-        if isinstance(mode, RiskMode):
-            return mode
-        return RiskMode(str(mode).strip().upper())
+        return RiskMode(str(_enum_value(mode)).strip().upper())
 
     def set_exchange_trust(self, trust: ExchangeTrustScore | str) -> None:
         self.exchange_trust = self._coerce_exchange_trust(trust)
@@ -310,11 +315,15 @@ class RiskEngine:
 
         try:
             bucket = CapitalBucketType(
-                getattr(
-                    intent,
-                    "bucket",
-                    CapitalBucketType.ACTIVE_TRADING,
-                )
+                str(
+                    _enum_value(
+                        getattr(
+                            intent,
+                            "bucket",
+                            CapitalBucketType.ACTIVE_TRADING,
+                        )
+                    )
+                ).strip().upper()
             )
         except (TypeError, ValueError):
             return False, "unknown capital bucket"
