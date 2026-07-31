@@ -48,7 +48,7 @@ function messagesFrom(body = {}) {
 function errorStatus(errors = []) {
   if (errors.some(error => error.endsWith('_not_found'))) return 404;
   if (errors.some(error => error.includes('disabled') || error.includes('required') || error.includes('mismatch') || error.includes('already_') || error.includes('requote') || error.includes('reconciliation') || error.includes('consumed'))) return 409;
-  if (errors.some(error => error.includes('unavailable') || error.includes('timeout') || error.includes('no_healthy'))) return 503;
+  if (errors.some(error => error.includes('unavailable') || error.includes('timeout') || error.includes('no_healthy') || error.includes('rate'))) return 503;
   return 400;
 }
 
@@ -88,14 +88,18 @@ function markRunning(state, body, now, env) {
   const job = body.researchJobId ? state.researchJobs?.find(row => row.id === body.researchJobId) : null;
   if (body.researchJobId && !job) return { errors: ['research_job_not_found'] };
   const costRow = job ? state.agentCostLedger?.find(row => row.jobId === job.id) : null;
-  const providerAttemptId = quote.providerAttemptId || `provider-attempt:${quote.id}`;
+  const providerAttemptNumber = Number(quote.providerAttemptNumber || 0) + 1;
+  const providerAttemptId = `provider-attempt:${quote.id}:${providerAttemptNumber}`;
 
   quote.researchJobId = job?.id || quote.researchJobId || null;
   quote.status = 'running';
   quote.startedAt = now;
+  quote.providerAttemptNumber = providerAttemptNumber;
   quote.providerAttemptId = providerAttemptId;
   quote.providerAttemptStartedAt = now;
+  quote.providerAttemptCompletedAt = null;
   quote.failureReason = null;
+  quote.retryable = false;
   quote.requiresManualReconciliation = false;
   quote.uncertainProviderOutcome = false;
   if (job) {
@@ -103,7 +107,9 @@ function markRunning(state, body, now, env) {
     job.startedAt ||= now;
     job.completedAt = null;
     job.failureReason = null;
+    job.retryable = false;
     job.providerAttemptId = providerAttemptId;
+    job.providerAttemptNumber = providerAttemptNumber;
     job.modelQuoteId = quote.id;
     job.economicDecisionId = decision.id;
     job.pricingSnapshotId = quote.pricingSnapshotId;
@@ -114,6 +120,7 @@ function markRunning(state, body, now, env) {
     costRow.economicDecisionId = decision.id;
     costRow.pricingSnapshotId = quote.pricingSnapshotId;
     costRow.providerAttemptId = providerAttemptId;
+    costRow.providerAttemptNumber = providerAttemptNumber;
     costRow.remoteApiCost = quote.localOrRemote === 'remote' ? quote.estimatedCostUsd : 0;
     costRow.localComputeCost = quote.localOrRemote === 'local' ? quote.estimatedCostUsd : 0;
     costRow.costSource = 'pre_call_estimate';
@@ -126,6 +133,7 @@ function markRunning(state, body, now, env) {
       decisionId: decision.id,
       researchJobId: job?.id || null,
       providerAttemptId,
+      providerAttemptNumber,
       localOrRemote: quote.localOrRemote,
       provider: quote.provider,
       model: quote.model,
@@ -149,36 +157,97 @@ function markFailed(state, prepared, error, now, options = {}) {
   const quote = state.modelUsageLedger?.find(row => row.id === prepared.quoteId);
   const job = prepared.researchJobId ? state.researchJobs?.find(row => row.id === prepared.researchJobId) : null;
   const costRow = job ? state.agentCostLedger?.find(row => row.jobId === job.id) : null;
-  const uncertainRemote = options.uncertainProviderOutcome === true && prepared.localOrRemote === 'remote';
-  const failureReason = uncertainRemote
-    ? 'remote_provider_outcome_uncertain_reconciliation_required'
-    : error;
+  const providerOutcome = options.providerOutcome || (prepared.localOrRemote === 'remote' ? 'uncertain' : 'local_failed');
+  const generationId = options.generationId || null;
+  const remoteNotStarted = prepared.localOrRemote === 'remote' && providerOutcome === 'not_started';
+  const remoteKnownGeneration = prepared.localOrRemote === 'remote' && providerOutcome === 'generation_usage_pending';
+  const remoteUncertain = prepared.localOrRemote === 'remote' && providerOutcome === 'uncertain';
+  const failureReason = remoteKnownGeneration
+    ? 'remote_usage_pending_reconciliation'
+    : remoteUncertain
+      ? 'remote_provider_outcome_uncertain_reconciliation_required'
+      : error;
 
   if (quote) {
-    quote.status = uncertainRemote ? 'usage_pending' : 'failed';
-    quote.failureReason = failureReason;
-    quote.completedAt = now;
-    quote.retryable = false;
-    quote.requiresRequote = !uncertainRemote && prepared.localOrRemote === 'local';
-    quote.requiresManualReconciliation = uncertainRemote;
-    quote.uncertainProviderOutcome = uncertainRemote;
+    quote.lastProviderAttemptId = prepared.providerAttemptId;
+    quote.providerAttemptCompletedAt = now;
+    quote.providerOutcome = providerOutcome;
     quote.providerError = error;
+    quote.lastProviderError = error;
+    if (remoteNotStarted) {
+      quote.status = 'quoted';
+      quote.failureReason = error;
+      quote.retryable = true;
+      quote.requiresRequote = false;
+      quote.requiresManualReconciliation = false;
+      quote.uncertainProviderOutcome = false;
+      quote.completedAt = null;
+    } else if (remoteKnownGeneration || remoteUncertain) {
+      quote.status = 'usage_pending';
+      quote.generationId = generationId || quote.generationId || null;
+      quote.failureReason = failureReason;
+      quote.completedAt = now;
+      quote.retryable = false;
+      quote.requiresRequote = false;
+      quote.requiresManualReconciliation = remoteUncertain;
+      quote.uncertainProviderOutcome = remoteUncertain;
+      quote.reconciliationStatus = remoteKnownGeneration ? 'pending' : 'manual_required';
+      quote.reconciliationAttempts = Number(quote.reconciliationAttempts || 0);
+      quote.nextReconciliationAt = remoteKnownGeneration ? now : null;
+    } else {
+      quote.status = 'failed';
+      quote.failureReason = failureReason;
+      quote.completedAt = now;
+      quote.retryable = false;
+      quote.requiresRequote = prepared.localOrRemote === 'local';
+      quote.requiresManualReconciliation = false;
+      quote.uncertainProviderOutcome = false;
+    }
   }
   if (job) {
-    job.status = 'failed';
-    job.failureReason = failureReason;
-    job.completedAt = now;
-    job.retryable = false;
-    job.requiresRequote = !uncertainRemote && prepared.localOrRemote === 'local';
-    job.requiresManualReconciliation = uncertainRemote;
-    job.uncertainProviderOutcome = uncertainRemote;
+    if (remoteNotStarted) {
+      job.status = 'queued';
+      job.failureReason = error;
+      job.completedAt = null;
+      job.retryable = true;
+      job.requiresRequote = false;
+      job.requiresManualReconciliation = false;
+      job.uncertainProviderOutcome = false;
+    } else {
+      job.status = 'failed';
+      job.failureReason = failureReason;
+      job.completedAt = now;
+      job.retryable = false;
+      job.requiresRequote = prepared.localOrRemote === 'local';
+      job.requiresManualReconciliation = remoteUncertain;
+      job.uncertainProviderOutcome = remoteUncertain;
+      if (generationId) job.generationId = generationId;
+    }
   }
-  if (costRow && uncertainRemote) {
-    costRow.recoveryStatus = 'usage_pending_manual_reconciliation_required';
-    costRow.requiresManualReconciliation = true;
-    costRow.providerError = error;
+  if (costRow) {
+    if (remoteNotStarted) {
+      costRow.recoveryStatus = 'provider_not_started_retryable';
+      costRow.requiresManualReconciliation = false;
+      costRow.providerError = error;
+    } else if (remoteKnownGeneration) {
+      costRow.recoveryStatus = 'usage_pending_reconciliation_scheduled';
+      costRow.requiresManualReconciliation = false;
+      costRow.providerError = error;
+      costRow.generationId = generationId;
+    } else if (remoteUncertain) {
+      costRow.recoveryStatus = 'usage_pending_manual_reconciliation_required';
+      costRow.requiresManualReconciliation = true;
+      costRow.providerError = error;
+    }
   }
-  return { errors: [failureReason] };
+  return {
+    errors: [failureReason],
+    providerOutcome,
+    retryable: remoteNotStarted,
+    generationId,
+    requiresManualReconciliation: remoteUncertain,
+    automaticReconciliationScheduled: remoteKnownGeneration,
+  };
 }
 
 function reconcileExecution(state, prepared, providerResult, now) {
@@ -199,8 +268,12 @@ function reconcileExecution(state, prepared, providerResult, now) {
   quote.prefillTokensPerSecondActual = providerResult.usage?.prefill_tokens_per_second ?? null;
   quote.decodeTokensPerSecondActual = providerResult.usage?.decode_tokens_per_second ?? null;
   quote.completedAt = now;
+  quote.providerAttemptCompletedAt = now;
+  quote.providerOutcome = 'completed_reconciled';
   quote.requiresManualReconciliation = false;
   quote.uncertainProviderOutcome = false;
+  quote.reconciliationStatus = 'reconciled';
+  quote.nextReconciliationAt = null;
 
   const job = prepared.researchJobId ? state.researchJobs?.find(row => row.id === prepared.researchJobId) : null;
   if (job) {
@@ -219,6 +292,39 @@ function reconcileExecution(state, prepared, providerResult, now) {
   }
 
   return { modelUsage: quote, researchJob: job || null };
+}
+
+function instrumentRemoteFetch(fetchImpl, env, telemetry) {
+  if (typeof fetchImpl !== 'function') return fetchImpl;
+  const chatUrl = env.OPENROUTER_CHAT_URL || 'https://openrouter.ai/api/v1/chat/completions';
+  return async (url, init = {}) => {
+    const remotePost = String(url) === chatUrl && String(init.method || 'GET').toUpperCase() === 'POST';
+    if (remotePost) {
+      telemetry.dispatched = true;
+      telemetry.dispatchedAt = new Date().toISOString();
+    }
+    try {
+      const response = await fetchImpl(url, init);
+      if (remotePost) {
+        telemetry.responseReceived = true;
+        telemetry.httpStatus = Number(response?.status || 0);
+        telemetry.generationId = response?.headers?.get?.('x-generation-id')
+          || response?.headers?.get?.('X-Generation-Id')
+          || null;
+      }
+      return response;
+    } catch (error) {
+      if (remotePost) telemetry.transportError = String(error?.message || error);
+      throw error;
+    }
+  };
+}
+
+function classifyRemoteFailure(telemetry = {}) {
+  if (!telemetry.dispatched) return 'not_started';
+  if (telemetry.responseReceived && telemetry.httpStatus >= 400) return 'not_started';
+  if (telemetry.generationId) return 'generation_usage_pending';
+  return 'uncertain';
 }
 
 export async function discoverLocalIntelligenceNodes({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
@@ -273,12 +379,22 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
   const preparedResult = await store.mutate(state => markRunning(state, body, now, env));
   if (preparedResult.errors) return resultFromErrors(preparedResult.errors);
   const prepared = preparedResult.execution;
-  const registry = registryFor(env, fetchImpl);
+  const telemetry = {};
+  const providerFetch = prepared.localOrRemote === 'remote'
+    ? instrumentRemoteFetch(fetchImpl, env, telemetry)
+    : fetchImpl;
+  const registry = registryFor(env, providerFetch);
   const provider = registry.providerForQuote(prepared);
   if (!provider) {
     const error = prepared.localOrRemote === 'local' ? 'local_node_unavailable_requote_required' : 'intelligence_provider_unavailable';
-    await store.mutate(state => markFailed(state, prepared, error, new Date().toISOString()));
-    return resultFromErrors([error]);
+    const failed = await store.mutate(state => markFailed(
+      state,
+      prepared,
+      error,
+      new Date().toISOString(),
+      { providerOutcome: prepared.localOrRemote === 'remote' ? 'not_started' : 'local_failed' },
+    ));
+    return resultFromErrors(failed.errors || [error], failed);
   }
 
   if (prepared.localOrRemote === 'local') {
@@ -290,7 +406,7 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
         : !modelAvailable
           ? 'quoted_model_no_longer_available_requote_required'
           : 'local_node_busy_requote_required';
-      await store.mutate(state => markFailed(state, prepared, error, new Date().toISOString()));
+      await store.mutate(state => markFailed(state, prepared, error, new Date().toISOString(), { providerOutcome: 'local_failed' }));
       return resultFromErrors([error], { node: health });
     }
   }
@@ -300,18 +416,24 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
     providerResult = await provider.execute(prepared);
   } catch (error) {
     const message = String(error?.message || error);
-    const uncertainProviderOutcome = prepared.localOrRemote === 'remote';
+    const providerOutcome = prepared.localOrRemote === 'remote'
+      ? classifyRemoteFailure(telemetry)
+      : 'local_failed';
     const failed = await store.mutate(state => markFailed(
       state,
       prepared,
       message,
       new Date().toISOString(),
-      { uncertainProviderOutcome },
+      { providerOutcome, generationId: telemetry.generationId },
     ));
     return resultFromErrors(failed.errors || [message], {
       modelQuoteId: prepared.quoteId,
       providerAttemptId: prepared.providerAttemptId,
-      requiresManualReconciliation: uncertainProviderOutcome,
+      providerOutcome,
+      generationId: telemetry.generationId || null,
+      retryable: failed.retryable === true,
+      automaticReconciliationScheduled: failed.automaticReconciliationScheduled === true,
+      requiresManualReconciliation: failed.requiresManualReconciliation === true,
     });
   }
 
@@ -332,6 +454,7 @@ export async function executeEconomicIntelligence({ store, body = {}, env = proc
       },
       modelUsage: reconciled.modelUsage,
       researchJob: reconciled.researchJob,
+      providerAttemptId: prepared.providerAttemptId,
       economicDecisionRefreshRequired: true,
     },
   };
