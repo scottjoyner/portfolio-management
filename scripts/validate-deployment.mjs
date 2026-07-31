@@ -5,6 +5,7 @@ const requiredFiles = [
   'Dockerfile',
   'docker-compose.production.yml',
   '.env.production.example',
+  'package-lock.json',
   'scripts/migrate-postgres.mjs',
   'scripts/run-economic-maintenance.mjs',
   'scripts/check-economic-worker-health.mjs',
@@ -59,10 +60,11 @@ const openRouterKey = 'OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}';
 const checks = [
   [dockerfile.includes('HEALTHCHECK'), 'Dockerfile must define a health check'],
   [dockerfile.includes('apps/api/src/server.p1.mjs'), 'Dockerfile must start the Node operator API'],
+  [dockerfile.includes('COPY package.json package-lock.json') && dockerfile.includes('npm ci --omit=dev --ignore-scripts'), 'Dockerfile must install production Node dependencies from package-lock.json'],
   [compose.includes('postgres:17-bookworm'), 'production compose must pin PostgreSQL 17'],
-  [compose.includes('command: ["pnpm", "migrations:up"]'), 'production compose must run migrations before services'],
-  [compose.includes('command: ["pnpm", "api"]'), 'production compose must run the Node API'],
-  [compose.includes('command: ["pnpm", "economics:worker"]'), 'production compose must run the leased economic worker'],
+  [compose.includes('command: ["npm", "run", "migrations:up"]'), 'production compose must run migrations before services'],
+  [compose.includes('command: ["npm", "run", "api"]'), 'production compose must run the Node API'],
+  [compose.includes('command: ["npm", "run", "economics:worker"]'), 'production compose must run the leased economic worker'],
   [compose.includes('condition: service_completed_successfully'), 'API and worker must wait for migration completion'],
   [compose.includes('OPERATOR_AUTH_REQUIRED: "true"'), 'production compose must require operator authentication'],
   [compose.includes('CSRF_REQUIRED: "true"'), 'production compose must require CSRF'],
@@ -119,4 +121,5 @@ process.stdout.write(`${JSON.stringify({
   remoteInferenceConfigurable: true,
   localInferenceDefaultRequired: true,
   workerHeartbeatHealthcheck: true,
+  lockedNodeDependencies: true,
 }, null, 2)}\n`);
