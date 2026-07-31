@@ -46,6 +46,55 @@ jobs:
         NODE_TEST_SHARD_TOTAL: 4
       run: node scripts/run-node-test-shard.mjs
 
+  postgres-integration:
+    name: postgres-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: portfolio
+          POSTGRES_USER: portfolio
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U portfolio -d portfolio"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://portfolio@127.0.0.1:5432/portfolio
+      OPERATOR_STORE: postgres
+      NODE_ENV: test
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    - name: Install locked runtime dependencies
+      run: npm ci --ignore-scripts
+    - name: Apply checksum-protected migrations
+      run: npm run migrations:up | tee postgres-migration-first.json
+    - name: Verify migration idempotency
+      run: npm run migrations:up | tee postgres-migration-second.json
+    - name: Verify migration 006, restart hydration, append-only events, and durable leases
+      run: npm run test:integration:postgres | tee postgres-integration.tap
+    - name: Upload PostgreSQL readiness evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: postgres-readiness-${{ github.sha }}
+        path: |
+          postgres-migration-first.json
+          postgres-migration-second.json
+          postgres-integration.tap
+        if-no-files-found: error
+        retention-days: 14
+
   python-critical:
     name: python-critical
     runs-on: ubuntu-latest
@@ -177,3 +226,30 @@ jobs:
     - name: Generate report
       if: always()
       run: python performance_benchmarks/cli_report_generator.py --output=benchmark-report.html
+
+  release-readiness:
+    name: release-readiness
+    if: always()
+    needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VALIDATION_RESULT: ${{ needs.validation.result }}
+      NODE_TESTS_RESULT: ${{ needs.node-tests.result }}
+      POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
+      PYTHON_CRITICAL_RESULT: ${{ needs.python-critical.result }}
+      COVERAGE_RESULT: ${{ needs.coverage-gate.result }}
+    steps:
+    - name: Enforce all production-critical gates
+      run: |
+        printf '%s\n' \
+          "validation=$VALIDATION_RESULT" \
+          "node-tests=$NODE_TESTS_RESULT" \
+          "postgres-integration=$POSTGRES_RESULT" \
+          "python-critical=$PYTHON_CRITICAL_RESULT" \
+          "coverage-gate=$COVERAGE_RESULT"
+        test "$VALIDATION_RESULT" = success
+        test "$NODE_TESTS_RESULT" = success
+        test "$POSTGRES_RESULT" = success
+        test "$PYTHON_CRITICAL_RESULT" = success
+        test "$COVERAGE_RESULT" = success
