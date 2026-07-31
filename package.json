@@ -26,6 +26,7 @@
     "first-prod:validate": "node scripts/validate-first-prod-release.mjs",
     "audit:verify": "node scripts/verify-audit-chain.mjs",
     "smoke:production-paper": "node scripts/smoke-production-paper.mjs",
+    "smoke:production-runtime": "node scripts/ci-production-runtime-smoke.mjs",
     "certify:mock": "node scripts/certify-mock.mjs",
     "certify:production-paper": "node scripts/certify-production-paper.mjs"
   },
