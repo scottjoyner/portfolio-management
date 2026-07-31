@@ -193,13 +193,18 @@ jobs:
           tests/test_start_competition_epoch.py \
           --import-mode=importlib \
           -q
-        python -m coverage report --show-missing --fail-under=60
+        python -m coverage report --show-missing --fail-under=60 | tee coverage-summary.txt
         python -m coverage xml
-    - name: Upload focused coverage
-      uses: codecov/codecov-action@v4
+    - name: Upload focused coverage evidence
+      if: always()
+      uses: actions/upload-artifact@v4
       with:
-        files: ./coverage.xml
-        fail_ci_if_error: false
+        name: focused-coverage-${{ github.sha }}
+        path: |
+          coverage-summary.txt
+          coverage.xml
+        if-no-files-found: error
+        retention-days: 14
 
   legacy-python-diagnostic:
     name: legacy-python-diagnostic
