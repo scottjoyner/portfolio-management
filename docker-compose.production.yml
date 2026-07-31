@@ -120,7 +120,7 @@ services:
       dockerfile: Dockerfile
     environment:
       <<: *app-environment
-    command: ["pnpm", "migrations:up"]
+    command: ["npm", "run", "migrations:up"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -142,7 +142,7 @@ services:
     environment:
       <<: [*app-environment, *openrouter-environment]
       PORT: "3000"
-    command: ["pnpm", "api"]
+    command: ["npm", "run", "api"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,7 +167,7 @@ services:
     environment:
       <<: [*app-environment, *openrouter-environment]
       ECONOMIC_WORKER_ID: ${ECONOMIC_WORKER_ID:-economic-worker-1}
-    command: ["pnpm", "economics:worker"]
+    command: ["npm", "run", "economics:worker"]
     depends_on:
       postgres:
         condition: service_healthy
