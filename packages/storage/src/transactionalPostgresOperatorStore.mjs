@@ -148,6 +148,14 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
+  normalizeForPersistence(input) {
+    const state = normalizeOperatorState(input);
+    return {
+      ...state,
+      audit: completeAuditChain(state.audit || []),
+    };
+  }
+
   async loadPersistedAuditChain() {
     const result = await this.query(
       `SELECT id, action, actor, at, details, payload_json,
@@ -246,7 +254,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   }
 
   async save(nextState) {
-    const state = normalizeOperatorState(nextState);
+    const state = this.normalizeForPersistence(nextState);
     return this.withTransaction(async () => {
       const persistedAudit = await this.loadPersistedAuditChain();
       this.assertAuditAppendOnly(persistedAudit, state.audit || []);
@@ -265,7 +273,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       const state = await this.loadStateWithAuditMetadata();
       const persistedAudit = state.audit || [];
       const result = await mutator(state);
-      const normalized = normalizeOperatorState(state);
+      const normalized = this.normalizeForPersistence(state);
       this.assertAuditAppendOnly(persistedAudit, normalized.audit || []);
       await super.save(normalized);
       await this.persistAuditChain(normalized.audit || []);
