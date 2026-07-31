@@ -16,11 +16,13 @@ const requiredFiles = [
   'packages/backtesting/src/replayEngine.mjs',
   'packages/intelligence/src/providerRegistry.mjs',
   'apps/api/src/intelligenceExecution.mjs',
+  'apps/api/src/openRouterUsageReconciliation.mjs',
   'apps/api/src/modelCallRecovery.mjs',
   'scripts/check-economic-worker-health.mjs',
   'scripts/ci-production-runtime-smoke.mjs',
   'scripts/validate-operational-readiness.mjs',
   'tests/integration/postgres-smoke.test.mjs',
+  'tests/openrouter-at-most-once.test.mjs',
   'docs/FIRST_PROD_RELEASE_CHECKLIST.md',
   'docs/API_CONTRACT_ECONOMICS.md',
   'docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md',
@@ -50,17 +52,19 @@ const adapters = read(requiredFiles[10]);
 const replay = read(requiredFiles[11]);
 const providers = read(requiredFiles[12]);
 const intelligenceExecution = read(requiredFiles[13]);
-const modelRecovery = read(requiredFiles[14]);
-const workerHealth = read(requiredFiles[15]);
-const runtimeSmoke = read(requiredFiles[16]);
-const operationalValidator = read(requiredFiles[17]);
-const postgresSmoke = read(requiredFiles[18]);
-const checklist = read(requiredFiles[19]);
-const economicsContract = read(requiredFiles[20]);
-const deploymentRunbook = read(requiredFiles[21]);
-const readinessMatrix = read(requiredFiles[22]);
-const workflow = read(requiredFiles[23]);
-const compose = read(requiredFiles[24]);
+const openRouterReconciliation = read(requiredFiles[14]);
+const modelRecovery = read(requiredFiles[15]);
+const workerHealth = read(requiredFiles[16]);
+const runtimeSmoke = read(requiredFiles[17]);
+const operationalValidator = read(requiredFiles[18]);
+const postgresSmoke = read(requiredFiles[19]);
+const openRouterTests = read(requiredFiles[20]);
+const checklist = read(requiredFiles[21]);
+const economicsContract = read(requiredFiles[22]);
+const deploymentRunbook = read(requiredFiles[23]);
+const readinessMatrix = read(requiredFiles[24]);
+const workflow = read(requiredFiles[25]);
+const compose = read(requiredFiles[26]);
 const checklistLower = checklist.toLowerCase();
 
 const checks = [
@@ -72,6 +76,7 @@ const checks = [
   [migration6.includes('execution_events_are_append_only') && migration6.includes('BEFORE UPDATE OR DELETE'), 'migration 006 must enforce append-only execution events'],
   [audit.includes('verifyAuditChain') && audit.includes('hashAuditEvent'), 'audit helper must verify and hash events'],
   [transactional.includes('BEGIN ISOLATION LEVEL') && transactional.includes('pg_advisory_xact_lock'), 'operator store must pin serializable transactions'],
+  [transactional.includes('queryTail') && transactional.includes('pinned-client-serialized'), 'operator store must serialize queries on its pinned client'],
   [transactional.includes('005_runtime_job_queue') && transactional.includes('006_normalized_execution_runtime'), 'operator store must require migrations 005 and 006'],
   [transactional.includes('synchronizeCompatibilityExecutions') && transactional.includes('publishExecutionReadModel'), 'operator store must synchronize and publish durable execution state'],
   [jobs.includes('FOR UPDATE SKIP LOCKED') && jobs.includes('heartbeat') && jobs.includes('recoverExpired'), 'runtime queue must claim, heartbeat, and recover jobs'],
@@ -86,10 +91,15 @@ const checks = [
   [providers.includes('estimatedQueueSeconds') && providers.includes('estimatedCostUsd'), 'local routing must estimate queue and economic cost'],
   [intelligenceExecution.includes('store.mutate(state => markRunning') && intelligenceExecution.includes('provider.execute(prepared)'), 'provider I/O must be separated from mutation transactions'],
   [intelligenceExecution.indexOf('provider.execute(prepared)') > intelligenceExecution.indexOf('store.mutate(state => markRunning'), 'provider execution must happen after the reservation mutation'],
+  [intelligenceExecution.includes('providerAttemptId') && intelligenceExecution.includes('model_usage_pending_reconciliation'), 'remote execution must reserve one provider attempt and reject pending reuse'],
+  [intelligenceExecution.includes("providerOutcome === 'not_started'") && intelligenceExecution.includes("providerOutcome === 'uncertain'"), 'remote execution must distinguish safe retry from uncertain outcomes'],
+  [openRouterReconciliation.includes('/api/v1/generation') && openRouterReconciliation.includes('retry_scheduled') && openRouterReconciliation.includes('exhausted'), 'known generations must use bounded delayed usage reconciliation'],
+  [openRouterTests.includes('never posts twice') && openRouterTests.includes('transport-uncertain') && openRouterTests.includes('eventually require manual reconciliation'), 'remote provider regression tests must prove at-most-once behavior and reconciliation exhaustion'],
   [economicsContract.includes('A model quote may authorize purchasing intelligence; it never authorizes a trade'), 'economic contract must separate intelligence and trade authorization'],
   [checklist.includes('Migration 006') && checklist.includes('append-only') && checklist.includes('expected version'), 'release checklist must include normalized execution gates'],
   [checklist.includes('MODEL_CALL_STALE_SECONDS') && checklist.includes('FOR UPDATE SKIP LOCKED'), 'release checklist must include model recovery and durable job queue gates'],
   [checklistLower.includes('local-first') && checklist.includes('REMOTE_LLM_EXECUTION_ENABLED=false'), 'release checklist must document local-first inference and remote-off defaults'],
+  [checklist.includes('at-most-once') && checklist.includes('generation metadata'), 'release checklist must document remote provider attempt and reconciliation gates'],
   [checklist.includes('npm test') && checklist.includes('npm run build') && checklist.includes('npm run operational:validate'), 'release checklist must include locked test, build, and operational validation gates'],
   [checklist.includes('postgres-readiness-<sha>') && checklist.includes('release-readiness'), 'release checklist must require exact-head PostgreSQL and aggregate CI evidence'],
   [checklist.includes('pg_dump') && checklist.includes('pg_restore'), 'release checklist must include backup and restore'],
@@ -97,9 +107,11 @@ const checks = [
   [postgresSmoke.includes('fresh execution engine') && postgresSmoke.includes('runtimeJobs.heartbeat'), 'PostgreSQL integration must verify restart hydration and durable job heartbeat'],
   [runtimeSmoke.includes('policyPersistedAcrossRestart') && runtimeSmoke.includes('productionPaperReady'), 'production runtime smoke must verify persistent policy and readiness after restart'],
   [workerHealth.includes('economic_worker_heartbeat_stale') && workerHealth.includes('economic_worker_last_run_failed'), 'worker health must detect stale and failed process state'],
+  [operationalValidator.includes('remoteProviderAtMostOnce') && operationalValidator.includes('delayedUsageReconciliation'), 'operational validator must preserve remote at-most-once and reconciliation evidence'],
   [operationalValidator.includes('backupRestoreEvidence') && operationalValidator.includes('rollbackRunbook'), 'operational validator must preserve backup/restore and rollback evidence'],
   [deploymentRunbook.includes('Stop conditions before deployment') && deploymentRunbook.includes('Rollback decision triggers'), 'deployment runbook must define stop and rollback decisions'],
-  [readinessMatrix.includes('Provider-call idempotency') && readinessMatrix.includes('Blocking — manual'), 'readiness matrix must retain engineering and host-only blockers'],
+  [readinessMatrix.includes('Remote provider at-most-once') && readinessMatrix.includes('Delayed `usage_pending` reconciliation'), 'readiness matrix must mark remote provider recovery as automated blocking evidence'],
+  [readinessMatrix.includes('Remaining whole-state rewrites') && readinessMatrix.includes('Deterministic paid-agent counterfactual replay') && readinessMatrix.includes('Blocking — manual'), 'readiness matrix must retain remaining engineering and host-only blockers'],
   [workflow.includes('postgres-integration:') && workflow.includes('release-readiness:') && workflow.includes('pg_restore'), 'CI must include PostgreSQL, aggregate readiness, and restore proof'],
   [compose.includes('LIVE_TRADING: "false"') && compose.includes('COINBASE_DRY_RUN: "true"'), 'canonical deployment must remain paper-only'],
   [compose.includes('LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}'), 'canonical deployment must require local inference by default'],
@@ -122,6 +134,8 @@ process.stdout.write(`${JSON.stringify({
   localInferenceDefaultRequired: true,
   remoteInferenceDefault: false,
   remoteInferenceConfigurable: true,
+  remoteProviderAtMostOnceRequired: true,
+  delayedUsageReconciliationRequired: true,
   normalizedExecutionRequired: true,
   postgresRestartHydrationRequired: true,
   authenticatedBrowserRestartSmokeRequired: true,
