@@ -271,7 +271,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   async mutate(mutator) {
     return this.withTransaction(async () => {
       const state = await this.loadStateWithAuditMetadata();
-      const persistedAudit = state.audit || [];
+      const persistedAudit = clone(state.audit || []);
       const result = await mutator(state);
       const normalized = this.normalizeForPersistence(state);
       this.assertAuditAppendOnly(persistedAudit, normalized.audit || []);
