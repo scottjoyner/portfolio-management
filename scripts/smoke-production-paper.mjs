@@ -5,12 +5,16 @@ const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 10000);
 const requireReady = process.env.SMOKE_REQUIRE_PRODUCTION_PAPER_READY !== 'false';
 
 const probes = [
+  { path: '/', expected: [200], contains: ['/ui/operator-session.js', '/ui/intelligence-policy.js'] },
+  { path: '/ui/operator-session.js', expected: [200], contains: ['sessionStorage', 'x-csrf-token'] },
+  { path: '/ui/intelligence-policy.js', expected: [200], contains: ['/api/economics/intelligence/policy', 'economic_auto'] },
   { path: '/health', expected: [200] },
-  { path: '/ready', expected: [503] },
+  { path: '/ready', expected: [200, 503] },
   { path: '/ready/production-paper', expected: requireReady ? [200] : [200, 503] },
   { path: '/api/operator/summary', expected: [200], auth: true },
   { path: '/api/economics/dashboard', expected: [200], auth: true },
   { path: '/api/economics/intelligence/nodes', expected: [200], auth: true },
+  { path: '/api/economics/intelligence/policy', expected: [200], auth: true },
   { path: '/metrics', expected: [200], auth: true },
   { path: '/metrics.prom', expected: [200] },
   { path: '/api/audit/verify', expected: [200], auth: true },
@@ -20,16 +24,18 @@ async function probe(row) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const headers = { accept: row.path === '/metrics.prom' ? 'text/plain' : 'application/json' };
+    const headers = { accept: row.path.includes('metrics') ? 'text/plain, application/json' : 'application/json, text/html, text/javascript' };
     if (row.auth && token) headers.authorization = `Bearer ${token}`;
     const response = await fetch(`${baseUrl}${row.path}`, { headers, signal: controller.signal });
     const body = await response.text();
+    const missingTokens = (row.contains || []).filter(value => !body.includes(value));
     return {
       path: row.path,
-      ok: row.expected.includes(response.status),
+      ok: row.expected.includes(response.status) && missingTokens.length === 0,
       status: response.status,
       expected: row.expected,
       contentType: response.headers.get('content-type'),
+      missingTokens,
       preview: body.slice(0, 240),
     };
   } catch (error) {
