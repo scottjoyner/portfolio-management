@@ -8,6 +8,7 @@ const required = [
   'apps/web/src/economics.js',
   'apps/web/src/economics.css',
   'apps/web/src/intelligence-policy.js',
+  'apps/web/src/operator-session.js',
 ];
 
 const missing = required.filter(path => !existsSync(path));
@@ -16,7 +17,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-for (const script of ['apps/web/src/app.js', 'apps/web/src/economics.js', 'apps/web/src/intelligence-policy.js']) {
+for (const script of ['apps/web/src/app.js', 'apps/web/src/economics.js', 'apps/web/src/intelligence-policy.js', 'apps/web/src/operator-session.js']) {
   const checked = spawnSync(process.execPath, ['--check', script], { encoding: 'utf8' });
   if (checked.status !== 0) {
     console.error(`web build failed: JavaScript syntax error in ${script}`);
@@ -31,8 +32,9 @@ const app = readFileSync(required[2], 'utf8');
 const economics = readFileSync(required[3], 'utf8');
 const economicsCss = readFileSync(required[4], 'utf8');
 const intelligencePolicy = readFileSync(required[5], 'utf8');
+const operatorSession = readFileSync(required[6], 'utf8');
 const server = readFileSync('apps/api/src/server.p1.mjs', 'utf8');
-const combined = html + css + app + economics + economicsCss + intelligencePolicy + server;
+const combined = html + css + app + economics + economicsCss + intelligencePolicy + operatorSession + server;
 
 for (const asset of ['/ui/app.js', '/ui/economics.js', '/ui/styles.css']) {
   if (!html.includes(asset)) {
@@ -44,8 +46,18 @@ if (!economics.includes('/ui/economics.css')) {
   console.error('web build failed: economics stylesheet is not loaded');
   process.exit(1);
 }
+if (!server.includes('/ui/operator-session.js')) {
+  console.error('web build failed: operator session headers are not loaded before console requests');
+  process.exit(1);
+}
 if (!server.includes('/ui/intelligence-policy.js')) {
   console.error('web build failed: intelligence routing control is not loaded by the served console');
+  process.exit(1);
+}
+if (!operatorSession.includes("pathname.startsWith('/api/')")
+  || !operatorSession.includes("headers.set('authorization'")
+  || !operatorSession.includes("headers.set('x-csrf-token'")) {
+  console.error('web build failed: operator session must attach auth and CSRF only to same-origin API requests');
   process.exit(1);
 }
 
@@ -82,6 +94,9 @@ for (const token of [
   'intelligence-policy-mode',
   'remoteSpendCapUsdPerDay',
   'minimumRemoteValueCoverage',
+  'operator-session-launcher',
+  'portfolio.operatorBearer',
+  'portfolio.operatorCsrf',
 ]) {
   if (!combined.includes(token)) {
     console.error(`web build failed: missing operator-workflow token ${token}`);
@@ -143,6 +158,7 @@ for (const token of [
   'economic_auto',
   'openrouter_allowed',
   'never bypasses forecast',
+  "same-origin <code>/api/</code> requests",
 ]) {
   if (!combined.includes(token)) {
     console.error(`web build failed: missing accounting or safety token ${token}`);
@@ -157,4 +173,4 @@ for (const id of ['system-truth', 'truth-mode', 'truth-feed', 'truth-cache', 'tr
   }
 }
 
-console.log('web build ok: daily operations, economic lifecycle, and intelligence routing console validated');
+console.log('web build ok: daily operations, authenticated browser session, economic lifecycle, and intelligence routing console validated');
