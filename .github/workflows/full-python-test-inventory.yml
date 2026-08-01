@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 60
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+      TRADING_SYSTEM_STATE_DIR: ${{ runner.temp }}/portfolio-state
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -57,9 +58,13 @@ jobs:
         retention-days: 14
 
   coverage-python-inventory:
-    name: coverage-python-inventory
+    name: coverage-python-inventory-${{ matrix.shard }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
     steps:
@@ -77,26 +82,16 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
-    - name: Collect generated coverage tests in their own process
+    - name: Collect and run assigned coverage domains in fresh processes
       run: |
-        set -o pipefail
-        python -m pytest tests/coverage/ \
-          --import-mode=importlib \
-          --collect-only \
-          -q | tee coverage-python-collection.txt
-    - name: Run generated coverage tests in their own process
-      run: |
-        set -o pipefail
-        python -m pytest tests/coverage/ \
-          --import-mode=importlib \
-          -q | tee coverage-python-results.txt
-    - name: Upload coverage test evidence
+        python scripts/run-isolated-coverage-inventory.py \
+          --shard-index "${{ matrix.shard }}" \
+          --shard-total 4
+    - name: Upload isolated coverage evidence
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: coverage-python-inventory-${{ github.sha }}
-        path: |
-          coverage-python-collection.txt
-          coverage-python-results.txt
-        if-no-files-found: warn
+        name: coverage-python-inventory-${{ matrix.shard }}-${{ github.sha }}
+        path: full-python-inventory/coverage/shard-${{ matrix.shard }}/
+        if-no-files-found: error
         retention-days: 14
