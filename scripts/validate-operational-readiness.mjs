@@ -45,6 +45,32 @@ const operatorRunbook = read('docs/OPERATOR_RUNBOOK_P0_P1.md');
 const deploymentRunbook = read('docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md');
 const readinessMatrix = read('docs/RELEASE_READINESS_MATRIX.md');
 
+const requiredBlockingGates = [
+  'validation',
+  'node-tests',
+  'postgres-integration',
+  'python-critical',
+  'coverage-gate',
+  'broad-python-suite',
+];
+const releaseReadinessBlock = workflow.split('\n  release-readiness:')[1] || '';
+const releaseReadinessNeeds = releaseReadinessBlock.match(/\n\s+needs:\s*\[([^\]]+)\]/)?.[1] || '';
+const declaredBlockingGates = new Set(
+  releaseReadinessNeeds
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean),
+);
+const aggregatesAllBlockingGates = requiredBlockingGates.every(gate => declaredBlockingGates.has(gate));
+const enforcesAllBlockingResults = [
+  'VALIDATION_RESULT',
+  'NODE_TESTS_RESULT',
+  'POSTGRES_RESULT',
+  'PYTHON_CRITICAL_RESULT',
+  'COVERAGE_RESULT',
+  'BROAD_PYTHON_RESULT',
+].every(resultName => releaseReadinessBlock.includes(`test "$${resultName}" = success`));
+
 const checks = [
   [packageJson.includes('"operational:validate"') && packageJson.includes('validate-operational-readiness.mjs'), 'package scripts must expose operational readiness validation'],
   [packageJson.includes('"smoke:production-runtime"') && packageJson.includes('ci-production-runtime-smoke.mjs'), 'package scripts must expose the authenticated production runtime smoke'],
@@ -56,7 +82,7 @@ const checks = [
   [workflow.includes('npm run test:integration:postgres') && workflow.includes('npm run smoke:production-runtime'), 'CI must run database and production runtime restart smoke tests'],
   [workflow.includes('pg_dump') && workflow.includes('pg_restore') && workflow.includes('portfolio_restore'), 'CI must prove logical backup restoration'],
   [workflow.includes('postgres-readiness-${{ github.sha }}') && workflow.includes('actions/upload-artifact@v4'), 'CI must retain exact-head readiness evidence'],
-  [workflow.includes('release-readiness:') && workflow.includes('needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate]'), 'CI must aggregate all blocking release gates'],
+  [workflow.includes('release-readiness:') && aggregatesAllBlockingGates && enforcesAllBlockingResults, 'CI must aggregate and enforce all blocking release gates'],
   [postgresSmoke.includes('006_normalized_execution_runtime') && postgresSmoke.includes('fresh execution engine'), 'PostgreSQL smoke must prove migration 006 and process-boundary hydration'],
   [postgresSmoke.includes('execution_events') && postgresSmoke.includes('assert.rejects'), 'PostgreSQL smoke must verify append-only execution events'],
   [postgresSmoke.includes('runtimeJobs.enqueue') && postgresSmoke.includes('runtimeJobs.heartbeat') && postgresSmoke.includes('runtimeJobs.complete'), 'PostgreSQL smoke must verify durable leased jobs'],
@@ -89,6 +115,7 @@ process.stdout.write(`${JSON.stringify({
   ok: true,
   operationalReadinessContract: 'production-paper-v1',
   blockingCiAggregate: 'release-readiness',
+  requiredBlockingGates,
   postgresEvidenceArtifact: 'postgres-readiness-<sha>',
   workerHeartbeatHealthcheck: true,
   browserAuthRestartSmoke: true,
