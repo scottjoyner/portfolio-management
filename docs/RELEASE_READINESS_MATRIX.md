@@ -15,7 +15,8 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 |---|---|---|---|
 | Static production contract | Blocking — automated | `validation` job | Build, API contract, security, deployment, migration, UI, and operational validators pass. |
 | Deterministic Node behavior | Blocking — automated | `node-tests-0..3` | Every shard passes. |
-| Critical Python trading/accounting | Blocking — automated | `python-critical` | Competition, accounting, trader controls, epoch start, and rebalance tests pass. |
+| Critical Python trading/accounting | Blocking — automated | `python-critical` | Competition, accounting, trader controls, epoch start, approval durability, dry-run execution, fee accounting, concentration policy, risk, on-chain, EVM, and deployment-contract tests pass. |
+| Maintained broad Python surface | Blocking — automated | `broad-python-suite` | The maintained `tests/` and `trading_system/tests/unit/` surface passes with no failures; skipped tests remain visible. |
 | Focused coverage | Blocking — automated | `coverage-gate` | Critical focused coverage remains above the configured threshold. |
 | PostgreSQL migrations | Blocking — automated | `postgres-integration`; migration artifacts | Migrations 001–006 apply, a second run is idempotent, and checksums match. |
 | Migration 006 execution persistence | Blocking — automated | `postgres-integration.tap` | Normalized execution, order, event, and read-model data survive a fresh store instance. |
@@ -40,8 +41,7 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 | Rollback rehearsal | Blocking — manual | `DEPLOYMENT_ROLLBACK_RUNBOOK.md` release record | Prior image and restored backup pass readiness and smoke in a disposable rollback target. |
 | Remaining whole-state rewrites | Open engineering blocker | PostgreSQL mutation review/tests | Operational mutations use targeted optimistic rows instead of broad compatibility replacement. |
 | Deterministic paid-agent counterfactual replay | Open engineering blocker | replay/attribution tests | Automatic attribution compares paid-agent decisions with a reproducible bot counterfactual. |
-| Legacy Python suite | Diagnostic | `legacy-python-diagnostic` | Failures are triaged; any release-path regression is promoted to blocking. |
-| Performance suite | Diagnostic | `performance-diagnostic` | Results are retained; a severe release-path regression is promoted to blocking. |
+| Performance suite | Diagnostic | `performance-diagnostic` | Results are retained; a severe release-path regression is promoted to blocking only after stable thresholds are defined. |
 
 ## Required host certification sequence
 
@@ -64,7 +64,7 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 
 The PR should remain draft until:
 
-- the exact-head `release-readiness` job is green;
+- the exact-head `release-readiness` job is green, including the mandatory `broad-python-suite`;
 - every open engineering blocker above is closed or explicitly removed from this release scope with a safe fail-closed implementation;
 - the host certification sequence has been completed or a clearly identified deployment owner has accepted the remaining manual gates;
 - the PR body reflects current evidence rather than an older green run;
