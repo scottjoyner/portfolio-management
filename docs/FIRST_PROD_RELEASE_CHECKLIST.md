@@ -45,9 +45,10 @@ Do not proceed unless the PR's exact head commit has a successful blocking `rele
 - all four deterministic Node shards;
 - `postgres-integration`;
 - `python-critical`;
+- `broad-python-suite`;
 - `coverage-gate`.
 
-The `legacy-python-diagnostic` and `performance-diagnostic` jobs remain diagnostic. A failure that affects the production-paper path must be promoted to blocking rather than dismissed as legacy.
+The maintained broad Python surface is now blocking, not advisory. It runs `tests/` and `trading_system/tests/unit/` with the explicitly excluded coverage-only directory omitted. The `performance-diagnostic` job remains diagnostic until stable, runner-normalized thresholds are defined. Any performance result that indicates a release-path regression must be investigated and either repaired or converted into an enforceable threshold before certification.
 
 Download and retain the exact-head `postgres-readiness-<sha>` artifact. It must contain:
 
@@ -57,6 +58,8 @@ Download and retain the exact-head `postgres-readiness-<sha>` artifact. It must 
 - authenticated production runtime and browser restart smoke results;
 - logical backup/restore evidence;
 - the disposable test dump.
+
+Retain the exact-head focused coverage and performance-smoke artifacts as supporting evidence. Artifact names may use the temporary PR merge SHA, but the workflow artifact record must identify the reviewed branch head SHA.
 
 ## Must pass before host deployment
 
@@ -88,6 +91,16 @@ The real PostgreSQL integration command is blocking, not optional:
 
 ```bash
 DATABASE_URL=<database-url> npm run test:integration:postgres
+```
+
+The maintained Python release surfaces are also blocking:
+
+```bash
+PYTHONPATH="$PWD:$PWD/trading_system" python -m pytest \
+  tests/ trading_system/tests/unit/ \
+  --ignore=tests/coverage \
+  --import-mode=importlib \
+  -q
 ```
 
 ## Database gates
@@ -196,6 +209,10 @@ Remote provider attempts are fail-closed and at-most-once under uncertainty:
 - Invalid fills are skipped and orphan order references are removed without fabricating a parent order.
 - The API process republishes persisted execution state and the compatibility engine hydrates after restart.
 - A newer in-process update is not overwritten by an older published snapshot.
+- A pending approval file is created with its parent directory, serialized under a dedicated lock, written through a staged file, `fsync`ed, and atomically replaced.
+- Coinbase dry-run preview/create/close/cancel behavior remains local, deterministic, and subprocess-free.
+- Paper scale-in fees are computed from the configured effective fee rate and recorded consistently in event, position, and portfolio accounting.
+- The 60% strategy-PnL concentration default applies only to the supervised paper competition and remains operator-tunable downward; it is not a live-capital authorization.
 - The current paper execution engine must not be represented as certified live execution.
 
 ## Audit and adapter gates
