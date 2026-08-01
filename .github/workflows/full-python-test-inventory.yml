@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 60
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
-      TRADING_SYSTEM_STATE_DIR: ${{ runner.temp }}/portfolio-state
+      TRADING_SYSTEM_STATE_DIR: .test-state
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
