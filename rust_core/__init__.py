@@ -28,8 +28,13 @@ except (ImportError, ModuleNotFoundError) as exc:
     evaluate_all_opens_py = _missing_extension
 
 
-__all__ = [
-    "RUST_CORE_AVAILABLE",
-    "RUST_CORE_IMPORT_ERROR",
-    "evaluate_all_opens_py",
-]
+if RUST_CORE_AVAILABLE:
+    # Preserve the original package behavior: every public symbol exported by
+    # the compiled module remains available through ``from rust_core import *``.
+    __all__ = [name for name in globals() if not name.startswith("_")]
+else:
+    __all__ = [
+        "RUST_CORE_AVAILABLE",
+        "RUST_CORE_IMPORT_ERROR",
+        "evaluate_all_opens_py",
+    ]
