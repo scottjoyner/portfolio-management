@@ -156,6 +156,11 @@ jobs:
           tests/test_rebalance_engine.py \
           tests/test_execution_proof.py::TestMutatingRequestShapesDryRun \
           tests/test_execution_proof.py::TestEngineLifecycleDryRun \
+          tests/test_execution_coverage.py::TestCBClientErrorBranches::test_cli_json_order_dry_run_is_local_and_deterministic \
+          tests/test_approval_persistence.py \
+          tests/test_coinbase_v2_enhancements.py::TestCriticalBugs::test_orchestrator_writes_dict_not_list_to_pending_approvals \
+          tests/test_scale_in_journal.py \
+          tests/test_strategy_concentration_guard.py \
           tests/test_infra_observability.py \
           tests/test_trader_latency.py::TestDrainTickDedup \
           tests/test_trader_latency.py::TestEvaluateOutputEquivalence \
