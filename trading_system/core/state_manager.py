@@ -11,6 +11,11 @@ from trading_system.core.models.domain import Bracket
 
 logger = logging.getLogger(__name__)
 
+_STATE_DIR_ENV = "TRADING_SYSTEM_STATE_DIR"
+_DEFAULT_STATE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "state")
+)
+
 
 class FileLock:
     """Cross-process advisory file lock using fcntl flock.
@@ -57,12 +62,11 @@ class FileLock:
 
 
 class StateManager:
-    """
-    Centralized state manager for portfolio entities.
-    Thread-safe + cross-process file-based persistence with atomic writes.
-    """
-    def __init__(self, state_dir: str = "/home/scott/git/portfolio-management/trading_system/state"):
-        self.state_dir = state_dir
+    """Centralized, process-safe file persistence for portfolio entities."""
+
+    def __init__(self, state_dir: Optional[str] = None):
+        configured = state_dir or os.getenv(_STATE_DIR_ENV) or _DEFAULT_STATE_DIR
+        self.state_dir = os.path.abspath(os.path.expanduser(configured))
         self.brackets_path = os.path.join(self.state_dir, "brackets.json")
         self.brackets_lock_path = self.brackets_path + ".lock"
         self.brackets_backup_path = self.brackets_path + ".bak"
@@ -70,8 +74,7 @@ class StateManager:
         self._ensure_dir()
 
     def _ensure_dir(self) -> None:
-        if not os.path.exists(self.state_dir):
-            os.makedirs(self.state_dir, exist_ok=True)
+        os.makedirs(self.state_dir, exist_ok=True)
 
     def _atomic_write(self, path: str, payload: Any) -> None:
         directory = os.path.dirname(path)
@@ -137,7 +140,7 @@ class StateManager:
 
     def save_brackets(self, brackets: List[Bracket]) -> None:
         with self.lock:
-            payload = [b.model_dump() if hasattr(b, 'model_dump') else b.dict() for b in brackets]
+            payload = [b.model_dump() if hasattr(b, "model_dump") else b.dict() for b in brackets]
             serializable = {"brackets": payload}
             with FileLock(self.brackets_lock_path):
                 self._atomic_write(self.brackets_path, serializable)
@@ -145,9 +148,7 @@ class StateManager:
                     import shutil
                     shutil.copy2(self.brackets_path, self.brackets_backup_path)
                 except OSError as exc:
-                    logger.warning(
-                        "Could not write backup after save: %s", exc
-                    )
+                    logger.warning("Could not write backup after save: %s", exc)
 
     def add_bracket(self, bracket: Bracket) -> None:
         with self.lock:
@@ -161,5 +162,7 @@ class StateManager:
             filtered = [b for b in brackets if b.client_order_id != client_order_id]
             self.save_brackets(filtered)
 
-# Singleton instance for the system
+
+# Singleton instance for the system. The path is portable and may be overridden
+# by TRADING_SYSTEM_STATE_DIR on deployment hosts and in tests.
 state_manager = StateManager()
