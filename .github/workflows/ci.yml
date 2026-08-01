@@ -221,11 +221,10 @@ jobs:
         if-no-files-found: error
         retention-days: 14
 
-  legacy-python-diagnostic:
-    name: legacy-python-diagnostic
+  broad-python-suite:
+    name: broad-python-suite
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    continue-on-error: true
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
     steps:
@@ -243,7 +242,7 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
-    - name: Run broad legacy suite for diagnostics
+    - name: Run maintained broad Python suite
       run: |
         python -m pytest tests/ trading_system/tests/unit/ \
           --ignore=tests/coverage \
@@ -276,7 +275,7 @@ jobs:
   release-readiness:
     name: release-readiness
     if: always()
-    needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate]
+    needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate, broad-python-suite]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -285,6 +284,7 @@ jobs:
       POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
       PYTHON_CRITICAL_RESULT: ${{ needs.python-critical.result }}
       COVERAGE_RESULT: ${{ needs.coverage-gate.result }}
+      BROAD_PYTHON_RESULT: ${{ needs.broad-python-suite.result }}
     steps:
     - name: Enforce all production-critical gates
       run: |
@@ -293,9 +293,11 @@ jobs:
           "node-tests=$NODE_TESTS_RESULT" \
           "postgres-integration=$POSTGRES_RESULT" \
           "python-critical=$PYTHON_CRITICAL_RESULT" \
-          "coverage-gate=$COVERAGE_RESULT"
+          "coverage-gate=$COVERAGE_RESULT" \
+          "broad-python-suite=$BROAD_PYTHON_RESULT"
         test "$VALIDATION_RESULT" = success
         test "$NODE_TESTS_RESULT" = success
         test "$POSTGRES_RESULT" = success
         test "$PYTHON_CRITICAL_RESULT" = success
         test "$COVERAGE_RESULT" = success
+        test "$BROAD_PYTHON_RESULT" = success
