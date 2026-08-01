@@ -32,6 +32,8 @@ def test_durable_record_append_propagates_failure(tmp_path, monkeypatch):
 
 def test_scale_in_emits_durable_event_with_ledger_components():
     trader = _mktrader()
+    configured_fee_bps = 25.0
+    trader._effective_fee_bps = lambda: configured_fee_bps
     position = _pos(
         high=110.0,
         low=100.0,
@@ -57,6 +59,10 @@ def test_scale_in_emits_durable_event_with_ledger_components():
     assert fields["qty"] > 0
     assert fields["notional"] > 0
     assert fields["margin"] > 0
-    assert fields["fee"] > 0
+    assert fields["fee"] == pytest.approx(
+        fields["notional"] * configured_fee_bps / 10_000.0
+    )
+    assert position.fees_paid == pytest.approx(fields["fee"])
+    assert trader.paper_fees_paid >= fields["fee"]
     assert fields["position_trades"] == 2
     assert fields["cash_after"] == trader.paper_cash
