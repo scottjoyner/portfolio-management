@@ -7,13 +7,16 @@ const requiredFiles = [
   'Dockerfile',
   'docker-compose.production.yml',
   '.github/workflows/ci.yml',
+  'config/release-performance-thresholds.json',
   'apps/api/src/intelligenceExecution.mjs',
   'apps/api/src/openRouterUsageReconciliation.mjs',
+  'scripts/benchmark-release-critical-paths.mjs',
   'scripts/ci-production-runtime-smoke.mjs',
   'scripts/smoke-production-paper.mjs',
   'scripts/check-economic-worker-health.mjs',
   'tests/integration/postgres-smoke.test.mjs',
   'tests/openrouter-at-most-once.test.mjs',
+  'tests/performance-thresholds.test.mjs',
   'tests/fixtures/openai-compatible-node.mjs',
   'docs/FIRST_PROD_RELEASE_CHECKLIST.md',
   'docs/OPERATOR_RUNBOOK_P0_P1.md',
@@ -33,6 +36,8 @@ const packageJson = read('package.json');
 const dockerfile = read('Dockerfile');
 const compose = read('docker-compose.production.yml');
 const workflow = read('.github/workflows/ci.yml');
+const performanceThresholds = JSON.parse(read('config/release-performance-thresholds.json'));
+const performanceBenchmark = read('scripts/benchmark-release-critical-paths.mjs');
 const intelligenceExecution = read('apps/api/src/intelligenceExecution.mjs');
 const openRouterReconciliation = read('apps/api/src/openRouterUsageReconciliation.mjs');
 const runtimeSmoke = read('scripts/ci-production-runtime-smoke.mjs');
@@ -40,6 +45,7 @@ const productionSmoke = read('scripts/smoke-production-paper.mjs');
 const workerHealth = read('scripts/check-economic-worker-health.mjs');
 const postgresSmoke = read('tests/integration/postgres-smoke.test.mjs');
 const openRouterTests = read('tests/openrouter-at-most-once.test.mjs');
+const performanceTests = read('tests/performance-thresholds.test.mjs');
 const checklist = read('docs/FIRST_PROD_RELEASE_CHECKLIST.md');
 const operatorRunbook = read('docs/OPERATOR_RUNBOOK_P0_P1.md');
 const deploymentRunbook = read('docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md');
@@ -52,6 +58,7 @@ const requiredBlockingGates = [
   'python-critical',
   'coverage-gate',
   'broad-python-suite',
+  'performance-gate',
 ];
 const releaseReadinessBlock = workflow.split('\n  release-readiness:')[1] || '';
 const releaseReadinessNeeds = releaseReadinessBlock.match(/\n\s+needs:\s*\[([^\]]+)\]/)?.[1] || '';
@@ -69,7 +76,22 @@ const enforcesAllBlockingResults = [
   'PYTHON_CRITICAL_RESULT',
   'COVERAGE_RESULT',
   'BROAD_PYTHON_RESULT',
+  'PERFORMANCE_RESULT',
 ].every(resultName => releaseReadinessBlock.includes(`test "$${resultName}" = success`));
+
+const performanceMeasurements = performanceThresholds.measurements || {};
+const performanceProfileValid = performanceThresholds.schemaVersion === 1
+  && performanceThresholds.profile === 'github-ubuntu-node22-x64'
+  && performanceThresholds.runner?.nodeMajor === 22
+  && performanceThresholds.runner?.platform === 'linux'
+  && performanceThresholds.runner?.architecture === 'x64'
+  && Object.keys(performanceMeasurements).length === 3
+  && Object.values(performanceMeasurements).every(value => (
+    Number(value.iterationsPerSample) > 0
+    && Number(value.maxMedianElapsedMs) > 0
+    && Number(value.maxP95ElapsedMs) >= Number(value.maxMedianElapsedMs)
+    && Number(value.minMedianOperationsPerSecond) > 0
+  ));
 
 const checks = [
   [packageJson.includes('"operational:validate"') && packageJson.includes('validate-operational-readiness.mjs'), 'package scripts must expose operational readiness validation'],
@@ -83,6 +105,10 @@ const checks = [
   [workflow.includes('pg_dump') && workflow.includes('pg_restore') && workflow.includes('portfolio_restore'), 'CI must prove logical backup restoration'],
   [workflow.includes('postgres-readiness-${{ github.sha }}') && workflow.includes('actions/upload-artifact@v4'), 'CI must retain exact-head readiness evidence'],
   [workflow.includes('release-readiness:') && aggregatesAllBlockingGates && enforcesAllBlockingResults, 'CI must aggregate and enforce all blocking release gates'],
+  [workflow.includes('performance-gate:') && workflow.includes("PERFORMANCE_STRICT_RUNNER: 'true'") && workflow.includes('release-performance-thresholds.json'), 'CI must enforce the checked-in runner-normalized performance profile'],
+  [performanceProfileValid, 'performance threshold profile must define valid Node 22 Linux x64 limits'],
+  [performanceBenchmark.includes('medianElapsedMs') && performanceBenchmark.includes('p95ElapsedMs') && performanceBenchmark.includes('minMedianOperationsPerSecond'), 'performance benchmark must enforce median, p95, and throughput thresholds'],
+  [performanceTests.includes('runner drift') && performanceTests.includes('performance regressions'), 'performance tests must cover runner drift and threshold regressions'],
   [postgresSmoke.includes('006_normalized_execution_runtime') && postgresSmoke.includes('fresh execution engine'), 'PostgreSQL smoke must prove migration 006 and process-boundary hydration'],
   [postgresSmoke.includes('execution_events') && postgresSmoke.includes('assert.rejects'), 'PostgreSQL smoke must verify append-only execution events'],
   [postgresSmoke.includes('runtimeJobs.enqueue') && postgresSmoke.includes('runtimeJobs.heartbeat') && postgresSmoke.includes('runtimeJobs.complete'), 'PostgreSQL smoke must verify durable leased jobs'],
@@ -96,6 +122,8 @@ const checks = [
   [openRouterTests.includes('never posts twice') && openRouterTests.includes('transport-uncertain') && openRouterTests.includes('eventually require manual reconciliation'), 'remote provider tests must prove at-most-once and bounded reconciliation behavior'],
   [checklist.includes('postgres-integration') && checklist.includes('release-readiness'), 'release checklist must name the blocking CI evidence'],
   [checklist.includes('`broad-python-suite`') && readinessMatrix.includes('`broad-python-suite`'), 'release documentation must name the mandatory broad Python gate'],
+  [checklist.includes('`performance-gate`') && readinessMatrix.includes('`performance-gate`'), 'release documentation must name the mandatory performance gate'],
+  [!checklist.includes('performance-diagnostic') && !readinessMatrix.includes('performance-diagnostic'), 'release documentation must not retain the retired diagnostic performance classification'],
   [!checklist.includes('legacy-python-diagnostic') && !readinessMatrix.includes('legacy-python-diagnostic'), 'release documentation must not classify the maintained broad Python suite as diagnostic'],
   [checklist.includes('at-most-once') && checklist.includes('generation metadata'), 'release checklist must document remote at-most-once and generation reconciliation gates'],
   [operatorRunbook.includes('sessionStorage') || deploymentRunbook.includes('sessionStorage'), 'operator documentation must explain same-tab browser credential handling'],
@@ -120,6 +148,8 @@ process.stdout.write(`${JSON.stringify({
   requiredBlockingGates,
   releaseDocumentationAligned: true,
   postgresEvidenceArtifact: 'postgres-readiness-<sha>',
+  performanceEvidenceArtifact: 'performance-smoke-<sha>',
+  performanceThresholdProfile: performanceThresholds.profile,
   workerHeartbeatHealthcheck: true,
   browserAuthRestartSmoke: true,
   remoteProviderAtMostOnce: true,
