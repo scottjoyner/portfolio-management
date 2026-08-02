@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "profile": "github-ubuntu-node22-x64",
+  "baseline": {
+    "sourceHead": "cf7b552bb82bfcf48fbb94131a8dbfbe8593fed8",
+    "sourceRun": 30765772348,
+    "measuredAt": "2026-08-02T20:31:17.086Z",
+    "policy": "Thresholds intentionally retain substantial headroom above the exact-runner baseline while blocking multi-fold release-path regressions."
+  },
+  "runner": {
+    "nodeMajor": 22,
+    "platform": "linux",
+    "architecture": "x64"
+  },
+  "sampling": {
+    "warmups": 1,
+    "samples": 5
+  },
+  "measurements": {
+    "moving-average-replay-10k-bars": {
+      "iterationsPerSample": 5,
+      "maxMedianElapsedMs": 500,
+      "maxP95ElapsedMs": 800,
+      "minMedianOperationsPerSecond": 10
+    },
+    "audit-chain-build-and-verify-5k-events": {
+      "iterationsPerSample": 1,
+      "maxMedianElapsedMs": 300,
+      "maxP95ElapsedMs": 500,
+      "minMedianOperationsPerSecond": 3
+    },
+    "operator-state-normalization-500-records": {
+      "iterationsPerSample": 250,
+      "maxMedianElapsedMs": 30,
+      "maxP95ElapsedMs": 60,
+      "minMedianOperationsPerSecond": 10000
+    }
+  }
+}
