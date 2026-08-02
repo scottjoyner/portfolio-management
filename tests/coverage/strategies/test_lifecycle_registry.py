@@ -1,45 +1,31 @@
-"""Coverage tests for strategies.registry.registry and strategies.lifecycle.
-
-The lifecycle module is heavily DB-coupled; the ORM classes and repository are
-replaced with lightweight fakes/mocks so no database is touched.
-"""
+"""Coverage tests for the strategy registry and lifecycle manager."""
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# registry/registry.py
-# ---------------------------------------------------------------------------
-
 def test_registry_registry_load():
-    from trading_system.strategies.registry import registry as reg
+    from trading_system.strategies.registry import registry as registry
 
-    strategies = reg.load_strategies()
+    strategies = registry.load_strategies()
     assert strategies
-    ids = [s.strategy_id for s in strategies]
-    assert len(ids) == len(set(ids))  # no duplicate ids
-
-    index = reg.strategy_metadata_index()
+    strategy_ids = [strategy.strategy_id for strategy in strategies]
+    assert len(strategy_ids) == len(set(strategy_ids))
+    index = registry.strategy_metadata_index()
     assert len(index) == len(strategies)
-    # every entry maps id -> metadata dict
-    for sid, meta in index.items():
-        assert isinstance(meta, dict)
+    assert all(isinstance(metadata, dict) for metadata in index.values())
 
-
-# ---------------------------------------------------------------------------
-# lifecycle.py
-# ---------------------------------------------------------------------------
 
 class _FakeQuery:
     def __init__(self, result_first=None, result_all=None):
         self._first = result_first
         self._all = result_all or []
 
-    def filter(self, *a, **k):
+    def filter(self, *args, **kwargs):
         return self
 
     def first(self):
@@ -55,7 +41,7 @@ class _FakeDB:
         self.commits = 0
         self._query_result = _FakeQuery()
 
-    def query(self, *a, **k):
+    def query(self, *args, **kwargs):
         return self._query_result
 
     def add(self, obj):
@@ -87,115 +73,95 @@ class _FakeRepo:
 
 @pytest.fixture
 def lifecycle(monkeypatch):
-    import trading_system.strategies.lifecycle as lc
+    # The root generated-coverage conftest installs a minimal lifecycle stub for
+    # unrelated tests. This file explicitly exercises the real implementation.
+    sys.modules.pop("strategies.lifecycle", None)
+    sys.modules.pop("trading_system.strategies.lifecycle", None)
+    module = importlib.import_module("trading_system.strategies.lifecycle")
     from unittest.mock import MagicMock
-    # Replace ORM model classes with MagicMock so class-attribute access used in
-    # SQLAlchemy-style query filters does not blow up on the plain data classes.
-    monkeypatch.setattr(lc, "StrategyConfig", MagicMock(name="StrategyConfig"))
-    monkeypatch.setattr(lc, "StrategyRun", MagicMock(name="StrategyRun"))
-    return lc
+
+    monkeypatch.setattr(module, "StrategyConfig", MagicMock(name="StrategyConfig"))
+    monkeypatch.setattr(module, "StrategyRun", MagicMock(name="StrategyRun"))
+    return module
 
 
 def test_lifecycle_start_creates_config(lifecycle):
     db = _FakeDB()
-    db._query_result = _FakeQuery(result_first=None)  # config missing
+    db._query_result = _FakeQuery(result_first=None)
     repo = _FakeRepo(db)
-    mgr = lifecycle.StrategyLifecycleManager(repo=repo)
-
-    run = mgr.start("strat-1", mode="paper")
+    run = lifecycle.StrategyLifecycleManager(repo=repo).start("strat-1", mode="paper")
     assert run is not None
     assert db.added and db.commits >= 1
     assert repo.created
 
 
 def test_lifecycle_start_existing_enabled(lifecycle):
-    cfg = types.SimpleNamespace(enabled=True)
     db = _FakeDB()
-    db._query_result = _FakeQuery(result_first=cfg)
+    db._query_result = _FakeQuery(result_first=types.SimpleNamespace(enabled=True))
     repo = _FakeRepo(db)
-    mgr = lifecycle.StrategyLifecycleManager(repo=repo)
-    run = mgr.start("strat-2")
+    lifecycle.StrategyLifecycleManager(repo=repo).start("strat-2")
     assert repo.created
 
 
 def test_lifecycle_start_disabled_raises(lifecycle):
-    cfg = types.SimpleNamespace(enabled=False)
     db = _FakeDB()
-    db._query_result = _FakeQuery(result_first=cfg)
-    repo = _FakeRepo(db)
-    mgr = lifecycle.StrategyLifecycleManager(repo=repo)
+    db._query_result = _FakeQuery(result_first=types.SimpleNamespace(enabled=False))
     with pytest.raises(lifecycle.StrategyLifecycleError):
-        mgr.start("strat-3")
+        lifecycle.StrategyLifecycleManager(repo=_FakeRepo(db)).start("strat-3")
 
 
 def test_lifecycle_stop_pause_resume(lifecycle):
-    db = _FakeDB()
-    repo = _FakeRepo(db)
-    mgr = lifecycle.StrategyLifecycleManager(repo=repo)
-
-    # stop: run exists
+    repo = _FakeRepo(_FakeDB())
+    manager = lifecycle.StrategyLifecycleManager(repo=repo)
     repo._runs["t1"] = types.SimpleNamespace(task_id="t1")
-    assert mgr.stop("t1") is not None
-    # stop: run missing
-    assert mgr.stop("nope") is None
-
-    assert mgr.pause("t1") is not None
-    assert mgr.resume("t1") is not None
+    assert manager.stop("t1") is not None
+    assert manager.stop("nope") is None
+    assert manager.pause("t1") is not None
+    assert manager.resume("t1") is not None
 
 
 def test_lifecycle_running_and_enable_disable(lifecycle):
     db = _FakeDB()
     db._query_result = _FakeQuery(result_all=["r1", "r2"])
-    repo = _FakeRepo(db)
-    mgr = lifecycle.StrategyLifecycleManager(repo=repo)
-    assert mgr.running_strategies() == ["r1", "r2"]
+    manager = lifecycle.StrategyLifecycleManager(repo=_FakeRepo(db))
+    assert manager.running_strategies() == ["r1", "r2"]
 
-    # enable / disable when config present
-    cfg = types.SimpleNamespace(enabled=False)
-    db._query_result = _FakeQuery(result_first=cfg)
-    assert mgr.enable("s").enabled is True
-    assert mgr.disable("s").enabled is False
+    config = types.SimpleNamespace(enabled=False)
+    db._query_result = _FakeQuery(result_first=config)
+    assert manager.enable("s").enabled is True
+    assert manager.disable("s").enabled is False
 
-    # enable / disable when config missing
     db._query_result = _FakeQuery(result_first=None)
-    assert mgr.enable("missing") is None
-    assert mgr.disable("missing") is None
+    assert manager.enable("missing") is None
+    assert manager.disable("missing") is None
 
 
 def test_lifecycle_disabled_ids(lifecycle):
     db = _FakeDB()
     db._query_result = _FakeQuery(result_all=[("a",), ("b",)])
-    repo = _FakeRepo(db)
-    mgr = lifecycle.StrategyLifecycleManager(repo=repo)
-    assert mgr.disabled_ids() == {"a", "b"}
+    manager = lifecycle.StrategyLifecycleManager(repo=_FakeRepo(db))
+    assert manager.disabled_ids() == {"a", "b"}
 
 
 def test_lifecycle_sync_catalog(monkeypatch, lifecycle):
-    # Fake the OpsRepository module resolved via __import__.
-    fake_repo_mod = types.ModuleType("storage.postgres.repository")
+    fake_repo_module = types.ModuleType("storage.postgres.repository")
 
     class _OpsRepo:
         def __init__(self, db):
             self.db = db
 
-    fake_repo_mod.OpsRepository = _OpsRepo
-    monkeypatch.setitem(sys.modules, "storage.postgres.repository", fake_repo_mod)
+    fake_repo_module.OpsRepository = _OpsRepo
+    monkeypatch.setitem(sys.modules, "storage.postgres.repository", fake_repo_module)
 
-    # Fake strategies returned by load_strategies.
-    class _Strat:
-        def __init__(self, sid, exists):
-            self.strategy_id = sid
-            self._exists = exists
+    class _Strategy:
+        def __init__(self, strategy_id):
+            self.strategy_id = strategy_id
 
         def metadata(self):
             return {"strategy_type": "trend", "config": {"k": 1}}
 
-    strat_new = _Strat("new-1", False)
-    strat_existing = _Strat("old-1", True)
-    monkeypatch.setattr(lifecycle, "load_strategies",
-                        lambda: [strat_new, strat_existing])
-
-    existing_cfg = types.SimpleNamespace(strategy_type="x", config_json="{}")
+    monkeypatch.setattr(lifecycle, "load_strategies", lambda: [_Strategy("new-1"), _Strategy("old-1")])
+    existing_config = types.SimpleNamespace(strategy_type="x", config_json="{}")
 
     class _DB:
         def __init__(self):
@@ -204,17 +170,17 @@ def test_lifecycle_sync_catalog(monkeypatch, lifecycle):
             self.calls = 0
 
         def query(self, model):
-            db = self
+            database = self
 
-            class _Q:
-                def filter(self, *a, **k):
+            class _Query:
+                def filter(self, *args, **kwargs):
                     return self
 
                 def first(self):
-                    db.calls += 1
-                    # first strategy -> missing, second -> existing
-                    return None if db.calls == 1 else existing_cfg
-            return _Q()
+                    database.calls += 1
+                    return None if database.calls == 1 else existing_config
+
+            return _Query()
 
         def add(self, obj):
             self.added.append(obj)
@@ -222,8 +188,8 @@ def test_lifecycle_sync_catalog(monkeypatch, lifecycle):
         def commit(self):
             self.commits += 1
 
-    db = _DB()
-    synced = lifecycle.sync_catalog_to_db(db)
+    database = _DB()
+    synced = lifecycle.sync_catalog_to_db(database)
     assert len(synced) == 2
-    assert db.added  # new config was added
-    assert db.commits >= 1
+    assert database.added
+    assert database.commits >= 1
