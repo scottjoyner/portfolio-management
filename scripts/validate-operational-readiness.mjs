@@ -8,8 +8,10 @@ const requiredFiles = [
   'docker-compose.production.yml',
   '.github/workflows/ci.yml',
   'config/release-performance-thresholds.json',
+  'apps/api/src/executionRoutePersistence.mjs',
   'apps/api/src/intelligenceExecution.mjs',
   'apps/api/src/openRouterUsageReconciliation.mjs',
+  'packages/storage/src/transactionalPostgresOperatorStore.mjs',
   'scripts/benchmark-release-critical-paths.mjs',
   'scripts/ci-production-runtime-smoke.mjs',
   'scripts/smoke-production-paper.mjs',
@@ -17,11 +19,13 @@ const requiredFiles = [
   'tests/integration/postgres-smoke.test.mjs',
   'tests/openrouter-at-most-once.test.mjs',
   'tests/performance-thresholds.test.mjs',
+  'tests/targeted-execution-persistence.test.mjs',
   'tests/fixtures/openai-compatible-node.mjs',
   'docs/FIRST_PROD_RELEASE_CHECKLIST.md',
   'docs/OPERATOR_RUNBOOK_P0_P1.md',
   'docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md',
   'docs/RELEASE_READINESS_MATRIX.md',
+  'docs/PRODUCTION_PAPER_GAP_REGISTER.md',
 ];
 
 const errors = [];
@@ -38,6 +42,9 @@ const compose = read('docker-compose.production.yml');
 const workflow = read('.github/workflows/ci.yml');
 const performanceThresholds = JSON.parse(read('config/release-performance-thresholds.json'));
 const performanceBenchmark = read('scripts/benchmark-release-critical-paths.mjs');
+const executionRoutes = read('apps/api/src/executionRoutePersistence.mjs');
+const transactionalStore = read('packages/storage/src/transactionalPostgresOperatorStore.mjs');
+const targetedExecutionTests = read('tests/targeted-execution-persistence.test.mjs');
 const intelligenceExecution = read('apps/api/src/intelligenceExecution.mjs');
 const openRouterReconciliation = read('apps/api/src/openRouterUsageReconciliation.mjs');
 const runtimeSmoke = read('scripts/ci-production-runtime-smoke.mjs');
@@ -50,6 +57,7 @@ const checklist = read('docs/FIRST_PROD_RELEASE_CHECKLIST.md');
 const operatorRunbook = read('docs/OPERATOR_RUNBOOK_P0_P1.md');
 const deploymentRunbook = read('docs/DEPLOYMENT_ROLLBACK_RUNBOOK.md');
 const readinessMatrix = read('docs/RELEASE_READINESS_MATRIX.md');
+const gapRegister = read('docs/PRODUCTION_PAPER_GAP_REGISTER.md');
 
 const requiredBlockingGates = [
   'validation',
@@ -105,10 +113,13 @@ const checks = [
   [workflow.includes('pg_dump') && workflow.includes('pg_restore') && workflow.includes('portfolio_restore'), 'CI must prove logical backup restoration'],
   [workflow.includes('postgres-readiness-${{ github.sha }}') && workflow.includes('actions/upload-artifact@v4'), 'CI must retain exact-head readiness evidence'],
   [workflow.includes('release-readiness:') && aggregatesAllBlockingGates && enforcesAllBlockingResults, 'CI must aggregate and enforce all blocking release gates'],
-  [workflow.includes('performance-gate:') && workflow.includes("PERFORMANCE_STRICT_RUNNER: 'true'") && workflow.includes('release-performance-thresholds.json'), 'CI must enforce the checked-in runner-normalized performance profile'],
+  [workflow.includes('performance-gate:') && workflow.includes("PERFORMANCE_STRICT_RUNNER: 'true'") && workflow.includes('release-performance-thresholds.json') && workflow.includes('set -o pipefail'), 'CI must enforce and propagate the checked-in runner-normalized performance profile'],
   [performanceProfileValid, 'performance threshold profile must define valid Node 22 Linux x64 limits'],
   [performanceBenchmark.includes('medianElapsedMs') && performanceBenchmark.includes('p95ElapsedMs') && performanceBenchmark.includes('minMedianOperationsPerSecond'), 'performance benchmark must enforce median, p95, and throughput thresholds'],
   [performanceTests.includes('runner drift') && performanceTests.includes('performance regressions'), 'performance tests must cover runner drift and threshold regressions'],
+  [executionRoutes.includes("pathname === '/api/execution/execute'") && executionRoutes.includes('persistExecutionMutation') && executionRoutes.includes('targeted-optimistic'), 'execution lifecycle routes must prefer targeted optimistic persistence'],
+  [transactionalStore.includes('async persistExecutionMutation') && transactionalStore.includes('appendAuditEventTargeted') && transactionalStore.includes("executionRoutePersistence: 'targeted-optimistic-with-append-only-audit'"), 'transactional store must expose targeted execution and audit persistence'],
+  [targetedExecutionTests.includes('broad_mutate_must_not_run') && targetedExecutionTests.includes('broad_save_must_not_run') && targetedExecutionTests.includes('DELETE FROM'), 'targeted execution tests must reject broad state mutation and replacement'],
   [postgresSmoke.includes('006_normalized_execution_runtime') && postgresSmoke.includes('fresh execution engine'), 'PostgreSQL smoke must prove migration 006 and process-boundary hydration'],
   [postgresSmoke.includes('execution_events') && postgresSmoke.includes('assert.rejects'), 'PostgreSQL smoke must verify append-only execution events'],
   [postgresSmoke.includes('runtimeJobs.enqueue') && postgresSmoke.includes('runtimeJobs.heartbeat') && postgresSmoke.includes('runtimeJobs.complete'), 'PostgreSQL smoke must verify durable leased jobs'],
@@ -133,6 +144,7 @@ const checks = [
   [readinessMatrix.includes('Remote provider at-most-once') && readinessMatrix.includes('Delayed `usage_pending` reconciliation'), 'readiness matrix must record remote provider recovery as blocking automated evidence'],
   [readinessMatrix.includes('Remaining whole-state rewrites') && readinessMatrix.includes('Deterministic paid-agent counterfactual replay'), 'readiness matrix must preserve the remaining engineering blockers'],
   [readinessMatrix.includes('Blocking — manual') && readinessMatrix.includes('Rollback rehearsal'), 'readiness matrix must preserve host-only certification gates'],
+  [gapRegister.includes('| G-002 |') && gapRegister.includes('| G-003 |') && gapRegister.includes('| G-009 |') && gapRegister.includes('Every code or documentation commit invalidates prior exact-head certification'), 'gap register must track technical, manual, and exact-head evidence obligations'],
 ];
 for (const [ok, message] of checks) if (!ok) errors.push(message);
 
@@ -150,6 +162,7 @@ process.stdout.write(`${JSON.stringify({
   postgresEvidenceArtifact: 'postgres-readiness-<sha>',
   performanceEvidenceArtifact: 'performance-smoke-<sha>',
   performanceThresholdProfile: performanceThresholds.profile,
+  targetedExecutionPersistence: true,
   workerHeartbeatHealthcheck: true,
   browserAuthRestartSmoke: true,
   remoteProviderAtMostOnce: true,
