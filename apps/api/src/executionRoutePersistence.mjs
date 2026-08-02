@@ -87,6 +87,14 @@ function upsertExecution(state, execution) {
   else state.executions.push(execution);
 }
 
+function upsertAuditEvent(state, event) {
+  if (!event) return;
+  state.audit = Array.isArray(state.audit) ? state.audit : [];
+  const index = state.audit.findIndex(row => row.id === event.id);
+  if (index >= 0) state.audit[index] = event;
+  else state.audit.push(event);
+}
+
 function auditEvent(action, execution, payload = {}, now = new Date().toISOString()) {
   const revision = execution?.version
     ?? execution?.updatedAt
@@ -137,30 +145,44 @@ async function persistResult({ store, state, result, action, payload = {}, now }
 
   const event = action ? auditEvent(action, result.execution, payload, now) : null;
   if (typeof store?.persistExecutionMutation === 'function') {
-    await store.persistExecutionMutation({ execution: result.execution, auditEvent: event }, { now });
+    const persisted = await store.persistExecutionMutation(
+      { execution: result.execution, auditEvent: event },
+      { now },
+    );
     if (state) {
       upsertExecution(state, result.execution);
-      if (event) {
-        state.audit = Array.isArray(state.audit) ? state.audit : [];
-        if (!state.audit.some(row => row.id === event.id)) state.audit.push(event);
-      }
+      upsertAuditEvent(state, persisted?.auditEvent || event);
     }
-    return { status: 200, body: { ok: true, ...result, persistence: 'targeted-optimistic' } };
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        ...result,
+        persistence: 'targeted-optimistic',
+        auditEventId: persisted?.auditEvent?.id || event?.id || null,
+        auditIdempotent: Boolean(persisted?.auditIdempotent),
+      },
+    };
   }
 
   const mutation = await store.mutate(async current => {
     upsertExecution(current, result.execution);
-    if (event) {
-      current.audit = Array.isArray(current.audit) ? current.audit : [];
-      if (!current.audit.some(row => row.id === event.id)) current.audit.push(event);
-    }
+    upsertAuditEvent(current, event);
     return result;
   });
   const mutationErrors = mutation?.errors || [];
   if (mutationErrors.length) {
     return { status: statusForErrors(mutationErrors), body: { ok: false, errors: mutationErrors } };
   }
-  return { status: 200, body: { ok: true, ...mutation, persistence: 'compatibility-state' } };
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      ...mutation,
+      persistence: 'compatibility-state',
+      auditEventId: event?.id || null,
+    },
+  };
 }
 
 export async function handleTargetedExecutionRoute({
