@@ -47,11 +47,11 @@ def test_atomic_write_rollback_on_failure(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("simulated fs failure")
 
-    monkeypatch.setattr("os.rename", boom)
+    monkeypatch.setattr("os.replace", boom)
     with pytest.raises(RuntimeError):
         sm.save_brackets([_make_bracket("b2")])
 
-    stray = [p for p in os.listdir(str(tmp_path)) if p.endswith(".tmp")]
+    stray = [p for p in os.listdir(str(tmp_path)) if p.startswith(".tmp-")]
     assert stray == [], "partial temp must be cleaned up after failure"
 
     restored = sm.load_brackets()
