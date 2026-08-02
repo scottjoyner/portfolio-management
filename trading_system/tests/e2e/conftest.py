@@ -98,6 +98,17 @@ def test_client(paper_exchange, risk_engine, db_session):
 
 
 @pytest.fixture()
+def app_client():
+    """Client for read-only API endpoints that require no database fixture."""
+    from apps.api.main import app
+
+    app.dependency_overrides.clear()
+    with TestClient(app) as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture()
 def deterministic_market_state():
     """Return a fixed market state for reproducibility."""
     return {
