@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Collect and run generated coverage tests in isolated domain processes.
+"""Collect and run every generated coverage file in a fresh Python process.
 
-The generated coverage corpus intentionally installs broad ``sys.modules``
-stubs from ``tests/coverage/conftest.py``. Running every domain in a single
-pytest interpreter lets those stubs and repeated package names contaminate
-unrelated domains. This runner preserves the complete corpus while launching a
-fresh pytest process for each top-level coverage domain.
+The generated coverage corpus installs broad ``sys.modules`` stubs from its
+root and per-directory conftests. Several test files also replace the same
+module names with mutually incompatible fakes. Co-collecting a directory lets
+one file's import-time state corrupt another file, producing order-dependent
+failures that do not reproduce in isolation. This runner preserves every test
+while giving each test file a clean interpreter.
 """
 
 from __future__ import annotations
@@ -17,37 +18,34 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Iterable
 
 
-def _discover_groups(coverage_root: Path) -> list[tuple[str, list[Path]]]:
-    groups: list[tuple[str, list[Path]]] = []
-    root_tests = sorted(coverage_root.glob("test_*.py"))
-    if root_tests:
-        groups.append(("root", root_tests))
-
-    for child in sorted(coverage_root.iterdir()):
-        if not child.is_dir() or child.name.startswith("__"):
-            continue
-        if any(child.rglob("test_*.py")):
-            groups.append((child.name, [child]))
+def _discover_groups(coverage_root: Path) -> list[tuple[str, Path]]:
+    groups: list[tuple[str, Path]] = []
+    for test_file in sorted(coverage_root.rglob("test_*.py")):
+        relative = test_file.relative_to(coverage_root)
+        name = str(relative.with_suffix("")).replace(os.sep, "__")
+        groups.append((name, test_file))
     return groups
 
 
-def _pythonpath(repo: Path, group_paths: Iterable[Path]) -> str:
-    candidates: list[Path] = []
-    for path in group_paths:
-        candidates.append(path if path.is_dir() else path.parent)
-    candidates.extend(
-        [
-            repo / "tests" / "coverage",
-            repo,
-            repo / "trading_system",
-            repo / "graph-alpha-bot",
-            repo / "graph-alpha-bot" / "scripts",
-            repo / "graph-alpha-bot" / "app",
-        ]
-    )
+def _pythonpath(repo: Path, test_file: Path) -> str:
+    """Prefer canonical source packages, then file-local test helpers.
+
+    ``tests/coverage`` itself is intentionally not added globally because it
+    contains packages named ``alembic``, ``scripts``, ``strategies``, and other
+    production names. The individual file's parent is sufficient for helper
+    imports such as ``db_helpers`` without shadowing unrelated packages.
+    """
+
+    candidates = [
+        repo,
+        repo / "trading_system",
+        repo / "graph-alpha-bot",
+        repo / "graph-alpha-bot" / "scripts",
+        repo / "graph-alpha-bot" / "app",
+        test_file.parent,
+    ]
     existing = os.environ.get("PYTHONPATH", "")
     ordered: list[str] = []
     seen: set[str] = set()
@@ -92,7 +90,7 @@ def main() -> int:
     parser.add_argument(
         "--collect-only",
         action="store_true",
-        help="Only collect each assigned domain; do not execute tests.",
+        help="Only collect each assigned test file; do not execute tests.",
     )
     args = parser.parse_args()
 
@@ -105,7 +103,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     groups = _discover_groups(coverage_root)
-    assigned = [group for idx, group in enumerate(groups) if idx % args.shard_total == args.shard_index]
+    assigned = [group for index, group in enumerate(groups) if index % args.shard_total == args.shard_index]
     summary: dict[str, object] = {
         "shard_index": args.shard_index,
         "shard_total": args.shard_total,
@@ -115,17 +113,23 @@ def main() -> int:
     }
 
     failed = False
-    for name, paths in assigned:
-        print(f"\n===== coverage group: {name} =====", flush=True)
+    for name, test_file in assigned:
+        relative_target = str(test_file.relative_to(repo))
+        print(f"\n===== coverage file: {relative_target} =====", flush=True)
         env = dict(os.environ)
-        env["PYTHONPATH"] = _pythonpath(repo, paths)
-        # Keep any module-level state singleton inside a writable, group-local path.
+        env["PYTHONPATH"] = _pythonpath(repo, test_file)
         state_dir = output_dir / "state" / _safe_name(name)
         state_dir.mkdir(parents=True, exist_ok=True)
         env["TRADING_SYSTEM_STATE_DIR"] = str(state_dir)
 
-        target_args = [str(path.relative_to(repo)) for path in paths]
-        base_command = [sys.executable, "-m", "pytest", *target_args, "-q"]
+        base_command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            relative_target,
+            "--import-mode=importlib",
+            "-q",
+        ]
         safe = _safe_name(name)
         collection_file = output_dir / f"{safe}-collection.txt"
         collection_rc = _run(
@@ -137,7 +141,7 @@ def main() -> int:
 
         record: dict[str, object] = {
             "name": name,
-            "targets": target_args,
+            "target": relative_target,
             "collection_returncode": collection_rc,
             "collection_output": str(collection_file.relative_to(repo)),
         }
