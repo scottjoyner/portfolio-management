@@ -1,8 +1,8 @@
 """Shared conftest for API generated-coverage tests.
 
-Patches FastAPI routing with a small decorator-compatible stub before target
-modules import. The tests invoke route handlers directly and do not need a
-fully constructed application router.
+Generated API tests invoke route functions directly. They do not need FastAPI
+to mount the complete production router graph, so mounting is disabled only in
+the isolated generated-test process.
 """
 
 import sys
@@ -11,18 +11,13 @@ import fastapi
 
 
 class _StubRouter:
-    """No-op replacement for ``fastapi.APIRouter`` used by direct unit tests."""
+    """Decorator-compatible replacement for ``fastapi.APIRouter``."""
 
     def __init__(self, *args, **kwargs):
         self.routes = []
 
-    def _contains_router(self, router):
-        return False
-
     def __call__(self, *args, **kwargs):
-        if args:
-            return args[0]
-        return self
+        return args[0] if args else self
 
     def get(self, *args, **kwargs):
         return lambda fn: fn
@@ -53,6 +48,7 @@ class _StubRouter:
 
 
 fastapi.APIRouter = _StubRouter
+fastapi.FastAPI.include_router = lambda self, *args, **kwargs: None
 sys.modules.setdefault("fastapi", fastapi)
 
 coinbase_service = sys.modules.get("trading_system.core.exchange.coinbase_service")
