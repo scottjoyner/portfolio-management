@@ -3,6 +3,7 @@ import {
   persistRouteArtifacts as legacyPersistRouteArtifacts,
   routeMatch,
 } from './operatorRouterLegacy.mjs';
+import { handleTargetedExecutionRoute } from './executionRoutePersistence.mjs';
 
 export { routeMatch };
 
@@ -108,6 +109,14 @@ async function persistMany(store, method, values = []) {
   await store[method](values);
 }
 
+async function getExecutionEngine() {
+  if (!legacyHandleOperatorRoute._execEngine) {
+    const module = await import('../../../packages/execution/src/executionEngine.mjs');
+    legacyHandleOperatorRoute._execEngine = new module.default();
+  }
+  return legacyHandleOperatorRoute._execEngine;
+}
+
 export async function persistRouteArtifacts(store, result = {}) {
   if (!result || result.errors?.length) return;
   const bundle = result.marketDataSnapshots || result.agentCostLedger
@@ -127,6 +136,15 @@ export async function persistRouteArtifacts(store, result = {}) {
 }
 
 export async function handleOperatorRoute(args) {
+  const targetedExecution = await handleTargetedExecutionRoute({
+    ...args,
+    getExecutionEngine,
+  });
+  if (targetedExecution) {
+    handleOperatorRoute._execEngine = legacyHandleOperatorRoute._execEngine;
+    return targetedExecution;
+  }
+
   const before = collectionIds(args?.state || args?.store?.state || {});
   const wrappedStore = deduplicatingStore(args?.store);
   const result = await legacyHandleOperatorRoute({ ...args, store: wrappedStore });
