@@ -15,7 +15,9 @@ class _StubRouter:
 
     def __init__(self, *args, **kwargs):
         self.routes = []
-        self._contains_router = False
+
+    def _contains_router(self, router):
+        return False
 
     def __call__(self, *args, **kwargs):
         if args:
@@ -41,7 +43,7 @@ class _StubRouter:
         return lambda fn: fn
 
     def include_router(self, *args, **kwargs):
-        self._contains_router = True
+        pass
 
     def add_api_route(self, *args, **kwargs):
         pass
