@@ -149,6 +149,8 @@ Strict production-paper deployment must fail if:
 - remote inference is enabled without an explicit provider key;
 - a configured local node has malformed or duplicate identity, URL, context, or concurrency fields.
 
+The canonical deployment is local-first and remote-off. `REMOTE_LLM_EXECUTION_ENABLED=false` is the required default; changing it to true is a deliberate, separately reviewed host action and still does not authorize live trading.
+
 The production runtime smoke must prove:
 
 - shipped browser assets load;
@@ -185,7 +187,7 @@ Browser operator and CSRF tokens remain only in same-tab `sessionStorage`; closi
 - Workers heartbeat, recover expired leases, apply bounded retries, and dead-letter terminal failures.
 - Multiple worker instances cannot execute the same interval job.
 - External provider and market requests complete before serializable mutations begin.
-- A stale running model call fails closed.
+- A running model call older than `MODEL_CALL_STALE_SECONDS` fails closed and requires the documented recovery path.
 - The worker writes an atomic process heartbeat; stale or failed runs make the Compose service unhealthy.
 - SIGTERM stops new claims, allows a bounded grace period, and closes the pool.
 
@@ -217,7 +219,7 @@ Browser operator and CSRF tokens remain only in same-tab `sessionStorage`; closi
 13. When remote is deliberately enabled, execute one capped paper-only request and verify provider-reported cost and post-reconciliation invalidation.
 14. Create a paper execution and verify normalized execution, order, fill, and append-only event records.
 15. Restart the API and verify execution and policy persistence.
-16. Seed a stale running model quote and verify recovery.
+16. Seed a stale running model quote and verify recovery under `MODEL_CALL_STALE_SECONDS`.
 17. Trigger the paper kill switch and confirm no new paper submission proceeds.
 18. Confirm every live execution and settlement route remains blocked.
 19. Rehearse the prior image against the restored backup target.
