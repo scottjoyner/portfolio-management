@@ -1,27 +1,34 @@
 import os
 import sys
+from pathlib import Path
 
-ROOT = "/home/scott/git/portfolio-management"
+ROOT = str(Path(__file__).resolve().parents[3])
+LEGACY_ROOT = os.path.join(ROOT, "graph-alpha-bot")
 
 # Ensure all import variants work:
 #  - repo root (for `backtester`, `multi_strategy_paper_trading` if present)
 #  - graph-alpha-bot (for `app.*` packages)
-#  - graph-alpha-bot/app/strategies (for `coinbase_universe`, `unified_signal_generator` fallbacks)
-for p in (ROOT, os.path.join(ROOT, "graph-alpha-bot"), os.path.join(ROOT, "graph-alpha-bot", "app", "strategies")):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+#  - graph-alpha-bot/app/strategies (for direct strategy fallbacks)
+for path in (
+    ROOT,
+    LEGACY_ROOT,
+    os.path.join(LEGACY_ROOT, "app", "strategies"),
+):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
-# The strategy modules live under the ``graph-alpha-bot`` directory (with a
-# hyphen), which is not a valid Python package name. Coverage is measured under
-# the dotted name ``graph_alpha_bot.app.strategies.<module>`` (with underscores),
-# so we expose an importable ``graph_alpha_bot`` package via a symlink to the
-# real ``graph-alpha-bot`` tree. This lets tests import the modules under the
-# ``graph_alpha_bot.`` prefix so ``coverage --source=graph_alpha_bot...`` collects
-# data, while the modules' own ``from app.strategies...`` imports still resolve
-# through the ``graph-alpha-bot`` path entry above.
-_link = os.path.join(ROOT, "graph_alpha_bot")
-if not os.path.exists(_link):
+# The strategy project is stored under a hyphenated directory.  A historical
+# checkout left an absolute symlink named ``graph_alpha_bot`` that is broken on
+# CI hosts. Replace only a broken symlink, then expose a portable relative link
+# for imports under ``graph_alpha_bot.app``.
+link = os.path.join(ROOT, "graph_alpha_bot")
+if os.path.lexists(link) and os.path.islink(link) and not os.path.exists(link):
     try:
-        os.symlink(os.path.join(ROOT, "graph-alpha-bot"), _link)
+        os.unlink(link)
+    except OSError:
+        pass
+if not os.path.lexists(link):
+    try:
+        os.symlink(LEGACY_ROOT, link, target_is_directory=True)
     except (OSError, NotImplementedError):
         pass
