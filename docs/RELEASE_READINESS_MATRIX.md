@@ -18,6 +18,7 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 | Critical Python trading/accounting | Blocking — automated | `python-critical` | Competition, accounting, trader controls, epoch start, approval durability, dry-run execution, fee accounting, concentration policy, risk, on-chain, EVM, and deployment-contract tests pass. |
 | Maintained broad Python surface | Blocking — automated | `broad-python-suite` | The maintained `tests/` and `trading_system/tests/unit/` surface passes with no failures; skipped tests remain visible. |
 | Focused coverage | Blocking — automated | `coverage-gate` | Critical focused coverage remains above the configured threshold. |
+| Release-critical performance | Blocking — automated | `performance-gate`; `performance-smoke-<sha>` | Node 22 Linux x64 runner profile matches; warmup and five-sample median, p95, and minimum-throughput thresholds pass for replay, audit-chain, and state-normalization paths. |
 | PostgreSQL migrations | Blocking — automated | `postgres-integration`; migration artifacts | Migrations 001–006 apply, a second run is idempotent, and checksums match. |
 | Migration 006 execution persistence | Blocking — automated | `postgres-integration.tap` | Normalized execution, order, event, and read-model data survive a fresh store instance. |
 | Restart hydration | Blocking — automated | PostgreSQL integration and production runtime smoke | A fresh execution engine and a restarted API hydrate persisted execution state without rewind. |
@@ -39,9 +40,21 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 | Reverse proxy/TLS | Blocking — manual | host configuration evidence | API binds as intended; TLS and access controls are active at the trusted ingress. |
 | Host resource sizing | Blocking — manual | release record | PostgreSQL, API, and worker memory/CPU limits fit the deployment host. |
 | Rollback rehearsal | Blocking — manual | `DEPLOYMENT_ROLLBACK_RUNBOOK.md` release record | Prior image and restored backup pass readiness and smoke in a disposable rollback target. |
-| Remaining whole-state rewrites | Open engineering blocker | PostgreSQL mutation review/tests | Operational mutations use targeted optimistic rows instead of broad compatibility replacement. |
-| Deterministic paid-agent counterfactual replay | Open engineering blocker | replay/attribution tests | Automatic attribution compares paid-agent decisions with a reproducible bot counterfactual. |
-| Performance suite | Diagnostic | `performance-diagnostic` | Results are retained; a severe release-path regression is promoted to blocking only after stable thresholds are defined. |
+| Remaining whole-state rewrites | Open engineering blocker | PostgreSQL mutation review/tests | Operational execution mutations use targeted optimistic rows and append-only audit writes instead of broad compatibility replacement. |
+| Deterministic paid-agent counterfactual replay | Open engineering blocker | replay/attribution tests | Automatic attribution compares paid-agent decisions with a reproducible bot counterfactual using identical market data, decision time, capital, fees, slippage, and risk limits. |
+| Off-host backup retention and immutable audit anchoring | Open engineering blocker | destination policy, signed manifests, restore/verification evidence | Backups leave the database volume under a retention policy and audit roots are anchored to an external immutable or WORM-capable destination. |
+
+## Performance threshold governance
+
+The checked-in profile is `config/release-performance-thresholds.json` and is calibrated to GitHub `ubuntu-latest`, Node 22, Linux x64. The gate performs one warmup and five measured samples for each workload. It fails on runner-profile drift, missing measurements, median or p95 latency breaches, or median-throughput breaches.
+
+Threshold changes require:
+
+1. exact-runner evidence from the current profile;
+2. the before and after measurement artifacts;
+3. a written reason for changing workload or headroom;
+4. no reduction in workload size merely to clear CI;
+5. updated baseline metadata in the checked-in profile.
 
 ## Required host certification sequence
 
@@ -64,7 +77,7 @@ This matrix defines what “ready for review” means for PR #30. It covers the 
 
 The PR should remain draft until:
 
-- the exact-head `release-readiness` job is green, including the mandatory `broad-python-suite`;
+- the exact-head `release-readiness` job is green, including `broad-python-suite` and `performance-gate`;
 - every open engineering blocker above is closed or explicitly removed from this release scope with a safe fail-closed implementation;
 - the host certification sequence has been completed or a clearly identified deployment owner has accepted the remaining manual gates;
 - the PR body reflects current evidence rather than an older green run;
