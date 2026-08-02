@@ -16,7 +16,7 @@ jobs:
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
       TRADING_SYSTEM_STATE_DIR: .test-state
-      TEST_DATABASE_URL: postgresql://postgres:testpass@localhost:54433/trading_int
+      TEST_DATABASE_URL: postgresql://postgres:testpass@127.0.0.1:54433/trading_int
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -41,17 +41,11 @@ jobs:
           -e POSTGRES_USER=postgres \
           -e POSTGRES_PASSWORD=testpass \
           -e POSTGRES_DB=trading_int \
-          -p 54433:5432 \
+          -p 127.0.0.1:54433:5432 \
           postgres:16-alpine
         for attempt in $(seq 1 60); do
-          if docker exec trading-integration-test pg_isready -U postgres -d trading_int >/dev/null 2>&1; then
-            python - <<'PY'
-        import os
-        import psycopg2
-
-        connection = psycopg2.connect(os.environ["TEST_DATABASE_URL"])
-        connection.close()
-        PY
+          if docker exec trading-integration-test pg_isready -U postgres -d trading_int >/dev/null 2>&1 \
+            && python -c 'import os, psycopg2; c = psycopg2.connect(os.environ["TEST_DATABASE_URL"]); c.close()'; then
             exit 0
           fi
           sleep 1
