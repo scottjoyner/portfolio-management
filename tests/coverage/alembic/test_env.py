@@ -1,12 +1,13 @@
 import importlib.util
 import os
+from pathlib import Path
 import sys
 import types
 import unittest
 from unittest import mock
 
-ROOT = "/home/scott/git/portfolio-management"
-ENV_PATH = os.path.join(ROOT, "trading_system", "alembic", "env.py")
+ROOT = Path(__file__).resolve().parents[3]
+ENV_PATH = ROOT / "trading_system" / "alembic" / "env.py"
 
 
 def _fake_storage():
@@ -51,6 +52,7 @@ def load_env(offline, with_file, with_dburl, modname):
             mock.patch("logging.config.fileConfig") as fc:
         spec = importlib.util.spec_from_file_location(modname, ENV_PATH)
         module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
         spec.loader.exec_module(module)
     return module, ctx, fc
 
