@@ -1,7 +1,9 @@
-"""Make the event_markets tests directory importable for ``from em_helpers import``."""
+"""Deterministic helpers for generated event-market tests."""
 
 import os
+from pathlib import Path
 import sys
+import types
 
 import pytest
 
@@ -9,10 +11,16 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-# Credential / config env vars read by event_markets clients. Earlier tests in
-# the suite set some of these (e.g. via monkeypatch) and leakage between tests
-# caused "no-creds" assertions to fail intermittently. Clear them before every
-# test so each test starts from a clean, deterministic environment.
+# The historical graph-alpha checkout uses a hyphenated directory name. Expose
+# a normal import package for tests that import graph_alpha_bot.app.*.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_LEGACY_GRAPH_ROOT = _REPO_ROOT / "graph-alpha-bot"
+graph_package = sys.modules.setdefault(
+    "graph_alpha_bot",
+    types.ModuleType("graph_alpha_bot"),
+)
+graph_package.__path__ = [str(_LEGACY_GRAPH_ROOT)]
+
 _PM_ENV_VARS = [
     "KALSHI_API_BASE_URL", "KALSHI_API_ENV", "KALSHI_API_KEY_ID", "KALSHI_EMAIL",
     "KALSHI_ENV", "KALSHI_FEE_RATE", "KALSHI_PASSWORD", "KALSHI_PRIVATE_KEY_PATH",
@@ -27,7 +35,7 @@ _PM_ENV_VARS = [
 
 @pytest.fixture(autouse=True)
 def _clear_pm_env():
-    saved = {k: os.environ.pop(k) for k in _PM_ENV_VARS if k in os.environ}
+    saved = {key: os.environ.pop(key) for key in _PM_ENV_VARS if key in os.environ}
     try:
         yield
     finally:
