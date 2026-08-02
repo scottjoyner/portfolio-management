@@ -14,9 +14,9 @@ Included:
 - stale model-call recovery;
 - local-first LM Studio/llama.cpp intelligence routing;
 - optional, explicitly gated OpenRouter execution;
-- a persisted UI policy for local-only, economic-auto, and OpenRouter-eligible routing;
+- persisted UI routing policy and hard caps;
 - at-most-once remote provider attempts with uncertain outcomes quarantined;
-- delayed generation-metadata reconciliation for known OpenRouter generations;
+- delayed generation metadata reconciliation for known OpenRouter generations;
 - normalized optimistic execution records;
 - append-only execution events, durable orders, and durable fills;
 - compatibility synchronization and restart hydration for the paper execution engine;
@@ -25,7 +25,8 @@ Included:
 - adapter certification gates;
 - deterministic replay backtests;
 - audit hash-chain verification;
-- canonical Docker Compose deployment, logical backups, and rollback procedures.
+- canonical Docker Compose deployment, logical backups, and rollback procedures;
+- runner-normalized release-critical performance thresholds.
 
 Excluded:
 
@@ -46,24 +47,31 @@ Do not proceed unless the PR's exact head commit has a successful blocking `rele
 - `postgres-integration`;
 - `python-critical`;
 - `broad-python-suite`;
-- `coverage-gate`.
+- `coverage-gate`;
+- `performance-gate`.
 
-The maintained broad Python surface is now blocking, not advisory. It runs `tests/` and `trading_system/tests/unit/` with the explicitly excluded coverage-only directory omitted. The `performance-diagnostic` job remains diagnostic until stable, runner-normalized thresholds are defined. Any performance result that indicates a release-path regression must be investigated and either repaired or converted into an enforceable threshold before certification.
+The maintained broad Python surface is blocking, not advisory. It runs `tests/` and `trading_system/tests/unit/` with the generated coverage directory omitted from that specific job.
 
-Download and retain the exact-head `postgres-readiness-<sha>` artifact. It must contain:
+The performance gate is also blocking. It uses `config/release-performance-thresholds.json`, requires the GitHub Node 22 Linux x64 runner profile, performs one warmup and five measured samples, and enforces median latency, p95 latency, and minimum median throughput for:
 
-- the first migration report;
-- the idempotent second migration report;
-- PostgreSQL integration TAP output;
-- authenticated production runtime and browser restart smoke results;
-- logical backup/restore evidence;
-- the disposable test dump.
+- the 10,000-bar moving-average replay path;
+- construction and verification of a 5,000-event audit chain;
+- normalization of the 500-record operator-state workload.
 
-Retain the exact-head focused coverage and performance-smoke artifacts as supporting evidence. Artifact names may use the temporary PR merge SHA, but the workflow artifact record must identify the reviewed branch head SHA.
+Thresholds may not be raised merely to clear CI. A threshold change requires exact-runner before/after evidence, a workload-preserving rationale, and updated baseline metadata.
+
+Download and retain the exact-head artifacts:
+
+- `postgres-readiness-<sha>`;
+- `focused-coverage-<sha>`;
+- `performance-smoke-<sha>`;
+- maintained and generated full-inventory artifacts when the exhaustive workflow is run.
+
+Artifact names may use the temporary PR merge SHA, but each workflow artifact record must identify the reviewed branch head SHA.
 
 ## Must pass before host deployment
 
-Use the committed npm lockfile and canonical npm scripts:
+Use the committed npm lockfile and canonical scripts:
 
 ```bash
 npm ci --ignore-scripts
@@ -76,6 +84,9 @@ npm run migrations:dry-run
 npm run security:validate
 npm run deploy:validate
 npm run first-prod:validate
+PERFORMANCE_STRICT_RUNNER=true \
+  PERFORMANCE_THRESHOLD_CONFIG=config/release-performance-thresholds.json \
+  node scripts/benchmark-release-critical-paths.mjs
 ```
 
 Validate the intended host-managed environment separately:
@@ -87,13 +98,13 @@ set +a
 npm run runtime:validate
 ```
 
-The real PostgreSQL integration command is blocking, not optional:
+The real PostgreSQL integration command is blocking:
 
 ```bash
 DATABASE_URL=<database-url> npm run test:integration:postgres
 ```
 
-The maintained Python release surfaces are also blocking:
+The maintained Python release surface is blocking:
 
 ```bash
 PYTHONPATH="$PWD:$PWD/trading_system" python -m pytest \
@@ -103,30 +114,35 @@ PYTHONPATH="$PWD:$PWD/trading_system" python -m pytest \
   -q
 ```
 
-## Database gates
+## Database and execution gates
 
-- Migration 001 creates core operator state.
-- Migration 002 creates product-layer row tables.
-- Migration 003 adds audit hashes and adapter certifications.
-- Migration 004 creates opportunity, research, budget, market snapshot, and cost tables.
-- Migration 005 creates the lease-backed runtime job queue.
+- Migrations 001–006 apply and a second application is idempotent.
+- Migration checksums are verified under a PostgreSQL advisory lock.
 - Migration 006 creates normalized execution records, events, orders, and fills.
-- Execution events are append-only and protected by a PostgreSQL trigger that rejects update or delete operations.
-- Migrations are checksum-protected and serialized by a PostgreSQL advisory lock.
-- Applying migrations a second time must be idempotent and preserve every checksum.
-- `TransactionalPostgresOperatorStore` uses one checked-out client, `SERIALIZABLE` isolation, an advisory transaction lock, and serialized queries on the pinned client.
+- Execution events are append-only and protected by a trigger rejecting update and delete.
+- `TransactionalPostgresOperatorStore` uses one checked-out client, `SERIALIZABLE` isolation, and serialized queries on that client.
 - `/ready/production-paper` rejects PostgreSQL without migrations 005 and 006.
-- A real PostgreSQL test must persist an execution, close the store, open a fresh store, publish the durable read model, and hydrate a fresh execution engine.
-- The integration test must enqueue, claim, heartbeat, and complete a real `runtime_jobs` row.
-- PostgreSQL is not exposed on a host port in the canonical Compose stack.
+- A fresh store and execution engine must hydrate normalized execution state after restart.
+- Runtime jobs must prove enqueue, claim, heartbeat, completion, retry, and lease recovery against real PostgreSQL.
+- Every execution has a unique intent idempotency key.
+- Lifecycle updates require an expected version and lock the current row with `FOR UPDATE`.
+- Duplicate transitions return the original append-only event.
+- Invalid transitions and stale versions fail closed.
+- Orders and fills have independent idempotency keys.
+- Every execution preserves opportunity, model quote, economic decision, forecast, and execution-cost lineage.
+- Unsupported compatibility statuses are skipped or recorded as divergence.
+- Invalid fills are skipped and orphan order references are removed without fabricating a parent order.
+- A newer in-process update is not overwritten by an older published snapshot.
+- Coinbase dry-run preview, create, close, cancel, and bracket behavior remains local, deterministic, and subprocess-free.
+- Paper scale-in fees are computed from the effective configured fee rate and agree across event, position, and portfolio accounting.
+- The paper execution engine must not be represented as certified live execution.
 
 ## Runtime and browser gates
 
 Strict production-paper deployment must fail if:
 
 - PostgreSQL or its migration set is unavailable;
-- operator authentication is disabled;
-- CSRF is disabled;
+- operator authentication or CSRF is disabled;
 - the CORS allowlist is missing;
 - live trading flags are enabled;
 - local inference is required but no valid local node is configured;
@@ -135,139 +151,82 @@ Strict production-paper deployment must fail if:
 
 The production runtime smoke must prove:
 
-- the shipped HTML loads `/ui/operator-session.js` and `/ui/intelligence-policy.js`;
-- an unauthenticated policy request is rejected;
+- shipped browser assets load;
+- unauthenticated policy access is rejected;
 - an authenticated, CSRF-protected policy update succeeds;
-- the routing policy survives an API process restart;
+- routing policy survives API restart;
 - the configured local fleet remains healthy after restart;
 - `/ready/production-paper` succeeds against real PostgreSQL.
 
-The browser's operator and CSRF tokens remain only in same-tab `sessionStorage`; closing the tab clears them. The browser must never expose or persist the OpenRouter key.
+Browser operator and CSRF tokens remain only in same-tab `sessionStorage`; closing the tab clears them. The browser must never expose or persist the OpenRouter key.
 
-## Intelligence routing gates
+## Intelligence and economic gates
 
-- Every configured local node exposes OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions`.
-- Model IDs in deployment configuration exactly match `/v1/models` output.
-- Heavy nodes begin at `maxConcurrent=1` until measured benchmarks justify more.
-- Routing verifies health, model availability, context capacity, queue capacity, and estimated cost.
+- Every configured local node exposes OpenAI-compatible `/v1/models` and `/v1/chat/completions`.
+- Configured model IDs exactly match provider output.
+- Heavy nodes begin at `maxConcurrent=1` until measured evidence justifies more.
+- Routing verifies health, model availability, context, queue capacity, and estimated cost.
 - Provider I/O occurs outside the PostgreSQL operator-state transaction.
-- Local usage reconciliation records runtime, queue delay, token counts, throughput when available, power assumptions, and actual computed cost.
 - Prompts and full responses are not persisted in the economic ledger.
 - Node/model drift requires a new quote.
-- Research jobs default to `local` and `queued`; a selected remote quote must carry its locality and provider lineage into the research job.
-- Automatic remote comparison falls back to local when remote is unavailable or blocked and fallback is enabled.
-
-OpenRouter has two independent controls:
-
-1. Deployment must set `REMOTE_LLM_EXECUTION_ENABLED=true` and supply a host-managed `OPENROUTER_API_KEY`.
-2. The UI policy must be `economic_auto` or `openrouter_allowed`.
-
-`REMOTE_LLM_EXECUTION_ENABLED=false` remains the canonical default. Remote execution is configurable, not fixed on. Every remote request remains subject to a per-request cap, daily cap, value-coverage policy when automatic, and the existing intelligence-purchase gate.
-
-Remote provider attempts are fail-closed and at-most-once under uncertainty:
-
-- a response-level HTTP failure that proves generation did not begin may restore the quote for a controlled retry;
-- a known generation ID with incomplete usage enters `usage_pending` and is reconciled through generation metadata without issuing another POST;
-- a transport-uncertain attempt without a generation ID enters manual reconciliation and cannot be retried automatically;
-- metadata reconciliation uses bounded exponential backoff and becomes explicit manual review after exhaustion;
-- every second execution attempt against a pending or consumed quote is rejected.
-
-## Economic gates
-
-- A pre-call decision may authorize intelligence purchase but never trade execution.
-- Actual measured/provider-reported cost supersedes the estimate.
-- Reconciliation invalidates older execution decisions based on estimates.
-- A post-reconciliation economic decision is required before paid-agent execution.
-- Stale forecasts, venue previews, model quotes, or unreconciled usage fail closed.
+- Research jobs default to local and queued.
+- Automatic remote comparison falls back to local or stops safely.
+- Remote execution requires both `REMOTE_LLM_EXECUTION_ENABLED=true` with a host-managed key and an eligible persisted UI policy.
+- Per-request, daily, and value-coverage limits fail closed.
+- A known OpenRouter generation with incomplete usage enters `usage_pending` and reconciles through generation metadata without another billable POST.
+- A transport-uncertain attempt without a generation ID enters manual reconciliation and cannot retry automatically.
+- Actual measured/provider cost supersedes estimates and invalidates stale execution decisions.
 - Missing counterfactual evidence remains visibly pending rather than being fabricated.
-- OpenRouter spend-cap exhaustion must fall back to local or stop; operators must not raise caps merely to clear an incident.
 
 ## Worker and scheduler gates
 
-- `runtime_jobs` uses idempotency keys.
-- Claiming uses `FOR UPDATE SKIP LOCKED`.
+- `runtime_jobs` uses idempotency keys and `FOR UPDATE SKIP LOCKED` claiming.
 - Running jobs have an owner and expiring lease.
-- Workers heartbeat long jobs, recover expired leases, apply bounded retries, and dead-letter terminal failures.
-- Multiple economic worker instances cannot execute the same interval job.
-- The maintenance lease also runs stale model-call recovery and due OpenRouter usage reconciliation.
-- External generation metadata and market/provider requests complete before the serializable mutation begins.
-- A `running` model call older than `MODEL_CALL_STALE_SECONDS` fails closed.
-- Recovered local calls require a new node quote before retry; `usage_pending` records remain available for later billing reconciliation.
-- The worker writes an atomic process heartbeat; a stale heartbeat or failed run must make the Compose container unhealthy.
-- SIGTERM stops new claims, allows a bounded grace period, and closes the database pool.
+- Workers heartbeat, recover expired leases, apply bounded retries, and dead-letter terminal failures.
+- Multiple worker instances cannot execute the same interval job.
+- External provider and market requests complete before serializable mutations begin.
+- A stale running model call fails closed.
+- The worker writes an atomic process heartbeat; stale or failed runs make the Compose service unhealthy.
+- SIGTERM stops new claims, allows a bounded grace period, and closes the pool.
 
-## Execution gates
+## Audit, backup, and rollback gates
 
-- Every execution has a unique intent idempotency key.
-- Lifecycle updates require an expected version and lock the current row with `FOR UPDATE`.
-- Duplicate transitions return the original append-only event rather than applying twice.
-- Invalid transitions and stale versions fail closed.
-- Orders and fills have independent idempotency keys.
-- Every execution preserves opportunity, model quote, economic decision, forecast, and execution-cost lineage.
-- Compatibility state is mirrored into normalized tables inside the same PostgreSQL transaction.
-- Unsupported compatibility statuses are skipped or recorded as divergence; durable state is not rewritten to an illegal status.
-- Invalid fills are skipped and orphan order references are removed without fabricating a parent order.
-- The API process republishes persisted execution state and the compatibility engine hydrates after restart.
-- A newer in-process update is not overwritten by an older published snapshot.
-- A pending approval file is created with its parent directory, serialized under a dedicated lock, written through a staged file, `fsync`ed, and atomically replaced.
-- Coinbase dry-run preview/create/close/cancel behavior remains local, deterministic, and subprocess-free.
-- Paper scale-in fees are computed from the configured effective fee rate and recorded consistently in event, position, and portfolio accounting.
-- The 60% strategy-PnL concentration default applies only to the supervised paper competition and remains operator-tunable downward; it is not a live-capital authorization.
-- The current paper execution engine must not be represented as certified live execution.
-
-## Audit and adapter gates
-
-- Audit events support `previousHash`, `eventHash`, and `sequenceNumber`.
-- Chain verification detects tampering, predecessor mismatches, and sequence gaps.
-- Audit chain fields are uniquely indexed when present.
-- Execution lifecycle evidence is independently append-only in `execution_events`.
-- Paper adapters require `certified_paper` or `certified_live` status.
-- Live adapters require `certified_live` and `liveEnabled=true`.
-- Fail-closed adapters reject live submission.
-- Remaining after this release: export audit roots to an external immutable sink.
-
-## Deployment, backup, and rollback gates
-
-- `docker-compose.production.yml` is the canonical runtime.
-- The production image installs Node dependencies from `package-lock.json` using `npm ci`.
-- The API and worker wait for successful migrations.
-- PostgreSQL uses an internal-only network.
-- API and worker receive controlled inference-network egress.
-- Application root filesystems are read-only and Linux capabilities are dropped.
-- Required secrets have no committed defaults.
-- `LIVE_TRADING=false`, `LIVE_TRADING_ENABLED=false`, `COINBASE_DRY_RUN=true`, `ALLOW_POLYMARKET_ORDER_SUBMISSION=false`, and `ALLOW_LIVE_SETTLEMENT_REDEMPTION=false` remain fixed.
-- Worker lease, retry, shutdown, stale-call, reconciliation, and heartbeat thresholds are explicitly passed into containers.
-- CI and the deployment host must exercise `pg_dump` and `pg_restore` into a clean database.
-- A pre-deploy backup must exist outside the PostgreSQL data volume.
-- The prior image/digest and a tested restore target must be recorded before go-live.
-- Do not use `docker compose down -v` as rollback.
+- Audit events include `previousHash`, `eventHash`, and `sequenceNumber`.
+- Chain verification detects tampering, predecessor mismatch, and sequence gaps.
+- Execution lifecycle evidence is independently append-only.
+- CI and the deployment host exercise `pg_dump` and `pg_restore` into a clean database.
+- A pre-deploy backup exists outside the PostgreSQL data volume.
+- The prior image digest and tested restore target are recorded before deployment.
+- `docker compose down -v` is prohibited as rollback.
+- Remaining after this release until separately closed: export audit roots and backups to an external immutable or WORM-capable destination.
 
 ## Required manual host certification
 
-1. Name the release operator, reviewer, and incident owner.
+1. Name the release operator, reviewer, rollback owner, and incident owner.
 2. Confirm the exact source SHA matches the reviewed PR head.
-3. Record the current and candidate image identifiers/digests.
+3. Record current and candidate image digests.
 4. Validate the host-managed environment and rendered Compose model.
-5. Confirm each local inference endpoint and exact loaded model ID.
+5. Confirm each local inference endpoint and loaded model ID.
 6. Create a pre-deploy logical backup and restore it into a disposable database.
 7. Deploy PostgreSQL, migrations, API, and worker.
-8. Confirm both API and worker container health.
-9. Run `npm run smoke:production-paper` against the deployed endpoint.
-10. Authenticate the browser session and inspect Today, Risk & System, and Intelligence Routing.
+8. Confirm API and worker health.
+9. Run `npm run smoke:production-paper`.
+10. Authenticate the browser and inspect Today, Risk & System, and Intelligence Routing.
 11. Save the intended routing policy and hard caps.
-12. Create a bounded local research job and verify actual local cost reconciliation.
-13. When remote is deliberately enabled, execute one capped paper-only request and verify provider-reported actual cost and post-reconciliation decision invalidation.
+12. Create a bounded local research job and verify actual local-cost reconciliation.
+13. When remote is deliberately enabled, execute one capped paper-only request and verify provider-reported cost and post-reconciliation invalidation.
 14. Create a paper execution and verify normalized execution, order, fill, and append-only event records.
-15. Restart the API and verify execution and routing-policy persistence.
-16. Seed a stale running model quote and verify maintenance recovery.
+15. Restart the API and verify execution and policy persistence.
+16. Seed a stale running model quote and verify recovery.
 17. Trigger the paper kill switch and confirm no new paper submission proceeds.
 18. Confirm every live execution and settlement route remains blocked.
 19. Rehearse the prior image against the restored backup target.
-20. Record the final go/no-go decision and evidence paths.
+20. Record final go/no-go and evidence locations.
 
 ## Open engineering blockers
 
 The PR remains draft until these are closed or safely removed from release scope:
 
 - remaining broad whole-state compatibility rewrites replaced by targeted optimistic PostgreSQL mutations;
-- deterministic bot replay for automatic paid-agent counterfactual attribution.
+- deterministic bot replay for automatic paid-agent counterfactual attribution;
+- off-host backup retention and external immutable/WORM audit anchoring.
