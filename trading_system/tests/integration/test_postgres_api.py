@@ -1,7 +1,7 @@
 """Postgres-backed integration tests for the Ops API.
 
-These tests spin up a real Postgres container, run migrations, seed data,
-and verify API endpoints against a real database.
+These tests use the shared integration Postgres database, run migrations,
+seed data, and verify API endpoints against a real database.
 """
 
 import os
@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from apps.api.main import app
 from storage.postgres.repository import OpsRepository
+from storage.postgres.session import get_db
 
 
 @pytest.fixture(scope="module")
@@ -25,10 +26,12 @@ def pg_url(postgres_container):
 def pg_engine(pg_url):
     """Create engine and run migrations."""
     engine = create_engine(pg_url, pool_pre_ping=True)
-    # Run migrations
     from alembic import config as alembic_config
     from alembic import command
-    alembic_cfg = alembic_config.Config(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
+
+    alembic_cfg = alembic_config.Config(
+        os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini")
+    )
     alembic_cfg.set_main_option("sqlalchemy.url", pg_url)
     command.upgrade(alembic_cfg, "head")
     yield engine
@@ -42,26 +45,33 @@ def db_session(pg_engine):
     transaction = conn.begin()
     Session = sessionmaker(bind=conn)
     session = Session()
-    yield session
-    session.close()
-    transaction.rollback()
-    conn.close()
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        conn.close()
 
 
 @pytest.fixture()
 def test_client(db_session):
-    """TestClient with DB override."""
+    """TestClient with the actual DB dependency overridden."""
+    previous_overrides = dict(app.dependency_overrides)
+
     def override_get_db():
         yield db_session
-    app.dependency_overrides[None] = override_get_db  # Will be set in test
-    client = TestClient(app)
-    yield client
-    app.dependency_overrides.clear()
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
 
 
 def test_ops_dashboard_with_postgres(test_client, db_session):
     """Dashboard endpoint works with Postgres-backed data."""
-    # Seed data via repo
     repo = OpsRepository(db_session)
     repo.seed_default_portfolios()
 
@@ -92,11 +102,12 @@ def test_ops_order_lifecycle_with_postgres(test_client, db_session):
     )
     assert preview.status_code == 200
 
-    submitted = test_client.post("/ops/orders/submit", json={"preview_id": preview.json()["preview_id"]})
+    submitted = test_client.post(
+        "/ops/orders/submit", json={"preview_id": preview.json()["preview_id"]}
+    )
     assert submitted.status_code == 200
     order_id = submitted.json()["order_id"]
 
-    # Verify it's in the DB
     order = db_session.query(
         __import__("storage.postgres.models", fromlist=["Order"]).Order
     ).filter_by(order_id=order_id).first()
