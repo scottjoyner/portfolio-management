@@ -249,21 +249,23 @@ jobs:
           --import-mode=importlib \
           -q
 
-  performance-diagnostic:
-    name: performance-diagnostic
+  performance-gate:
+    name: performance-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     needs: node-tests
+    env:
+      PERFORMANCE_STRICT_RUNNER: 'true'
+      PERFORMANCE_THRESHOLD_CONFIG: config/release-performance-thresholds.json
     steps:
     - uses: actions/checkout@v4
     - name: Set up Node
       uses: actions/setup-node@v4
       with:
         node-version: '22'
-    - name: Run deterministic release-critical performance smoke
+    - name: Enforce deterministic release-critical performance thresholds
       run: node scripts/benchmark-release-critical-paths.mjs | tee performance-smoke.json
-    - name: Upload performance baseline
+    - name: Upload performance evidence
       if: always()
       uses: actions/upload-artifact@v4
       with:
@@ -275,7 +277,7 @@ jobs:
   release-readiness:
     name: release-readiness
     if: always()
-    needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate, broad-python-suite]
+    needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate, broad-python-suite, performance-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -285,6 +287,7 @@ jobs:
       PYTHON_CRITICAL_RESULT: ${{ needs.python-critical.result }}
       COVERAGE_RESULT: ${{ needs.coverage-gate.result }}
       BROAD_PYTHON_RESULT: ${{ needs.broad-python-suite.result }}
+      PERFORMANCE_RESULT: ${{ needs.performance-gate.result }}
     steps:
     - name: Enforce all production-critical gates
       run: |
@@ -294,10 +297,12 @@ jobs:
           "postgres-integration=$POSTGRES_RESULT" \
           "python-critical=$PYTHON_CRITICAL_RESULT" \
           "coverage-gate=$COVERAGE_RESULT" \
-          "broad-python-suite=$BROAD_PYTHON_RESULT"
+          "broad-python-suite=$BROAD_PYTHON_RESULT" \
+          "performance-gate=$PERFORMANCE_RESULT"
         test "$VALIDATION_RESULT" = success
         test "$NODE_TESTS_RESULT" = success
         test "$POSTGRES_RESULT" = success
         test "$PYTHON_CRITICAL_RESULT" = success
         test "$COVERAGE_RESULT" = success
         test "$BROAD_PYTHON_RESULT" = success
+        test "$PERFORMANCE_RESULT" = success
