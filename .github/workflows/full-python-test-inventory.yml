@@ -81,11 +81,11 @@ jobs:
   coverage-python-inventory:
     name: coverage-python-inventory-${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     env:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
     steps:
@@ -105,11 +105,12 @@ jobs:
         python -m pip install pytest-asyncio
         mkdir -p .venv/bin
         ln -sf "$(command -v alembic)" .venv/bin/alembic
-    - name: Collect and run assigned coverage domains in fresh processes
+    - name: Run assigned coverage files in bounded fresh processes
       run: |
         python scripts/run-isolated-coverage-inventory.py \
           --shard-index "${{ matrix.shard }}" \
-          --shard-total 4
+          --shard-total 8 \
+          --file-timeout-seconds 180
     - name: Upload isolated coverage evidence
       if: always()
       uses: actions/upload-artifact@v4
