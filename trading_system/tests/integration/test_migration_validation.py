@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
 
@@ -27,8 +29,16 @@ def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[s
     )
 
 
+def _declared_head() -> str:
+    config = Config(str(ALEMBIC_INI))
+    script = ScriptDirectory.from_config(config)
+    head = script.get_current_head()
+    assert head is not None, "Alembic migration graph has no head revision"
+    return head
+
+
 def test_alembic_current_reports_head():
-    """A fresh database upgrades to and reports revision 0001."""
+    """A fresh database upgrades to the current declared migration head."""
     import tempfile
 
     fd, path = tempfile.mkstemp(suffix=".db")
@@ -40,7 +50,11 @@ def test_alembic_current_reports_head():
 
         current = _run_alembic("current", database_url=db_url)
         assert current.returncode == 0, f"Alembic current failed: {current.stdout}\n{current.stderr}"
-        assert "0001" in current.stdout, f"Alembic current did not report head: {current.stdout}\n{current.stderr}"
+        expected_head = _declared_head()
+        assert expected_head in current.stdout, (
+            f"Alembic current did not report {expected_head}: "
+            f"{current.stdout}\n{current.stderr}"
+        )
     finally:
         os.unlink(path)
 
