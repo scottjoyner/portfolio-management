@@ -108,6 +108,7 @@
         "tests/coverage/coinbase/test_cb_client_full.py",
         "tests/coverage/coinbase/test_config_extra.py",
         "tests/coverage/coinbase/test_config_full.py",
+        "tests/coverage/coinbase/test_config_manager_full.py",
         "tests/coverage/coinbase/test_orchestrator.py",
         "tests/coverage/coinbase/test_regime.py",
         "tests/coverage/coinbase/test_run_trader_v4.py",
