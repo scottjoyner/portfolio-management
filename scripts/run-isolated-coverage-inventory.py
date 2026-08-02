@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Collect and run every generated coverage file in a fresh Python process.
+"""Run every generated coverage file in a fresh, bounded Python process.
 
 The generated coverage corpus installs broad ``sys.modules`` stubs from its
 root and per-directory conftests. Several test files also replace the same
 module names with mutually incompatible fakes. Co-collecting a directory lets
-one file's import-time state corrupt another file, producing order-dependent
-failures that do not reproduce in isolation. This runner preserves every test
-while giving each test file a clean interpreter.
+one file's import-time state corrupt another file. This runner preserves every
+test while giving each file a clean interpreter and preventing a single hanging
+legacy test from consuming an entire workflow shard.
 """
 
 from __future__ import annotations
@@ -30,13 +30,7 @@ def _discover_groups(coverage_root: Path) -> list[tuple[str, Path]]:
 
 
 def _pythonpath(repo: Path, test_file: Path) -> str:
-    """Prefer canonical source packages, then file-local test helpers.
-
-    ``tests/coverage`` itself is intentionally not added globally because it
-    contains packages named ``alembic``, ``scripts``, ``strategies``, and other
-    production names. The individual file's parent is sufficient for helper
-    imports such as ``db_helpers`` without shadowing unrelated packages.
-    """
+    """Prefer canonical source packages, then file-local test helpers."""
 
     candidates = [
         repo,
@@ -65,21 +59,44 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "group"
 
 
-def _run(command: list[str], *, cwd: Path, env: dict[str, str], output: Path) -> int:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    output.write_text(completed.stdout, encoding="utf-8")
-    sys.stdout.write(completed.stdout)
-    if completed.stdout and not completed.stdout.endswith("\n"):
+def _run(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    output: Path,
+    timeout_seconds: int,
+) -> tuple[int, bool]:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=timeout_seconds,
+        )
+        text = completed.stdout
+        returncode = completed.returncode
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        text = (
+            f"{stdout}\n"
+            f"TIMEOUT: pytest exceeded {timeout_seconds} seconds for this file.\n"
+        )
+        returncode = 124
+        timed_out = True
+
+    output.write_text(text, encoding="utf-8")
+    sys.stdout.write(text)
+    if text and not text.endswith("\n"):
         sys.stdout.write("\n")
-    return completed.returncode
+    return returncode, timed_out
 
 
 def main() -> int:
@@ -87,6 +104,7 @@ def main() -> int:
     parser.add_argument("--shard-index", type=int, required=True)
     parser.add_argument("--shard-total", type=int, required=True)
     parser.add_argument("--output-dir", default="full-python-inventory/coverage")
+    parser.add_argument("--file-timeout-seconds", type=int, default=180)
     parser.add_argument(
         "--collect-only",
         action="store_true",
@@ -96,6 +114,8 @@ def main() -> int:
 
     if args.shard_total < 1 or not 0 <= args.shard_index < args.shard_total:
         parser.error("shard index must be within [0, shard total)")
+    if args.file_timeout_seconds < 1:
+        parser.error("file timeout must be positive")
 
     repo = Path(__file__).resolve().parents[1]
     coverage_root = repo / "tests" / "coverage"
@@ -103,10 +123,15 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     groups = _discover_groups(coverage_root)
-    assigned = [group for index, group in enumerate(groups) if index % args.shard_total == args.shard_index]
+    assigned = [
+        group
+        for index, group in enumerate(groups)
+        if index % args.shard_total == args.shard_index
+    ]
     summary: dict[str, object] = {
         "shard_index": args.shard_index,
         "shard_total": args.shard_total,
+        "file_timeout_seconds": args.file_timeout_seconds,
         "discovered_groups": len(groups),
         "assigned_groups": [name for name, _ in assigned],
         "groups": [],
@@ -122,7 +147,7 @@ def main() -> int:
         state_dir.mkdir(parents=True, exist_ok=True)
         env["TRADING_SYSTEM_STATE_DIR"] = str(state_dir)
 
-        base_command = [
+        command = [
             sys.executable,
             "-m",
             "pytest",
@@ -130,45 +155,37 @@ def main() -> int:
             "--import-mode=importlib",
             "-q",
         ]
+        if args.collect_only:
+            command.append("--collect-only")
+
         safe = _safe_name(name)
-        collection_file = output_dir / f"{safe}-collection.txt"
-        collection_rc = _run(
-            [*base_command, "--collect-only"],
+        suffix = "collection" if args.collect_only else "results"
+        result_file = output_dir / f"{safe}-{suffix}.txt"
+        returncode, timed_out = _run(
+            command,
             cwd=repo,
             env=env,
-            output=collection_file,
+            output=result_file,
+            timeout_seconds=args.file_timeout_seconds,
         )
-
+        status = "passed" if returncode == 0 else ("timed_out" if timed_out else "failed")
         record: dict[str, object] = {
             "name": name,
             "target": relative_target,
-            "collection_returncode": collection_rc,
-            "collection_output": str(collection_file.relative_to(repo)),
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "output": str(result_file.relative_to(repo)),
+            "status": status,
         }
-        if collection_rc != 0:
-            failed = True
-            record["test_returncode"] = None
-            record["status"] = "collection_failed"
-            summary["groups"].append(record)
-            continue
-
-        if args.collect_only:
-            record["test_returncode"] = None
-            record["status"] = "collected"
-            summary["groups"].append(record)
-            continue
-
-        result_file = output_dir / f"{safe}-results.txt"
-        test_rc = _run(base_command, cwd=repo, env=env, output=result_file)
-        record["test_returncode"] = test_rc
-        record["result_output"] = str(result_file.relative_to(repo))
-        record["status"] = "passed" if test_rc == 0 else "failed"
-        if test_rc != 0:
+        if returncode != 0:
             failed = True
         summary["groups"].append(record)
 
     summary_path = output_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     print(f"\nInventory summary: {summary_path.relative_to(repo)}")
     return 1 if failed else 0
 
