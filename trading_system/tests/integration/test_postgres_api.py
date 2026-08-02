@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.main import app
+from storage.postgres.models import StrategyConfig
 from storage.postgres.repository import OpsRepository
 from storage.postgres.session import get_db
 
@@ -49,7 +50,8 @@ def db_session(pg_engine):
         yield session
     finally:
         session.close()
-        transaction.rollback()
+        if transaction.is_active:
+            transaction.rollback()
         conn.close()
 
 
@@ -70,6 +72,17 @@ def test_client(db_session):
         app.dependency_overrides.update(previous_overrides)
 
 
+def _seed_supported_strategy(repo: OpsRepository) -> None:
+    repo.upsert_strategy_config(
+        StrategyConfig(
+            strategy_id="adaptive_spread_mm",
+            strategy_type="market_making",
+            status="implemented",
+            enabled=True,
+        )
+    )
+
+
 def test_ops_dashboard_with_postgres(test_client, db_session):
     """Dashboard endpoint works with Postgres-backed data."""
     repo = OpsRepository(db_session)
@@ -86,6 +99,7 @@ def test_ops_order_lifecycle_with_postgres(test_client, db_session):
     """Order preview/submit/cancel works with Postgres."""
     repo = OpsRepository(db_session)
     repo.seed_default_portfolios()
+    _seed_supported_strategy(repo)
 
     preview = test_client.post(
         "/ops/orders/preview",
