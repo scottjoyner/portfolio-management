@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Run every generated coverage file in a fresh, bounded Python process.
+"""Run active generated coverage files in fresh, bounded Python processes.
 
-The generated coverage corpus installs broad ``sys.modules`` stubs from its
-root and per-directory conftests. Several test files also replace the same
-module names with mutually incompatible fakes. Co-collecting a directory lets
-one file's import-time state corrupt another file. This runner preserves every
-test while giving each file a clean interpreter and preventing a single hanging
-legacy test from consuming an entire workflow shard.
+Generated coverage is treated as a catalog of snapshots rather than one Python
+package: each active file gets a clean interpreter. Superseded snapshots must
+be declared in ``tests/coverage/retired_tests.json`` with a concrete reason;
+they remain visible in artifacts and counts instead of being silently ignored.
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from typing import Any
 
 
 def _discover_groups(coverage_root: Path) -> list[tuple[str, Path]]:
@@ -29,16 +28,37 @@ def _discover_groups(coverage_root: Path) -> list[tuple[str, Path]]:
     return groups
 
 
+def _load_retired(repo: Path, coverage_root: Path) -> dict[str, str]:
+    registry_path = coverage_root / "retired_tests.json"
+    payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError("unsupported generated-test retirement schema")
+
+    retired: dict[str, str] = {}
+    for group in payload.get("groups", []):
+        reason = str(group.get("reason", "")).strip()
+        if not reason:
+            raise ValueError("every retired generated-test group requires a reason")
+        for raw_path in group.get("paths", []):
+            path = str(raw_path)
+            if path in retired:
+                raise ValueError(f"duplicate retired generated test: {path}")
+            if not (repo / path).is_file():
+                raise ValueError(f"retired generated test does not exist: {path}")
+            retired[path] = reason
+    return retired
+
+
 def _pythonpath(repo: Path, test_file: Path) -> str:
-    """Prefer canonical source packages, then file-local test helpers."""
+    """Expose file-local helpers without shadowing canonical packages."""
 
     candidates = [
+        test_file.parent,
         repo,
         repo / "trading_system",
         repo / "graph-alpha-bot",
         repo / "graph-alpha-bot" / "scripts",
         repo / "graph-alpha-bot" / "app",
-        test_file.parent,
     ]
     existing = os.environ.get("PYTHONPATH", "")
     ordered: list[str] = []
@@ -99,6 +119,14 @@ def _run(
     return returncode, timed_out
 
 
+def _status_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        status = str(record["status"])
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--shard-index", type=int, required=True)
@@ -108,7 +136,7 @@ def main() -> int:
     parser.add_argument(
         "--collect-only",
         action="store_true",
-        help="Only collect each assigned test file; do not execute tests.",
+        help="Only collect each assigned active test file; do not execute tests.",
     )
     args = parser.parse_args()
 
@@ -123,24 +151,49 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     groups = _discover_groups(coverage_root)
+    discovered_targets = {str(path.relative_to(repo)) for _, path in groups}
+    retired = _load_retired(repo, coverage_root)
+    untracked_retired = set(retired) - discovered_targets
+    if untracked_retired:
+        raise ValueError(f"retirement registry contains non-tests: {sorted(untracked_retired)}")
+
     assigned = [
         group
         for index, group in enumerate(groups)
         if index % args.shard_total == args.shard_index
     ]
-    summary: dict[str, object] = {
+    records: list[dict[str, Any]] = []
+    summary: dict[str, Any] = {
         "shard_index": args.shard_index,
         "shard_total": args.shard_total,
         "file_timeout_seconds": args.file_timeout_seconds,
         "discovered_groups": len(groups),
+        "retired_registry_count": len(retired),
         "assigned_groups": [name for name, _ in assigned],
-        "groups": [],
+        "groups": records,
     }
 
     failed = False
     for name, test_file in assigned:
         relative_target = str(test_file.relative_to(repo))
-        print(f"\n===== coverage file: {relative_target} =====", flush=True)
+        retirement_reason = retired.get(relative_target)
+        if retirement_reason is not None:
+            print(
+                f"\n===== retired coverage file: {relative_target} =====\n"
+                f"{retirement_reason}",
+                flush=True,
+            )
+            records.append(
+                {
+                    "name": name,
+                    "target": relative_target,
+                    "status": "retired",
+                    "reason": retirement_reason,
+                }
+            )
+            continue
+
+        print(f"\n===== active coverage file: {relative_target} =====", flush=True)
         env = dict(os.environ)
         env["PYTHONPATH"] = _pythonpath(repo, test_file)
         state_dir = output_dir / "state" / _safe_name(name)
@@ -169,18 +222,20 @@ def main() -> int:
             timeout_seconds=args.file_timeout_seconds,
         )
         status = "passed" if returncode == 0 else ("timed_out" if timed_out else "failed")
-        record: dict[str, object] = {
-            "name": name,
-            "target": relative_target,
-            "returncode": returncode,
-            "timed_out": timed_out,
-            "output": str(result_file.relative_to(repo)),
-            "status": status,
-        }
+        records.append(
+            {
+                "name": name,
+                "target": relative_target,
+                "returncode": returncode,
+                "timed_out": timed_out,
+                "output": str(result_file.relative_to(repo)),
+                "status": status,
+            }
+        )
         if returncode != 0:
             failed = True
-        summary["groups"].append(record)
 
+    summary["status_counts"] = _status_counts(records)
     summary_path = output_dir / "summary.json"
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
