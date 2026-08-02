@@ -1,8 +1,9 @@
+import asyncio
 from decimal import Decimal
 
 from trading_system.brokers.base import (
-    BrokerAdapter,
     BrokerAccount,
+    BrokerAdapter,
     BrokerFill,
     BrokerOrder,
     BrokerPosition,
@@ -11,9 +12,6 @@ from trading_system.brokers.base import (
 
 
 class _ConcreteAdapter(BrokerAdapter):
-    """Minimal concrete adapter implementing only the abstract methods, so we
-    can exercise the base class's default (non-abstract) implementations."""
-
     def broker_name(self) -> str:
         return "concrete"
 
@@ -55,29 +53,37 @@ def test_enums_values():
     assert OrderStatus.FILLED.value == "filled"
     assert OrderStatus.PARTIALLY_FILLED.value == "partially_filled"
     assert BrokerOrder(
-        broker_order_id="b", client_order_id="c", account_id="a",
-        product_id="BTC-USD", side="buy", order_type="limit", size=Decimal("1"),
+        broker_order_id="b",
+        client_order_id="c",
+        account_id="a",
+        product_id="BTC-USD",
+        side="buy",
+        order_type="limit",
+        size=Decimal("1"),
     ).status == OrderStatus.PENDING
 
 
 def test_dataclass_defaults():
-    o = BrokerOrder("b", "c", "a", "BTC-USD", "buy", "limit", Decimal("1"))
-    assert o.filled_size == Decimal("0")
-    assert o.fee == Decimal("0")
-    assert o.extra == {}
+    order = BrokerOrder("b", "c", "a", "BTC-USD", "buy", "limit", Decimal("1"))
+    assert order.filled_size == Decimal("0")
+    assert order.fee == Decimal("0")
+    assert order.extra == {}
 
 
-async def test_base_default_market_price_and_health():
-    a = _ConcreteAdapter()
-    # default implementations
-    assert await a.get_market_price("BTC-USD") is None
-    assert await a.health_check() == {"status": "unknown"}
+def test_base_default_market_price_and_health():
+    adapter = _ConcreteAdapter()
+
+    async def exercise():
+        assert await adapter.get_market_price("BTC-USD") is None
+        assert await adapter.health_check() == {"status": "unknown"}
+
+    asyncio.run(exercise())
 
 
 def test_broker_fill_and_position_dataclasses():
-    f = BrokerFill("f1", "o1", "BTC-USD", "buy", Decimal("1"), Decimal("100"), Decimal("100"))
-    assert f.notional == Decimal("100")
-    assert f.liquidity == "TAKER"
-    p = BrokerPosition("BTC-USD", "long", Decimal("1"), Decimal("100"))
-    assert p.unrealized_pnl == Decimal("0")
-    assert p.realized_pnl == Decimal("0")
+    fill = BrokerFill("f1", "o1", "BTC-USD", "buy", Decimal("1"), Decimal("100"), Decimal("100"))
+    assert fill.notional == Decimal("100")
+    assert fill.liquidity == "TAKER"
+    position = BrokerPosition("BTC-USD", "long", Decimal("1"), Decimal("100"))
+    assert position.unrealized_pnl == Decimal("0")
+    assert position.realized_pnl == Decimal("0")
