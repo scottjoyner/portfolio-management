@@ -11,6 +11,10 @@ from execution.queue_model.models import SimpleQueueModel
 from core.events.ws_hub import hub
 
 
+def _decimal(value: Decimal | str | int | float) -> Decimal:
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
 @dataclass
 class PaperOrder:
     order_id: str
@@ -40,9 +44,9 @@ class PaperFill:
     side: str
     size: Decimal
     price: Decimal
-    fee: Decimal
-    liquidity: str
-    created_at: float
+    fee: Decimal = Decimal("0")
+    liquidity: str = "taker"
+    created_at: float = 0.0
 
 
 @dataclass
@@ -51,15 +55,28 @@ class PaperPosition:
     size: Decimal = Decimal("0")
     cost_basis: Decimal = Decimal("0")
     realized_pnl: Decimal = Decimal("0")
+    unrealized_pnl: Decimal = Decimal("0")
+
+    @property
+    def side(self) -> str:
+        if self.size > 0:
+            return "long"
+        if self.size < 0:
+            return "short"
+        return "flat"
 
 
 class PaperExchangeEngine:
     FEE_RATE_MAKER = Decimal("0.0004")
     FEE_RATE_TAKER = Decimal("0.0008")
 
-    def __init__(self, starting_cash: Decimal = Decimal("10000"), products: list[str] | None = None) -> None:
-        self.cash: Decimal = starting_cash
-        self.products: list[str] = products or ["BTC-USD"]
+    def __init__(
+        self,
+        starting_cash: Decimal | str | int | float = Decimal("10000"),
+        products: list[str] | None = None,
+    ) -> None:
+        self.cash = _decimal(starting_cash)
+        self.products = list(products) if products is not None else ["BTC-USD"]
         self.orders: dict[str, PaperOrder] = {}
         self.fills: list[PaperFill] = []
         self.positions: dict[str, PaperPosition] = {}
@@ -68,12 +85,20 @@ class PaperExchangeEngine:
         self.queue_model = SimpleQueueModel()
         self._running = False
 
-        for p in self.products:
-            self.positions[p] = PaperPosition(product_id=p)
+        for product_id in self.products:
+            self.positions[product_id] = PaperPosition(product_id=product_id)
 
-    def set_market_price(self, product_id: str, mid: Decimal, spread_bps: Decimal = Decimal("5")) -> None:
-        self.mid_prices[product_id] = mid
-        self.spreads[product_id] = spread_bps
+    def set_market_price(
+        self,
+        product_id: str,
+        mid: Decimal | str | int | float,
+        spread_bps: Decimal | str | int | float = Decimal("5"),
+    ) -> None:
+        if product_id not in self.products:
+            self.products.append(product_id)
+        self.positions.setdefault(product_id, PaperPosition(product_id=product_id))
+        self.mid_prices[product_id] = _decimal(mid)
+        self.spreads[product_id] = _decimal(spread_bps)
 
     def _generate_order_id(self) -> str:
         return f"paper-{uuid4().hex[:12]}"
@@ -81,50 +106,77 @@ class PaperExchangeEngine:
     def _generate_fill_id(self) -> str:
         return f"fill-{uuid4().hex[:12]}"
 
-    def place_order(self, strategy_id: str, portfolio_id: str, product_id: str, side: str, order_type: str, size: Decimal, price: Decimal | None = None, limit_price: Decimal | None = None) -> PaperOrder:
+    def place_order(
+        self,
+        strategy_id: str,
+        portfolio_id: str,
+        product_id: str,
+        side: str,
+        order_type: str,
+        size: Decimal | str | int | float,
+        price: Decimal | str | int | float | None = None,
+        limit_price: Decimal | str | int | float | None = None,
+    ) -> PaperOrder:
+        normalized_size = _decimal(size)
+        if normalized_size <= 0:
+            raise ValueError("size must be positive")
+        normalized_side = side.lower()
+        if normalized_side not in {"buy", "sell"}:
+            raise ValueError("side must be buy or sell")
+        normalized_type = order_type.lower()
+        if normalized_type not in {"market", "limit"}:
+            raise ValueError("order_type must be market or limit")
+
+        selected_price = limit_price if limit_price is not None else price
+        normalized_price = _decimal(selected_price) if selected_price is not None else None
+        if product_id not in self.products:
+            self.products.append(product_id)
+        self.positions.setdefault(product_id, PaperPosition(product_id=product_id))
+
         order = PaperOrder(
             order_id=self._generate_order_id(),
             strategy_id=strategy_id,
             portfolio_id=portfolio_id,
             product_id=product_id,
-            side=side,
-            order_type=order_type,
-            size=size,
-            price=limit_price or price,
-            remaining_size=size,
+            side=normalized_side,
+            order_type=normalized_type,
+            size=normalized_size,
+            price=normalized_price,
+            remaining_size=normalized_size,
             status="open",
             created_at=time.time(),
         )
         self.orders[order.order_id] = order
 
-        if order_type == "market":
+        if normalized_type == "market":
             self._fill_market(order)
         else:
             self._queue_limit(order)
 
-        hub.publish_sync("orders", {
-            "event": "order_placed",
-            "order_id": order.order_id,
-            "product_id": product_id,
-            "side": side,
-            "order_type": order_type,
-            "size": str(size),
-            "strategy_id": strategy_id,
-        })
-
+        hub.publish_sync(
+            "orders",
+            {
+                "event": "order_placed",
+                "order_id": order.order_id,
+                "product_id": product_id,
+                "side": normalized_side,
+                "order_type": normalized_type,
+                "size": str(normalized_size),
+                "strategy_id": strategy_id,
+            },
+        )
         return order
 
     def _fill_market(self, order: PaperOrder) -> None:
         mid = self.mid_prices.get(order.product_id, Decimal("100"))
         spread_bps = self.spreads.get(order.product_id, Decimal("5"))
         offset = spread_bps / Decimal("2") / Decimal("10000")
-        exec_price = mid * (Decimal("1") + offset if order.side == "buy" else Decimal("1") - offset)
-        fee_rate = self.FEE_RATE_TAKER
+        exec_price = mid * (
+            Decimal("1") + offset if order.side == "buy" else Decimal("1") - offset
+        )
         notional = order.size * exec_price
-        fee = notional * fee_rate
-        order.fee = fee
+        order.fee = notional * self.FEE_RATE_TAKER
         order.slippage_bps = float(spread_bps) / 2.0
-
         self._apply_fill(order, exec_price, "taker")
 
     def _quote_limit(self, product_id: str, side: str) -> tuple[Decimal, Decimal]:
@@ -137,60 +189,75 @@ class PaperExchangeEngine:
 
     def _queue_limit(self, order: PaperOrder) -> None:
         bid, ask = self._quote_limit(order.product_id, order.side)
-        limit_px = bid if order.side == "buy" else ask
+        limit_price = bid if order.side == "buy" else ask
         if order.price is not None:
-            if (order.side == "buy" and order.price < limit_px) or (order.side == "sell" and order.price > limit_px):
-                limit_px = order.price
-        order.price = limit_px
+            if (
+                order.side == "buy" and order.price < limit_price
+            ) or (
+                order.side == "sell" and order.price > limit_price
+            ):
+                limit_price = order.price
+        order.price = limit_price
 
-        queue_ahead = 2.5
-        trade_rate = 0.8
-        cancel_rate = 0.3
-        estimate = self.queue_model.estimate(queue_ahead, trade_rate, cancel_rate, float(order.size))
-
+        estimate = self.queue_model.estimate(2.5, 0.8, 0.3, float(order.size))
         if estimate.fill_probability > 0.3:
-            time_to_fill_ms = estimate.expected_queue_time_ms
             fill_ratio = min(1.0, estimate.fill_probability)
             fill_size = order.size * Decimal(str(fill_ratio))
-            fee = fill_size * limit_px * self.FEE_RATE_MAKER
-            slippage = estimate.adverse_selection_bps
-
-            order.fee = fee
-            order.slippage_bps = slippage
-            order.filled_at = time.time() + time_to_fill_ms / 1000.0
-            self._apply_fill(order, limit_px, "maker", fill_size=fill_size)
+            order.fee = fill_size * limit_price * self.FEE_RATE_MAKER
+            order.slippage_bps = estimate.adverse_selection_bps
+            order.filled_at = time.time() + estimate.expected_queue_time_ms / 1000.0
+            self._apply_fill(order, limit_price, "maker", fill_size=fill_size)
         else:
             order.status = "cancelled"
 
-    def _apply_fill(self, order: PaperOrder, price: Decimal, liquidity: str, fill_size: Decimal | None = None) -> None:
-        fill_qty = fill_size or order.size
-        notional = fill_qty * price
+    def _apply_fill(
+        self,
+        order: PaperOrder,
+        price: Decimal,
+        liquidity: str,
+        fill_size: Decimal | None = None,
+    ) -> None:
+        fill_quantity = fill_size or order.size
+        notional = fill_quantity * price
+        position = self.positions.setdefault(
+            order.product_id,
+            PaperPosition(product_id=order.product_id),
+        )
 
         if order.side == "buy":
             self.cash -= notional + order.fee
-            pos = self.positions[order.product_id]
-            pos.cost_basis = ((pos.cost_basis * pos.size) + notional) / (pos.size + fill_qty) if pos.size + fill_qty > 0 else price
-            pos.size += fill_qty
+            new_size = position.size + fill_quantity
+            position.cost_basis = (
+                ((position.cost_basis * position.size) + notional) / new_size
+                if new_size > 0
+                else price
+            )
+            position.size = new_size
         else:
             self.cash += notional - order.fee
-            pos = self.positions[order.product_id]
-            avg_cost = fill_qty * pos.cost_basis
-            pos.realized_pnl += notional - avg_cost
-            pos.size -= fill_qty
+            average_cost = fill_quantity * position.cost_basis
+            position.realized_pnl += notional - average_cost
+            position.size -= fill_quantity
 
-        total_filled = order.filled_size + fill_qty
-        order.avg_fill_price = ((order.avg_fill_price * order.filled_size) + (price * fill_qty)) / total_filled if total_filled > 0 else price
+        total_filled = order.filled_size + fill_quantity
+        order.avg_fill_price = (
+            ((order.avg_fill_price * order.filled_size) + (price * fill_quantity)) / total_filled
+            if total_filled > 0
+            else price
+        )
         order.filled_size = total_filled
         order.filled_value += notional
         order.remaining_size = order.size - total_filled
         order.status = "filled" if order.remaining_size <= 0 else "partially_filled"
 
+        current_mid = self.mid_prices.get(order.product_id, price)
+        position.unrealized_pnl = (current_mid - position.cost_basis) * position.size
         fill = PaperFill(
             fill_id=self._generate_fill_id(),
             order_id=order.order_id,
             product_id=order.product_id,
             side=order.side,
-            size=fill_qty,
+            size=fill_quantity,
             price=price,
             fee=order.fee,
             liquidity=liquidity,
@@ -198,42 +265,43 @@ class PaperExchangeEngine:
         )
         self.fills.append(fill)
 
-        hub.publish_sync("orders", {
-            "event": "order_filled",
-            "order_id": order.order_id,
-            "fill_id": fill.fill_id,
-            "product_id": order.product_id,
-            "side": order.side,
-            "size": str(fill_qty),
-            "price": str(price),
-            "liquidity": liquidity,
-            "fee": str(order.fee),
-        })
+        hub.publish_sync(
+            "orders",
+            {
+                "event": "order_filled",
+                "order_id": order.order_id,
+                "fill_id": fill.fill_id,
+                "product_id": order.product_id,
+                "side": order.side,
+                "size": str(fill_quantity),
+                "price": str(price),
+                "liquidity": liquidity,
+                "fee": str(order.fee),
+            },
+        )
 
     def cancel_order(self, order_id: str) -> bool:
         order = self.orders.get(order_id)
-        if order and order.status in ("open", "pending"):
+        if order and order.status in {"open", "pending"}:
             order.status = "cancelled"
             return True
         return False
 
     def get_portfolio_summary(self) -> dict[str, Any]:
         total_equity = self.cash
-        for pos in self.positions.values():
-            mid = self.mid_prices.get(pos.product_id, Decimal("0"))
-            pos_value = pos.size * mid
-            total_equity += pos_value
-
+        for position in self.positions.values():
+            mid = self.mid_prices.get(position.product_id, Decimal("0"))
+            total_equity += position.size * mid
         return {
             "cash": float(self.cash),
-            "positions": {pid: float(p.size) for pid, p in self.positions.items()},
+            "positions": {product_id: float(position.size) for product_id, position in self.positions.items()},
             "total_equity": float(total_equity),
-            "open_orders": len([o for o in self.orders.values() if o.status == "open"]),
+            "open_orders": sum(order.status == "open" for order in self.orders.values()),
             "total_fills": len(self.fills),
         }
 
     def get_open_orders(self) -> list[PaperOrder]:
-        return [o for o in self.orders.values() if o.status == "open"]
+        return [order for order in self.orders.values() if order.status == "open"]
 
     async def run(self, config: dict[str, Any] | None = None) -> None:
         self._running = True
