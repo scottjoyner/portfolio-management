@@ -5,7 +5,7 @@ import { handleOperatorRoute } from '../apps/api/src/operatorRouter.mjs';
 import { createInitialOperatorState } from '../packages/storage/src/operatorStore.mjs';
 import { TransactionalPostgresOperatorStore } from '../packages/storage/src/transactionalPostgresOperatorStore.mjs';
 
-function execution(id, status) {
+function execution(id, status, version = 1) {
   return {
     id,
     idempotencyKey: `intent-${id}`,
@@ -15,7 +15,7 @@ function execution(id, status) {
     mode: 'paper',
     side: 'buy',
     status,
-    version: 1,
+    version,
     quantity: 0.01,
     notional: 1000,
     entryPrice: 100000,
@@ -30,7 +30,18 @@ function targetedStore() {
     calls,
     async persistExecutionMutation(input, options) {
       calls.push({ input, options });
-      return { persistence: 'targeted-optimistic' };
+      return {
+        persistence: 'targeted-optimistic',
+        auditEvent: input.auditEvent
+          ? {
+            ...input.auditEvent,
+            previousHash: null,
+            eventHash: `hash-${input.auditEvent.id}`,
+            sequenceNumber: 1,
+          }
+          : null,
+        auditIdempotent: calls.length > 1,
+      };
     },
     async mutate() {
       throw new Error('broad_mutate_must_not_run');
@@ -68,7 +79,34 @@ test('execution submit uses targeted persistence instead of broad state mutation
   assert.equal(store.calls.length, 1);
   assert.equal(store.calls[0].input.execution.id, 'execution-submit');
   assert.equal(store.calls[0].input.auditEvent.action, 'execution_submitted');
+  assert.equal(response.body.auditEventId, store.calls[0].input.auditEvent.id);
   assert.equal(state.executions.at(-1).id, 'execution-submit');
+  assert.equal(state.audit.at(-1).eventHash, `hash-${response.body.auditEventId}`);
+});
+
+test('identical execution retries reuse the same deterministic audit id', async () => {
+  const state = createInitialOperatorState('2026-08-02T20:00:00.000Z');
+  const store = targetedStore();
+  handleOperatorRoute._execEngine = {
+    async approve(id) {
+      return { ok: true, execution: execution(id, 'approved', 2) };
+    },
+  };
+
+  const request = () => handleOperatorRoute({
+    method: 'POST',
+    pathname: '/api/execution/execution-retry/approve',
+    state,
+    store,
+    readJsonBody: async () => ({}),
+  });
+  const first = await request();
+  const second = await request();
+
+  assert.equal(first.body.auditEventId, second.body.auditEventId);
+  assert.equal(store.calls[0].input.auditEvent.id, store.calls[1].input.auditEvent.id);
+  assert.equal(state.audit.filter(row => row.id === first.body.auditEventId).length, 1);
+  assert.equal(second.body.auditIdempotent, true);
 });
 
 for (const scenario of [
