@@ -1,8 +1,8 @@
-"""Shared conftest for api coverage tests.
+"""Shared conftest for API generated-coverage tests.
 
-Patches fastapi.APIRouter with a no-op stub BEFORE any target module is
-imported, so invalid route decorators do not raise at import time. Route
-handler functions are still defined normally and can be invoked directly.
+Patches FastAPI routing with a small decorator-compatible stub before target
+modules import. The tests invoke route handlers directly and do not need a
+fully constructed application router.
 """
 
 import sys
@@ -11,10 +11,11 @@ import fastapi
 
 
 class _StubRouter:
-    """No-op replacement for fastapi.APIRouter used during unit testing."""
+    """No-op replacement for ``fastapi.APIRouter`` used by direct unit tests."""
 
     def __init__(self, *args, **kwargs):
         self.routes = []
+        self._contains_router = False
 
     def __call__(self, *args, **kwargs):
         if args:
@@ -40,7 +41,7 @@ class _StubRouter:
         return lambda fn: fn
 
     def include_router(self, *args, **kwargs):
-        pass
+        self._contains_router = True
 
     def add_api_route(self, *args, **kwargs):
         pass
@@ -52,8 +53,13 @@ class _StubRouter:
 fastapi.APIRouter = _StubRouter
 sys.modules.setdefault("fastapi", fastapi)
 
-# The root coverage conftest provides a minimal Coinbase service collaborator.
-# Keep it compatible with the current API module's sanitized-error import.
 coinbase_service = sys.modules.get("trading_system.core.exchange.coinbase_service")
 if coinbase_service is not None and not hasattr(coinbase_service, "sanitize_error"):
-    coinbase_service.sanitize_error = lambda error: str(error).replace("SHOULD_NOT_LEAK", "[REDACTED]")
+    coinbase_service.sanitize_error = lambda error: str(error).replace(
+        "SHOULD_NOT_LEAK", "[REDACTED]"
+    )
+
+settings_module = sys.modules.get("core.config.settings")
+settings_class = getattr(settings_module, "Settings", None) if settings_module else None
+if settings_class is not None and not hasattr(settings_class, "onchain_mode"):
+    settings_class.onchain_mode = "paper"
