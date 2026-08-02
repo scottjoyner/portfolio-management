@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
@@ -11,6 +11,14 @@ function routeMatch(pathname, pattern) {
     else if (patternPart !== pathParts[index]) return null;
   }
   return params;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function normalizeTradePlan(input = {}) {
@@ -80,8 +88,22 @@ function upsertExecution(state, execution) {
 }
 
 function auditEvent(action, execution, payload = {}, now = new Date().toISOString()) {
+  const revision = execution?.version
+    ?? execution?.updatedAt
+    ?? execution?.lastHeartbeatAt
+    ?? execution?.status
+    ?? 'unknown';
+  const digest = createHash('sha256')
+    .update(canonicalJson({
+      action,
+      executionId: execution?.id || null,
+      revision,
+      payload,
+    }))
+    .digest('hex')
+    .slice(0, 24);
   return {
-    id: `audit-${randomUUID()}`,
+    id: `audit-execution-${digest}`,
     action,
     actor: 'operator',
     at: now,
@@ -120,7 +142,7 @@ async function persistResult({ store, state, result, action, payload = {}, now }
       upsertExecution(state, result.execution);
       if (event) {
         state.audit = Array.isArray(state.audit) ? state.audit : [];
-        state.audit.push(event);
+        if (!state.audit.some(row => row.id === event.id)) state.audit.push(event);
       }
     }
     return { status: 200, body: { ok: true, ...result, persistence: 'targeted-optimistic' } };
@@ -130,7 +152,7 @@ async function persistResult({ store, state, result, action, payload = {}, now }
     upsertExecution(current, result.execution);
     if (event) {
       current.audit = Array.isArray(current.audit) ? current.audit : [];
-      current.audit.push(event);
+      if (!current.audit.some(row => row.id === event.id)) current.audit.push(event);
     }
     return result;
   });
