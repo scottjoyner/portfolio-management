@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { completeAuditChain } from './auditChain.mjs';
+import { buildAuditEvent, completeAuditChain } from './auditChain.mjs';
 import { synchronizeCompatibilityExecutions } from './executionCompatibilitySync.mjs';
 import { ExecutionRepository } from './executionRepository.mjs';
 import { normalizeOperatorState } from './operatorStore.mjs';
@@ -38,8 +38,29 @@ function iso(value) {
   return String(value);
 }
 
+function requiredText(name, value) {
+  const text = String(value || '').trim();
+  if (!text) throw new Error(`${name}_required`);
+  return text;
+}
+
 function hasAuditMetadata(event = {}) {
   return event.eventHash != null || event.sequenceNumber != null || event.previousHash != null;
+}
+
+function mapAuditEvent(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    action: row.action,
+    actor: row.actor || 'system',
+    at: iso(row.at),
+    details: row.details || null,
+    payload: parseJson(row.payload_json),
+    previousHash: row.previous_hash || null,
+    eventHash: row.event_hash || null,
+    sequenceNumber: row.sequence_number == null ? null : Number(row.sequence_number),
+  };
 }
 
 function mapExecutionEvent(row) {
@@ -62,14 +83,9 @@ function mapExecutionEvent(row) {
 /**
  * Production PostgreSQL store.
  *
- * The legacy stores issue BEGIN/COMMIT through store.query() and layer P0, P1,
- * and P2 saves independently. This wrapper pins the complete operation to one
- * checked-out client, suppresses nested transaction controls, and serializes
- * whole-state mutations with a transaction-scoped advisory lock.
- *
- * Targeted row repositories, normalized executions, and the runtime job queue
- * execute inside the same pinned transaction because store.query() resolves
- * through AsyncLocalStorage.
+ * The compatibility state remains available for read models and non-migrated
+ * domains. Normalized execution routes use targeted optimistic rows and direct
+ * append-only audit writes; they do not invoke the broad whole-state saver.
  */
 export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 {
   constructor(options = {}) {
@@ -172,17 +188,7 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
        FROM audit_events
        ORDER BY sequence_number ASC NULLS LAST, at ASC, id ASC`,
     );
-    const events = (result.rows || []).map(row => ({
-      id: row.id,
-      action: row.action,
-      actor: row.actor || 'system',
-      at: iso(row.at),
-      details: row.details || null,
-      payload: parseJson(row.payload_json),
-      previousHash: row.previous_hash,
-      eventHash: row.event_hash,
-      sequenceNumber: row.sequence_number == null ? null : Number(row.sequence_number),
-    }));
+    const events = (result.rows || []).map(mapAuditEvent);
     const metadataCount = events.filter(hasAuditMetadata).length;
     if (metadataCount > 0 && metadataCount !== events.length) {
       throw new Error('audit_chain_partial_metadata_missing');
@@ -224,6 +230,68 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
     }
   }
 
+  async appendAuditEventTargeted(input = {}, options = {}) {
+    const now = options.now instanceof Date ? options.now.toISOString() : options.now || new Date().toISOString();
+    const id = requiredText('audit_event_id', input.id);
+    const existing = await this.query(
+      `SELECT id, action, actor, at, details, payload_json,
+              previous_hash, event_hash, sequence_number
+       FROM audit_events WHERE id = $1`,
+      [id],
+    );
+    if (existing.rows?.[0]) return { event: mapAuditEvent(existing.rows[0]), idempotent: true };
+
+    const previousResult = await this.query(
+      `SELECT id, action, actor, at, details, payload_json,
+              previous_hash, event_hash, sequence_number
+       FROM audit_events
+       ORDER BY sequence_number DESC NULLS LAST, at DESC, id DESC
+       LIMIT 1
+       FOR UPDATE`,
+    );
+    const previous = mapAuditEvent(previousResult.rows?.[0]);
+    if (previous && !previous.eventHash) throw new Error('audit_chain_previous_hash_missing');
+    const event = buildAuditEvent({
+      ...input,
+      id,
+      action: requiredText('audit_event_action', input.action),
+      at: input.at || now,
+      actor: input.actor || 'system',
+      payload: input.payload || {},
+    }, previous);
+
+    const inserted = await this.query(
+      `INSERT INTO audit_events (
+         id, action, actor, at, details, payload_json,
+         previous_hash, event_hash, sequence_number
+       ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
+       ON CONFLICT (id) DO NOTHING
+       RETURNING id, action, actor, at, details, payload_json,
+                 previous_hash, event_hash, sequence_number`,
+      [
+        event.id,
+        event.action,
+        event.actor,
+        event.at,
+        event.details || null,
+        JSON.stringify(event.payload || {}),
+        event.previousHash || null,
+        event.eventHash,
+        Number(event.sequenceNumber),
+      ],
+    );
+    if (inserted.rows?.[0]) return { event: mapAuditEvent(inserted.rows[0]), idempotent: false };
+
+    const conflicted = await this.query(
+      `SELECT id, action, actor, at, details, payload_json,
+              previous_hash, event_hash, sequence_number
+       FROM audit_events WHERE id = $1`,
+      [id],
+    );
+    if (!conflicted.rows?.[0]) throw new Error(`audit_event_insert_conflict:${id}`);
+    return { event: mapAuditEvent(conflicted.rows[0]), idempotent: true };
+  }
+
   async loadExecutionEventsForReadModel(limit = Number(process.env.EXECUTION_READ_MODEL_EVENT_LIMIT || 5000)) {
     const boundedLimit = Math.max(1, Math.min(50000, Math.floor(Number(limit) || 5000)));
     const result = await this.query(
@@ -260,6 +328,38 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
   async synchronizeExecutions(executions = [], now = new Date().toISOString()) {
     this.lastExecutionSync = await synchronizeCompatibilityExecutions(this.executionRepository, executions, { now });
     return this.lastExecutionSync;
+  }
+
+  async persistExecutionMutation({ execution, auditEvent = null } = {}, options = {}) {
+    if (!execution?.id) throw new Error('execution_mutation_execution_required');
+    const now = options.now instanceof Date ? options.now.toISOString() : options.now || new Date().toISOString();
+    return this.withTransaction(async () => {
+      const synchronization = await this.synchronizeExecutions([execution], now);
+      if (!synchronization.ok) throw new Error(`execution_targeted_sync_divergence:${execution.id}`);
+      const auditResult = auditEvent
+        ? await this.appendAuditEventTargeted(auditEvent, { now })
+        : null;
+
+      const state = normalizeOperatorState(clone(this.state || {}));
+      state.executions = Array.isArray(state.executions) ? state.executions : [];
+      const executionIndex = state.executions.findIndex(row => row.id === execution.id);
+      if (executionIndex >= 0) state.executions[executionIndex] = clone(execution);
+      else state.executions.push(clone(execution));
+      if (auditResult?.event && !state.audit.some(row => row.id === auditResult.event.id)) {
+        state.audit.push(clone(auditResult.event));
+      }
+
+      const events = await this.loadExecutionEventsForReadModel();
+      this.state = state;
+      this.publishExecutionReadModel(state, events);
+      return {
+        execution: clone(execution),
+        synchronization,
+        auditEvent: auditResult?.event || null,
+        auditIdempotent: auditResult?.idempotent || false,
+        persistence: 'targeted-optimistic',
+      };
+    });
   }
 
   async save(nextState) {
@@ -335,9 +435,10 @@ export class TransactionalPostgresOperatorStore extends PostgresOperatorStoreP2 
       operatorWriteLockKey: this.operatorWriteLockKey,
       runtimeJobQueue: 'lease-backed-postgres',
       executionPersistence: 'normalized-optimistic-postgres',
+      executionRoutePersistence: 'targeted-optimistic-with-append-only-audit',
       executionEvents: 'append-only-postgres',
       auditEvents: 'hash-chained-append-only-postgres',
-      executionCompatibilitySync: 'atomic-on-save',
+      executionCompatibilitySync: 'targeted-routes-and-compatibility-boundaries',
       executionReadModel: 'postgres-published-compatibility-with-events',
       lastExecutionSync: this.lastExecutionSync,
       activeTransaction: Boolean(this.currentTransaction()),
