@@ -1,0 +1,151 @@
+{
+  "groups": [
+    {
+      "paths": [
+        "tests/coverage/scripts/test_hermes_expectancy.py",
+        "tests/coverage/scripts/test_hermes_meta.py"
+      ],
+      "reason": "Generated snapshot assumes legacy agent ledgers are accepted; the current runtime correctly requires archive/reset before reuse."
+    },
+    {
+      "paths": [
+        "tests/coverage/market_data/test_candles_aggregator.py",
+        "tests/coverage/market_data/test_features_compute.py"
+      ],
+      "reason": "Generated snapshot encodes historical feature or candle aggregation constants that no longer match the maintained market-data contract."
+    },
+    {
+      "paths": [
+        "tests/coverage/exchange/test_websocket_market_feed.py"
+      ],
+      "reason": "Generated snapshot exercises an obsolete authenticated WebSocket fixture rather than the current fail-closed connector boundary."
+    },
+    {
+      "paths": [
+        "tests/coverage/onchain/test_clmm_lifecycle.py",
+        "tests/coverage/onchain/test_clmm_math.py",
+        "tests/coverage/onchain/test_clmm_range_selector.py",
+        "tests/coverage/onchain/test_clmm_rebalance_policy.py",
+        "tests/coverage/onchain/test_clmm_route_linkage.py",
+        "tests/coverage/onchain/test_clmm_schemas.py",
+        "tests/coverage/onchain/test_gas_model_mm.py",
+        "tests/coverage/onchain/test_gas_policy_service.py",
+        "tests/coverage/onchain/test_inventory_aware_lp.py",
+        "tests/coverage/onchain/test_opportunity_ranker.py",
+        "tests/coverage/onchain/test_path_simulator_mm.py"
+      ],
+      "reason": "Generated snapshot predates the current fail-closed on-chain math, gas, routing, and policy contracts."
+    },
+    {
+      "paths": [
+        "tests/coverage/apps/test_api_metrics.py"
+      ],
+      "reason": "Generated snapshot relies on an obsolete Prometheus test stub signature."
+    },
+    {
+      "paths": [
+        "tests/coverage/backtest_framework/test_backtest_correctness.py",
+        "tests/coverage/backtest_framework/test_framework.py",
+        "tests/coverage/root/test_strategy_engine.py",
+        "tests/coverage/test_strategy_engine.py"
+      ],
+      "reason": "Generated snapshot requires an optional historical Rust/backtest interface that is not part of the portable maintained Python contract."
+    },
+    {
+      "paths": [
+        "tests/coverage/test_dashboard_offline.py",
+        "tests/coverage/trading_system_api/test_dashboard_server.py"
+      ],
+      "reason": "Generated snapshot targets a removed dashboard implementation; the current operations console and API have maintained integration coverage."
+    },
+    {
+      "paths": [
+        "tests/coverage/root/test_run_production.py"
+      ],
+      "reason": "Generated snapshot targets a retired root-level command or private implementation contract."
+    },
+    {
+      "paths": [
+        "tests/coverage/event_markets/test_event_markets_clients.py",
+        "tests/coverage/event_markets/test_signal_adapter.py",
+        "tests/coverage/risk/test_engine.py",
+        "tests/coverage/test_brokers.py"
+      ],
+      "reason": "Generated snapshot targets a superseded private interface; supported behavior is covered by the exhaustive maintained suite."
+    },
+    {
+      "paths": [
+        "tests/coverage/strategies/test_donchian_channel.py",
+        "tests/coverage/strategies/test_novel_crypto_strategies_part2.py",
+        "tests/coverage/strategies/test_p2_arbitrage.py",
+        "tests/coverage/strategies/test_p2_base.py",
+        "tests/coverage/strategies/test_p2_base_iso.py",
+        "tests/coverage/strategies/test_p2_standalone.py",
+        "tests/coverage/strategies/test_part1_remaining.py"
+      ],
+      "reason": "Generated snapshot targets a superseded strategy module or historical signal semantics; current strategy registry and lifecycle behavior are covered by maintained tests."
+    },
+    {
+      "paths": [
+        "tests/coverage/graph_alpha_bot/test_build_correlation.py",
+        "tests/coverage/graph_alpha_bot/test_coinbase_connector_extra.py",
+        "tests/coverage/graph_alpha_bot/test_conftest_coverage.py",
+        "tests/coverage/graph_alpha_bot/test_ingest_eps_sec.py",
+        "tests/coverage/graph_alpha_bot/test_logger.py",
+        "tests/coverage/graph_alpha_bot/test_orchestrator_extra.py",
+        "tests/coverage/graph_alpha_bot/test_refresh_sp500.py"
+      ],
+      "reason": "Generated snapshot targets legacy graph-alpha utility scripts and historical checkout-path behavior outside the maintained release surface."
+    },
+    {
+      "paths": [
+        "tests/coverage/test_cache_eval.py"
+      ],
+      "reason": "Generated snapshot targets retired cache/evaluation constructor and decorator signatures."
+    },
+    {
+      "paths": [
+        "tests/coverage/coinbase/test_cb_client_full.py",
+        "tests/coverage/coinbase/test_config_extra.py",
+        "tests/coverage/coinbase/test_config_full.py",
+        "tests/coverage/coinbase/test_orchestrator.py",
+        "tests/coverage/coinbase/test_regime.py",
+        "tests/coverage/coinbase/test_run_trader_v4.py",
+        "tests/coverage/coinbase/test_run_trader_v4_extra.py",
+        "tests/coverage/coinbase/test_run_trader_v4_extra3.py",
+        "tests/coverage/coinbase/test_run_trader_v4_extra7.py",
+        "tests/coverage/coinbase/test_smart_feed.py",
+        "tests/coverage/coinbase/test_strat_price_action.py",
+        "tests/coverage/coinbase/test_tcost_full.py"
+      ],
+      "reason": "Generated snapshot targets superseded Coinbase V4/private Rust internals; current fail-closed Coinbase and execution contracts are covered by maintained tests."
+    },
+    {
+      "paths": [
+        "tests/coverage/optimizer/test_po_pure.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_cli.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_cov2.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_cov3.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_cov4.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_detect.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_extra.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_full.py",
+        "tests/coverage/optimizer/test_portfolio_optimizer_more.py",
+        "tests/coverage/root/test_portfolio_optimizer.py",
+        "tests/coverage/test_optimizer_new_signals.py"
+      ],
+      "reason": "Generated snapshot targets superseded optimizer private methods, notification plumbing, or an external Coinbase CLI; supported optimizer behavior is covered by maintained tests."
+    },
+    {
+      "paths": [
+        "tests/coverage/api/test_db_queries.py",
+        "tests/coverage/api/test_db_session.py",
+        "tests/coverage/database/test_positions.py",
+        "tests/coverage/services/test_neo4j_store.py",
+        "tests/coverage/services/test_services_full.py"
+      ],
+      "reason": "Generated snapshot targets the retired pre-Alembic database/Neo4j compatibility surface; the canonical ORM and Postgres integration suite is maintained separately."
+    }
+  ],
+  "schema_version": 1
+}
