@@ -96,7 +96,7 @@ def test_ops_dashboard_with_postgres(test_client, db_session):
 
 
 def test_ops_order_lifecycle_with_postgres(test_client, db_session):
-    """Order preview/submit/cancel works with Postgres."""
+    """Order preview/submit persists the canonical open order state."""
     repo = OpsRepository(db_session)
     repo.seed_default_portfolios()
     _seed_supported_strategy(repo)
@@ -126,4 +126,4 @@ def test_ops_order_lifecycle_with_postgres(test_client, db_session):
         __import__("storage.postgres.models", fromlist=["Order"]).Order
     ).filter_by(order_id=order_id).first()
     assert order is not None
-    assert order.status == "submitted"
+    assert order.status == "open"
