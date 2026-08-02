@@ -264,7 +264,9 @@ jobs:
       with:
         node-version: '22'
     - name: Enforce deterministic release-critical performance thresholds
-      run: node scripts/benchmark-release-critical-paths.mjs | tee performance-smoke.json
+      run: |
+        set -o pipefail
+        node scripts/benchmark-release-critical-paths.mjs | tee performance-smoke.json
     - name: Upload performance evidence
       if: always()
       uses: actions/upload-artifact@v4
