@@ -11,9 +11,6 @@ class _StubRouter:
     def __init__(self, *args, **kwargs):
         self.routes = []
 
-    def _contains_router(self, router):
-        return False
-
     def __call__(self, *args, **kwargs):
         return args[0] if args else self
 
@@ -46,6 +43,7 @@ class _StubRouter:
 
 
 fastapi.APIRouter = _StubRouter
+fastapi.FastAPI.include_router = lambda self, *args, **kwargs: None
 sys.modules.setdefault("fastapi", fastapi)
 
 coinbase_service = sys.modules.get("trading_system.core.exchange.coinbase_service")
