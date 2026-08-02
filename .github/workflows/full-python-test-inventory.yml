@@ -31,6 +31,8 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
+        mkdir -p .venv/bin
+        ln -sf "$(command -v alembic)" .venv/bin/alembic
     - name: Collect every maintained Python test in an isolated process
       run: |
         set -o pipefail
@@ -82,6 +84,8 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
+        mkdir -p .venv/bin
+        ln -sf "$(command -v alembic)" .venv/bin/alembic
     - name: Collect and run assigned coverage domains in fresh processes
       run: |
         python scripts/run-isolated-coverage-inventory.py \
