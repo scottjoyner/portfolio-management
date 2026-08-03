@@ -88,6 +88,7 @@ logs/
 # Keep data source code and seed CSVs deployable, but ignore generated state/cache files.
 data/*.log
 data/.daemon_heartbeat
+data/.competition_heartbeat
 data/.*cache*.json
 data/*cache*.json
 data/operator-state.json
@@ -152,6 +153,14 @@ data/*.db-shm
 data/*.db-wal
 data/wash_sale_state.json
 data/hermes_agent_ledger.json
+data/agent_cost_ledger.json
+data/competition_epoch.json
+data/competition_state.json
+data/learning_lineage.jsonl
+data/agent_runtime_config.json
+data/learning/
+data/legacy_agent_ledgers/
+data/competition_epochs/
 data/llm_watchdog*
 data/optimizer_brackets.json
 data/order_flow_signals.json

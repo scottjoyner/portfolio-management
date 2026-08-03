@@ -91,12 +91,27 @@ class TestCBClientErrorBranches(unittest.TestCase):
         with patch.object(subprocess, "run", return_value=out):
             self.assertEqual(cb._cli_json("balance"), {"accounts": []})
 
-    def test_cli_json_dryrun_parses(self):
+    def test_cli_json_order_dry_run_is_local_and_deterministic(self):
         cb = make_cb(override_cli=False)
-        body = 'would execute orders_create\n{"product_id": "BTC-USD"}'
-        out = subprocess.CompletedProcess(args=[], returncode=0, stdout=body, stderr="")
-        with patch.object(subprocess, "run", return_value=out):
-            self.assertEqual(cb._cli_json("orders", "create", dry_run=True)["product_id"], "BTC-USD")
+        args = (
+            "orders",
+            "create",
+            "product_id=BTC-USD",
+            "side=BUY",
+            "type=market",
+            "base_size=0.001",
+        )
+        with patch.object(subprocess, "run") as run:
+            first = cb._cli_json(*args, dry_run=True)
+            second = cb._cli_json(*args, dry_run=True)
+        run.assert_not_called()
+        self.assertEqual(first, second)
+        self.assertEqual(first["product_id"], "BTC-USD")
+        self.assertEqual(first["side"], "BUY")
+        self.assertEqual(first["base_size"], "0.001")
+        self.assertEqual(first["status"], "OPEN")
+        self.assertTrue(first["dry_run"])
+        self.assertTrue(first["order_id"].startswith("dry-order-"))
 
     def test_get_fees_error_returns_empty(self):
         cb = make_cb()

@@ -74,10 +74,10 @@ def ws_hub():
 
 @pytest.fixture()
 def test_client(paper_exchange, risk_engine, db_session):
-    """TestClient with overrides for paper exchange, risk, and DB."""
+    """TestClient with temporary overrides that preserve other modules' state."""
     from apps.api.main import app
 
-    app.dependency_overrides.clear()
+    previous_overrides = dict(app.dependency_overrides)
 
     def override_get_paper():
         return paper_exchange
@@ -92,9 +92,25 @@ def test_client(paper_exchange, risk_engine, db_session):
     app.dependency_overrides["get_risk_engine"] = override_get_risk
     app.dependency_overrides[get_db] = override_get_db
 
-    yield TestClient(app)
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
 
-    app.dependency_overrides.clear()
+
+@pytest.fixture()
+def app_client():
+    """Client for read-only API endpoints without mutating shared overrides."""
+    from apps.api.main import app
+
+    previous_overrides = dict(app.dependency_overrides)
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
 
 
 @pytest.fixture()

@@ -1,27 +1,23 @@
-"""Offline unit tests for coinbase.src.config (TradingConfig + safety validators).
-
-NOTE: in this environment pydantic is not installed, so only the dataclass branch of
-TradingConfig is exercised. The pydantic branch (dead here, per AGENTS.md) remains
-uncovered by design — see coverage report caveat.
-"""
+"""Offline unit tests for Coinbase runtime configuration and safety guards."""
 
 from __future__ import annotations
 
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from coinbase.src.config import TradingConfig, LiveSafetyValidator, KillSwitch
+from coinbase.src.config import KillSwitch, LiveSafetyValidator, TradingConfig
 
 
 class TestTradingConfig(unittest.TestCase):
     def test_defaults(self):
-        c = TradingConfig()
-        self.assertEqual(c.mode, "paper")
-        self.assertTrue(c.kill_switch)
-        self.assertEqual(c.max_notional_per_trade_usd, 100.0)
-        self.assertEqual(c.min_confidence, 0.40)
+        config = TradingConfig()
+        self.assertEqual(config.mode, "paper")
+        self.assertTrue(config.kill_switch)
+        self.assertEqual(config.max_notional_per_trade_usd, 100.0)
+        self.assertEqual(config.min_confidence, 0.40)
 
     def test_from_env_reads_values(self):
         env = {
@@ -34,96 +30,139 @@ class TestTradingConfig(unittest.TestCase):
             "BRACKET_STOP_ATR_MULT": "3.0",
             "PRODUCTS": "BTC-USD,ETH-USD",
         }
-        with patch.dict(os.environ, env, clear=False):
-            c = TradingConfig.from_env()
-        self.assertEqual(c.mode, "live")
-        self.assertFalse(c.kill_switch)
-        self.assertTrue(c.live_trading_enabled)
-        self.assertEqual(c.max_notional_per_trade_usd, 250.0)
-        self.assertEqual(c.min_confidence, 0.70)
-        self.assertEqual(c.bracket_stop_atr_mult, 3.0)
-        self.assertEqual(c.products, "BTC-USD,ETH-USD")
+        with patch.dict(os.environ, env, clear=True):
+            config = TradingConfig.from_env()
+        self.assertEqual(config.mode, "live")
+        self.assertFalse(config.kill_switch)
+        self.assertTrue(config.live_trading_enabled)
+        self.assertEqual(config.max_notional_per_trade_usd, 250.0)
+        self.assertEqual(config.min_confidence, 0.70)
+        self.assertEqual(config.bracket_stop_atr_mult, 3.0)
+        self.assertEqual(config.products, "BTC-USD,ETH-USD")
+
+    def test_legacy_kill_switch_alias_is_honored(self):
+        with patch.dict(
+            os.environ,
+            {"TRADER_KILL_SWITCH": "true"},
+            clear=True,
+        ):
+            config = TradingConfig.from_env()
+            self.assertTrue(config.kill_switch)
+            self.assertTrue(KillSwitch.is_active())
 
     def test_from_env_bad_mode_raises(self):
-        with patch.dict(os.environ, {"TRADER_MODE": "nonsense"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"TRADER_MODE": "nonsense"},
+            clear=True,
+        ):
             with self.assertRaises(ValueError):
                 TradingConfig.from_env()
 
 
 class TestLiveSafetyValidator(unittest.TestCase):
     def _clean_cfg(self):
-        c = TradingConfig()
-        c.kill_switch = False
-        c.live_trading_enabled = True
-        c.mode = "live"
-        c.coinbase_api_key = "k"
-        c.coinbase_api_secret = "s"
-        return c
+        config = TradingConfig()
+        config.kill_switch = False
+        config.live_trading_enabled = True
+        config.mode = "live"
+        config.dry_run = False
+        config.coinbase_api_key = "k"
+        config.coinbase_api_secret = "s"
+        config.coinbase_cli_path = "/bin/true"
+        return config
 
     def test_clean_passes(self):
         issues = LiveSafetyValidator.check(self._clean_cfg())
         self.assertEqual(issues, [])
 
     def test_kill_switch_flagged(self):
-        c = self._clean_cfg()
-        c.kill_switch = True
-        self.assertTrue(any("KILL_SWITCH" in i for i in LiveSafetyValidator.check(c)))
+        config = self._clean_cfg()
+        config.kill_switch = True
+        self.assertTrue(
+            any("KILL_SWITCH" in issue for issue in LiveSafetyValidator.check(config))
+        )
 
     def test_live_disabled_flagged(self):
-        c = self._clean_cfg()
-        c.live_trading_enabled = False
-        self.assertTrue(any("LIVE_TRADING_ENABLED" in i for i in LiveSafetyValidator.check(c)))
+        config = self._clean_cfg()
+        config.live_trading_enabled = False
+        self.assertTrue(
+            any(
+                "LIVE_TRADING_ENABLED" in issue
+                for issue in LiveSafetyValidator.check(config)
+            )
+        )
 
     def test_dry_run_with_live_flagged(self):
-        c = self._clean_cfg()
-        c.dry_run = True
-        self.assertTrue(any("dry-run" in i.lower() for i in LiveSafetyValidator.check(c)))
+        config = self._clean_cfg()
+        config.dry_run = True
+        self.assertTrue(
+            any("dry-run" in issue.lower() for issue in LiveSafetyValidator.check(config))
+        )
 
     def test_notional_bounds_flagged(self):
-        c = self._clean_cfg()
-        c.max_notional_per_trade_usd = 0
-        self.assertTrue(any("MAX_NOTIONAL" in i for i in LiveSafetyValidator.check(c)))
-        c2 = self._clean_cfg()
-        c2.risk_per_trade_pct = 0.9
-        self.assertTrue(any("RISK_PER_TRADE" in i for i in LiveSafetyValidator.check(c2)))
+        config = self._clean_cfg()
+        config.max_notional_per_trade_usd = 0
+        self.assertTrue(
+            any("MAX_NOTIONAL" in issue for issue in LiveSafetyValidator.check(config))
+        )
+
+        config = self._clean_cfg()
+        config.risk_per_trade_pct = 0.9
+        self.assertTrue(
+            any(
+                "RISK_PER_TRADE" in issue
+                for issue in LiveSafetyValidator.check(config)
+            )
+        )
 
     def test_daily_loss_bounds_flagged(self):
-        c = self._clean_cfg()
-        c.max_daily_loss_pct = 0.9
-        self.assertTrue(any("MAX_DAILY_LOSS" in i for i in LiveSafetyValidator.check(c)))
+        config = self._clean_cfg()
+        config.max_daily_loss_pct = 0.9
+        self.assertTrue(
+            any(
+                "MAX_DAILY_LOSS" in issue
+                for issue in LiveSafetyValidator.check(config)
+            )
+        )
 
     def test_missing_credentials_flagged(self):
-        c = self._clean_cfg()
-        c.coinbase_api_key = ""
-        c.coinbase_api_secret = ""
-        issues = LiveSafetyValidator.check(c)
-        self.assertTrue(any("COINBASE_API_KEY" in i for i in issues))
+        config = self._clean_cfg()
+        config.coinbase_api_key = ""
+        config.coinbase_api_secret = ""
+        issues = LiveSafetyValidator.check(config)
+        self.assertTrue(any("COINBASE_API_KEY" in issue for issue in issues))
 
     def test_assert_safe_raises(self):
-        c = self._clean_cfg()
-        c.kill_switch = True
+        config = self._clean_cfg()
+        config.kill_switch = True
         with self.assertRaises(RuntimeError):
-            LiveSafetyValidator.assert_safe(c)
+            LiveSafetyValidator.assert_safe(config)
 
 
 class TestKillSwitch(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self.path = os.path.join(self.tmp, "ks")
+        self.path = Path(self.tmp) / "nested" / "ks"
 
     def test_env_active(self):
-        with patch.dict(os.environ, {"KILL_SWITCH": "true"}, clear=False):
-            with patch.object(KillSwitch, "KILL_PATH", __import__("pathlib").Path(self.path)):
+        with patch.dict(os.environ, {"KILL_SWITCH": "true"}, clear=True):
+            with patch.object(KillSwitch, "KILL_PATH", self.path):
                 self.assertTrue(KillSwitch.is_active())
 
     def test_file_active(self):
-        with patch.dict(os.environ, {}, clear=False):
-            with patch.object(KillSwitch, "KILL_PATH", __import__("pathlib").Path(self.path)):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(KillSwitch, "KILL_PATH", self.path):
                 self.assertFalse(KillSwitch.is_active())
                 KillSwitch.engage()
                 self.assertTrue(KillSwitch.is_active())
                 KillSwitch.disengage()
                 self.assertFalse(KillSwitch.is_active())
+
+    def test_invalid_explicit_value_fails_closed(self):
+        with patch.dict(os.environ, {"KILL_SWITCH": "maybe"}, clear=True):
+            with patch.object(KillSwitch, "KILL_PATH", self.path):
+                self.assertTrue(KillSwitch.is_active())
 
 
 if __name__ == "__main__":

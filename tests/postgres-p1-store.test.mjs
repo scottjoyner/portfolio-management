@@ -13,19 +13,34 @@ class FakePgClientP1 {
 
   async query(sql, params = []) {
     this.queries.push({ sql, params });
-    if (sql.includes("to_regclass('public.schema_migrations')")) return { rows: [{ schema_migrations: 'schema_migrations', strategies: 'strategies' }] };
-    if (sql.startsWith('SELECT version FROM schema_migrations')) return { rows: this.includeP1Migration ? [{ version: '001_operator_state' }, { version: '002_operator_product_layer' }] : [{ version: '001_operator_state' }] };
+    if (sql.includes("to_regclass('public.schema_migrations')")) {
+      return { rows: [{ schema_migrations: 'schema_migrations', strategies: 'strategies', opportunities: 'opportunities' }] };
+    }
+    if (sql.startsWith('SELECT version FROM schema_migrations')) {
+      const versions = [
+        { version: '001_operator_state' },
+        { version: '004_opportunity_agent_workflow' },
+      ];
+      if (this.includeP1Migration) versions.splice(1, 0, { version: '002_operator_product_layer' });
+      return { rows: versions };
+    }
     if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
-    if (sql.startsWith('SELECT * FROM strategies')) return { rows: this.tables.strategies.map(s => ({ id: s.id, name: s.name, version: s.version, status: s.status, risk_level: s.riskLevel, parameters_json: s.parameters, created_at: s.createdAt, updated_at: s.updatedAt })) };
-    if (sql.startsWith('SELECT * FROM backtest_runs')) return { rows: this.tables.backtests.map(b => ({ id: b.id, strategy_id: b.strategyId, status: b.status, assumptions_json: b.assumptions, metrics_json: b.metrics, equity_curve_json: b.equityCurve, trades_json: b.trades, started_at: b.startedAt, completed_at: b.completedAt })) };
-    if (sql.startsWith('SELECT * FROM approvals')) return { rows: this.tables.approvals.map(a => ({ id: a.id, strategy_id: a.strategyId, status: a.status, tier: a.tier, reason: a.reason, created_at: a.createdAt, reviewed_at: a.reviewedAt, reviewer: a.reviewer })) };
+    if (sql.startsWith('SELECT * FROM strategies')) return { rows: this.tables.strategies.map(strategy => ({ id: strategy.id, name: strategy.name, version: strategy.version, status: strategy.status, risk_level: strategy.riskLevel, parameters_json: strategy.parameters, created_at: strategy.createdAt, updated_at: strategy.updatedAt })) };
+    if (sql.startsWith('SELECT * FROM backtest_runs')) return { rows: this.tables.backtests.map(backtest => ({ id: backtest.id, strategy_id: backtest.strategyId, status: backtest.status, assumptions_json: backtest.assumptions, metrics_json: backtest.metrics, equity_curve_json: backtest.equityCurve, trades_json: backtest.trades, started_at: backtest.startedAt, completed_at: backtest.completedAt })) };
+    if (sql.startsWith('SELECT * FROM approvals')) return { rows: this.tables.approvals.map(approval => ({ id: approval.id, strategy_id: approval.strategyId, status: approval.status, tier: approval.tier, reason: approval.reason, created_at: approval.createdAt, reviewed_at: approval.reviewedAt, reviewer: approval.reviewer })) };
     if (sql.startsWith('SELECT * FROM positions')) return { rows: [] };
-    if (sql.startsWith('SELECT * FROM audit_events')) return { rows: this.tables.audit.map(a => ({ id: a.id, action: a.action, actor: a.actor, at: a.at, details: a.details, payload_json: a.payload || {} })) };
+    if (sql.startsWith('SELECT * FROM audit_events')) return { rows: this.tables.audit.map(event => ({ id: event.id, action: event.action, actor: event.actor, at: event.at, details: event.details, payload_json: event.payload || {} })) };
     if (sql.includes("WHERE key = 'kill_switch'")) return { rows: [{ key: 'kill_switch', value_json: this.tables.killSwitch, updated_at: this.tables.killSwitch.updatedAt }] };
-    if (sql.startsWith('SELECT * FROM accounts')) return { rows: this.tables.accounts.map(a => ({ id: a.id, name: a.name, provider: a.provider, status: a.status, currency: a.currency, cash: a.cash, nav: a.nav, updated_at: a.updatedAt })) };
-    if (sql.startsWith('SELECT * FROM instruments')) return { rows: this.tables.instruments.map(i => ({ symbol: i.symbol, name: i.name, asset_class: i.assetClass, venue: i.venue, status: i.status, min_order_size: i.minOrderSize, price_precision: i.pricePrecision })) };
-    if (sql.startsWith('SELECT * FROM strategy_templates')) return { rows: this.tables.strategyTemplates.map(t => ({ id: t.id, name: t.name, description: t.description, risk_level: t.riskLevel, parameter_schema_json: t.parameterSchema, created_at: t.createdAt, updated_at: t.updatedAt })) };
-    if (sql.startsWith('SELECT * FROM paper_executions')) return { rows: this.tables.paperExecutions.map(e => ({ id: e.id, strategy_id: e.strategyId, account_id: e.accountId, status: e.status, mode: e.mode || 'paper', started_at: e.startedAt, stopped_at: e.stoppedAt, stop_reason: e.stopReason, last_heartbeat_at: e.lastHeartbeatAt, fills_json: e.fills || [] })) };
+    if (sql.startsWith('SELECT * FROM market_data_snapshots')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM agent_budgets')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM research_jobs')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM opportunities')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM risk_breakdowns')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM agent_cost_ledger')) return { rows: [] };
+    if (sql.startsWith('SELECT * FROM accounts')) return { rows: this.tables.accounts.map(account => ({ id: account.id, name: account.name, provider: account.provider, status: account.status, currency: account.currency, cash: account.cash, nav: account.nav, updated_at: account.updatedAt })) };
+    if (sql.startsWith('SELECT * FROM instruments')) return { rows: this.tables.instruments.map(instrument => ({ symbol: instrument.symbol, name: instrument.name, asset_class: instrument.assetClass, venue: instrument.venue, status: instrument.status, min_order_size: instrument.minOrderSize, price_precision: instrument.pricePrecision })) };
+    if (sql.startsWith('SELECT * FROM strategy_templates')) return { rows: this.tables.strategyTemplates.map(template => ({ id: template.id, name: template.name, description: template.description, risk_level: template.riskLevel, parameter_schema_json: template.parameterSchema, created_at: template.createdAt, updated_at: template.updatedAt })) };
+    if (sql.startsWith('SELECT * FROM paper_executions')) return { rows: this.tables.paperExecutions.map(execution => ({ id: execution.id, strategy_id: execution.strategyId, account_id: execution.accountId, status: execution.status, mode: execution.mode || 'paper', started_at: execution.startedAt, stopped_at: execution.stoppedAt, stop_reason: execution.stopReason, last_heartbeat_at: execution.lastHeartbeatAt, fills_json: execution.fills || [] })) };
     if (sql.startsWith('DELETE FROM')) {
       const table = sql.replace('DELETE FROM ', '').trim();
       if (table === 'operator_flags') { this.flags.clear(); this.tables.killSwitch = { enabled: false, reason: null, updatedAt: null }; }

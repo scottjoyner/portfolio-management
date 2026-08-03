@@ -1,5 +1,6 @@
 from __future__ import annotations
 import fcntl
+import json
 import os
 import time
 import uuid
@@ -565,8 +566,50 @@ class ExecutionOrchestrator:
             "bucket_id": bucket_id,
         }
 
+    def _persist_pending_approval(self, token: str, approval: Dict[str, Any]) -> None:
+        """Durably append an approval using a process-safe lock and atomic replace."""
+        pending_path = os.path.abspath(self.pending_file)
+        parent = os.path.dirname(pending_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        lock_path = f"{pending_path}.lock"
+        temp_path = f"{pending_path}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
+        with open(lock_path, "a+") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            pending: Dict[str, Any] = {}
+            try:
+                with open(pending_path, encoding="utf-8") as existing:
+                    loaded = json.load(existing)
+                    if isinstance(loaded, dict):
+                        pending = loaded
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError, TypeError) as exc:
+                log.warning("Unable to read pending approvals from %s: %s", pending_path, exc)
+
+            pending[token] = approval
+            try:
+                with open(temp_path, "w", encoding="utf-8") as staged:
+                    json.dump(pending, staged, indent=2, default=str, sort_keys=True)
+                    staged.write("\n")
+                    staged.flush()
+                    os.fsync(staged.fileno())
+                os.replace(temp_path, pending_path)
+                if parent and hasattr(os, "O_DIRECTORY"):
+                    directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            finally:
+                try:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                except OSError:
+                    pass
+
     def _approval_execute(self, sig: TradeSignal) -> Dict[str, Any]:
-        import json, os
         token = str(uuid.uuid4())
         approval = {
             "product_id": sig.product_id,
@@ -582,18 +625,7 @@ class ExecutionOrchestrator:
             "token": token,
             "status": "pending",
         }
-        pending = {}
-        try:
-            if os.path.exists(self.pending_file):
-                with open(self.pending_file) as f:
-                    fcntl.flock(f, fcntl.LOCK_SH)
-                    pending = json.load(f)
-        except Exception:
-            pass
-        pending[token] = approval
-        with open(self.pending_file, "w") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            json.dump(pending, f, indent=2, default=str)
+        self._persist_pending_approval(token, approval)
         self.state.pending_approvals.append(approval)
         return {
             "success": True,

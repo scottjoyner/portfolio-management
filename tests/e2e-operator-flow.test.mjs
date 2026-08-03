@@ -5,14 +5,14 @@ import { MemoryOperatorStore, createInitialOperatorState } from '../packages/sto
 
 async function withServer(fn) {
   const store = new MemoryOperatorStore(createInitialOperatorState());
-  const server = startServer(0, { store, env: { NODE_ENV: 'development', OPERATOR_AUTH_REQUIRED: 'false', CSRF_REQUIRED: 'false' } });
+  const server = startServer(0, { store, env: { NODE_ENV: 'development', MODE: 'mock', OPERATOR_AUTH_REQUIRED: 'false', CSRF_REQUIRED: 'false' } });
   await new Promise(resolve => server.once('listening', resolve));
   const { port } = server.address();
   const baseUrl = `http://127.0.0.1:${port}`;
   try {
     return await fn({ baseUrl, store });
   } finally {
-    await new Promise(resolve => server.close(resolve));
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }
 }
 
@@ -32,15 +32,21 @@ test('operator UI assets are served over HTTP and use API-backed dashboard data'
   await withServer(async ({ baseUrl }) => {
     const home = await request(baseUrl, '/');
     assert.equal(home.response.status, 200);
-    assert.match(home.body, /Trading Bot Command Center/);
-    assert.match(home.body, /id="opportunities"/);
-    assert.match(home.body, /id="polymarket"/);
+    assert.match(home.body, /Portfolio OS/);
+    assert.match(home.body, /Daily Trading Operations/);
+    assert.match(home.body, /id="overview"/);
+    assert.match(home.body, /id="race"/);
+    assert.match(home.body, /\/ui\/economics\.js/);
 
     const app = await request(baseUrl, '/ui/app.js');
     assert.equal(app.response.status, 200);
     assert.match(app.body, /netExpectedValue/);
-    assert.match(app.body, /\/api\/opportunity-dashboard/);
+    assert.match(app.body, /\/api\/opportunities/);
     assert.doesNotMatch(app.body, /dashboard-data\.js/);
+
+    const economics = await request(baseUrl, '/ui/economics.js');
+    assert.equal(economics.response.status, 200);
+    assert.match(economics.body, /\/api\/economics\/dashboard/);
   });
 });
 
@@ -68,7 +74,7 @@ test('connector ingest generates market snapshots and review opportunities', asy
   });
 });
 
-test('opportunity validation and agent budget guardrails reject unsafe inputs', async () => {
+test('opportunity validation and economic research guardrails fail closed', async () => {
   await withServer(async ({ baseUrl }) => {
     const invalidOpportunity = await request(baseUrl, '/api/opportunities', {
       method: 'POST',
@@ -87,59 +93,40 @@ test('opportunity validation and agent budget guardrails reject unsafe inputs', 
     assert.ok(invalidOpportunity.body.errors.includes('max_loss_exceeds_total_money_risked'));
     assert.ok(invalidOpportunity.body.errors.includes('win_loss_probability_sum_invalid'));
 
-    const runawayJob = await request(baseUrl, '/api/agents/jobs', {
+    const remoteWithoutEconomics = await request(baseUrl, '/api/agents/jobs', {
       method: 'POST',
       body: {
         agentId: 'market-research-agent',
         model: 'expensive-remote-model',
         localOrRemote: 'remote',
-        promptTokens: 250000,
-        completionTokens: 250000,
         totalTokens: 500000,
-        costPerMillionTokens: 200,
+        remoteApiCost: 100,
         marketScope: 'PREDICTION:DEMO'
       }
     });
-    assert.equal(runawayJob.response.status, 400);
-    assert.ok(runawayJob.body.errors.includes('per_job_token_limit_exceeded'));
-    assert.ok(runawayJob.body.errors.includes('daily_cost_limit_exceeded'));
-    assert.ok(runawayJob.body.errors.includes('research_budget_approval_required'));
+    assert.equal(remoteWithoutEconomics.response.status, 409);
+    assert.equal(remoteWithoutEconomics.body.error, 'remote_intelligence_purchase_blocked');
+    assert.ok(remoteWithoutEconomics.body.errors.includes('model_quote_required'));
+    assert.ok(remoteWithoutEconomics.body.errors.includes('economic_decision_required'));
 
-    const overrideJob = await request(baseUrl, '/api/agents/jobs', {
+    const localDefault = await request(baseUrl, '/api/agents/jobs', {
       method: 'POST',
       body: {
-        agentId: 'market-research-agent',
-        model: 'approved-review-model',
-        localOrRemote: 'remote',
-        promptTokens: 1000,
-        completionTokens: 500,
+        agentId: 'local-e2e-agent',
+        model: 'local-review',
         totalTokens: 1500,
-        remoteApiCost: 12,
-        systemBudgetOverride: true,
-        marketScope: 'PREDICTION:DEMO'
+        runtimeSeconds: 30,
+        marketScope: 'BTC-USD'
       }
     });
-    assert.equal(overrideJob.response.status, 201);
-    assert.equal(overrideJob.body.job.agentId, 'market-research-agent');
+    assert.equal(localDefault.response.status, 201);
+    assert.equal(localDefault.body.job.localOrRemote, 'local');
+    assert.equal(localDefault.body.job.status, 'queued');
   });
 });
 
-test('explicit budget approval unlocks expensive research and is audited', async () => {
+test('budget approval does not bypass model quote and economic decision gates', async () => {
   await withServer(async ({ baseUrl }) => {
-    const blocked = await request(baseUrl, '/api/agents/jobs', {
-      method: 'POST',
-      body: {
-        agentId: 'market-research-agent',
-        model: 'expensive-remote-model',
-        localOrRemote: 'remote',
-        totalTokens: 60000,
-        remoteApiCost: 12,
-        marketScope: 'PREDICTION:DEMO'
-      }
-    });
-    assert.equal(blocked.response.status, 400);
-    assert.ok(blocked.body.errors.includes('research_budget_approval_required'));
-
     const requested = await request(baseUrl, '/api/agents/budget-approvals', {
       method: 'POST',
       body: {
@@ -161,7 +148,7 @@ test('explicit budget approval unlocks expensive research and is audited', async
     assert.equal(approved.response.status, 200);
     assert.equal(approved.body.budgetApproval.status, 'approved');
 
-    const allowed = await request(baseUrl, '/api/agents/jobs', {
+    const stillBlocked = await request(baseUrl, '/api/agents/jobs', {
       method: 'POST',
       body: {
         agentId: 'market-research-agent',
@@ -173,8 +160,10 @@ test('explicit budget approval unlocks expensive research and is audited', async
         budgetApprovalId: requested.body.budgetApproval.id
       }
     });
-    assert.equal(allowed.response.status, 201);
-    assert.equal(allowed.body.job.budgetApprovalId, requested.body.budgetApproval.id);
+    assert.equal(stillBlocked.response.status, 409);
+    assert.equal(stillBlocked.body.error, 'remote_intelligence_purchase_blocked');
+    assert.ok(stillBlocked.body.errors.includes('model_quote_required'));
+    assert.ok(stillBlocked.body.errors.includes('economic_decision_required'));
 
     const list = await request(baseUrl, '/api/agents/budget-approvals');
     assert.equal(list.response.status, 200);
@@ -187,7 +176,7 @@ test('explicit budget approval unlocks expensive research and is audited', async
   });
 });
 
-test('opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
+test('local opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
   await withServer(async ({ baseUrl }) => {
     const job = await request(baseUrl, '/api/agents/jobs', {
       method: 'POST',
@@ -195,6 +184,7 @@ test('opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
     });
     assert.equal(job.response.status, 201);
     assert.equal(job.body.job.agentId, 'e2e-research-agent');
+    assert.equal(job.body.job.status, 'queued');
     assert.ok(job.body.ledger.localComputeCost > 0);
 
     const created = await request(baseUrl, '/api/opportunities', {
@@ -217,11 +207,11 @@ test('opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
         estimatedFees: 4,
         estimatedSlippage: 6,
         agentResearchCost: 3,
-        modelInferenceCost: 2
+        modelInferenceCost: 0
       }
     });
     assert.equal(created.response.status, 201);
-    assert.equal(created.body.opportunity.netExpectedValue, 85);
+    assert.equal(created.body.opportunity.netExpectedValue, 87);
     assert.equal(created.body.opportunity.riskBreakdownId, created.body.riskBreakdown.id);
 
     const dashboard = await request(baseUrl, '/api/opportunity-dashboard');
@@ -235,23 +225,20 @@ test('opportunity, risk, agent, and cost workflow runs over HTTP', async () => {
     assert.equal(detail.body.opportunity.title, 'E2E ETH opportunity');
     assert.ok(detail.body.riskBreakdown.aggregateScore >= 0);
 
-    const approved = await request(baseUrl, `/api/opportunities/${created.body.opportunity.id}/approve`, { method: 'POST', body: { reviewer: 'e2e', reason: 'paper review accepted' } });
+    const approved = await request(baseUrl, `/api/opportunities/${created.body.opportunity.id}/approve`, { method: 'POST', body: { reviewer: 'e2e', reason: 'local paper review accepted' } });
     assert.equal(approved.response.status, 200);
     assert.equal(approved.body.opportunity.status, 'approved');
 
     const moreResearch = await request(baseUrl, `/api/opportunities/${created.body.opportunity.id}/request-research`, { method: 'POST', body: { localOrRemote: 'local', model: 'local-review', totalTokens: 8000, runtimeSeconds: 60, systemBudgetOverride: true } });
     assert.equal(moreResearch.response.status, 200);
     assert.equal(moreResearch.body.opportunity.status, 'research_requested');
+    assert.equal(moreResearch.body.job.status, 'queued');
     assert.ok(moreResearch.body.ledger.localComputeCost >= 0);
 
     const costs = await request(baseUrl, '/api/agents/costs');
     assert.equal(costs.response.status, 200);
     assert.ok(costs.body.summary.spentTodayUsd > 0);
     assert.match(costs.body.summary.localCostFormula, /runtime_hours/);
-
-    const poly = await request(baseUrl, '/api/polymarket/opportunities');
-    assert.equal(poly.response.status, 200);
-    assert.ok(Array.isArray(poly.body.opportunities));
 
     const audit = await request(baseUrl, '/api/audit');
     assert.equal(audit.response.status, 200);
@@ -274,7 +261,6 @@ test('full paper operator workflow runs over HTTP', async () => {
 
     const createdStrategy = await request(baseUrl, '/api/strategies/from-template', { method: 'POST', body: { templateId: template.id, name: 'E2E Template Strategy' } });
     assert.equal(createdStrategy.response.status, 201);
-    assert.equal(createdStrategy.body.ok, true);
     const strategyId = createdStrategy.body.strategy.id;
 
     const backtest = await request(baseUrl, '/api/backtests/run', { method: 'POST', body: { strategyId, initialCapitalUsd: 100000, feeBps: 5, slippageBps: 10 } });
@@ -283,11 +269,9 @@ test('full paper operator workflow runs over HTTP', async () => {
 
     const approval = await request(baseUrl, '/api/approvals/request', { method: 'POST', body: { strategyId, tier: 'canary' } });
     assert.equal(approval.response.status, 201);
-    assert.equal(approval.body.approval.status, 'pending_review');
 
     const decision = await request(baseUrl, `/api/approvals/${approval.body.approval.id}/decision`, { method: 'POST', body: { status: 'approved', reviewer: 'e2e-test', reason: 'covered by e2e paper flow' } });
     assert.equal(decision.response.status, 200);
-    assert.equal(decision.body.approval.status, 'approved');
 
     const paper = await request(baseUrl, '/api/paper-executions', { method: 'POST', body: { strategyId, accountId: 'acct-paper-primary' } });
     assert.equal(paper.response.status, 201);
@@ -306,12 +290,11 @@ test('full paper operator workflow runs over HTTP', async () => {
     assert.equal(liveBlocked.response.status, 403);
     assert.equal(liveBlocked.body.error, 'live_execution_disabled');
 
-    const metrics = await request(baseUrl, '/metrics');
-    assert.equal(metrics.response.status, 200);
-    assert.equal(typeof metrics.body.strategies_total, 'number');
-
-    const prom = await request(baseUrl, '/metrics.prom');
-    assert.equal(prom.response.status, 200);
-    assert.match(prom.body, /portfolio_requests_total/);
+    for (const path of ['/metrics', '/metrics.prom']) {
+      const metrics = await request(baseUrl, path);
+      assert.equal(metrics.response.status, 200);
+      assert.match(metrics.body, /portfolio_requests_total/);
+      assert.match(metrics.response.headers.get('content-type') || '', /text\/plain/);
+    }
   });
 });

@@ -1,755 +1,660 @@
 #!/usr/bin/env python3
-"""
-hermes_agent_trader.py — Hermes agent's paper/simulation trading harness for the
-portfolio-management system. Lets the agent COMPETE against the strategy engine's
-paper trades using REAL exchange quotes, with ZERO live money at risk.
+"""Hermes paper-trading facade backed exclusively by accounting v2.
 
-=== SAFETY MODEL (non-negotiable) ===
-* This module is PAPER/SIMULATION ONLY by default. It uses CBClient with
-  dry_run_cli=True and only ever calls `orders preview` (a read-only quote) to
-  value trades. It NEVER submits a live `orders create`.
-* A live path exists (propose_live / _execute_live) but is gated behind the env
-  var HERMES_AGENT_LIVE=true. The agent MUST NOT set that var itself; it requires
-  an explicit, separate operator authorization. If unset (or any safety gate is
-  active), every live attempt is refused and logged.
-* Inherited gates (read from .env, never modified):
-    KILL_SWITCH            -> if true, ALL trading refused (paper + live)
-    REQUIRE_MANUAL_APPROVAL-> paper fills still simulated, but live blocked
-    MAX_NOTIONAL_PER_TRADE_USD -> caps simulated trade quote_size
-* The agent's job per operator: "don't lose any money." Paper competition only.
-
-=== HOW IT COMPETES ===
-The strategy engine runs paper trades (portfolio_optimizer / run_trader_v4 paper
-mode). This harness independently evaluates signals using REAL exchange quotes
-(CBClient.preview_order) and tracks a parallel simulated book in
-data/hermes_agent_ledger.json. Later we diff the two paper P&Ls.
-
-=== CLI USAGE ===
-  .venv/bin/python scripts/hermes_agent_trader.py quote BTC-USD BUY --quote-size 10
-  .venv/bin/python scripts/hermes_agent_trader.py signal BTC-USD BUY --quote-size 10
-        (records a simulated fill at the preview price into the ledger)
-  .venv/bin/python scripts/hermes_agent_trader.py ledger
-  .venv/bin/python scripts/hermes_agent_trader.py status
+The strategy loop keeps its established public API, but every ledger mutation is
+now delegated to :mod:`scripts.hermes_agent_accounting`. Legacy ledgers are never
+healed or reinterpreted; they must be archived and reset with
+``scripts/reset_agent_competition.py`` before the agent can trade again.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import datetime as dt
 import json
 import os
 import sys
-import time
+import tempfile
 from datetime import datetime, timezone
-import datetime as dt
 from pathlib import Path
+from typing import Callable, Iterator
 
 ROOT = Path(__file__).resolve().parent.parent
-LEDGER = ROOT / "data" / "hermes_agent_ledger.json"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# Safety env (read-only — never written by this module)
+from scripts.hermes_agent_accounting import (
+    ACCOUNTING_VERSION,
+    apply_marks as accounting_apply_marks,
+    assert_invariants,
+    close_position as accounting_close_position,
+    mark_to_market as accounting_mark_to_market,
+    new_ledger,
+    open_position as accounting_open_position,
+    position_key,
+    require_v2,
+)
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Linux is the production target
+    fcntl = None
+
+LEDGER = ROOT / "data" / "hermes_agent_ledger.json"
+LOCK_FILE = ROOT / "data" / "hermes_agent_ledger.lock"
 KILL_SWITCH = os.getenv("KILL_SWITCH", "").lower() in ("1", "true", "yes")
 REQUIRE_MANUAL_APPROVAL = os.getenv("REQUIRE_MANUAL_APPROVAL", "").lower() in ("1", "true", "yes")
+HERMES_AGENT_LIVE = os.getenv("HERMES_AGENT_LIVE", "").lower() in ("1", "true", "yes")
 try:
     MAX_NOTIONAL = float(os.getenv("MAX_NOTIONAL_PER_TRADE_USD", "250"))
 except ValueError:
     MAX_NOTIONAL = 10.0
-# Phase 17: LEVERAGE — the agent is the aggressive moonshot book. Operator
-# authorized leverage (bot runs --max-leverage 2.0; agent goes harder). Margin
-# per trade is capped at MAX_NOTIONAL; EXPOSURE = margin * AGENT_LEVERAGE.
-# Paper-only: no borrow, no liquidation — PnL just scales by leverage.
 try:
     AGENT_LEVERAGE = float(os.getenv("AGENT_LEVERAGE", "3.0"))
 except ValueError:
     AGENT_LEVERAGE = 3.0
-HERMES_AGENT_LIVE = os.getenv("HERMES_AGENT_LIVE", "").lower() in ("1", "true", "yes")
+try:
+    FEE_RATE = float(os.getenv("AGENT_FEE_RATE", "0.0012"))
+except ValueError:
+    FEE_RATE = 0.0012
 
 
-def _refuse(reason: str) -> dict:
-    return {"action": "refused", "reason": reason, "live": False}
+class LegacyLedgerError(RuntimeError):
+    """Raised when a pre-v2 ledger would otherwise be mutated or ranked."""
+
+
+def _refuse(reason: str, **extra) -> dict:
+    return {"action": "refused", "reason": reason, "live": False, **extra}
+
+
+@contextlib.contextmanager
+def _ledger_lock(exclusive: bool) -> Iterator[None]:
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_FILE.open("a+") as handle:
+        if fcntl is not None:
+            mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            fcntl.flock(handle.fileno(), mode)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _read_raw() -> dict:
+    if not LEDGER.exists():
+        return new_ledger()
+    try:
+        payload = json.loads(LEDGER.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LegacyLedgerError(f"agent_ledger_unreadable:{type(exc).__name__}") from exc
+    try:
+        require_v2(payload)
+        assert_invariants(payload)
+    except (ValueError, AssertionError) as exc:
+        raise LegacyLedgerError(
+            "legacy_or_invalid_agent_ledger; run "
+            "python scripts/reset_agent_competition.py --yes after stopping the old agent"
+        ) from exc
+    return payload
+
+
+def _atomic_write(payload: dict) -> None:
+    require_v2(payload)
+    assert_invariants(payload)
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{LEDGER.name}.", suffix=".tmp", dir=LEDGER.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, LEDGER)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
+def load_ledger() -> dict:
+    with _ledger_lock(exclusive=False):
+        return _read_raw()
+
+
+def save_ledger(ledger: dict) -> None:
+    """Compatibility export used by maintenance scripts; only accepts v2."""
+    with _ledger_lock(exclusive=True):
+        _atomic_write(ledger)
+
+
+def _mutate(operation: Callable[[dict], dict]) -> dict:
+    with _ledger_lock(exclusive=True):
+        current = _read_raw()
+        updated = operation(current)
+        _atomic_write(updated)
+        return updated
 
 
 def get_client():
-    # Force dry-run so create_market_order is always simulated. preview_order is
-    # read-only regardless. Import lazily to keep the module importable anywhere.
-    sys.path.insert(0, str(ROOT))
     from coinbase.src.cb_client import CBClient
     return CBClient(dry_run_cli=True)
 
 
 def _current_price(product_id: str) -> float:
-    """Current mark price via latest 1h candle close (read-only, per-product
-    accurate). NOTE: the `products best-bid-ask product_id=X` CLI call ignores
-    the product_id and always returns ETH-USD, so we mark from candles instead."""
+    """Read-only mark from the latest 1-hour Coinbase candle."""
     from coinbase.src.cb_client import CBClient
-    c = CBClient(dry_run_cli=True)
+
+    client = CBClient(dry_run_cli=True)
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(hours=1)
-    r = c._cli_json("products", "candles", product_id, "granularity=1h",
-                    f"start={start.isoformat()}", f"end={end.isoformat()}")
-    if isinstance(r, dict) and "candles" in r:
-        cs = [x for x in r["candles"] if x.get("close")]
-        if cs:
-            return float(cs[-1]["close"])
+    response = client._cli_json(
+        "products",
+        "candles",
+        product_id,
+        "granularity=1h",
+        f"start={start.isoformat()}",
+        f"end={end.isoformat()}",
+    )
+    if isinstance(response, dict) and isinstance(response.get("candles"), list):
+        candles = [row for row in response["candles"] if row.get("close")]
+        if candles:
+            return float(candles[-1]["close"])
     return 0.0
-
-
-def _heal_ledger_schema(led: dict) -> dict:
-    """Normalize positions written under older schemas so downstream += / reads
-    never KeyError. Adds missing numeric position keys with safe defaults.
-    Idempotent — safe to call on every load."""
-    for pid, pos in list(led.get("positions", {}).items()):
-        if not isinstance(pos, dict):
-            continue
-        pos.setdefault("base", 0.0)
-        pos.setdefault("cost_basis", 0.0)
-        pos.setdefault("exposure", 0.0)
-        pos.setdefault("entries", 0)
-    # Top-level fields some older ledgers lacked.
-    led.setdefault("cash", led.get("starting_capital", 10000.0))
-    led.setdefault("equity", led.get("cash", 10000.0))
-    led.setdefault("peak_equity", led.get("equity", 10000.0))
-    led.setdefault("starting_capital", 10000.0)
-    return led
-
-
-def load_ledger() -> dict:
-    if LEDGER.exists():
-        try:
-            return _heal_ledger_schema(json.loads(LEDGER.read_text() or "{}"))
-        except Exception:
-            pass
-    return {"positions": {}, "trades": [], "realized_pnl": 0.0,
-            "cash": 10000.0, "equity": 10000.0, "peak_equity": 10000.0,
-            "equity_curve": [10000.0], "starting_capital": 10000.0,
-            "created_at": datetime.now(timezone.utc).isoformat()}
-
-
-def save_ledger(led: dict) -> None:
-    LEDGER.write_text(json.dumps(led, indent=2))
 
 
 def quote(product_id: str, side: str, quote_size: float | None = None,
           base_size: float | None = None) -> dict:
-    """Read-only real quote from the exchange via CBClient.preview_order."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     if quote_size is not None and quote_size > MAX_NOTIONAL:
-        return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    if base_size is not None and (base_size * 0) != 0:
-        pass  # base_size notional checked at fill time via preview
+        return _refuse(f"margin {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
     client = get_client()
-    r = client.preview_order(side, product_id, quote_size=str(quote_size) if quote_size else None,
-                             base_size=str(base_size) if base_size else None)
-    if isinstance(r, dict) and r.get("status") == "preview_error":
-        return {"action": "quote_error", "error": r.get("error"), "raw": r}
-    return {"action": "quote", "live": False, "product_id": product_id, "side": side.upper(),
-            "quote": r}
+    response = client.preview_order(
+        side,
+        product_id,
+        quote_size=str(quote_size) if quote_size else None,
+        base_size=str(base_size) if base_size else None,
+    )
+    if isinstance(response, dict) and response.get("status") == "preview_error":
+        return {"action": "quote_error", "error": response.get("error"), "raw": response}
+    return {
+        "action": "quote",
+        "live": False,
+        "product_id": product_id,
+        "side": side.upper(),
+        "quote": response,
+    }
+
+
+def _resolve_price(product_id: str, side: str, margin: float | None,
+                   base_size: float | None, price: float | None) -> tuple[float, dict | None]:
+    if price is not None and price > 0:
+        return float(price), None
+    preview = quote(product_id, side, quote_size=margin, base_size=base_size)
+    if preview.get("action") != "quote":
+        return 0.0, preview
+    raw = preview.get("quote") or {}
+    resolved = float(raw.get("est_average_filled_price", raw.get("price", 0)) or 0)
+    return resolved, preview
+
+
+def _latest_result(updated: dict, action: str, key: str | None = None) -> dict:
+    trade = updated.get("trades", [])[-1] if updated.get("trades") else None
+    return {
+        "action": action,
+        "live": False,
+        "trade": trade,
+        "position": updated.get("positions", {}).get(key) if key else None,
+        "realized_pnl": round(float(updated.get("realized_pnl", 0.0)), 6),
+        "accounting_version": ACCOUNTING_VERSION,
+    }
 
 
 def record_signal(product_id: str, side: str, quote_size: float | None = None,
                   base_size: float | None = None, note: str = "",
                   regime: str = "", setup: str = "", price: float | None = None,
                   leverage: float | None = None) -> dict:
-    """Simulate a paper fill at the real preview price and log it to the ledger.
-    This is the agent 'competing' — a paper position, no money moves.
-
-    `price` (optional) is the decision price (e.g. candle last close) used for the
-    paper fill. When passed, NO live quote is fetched — the paper sim is fully
-    self-contained from candles (Phase 9c: removes dry_run preview dependency so
-    signals actually record in paper competition). Falls back to live preview."""
+    """Open/add a long or reduce an existing long using accounting v2."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     if quote_size is None and base_size is None:
         return _refuse("need quote_size or base_size")
-    if quote_size is not None and quote_size > MAX_NOTIONAL:
-        return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    # If a decision price was supplied, simulate the fill directly (no live quote).
-    if price is not None and price > 0:
-        margin = quote_size if quote_size is not None else (base_size or 0) * price
-        if margin > MAX_NOTIONAL + 0.01:
-            return _refuse(f"margin {margin:.2f} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-        lev = AGENT_LEVERAGE
-        exposure = margin * lev  # leveraged notional (PnL scales by lev)
-        base = exposure / price if price > 0 else 0.0
-        commission = margin * 0.0012  # fee on margin deployed
-        led = load_ledger()
-        ts = datetime.now(timezone.utc).isoformat()
-        trade = {
-            "ts": ts, "product_id": product_id, "side": side.upper(),
-            "quote_size": round(margin, 4), "exposure": round(exposure, 4),
-            "leverage": lev, "fill_price": round(price, 8),
-            "base_size": round(base, 8), "commission": round(commission, 6),
-            "live": False, "note": note, "regime": regime, "setup": setup,
-        }
-        led["trades"].append(trade)
-        pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0,
-                                                "exposure": 0.0, "entries": 0})
-        # Heal legacy positions written under an older schema that lacked these
-        # keys (pre-exposure ledgers), so += below never KeyErrors.
-        pos.setdefault("base", 0.0)
-        pos.setdefault("cost_basis", 0.0)
-        pos.setdefault("exposure", 0.0)
-        pos.setdefault("entries", 0)
-        if side.upper() == "BUY":
-            if pos.get("base", 0.0) <= 1e-12:
-                pos["entry_ts"] = ts
-                pos["entry_price"] = price
-            else:
-                # weighted-average entry price
-                prev_base = pos["base"]
-                pos["entry_price"] = ((pos["entry_price"] * prev_base) + (price * base)) / (prev_base + base)
-            pos["base"] += base
-            pos["cost_basis"] += margin  # margin tied up (not full exposure)
-            pos["exposure"] += exposure
-            led["cash"] = led.get("cash", 10000.0) - (margin + commission)
-        else:
-            avg_entry = (pos["entry_price"] if pos.get("entry_price")
-                         else price)
-            avg_exposure = pos.get("exposure", 0.0)
-            # close a fraction `base` of the position; scale pnl by leverage
-            frac = (base / pos["base"]) if pos["base"] > 0 else 1.0
-            pnl = (price - avg_entry) * base * lev - commission
-            led["realized_pnl"] += pnl
-            led["cash"] = led.get("cash", 10000.0) + (margin + pnl)
-            pos["base"] = max(0.0, pos["base"] - base)
-            pos["cost_basis"] = max(0.0, pos["cost_basis"] - margin)
-            pos["exposure"] = max(0.0, pos["exposure"] - exposure)
-        pos["entries"] += 1
-        led["positions"][product_id] = pos
-        save_ledger(led)
-        return {"action": "signal_recorded", "live": False, "trade": trade,
-                "position": pos, "realized_pnl": round(led["realized_pnl"], 6)}
-    # SELL via base_size: some products reject fine precision. Retry coarser if the
-    # exchange complains, so a valid signal isn't dropped on a rounding artifact.
-    tried = set()
-    base_attempts = [base_size] + [round(base_size, d) for d in (6, 5, 4, 3, 2)] if base_size else [None]
-    last_err = None
-    q = None
-    for b_att in base_attempts:
-        if b_att in tried:
-            continue
-        tried.add(b_att)
-        q = quote(product_id, side, quote_size=quote_size, base_size=b_att)
-        if q.get("action") == "quote":
-            break
-        err = str(q.get("error", ""))
-        if "precision" in err:
-            last_err = err
-            continue  # try coarser base
-        if "too small" in err or "minimum" in err or "min_size" in err:
-            # Asset's minimum base size exceeds our MAX_NOTIONAL cap — untradeable
-            # at this size. Skip cleanly (not an error worth retrying).
-            return {"action": "min_size_skip", "product_id": product_id,
-                    "reason": "min base size > MAX_NOTIONAL notional"}
-        # non-precision error (e.g. kill switch upstream) -> surface it
-        return q
-    else:
-        return {"action": "quote_error", "error": last_err or "all base-precision attempts failed",
-                "raw": q}
-    if q.get("action") != "quote":
-        return q
-    price = float(q["quote"].get("est_average_filled_price", 0))
-    base = float(q["quote"].get("base_size", 0))
-    commission = float(q["quote"].get("commission_total", 0))
-    if price <= 0 or base <= 0:
-        return {"action": "signal_error", "error": "bad preview price/base", "quote": q["quote"]}
-    # Notional for the gating check when base-only
-    notional = quote_size if quote_size is not None else base * price
-    # tolerance for float/rounding drift (e.g. 10.08 vs cap 10.0 from base rounding)
-    if notional > MAX_NOTIONAL + 0.01:
-        return _refuse(f"notional {notional:.2f} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    led = load_ledger()
-    ts = datetime.now(timezone.utc).isoformat()
-    trade = {
-        "ts": ts, "product_id": product_id, "side": side.upper(),
-        "quote_size": notional, "fill_price": price, "base_size": base,
-        "commission": commission, "live": False, "note": note,
-        "regime": regime, "setup": setup,
-    }
-    led["trades"].append(trade)
-    # Update a simple net position (base-weighted) per product
-    pos = led["positions"].get(product_id, {"base": 0.0, "cost_basis": 0.0, "entries": 0})
-    if side.upper() == "BUY":
-        if pos.get("base", 0.0) <= 1e-12:
-            pos["entry_ts"] = ts  # fresh entry start time
-        pos["base"] += base
-        pos["cost_basis"] += notional
-    else:  # SELL reduces; realize pnl vs cost basis (avg)
-        avg_cost = (pos["cost_basis"] / pos["base"]) if pos["base"] > 0 else price
-        proceeds = base * price
-        led["realized_pnl"] += (proceeds - avg_cost * base)
-        pos["base"] = max(0.0, pos["base"] - base)
-        pos["cost_basis"] = max(0.0, pos["cost_basis"] - avg_cost * base)
-    pos["entries"] += 1
-    led["positions"][product_id] = pos
-    save_ledger(led)
-    return {"action": "signal_recorded", "live": False, "trade": trade,
-            "position": pos, "realized_pnl": round(led["realized_pnl"], 6)}
+    if quote_size is not None and (quote_size <= 0 or quote_size > MAX_NOTIONAL):
+        return _refuse(f"margin {quote_size} outside (0, {MAX_NOTIONAL}]")
+    direction = side.upper()
+    resolved, error = _resolve_price(product_id, direction, quote_size, base_size, price)
+    if error:
+        return error
+    if resolved <= 0:
+        return {"action": "quote_error", "error": "no valid fill price", "product_id": product_id}
+
+    try:
+        if direction == "BUY":
+            lev = float(leverage or AGENT_LEVERAGE)
+            margin = float(quote_size) if quote_size is not None else float(base_size) * resolved / lev
+            key = position_key(product_id, "LONG")
+
+            def operation(ledger: dict) -> dict:
+                existing = ledger.get("positions", {}).get(key)
+                use_leverage = float(existing.get("leverage")) if existing else lev
+                return accounting_open_position(
+                    ledger,
+                    product_id=product_id,
+                    side="LONG",
+                    margin_usd=margin,
+                    entry_price=resolved,
+                    leverage=use_leverage,
+                    fee_rate=FEE_RATE,
+                    note=note,
+                    regime=regime,
+                    setup=setup,
+                )
+
+            updated = _mutate(operation)
+            return _latest_result(updated, "signal_recorded", key)
+
+        if direction == "SELL":
+            key = position_key(product_id, "LONG")
+
+            def operation(ledger: dict) -> dict:
+                pos = ledger.get("positions", {}).get(key)
+                if not pos:
+                    raise ValueError("position_not_found; use open_short for a short entry")
+                if base_size is not None:
+                    fraction = min(1.0, float(base_size) / float(pos["quantity"]))
+                elif quote_size is not None:
+                    fraction = min(1.0, float(quote_size) / float(pos["margin_usd"]))
+                else:
+                    fraction = 1.0
+                return accounting_close_position(
+                    ledger,
+                    product_id=product_id,
+                    side="LONG",
+                    exit_price=resolved,
+                    fraction=fraction,
+                    fee_rate=FEE_RATE,
+                    note=note or "signal-sell",
+                    regime=regime,
+                )
+
+            updated = _mutate(operation)
+            return _latest_result(updated, "signal_recorded", key)
+        return _refuse("side must be BUY or SELL")
+    except (ValueError, AssertionError, LegacyLedgerError) as exc:
+        return _refuse(str(exc), product_id=product_id)
 
 
 def close_position(product_id: str, note: str = "close", price: float | None = None,
                    regime: str | None = None) -> dict:
-    """Simulated SELL of the full held base at the current real quote.
-    Realizes P&L vs cost basis. Paper-only. No money moves.
-    `price` (optional) lets the caller pass the decision price (loop passes the
-    same candle mark used for the TP/SL decision, so execution == decision)."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
-    led = load_ledger()
-    pos = led["positions"].get(product_id)
-    if not pos or pos.get("base", 0.0) <= 1e-12:
-        return {"action": "no_position", "product_id": product_id}
-    base = pos["base"]
-    if price is None or price <= 0:
-        price = _current_price(product_id)
-    if price <= 0:
-        return {"action": "quote_error", "error": "no bid", "product_id": product_id}
-    commission = base * price * 0.0012  # ~0.12% taker, matches preview scale
-    entry = pos.get("entry_price", price)
-    lev = pos.get("leverage", AGENT_LEVERAGE)
-    pnl = (price - entry) * base * lev - commission  # PnL scales by leverage
-    margin = pos.get("cost_basis", 0.0)  # margin tied up, released on close
-    led["cash"] = led.get("cash", 10000.0) + (margin + pnl)
-    ts = datetime.now(timezone.utc).isoformat()
-    trade = {"ts": ts, "product_id": product_id, "side": "SELL",
-             "quote_size": round(base * price, 4), "exposure": round(base * price * lev, 4),
-             "leverage": lev, "fill_price": price,
-             "base_size": base, "commission": round(commission, 6), "live": False,
-             "note": note, "realized_pnl": round(pnl, 6),
-             "regime": regime or pos.get("regime") or ""}
-    led["trades"].append(trade)
-    led["realized_pnl"] += pnl
-    led["positions"][product_id] = {"base": 0.0, "cost_basis": 0.0, "entries": pos["entries"] + 1}
-    save_ledger(led)
-    return {"action": "closed", "live": False, "trade": trade,
-            "realized_pnl": round(led["realized_pnl"], 6)}
+    exit_price = float(price or 0) or _current_price(product_id)
+    if exit_price <= 0:
+        return {"action": "quote_error", "error": "no mark", "product_id": product_id}
+    try:
+        updated = _mutate(lambda ledger: accounting_close_position(
+            ledger,
+            product_id=product_id,
+            side="LONG",
+            exit_price=exit_price,
+            fee_rate=FEE_RATE,
+            note=note,
+            regime=regime or "",
+        ))
+        return _latest_result(updated, "closed")
+    except ValueError as exc:
+        if str(exc) == "position_not_found":
+            return {"action": "no_position", "product_id": product_id}
+        return _refuse(str(exc), product_id=product_id)
+    except (AssertionError, LegacyLedgerError) as exc:
+        return _refuse(str(exc), product_id=product_id)
 
 
 def open_short(product_id: str, quote_size: float, note: str = "short",
                regime: str = "", setup: str = "", price: float | None = None,
                leverage: float | None = None) -> dict:
-    """Open a SIMULATED SHORT (paper). Stores magnitude as a SHORT: keyed position
-    with entry_price = current candle mark. No real borrow/sell; no money moves.
-    P&L on close = (entry - exit) * magnitude - commission.
-
-    `price` (optional) overrides the decision mark (Phase 9c: candle-derived, no
-    live fetch needed for paper competition)."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
-    if quote_size is None or quote_size <= 0:
-        return _refuse("need quote_size for short")
-    if quote_size > MAX_NOTIONAL:
-        return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    if price is None or price <= 0:
-        price = _current_price(product_id)
-    if price <= 0:
+    if quote_size is None or quote_size <= 0 or quote_size > MAX_NOTIONAL:
+        return _refuse(f"margin must be inside (0, {MAX_NOTIONAL}]")
+    entry_price = float(price or 0) or _current_price(product_id)
+    if entry_price <= 0:
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
-    magnitude = quote_size / price  # positive = size of short
-    commission = quote_size * 0.0012
-    led = load_ledger()
-    led["cash"] = led.get("cash", 10000.0) + (quote_size - commission)
-    ts = datetime.now(timezone.utc).isoformat()
-    key = f"SHORT:{product_id}"
-    pos = led["positions"].get(key, {"base": 0.0, "entry_price": 0.0,
-                                    "entries": 0, "entry_ts": ts})
-    pos["base"] += magnitude
-    pos["entry_price"] = price  # simple: latest entry price
-    pos["entry_ts"] = ts
-    pos["exposure"] = pos.get("exposure", 0.0) + (magnitude * price * AGENT_LEVERAGE)
-    pos["leverage"] = leverage if leverage else AGENT_LEVERAGE
-    pos["cost_basis"] = pos.get("cost_basis", 0.0) + quote_size  # margin tied up
-    pos["entries"] += 1
-    led["positions"][key] = pos
-    trade = {"ts": ts, "product_id": product_id, "side": "SHORT_OPEN",
-             "quote_size": round(quote_size, 4),
-             "exposure": round(magnitude * price * AGENT_LEVERAGE, 4),
-             "leverage": AGENT_LEVERAGE, "fill_price": price,
-             "base_size": round(magnitude, 8), "commission": round(commission, 6),
-             "live": False, "note": note, "regime": regime, "setup": setup}
-    led["trades"].append(trade)
-    save_ledger(led)
-    return {"action": "short_opened", "live": False, "trade": trade, "position": pos}
+    key = position_key(product_id, "SHORT")
+    try:
+        def operation(ledger: dict) -> dict:
+            existing = ledger.get("positions", {}).get(key)
+            use_leverage = float(existing.get("leverage")) if existing else float(leverage or AGENT_LEVERAGE)
+            return accounting_open_position(
+                ledger,
+                product_id=product_id,
+                side="SHORT",
+                margin_usd=float(quote_size),
+                entry_price=entry_price,
+                leverage=use_leverage,
+                fee_rate=FEE_RATE,
+                note=note,
+                regime=regime,
+                setup=setup,
+            )
+
+        updated = _mutate(operation)
+        return _latest_result(updated, "short_opened", key)
+    except (ValueError, AssertionError, LegacyLedgerError) as exc:
+        return _refuse(str(exc), product_id=product_id)
 
 
 def close_short(product_id: str, note: str = "close-short", price: float | None = None,
                 regime: str | None = None) -> dict:
-    """Close a simulated short: buy back at current candle mark. Realizes P&L.
-    `price` (optional) lets the caller pass the decision price (loop passes the
-    same candle mark used for the TP/SL decision, so execution == decision)."""
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
-    led = load_ledger()
-    key = f"SHORT:{product_id}"
-    pos = led["positions"].get(key)
-    if not pos or pos.get("base", 0.0) <= 1e-12:
-        return {"action": "no_short", "product_id": product_id}
-    magnitude = pos["base"]
-    entry = pos["entry_price"]
-    if price is None or price <= 0:
-        price = _current_price(product_id)
-    exit_px = price
-    if exit_px <= 0:
+    exit_price = float(price or 0) or _current_price(product_id)
+    if exit_price <= 0:
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
-    commission = magnitude * exit_px * 0.0012
-    lev = pos.get("leverage", AGENT_LEVERAGE)
-    pnl = (entry - exit_px) * magnitude * lev - commission  # short wins if exit < entry
-    margin = pos.get("cost_basis", 0.0)
-    led["cash"] = led.get("cash", 10000.0) + (pnl - margin)
-    ts = datetime.now(timezone.utc).isoformat()
-    trade = {"ts": ts, "product_id": product_id, "side": "SHORT_CLOSE",
-             "quote_size": round(magnitude * exit_px, 4),
-             "exposure": round(magnitude * exit_px * lev, 4),
-             "leverage": lev, "fill_price": exit_px,
-             "base_size": round(magnitude, 8), "commission": round(commission, 6),
-             "live": False, "note": note, "realized_pnl": round(pnl, 6),
-             "regime": regime or pos.get("regime") or ""}
-    led["trades"].append(trade)
-    led["realized_pnl"] += pnl
-    led["positions"][key] = {"base": 0.0, "entry_price": 0.0, "entries": pos["entries"] + 1}
-    save_ledger(led)
-    return {"action": "short_closed", "live": False, "trade": trade,
-            "realized_pnl": round(led["realized_pnl"], 6)}
+    try:
+        updated = _mutate(lambda ledger: accounting_close_position(
+            ledger,
+            product_id=product_id,
+            side="SHORT",
+            exit_price=exit_price,
+            fee_rate=FEE_RATE,
+            note=note,
+            regime=regime or "",
+        ))
+        return _latest_result(updated, "short_closed")
+    except ValueError as exc:
+        if str(exc) == "position_not_found":
+            return {"action": "no_short", "product_id": product_id}
+        return _refuse(str(exc), product_id=product_id)
+    except (AssertionError, LegacyLedgerError) as exc:
+        return _refuse(str(exc), product_id=product_id)
 
 
 def add_to_position(product_id: str, add_margin: float, price: float | None = None,
-                     note: str = "add-to-winner") -> dict:
-    """Pyramid into an EXISTING paper position (long or short) by averaging the
-    entry and increasing exposure. Margin accounting mirrors record_signal/
-    open_short: longs debit margin+commission, shorts credit margin-commission.
-    Paper-only. Used by the agent's 'add-to-winner' edge (let winners run harder
-    when the setup is still confirmed)."""
+                    note: str = "add-to-winner") -> dict:
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
-    if add_margin is None or add_margin <= 0:
-        return _refuse("need add_margin > 0")
-    if add_margin > MAX_NOTIONAL:
-        return _refuse(f"add_margin {add_margin} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    is_short = product_id.startswith("SHORT:") or led_short_key(product_id)
-    key = f"SHORT:{product_id}" if is_short else product_id
-    led = load_ledger()
-    pos = led["positions"].get(key)
-    if not pos or pos.get("base", 0.0) <= 1e-12:
-        return {"action": "no_position", "product_id": product_id}
-    if price is None or price <= 0:
-        price = _current_price(product_id if not is_short else product_id)
-    if price <= 0:
+    if add_margin is None or add_margin <= 0 or add_margin > MAX_NOTIONAL:
+        return _refuse(f"add_margin must be inside (0, {MAX_NOTIONAL}]")
+    mark = float(price or 0) or _current_price(product_id.replace("SHORT:", ""))
+    if mark <= 0:
         return {"action": "quote_error", "error": "no mark", "product_id": product_id}
-    lev = pos.get("leverage", AGENT_LEVERAGE)
-    commission = add_margin * 0.0012
-    ts = datetime.now(timezone.utc).isoformat()
-    base = 0.0
-    magnitude = 0.0
-    if is_short:
-        magnitude = add_margin / price
-        # average entry price across the (now larger) short
-        prev_base = pos["base"]
-        pos["entry_price"] = ((pos["entry_price"] * prev_base) + (price * magnitude)) / (prev_base + magnitude)
-        pos["base"] += magnitude
-        pos["exposure"] = pos.get("exposure", 0.0) + (magnitude * price * lev)
-        pos["cost_basis"] = pos.get("cost_basis", 0.0) + add_margin  # margin tied up
-        led["cash"] = led.get("cash", 10000.0) + (add_margin - commission)
-        side_tag = "SHORT_ADD"
-    else:
-        base = (add_margin * lev) / price
-        prev_base = pos["base"]
-        pos["entry_price"] = ((pos["entry_price"] * prev_base) + (price * base)) / (prev_base + base)
-        pos["base"] += base
-        pos["cost_basis"] = pos.get("cost_basis", 0.0) + add_margin
-        pos["exposure"] = pos.get("exposure", 0.0) + (base * price * lev)
-        led["cash"] = led.get("cash", 10000.0) - (add_margin + commission)
-        side_tag = "BUY_ADD"
-    pos["entries"] = pos.get("entries", 0) + 1
-    pos["adds"] = pos.get("adds", 0) + 1
-    led["positions"][key] = pos
-    trade = {"ts": ts, "product_id": product_id, "side": side_tag,
-             "quote_size": round(add_margin, 4),
-             "exposure": round((base if not is_short else magnitude) * price * lev, 4),
-             "leverage": lev, "fill_price": price,
-             "base_size": round(base if not is_short else magnitude, 8),
-             "commission": round(commission, 6), "live": False, "note": note}
-    led["trades"].append(trade)
-    save_ledger(led)
-    return {"action": "position_added", "live": False, "trade": trade, "position": pos}
+    clean_product = product_id.replace("SHORT:", "")
+    try:
+        def operation(ledger: dict) -> dict:
+            long_key = position_key(clean_product, "LONG")
+            short_key = position_key(clean_product, "SHORT")
+            long_pos = ledger.get("positions", {}).get(long_key)
+            short_pos = ledger.get("positions", {}).get(short_key)
+            if bool(long_pos) == bool(short_pos):
+                raise ValueError("position_not_found_or_ambiguous")
+            pos = short_pos or long_pos
+            side = "SHORT" if short_pos else "LONG"
+            return accounting_open_position(
+                ledger,
+                product_id=clean_product,
+                side=side,
+                margin_usd=float(add_margin),
+                entry_price=mark,
+                leverage=float(pos["leverage"]),
+                fee_rate=FEE_RATE,
+                note=note,
+                regime=str(pos.get("regime", "")),
+                setup=str(pos.get("setup", "")),
+            )
+
+        updated = _mutate(operation)
+        key = position_key(clean_product, "SHORT" if f"SHORT:{clean_product}" in updated["positions"] else "LONG")
+        return _latest_result(updated, "position_added", key)
+    except (ValueError, AssertionError, LegacyLedgerError) as exc:
+        return _refuse(str(exc), product_id=clean_product)
 
 
 def led_short_key(product_id: str) -> bool:
-    """True if product_id already exists as a SHORT: key in the ledger."""
-    return load_ledger()["positions"].get(f"SHORT:{product_id}") is not None
+    return position_key(product_id, "SHORT") in load_ledger().get("positions", {})
+
+
+def _timestamp(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
 
 
 def bot_recent_fills(minutes: int = 15) -> dict:
-    """Same-team intel: read the bot's LIVE paper fills from its state file and
-    return {product_id: {'side': 'BUY'|'SELL', 'ts': float, 'strategy': str}}
-    for fills within the last `minutes`. The bot is the conservative book; when
-    it just opened the SAME side on the SAME asset as the agent, that's a free
-    confirmation signal (it's literally trading the same alpha). Paper-only read."""
     out: dict = {}
+    path = ROOT / "data" / "paper_trader_v4_state.json"
     try:
-        import json as _json
-        from pathlib import Path as _P
-        p = _P(__file__).resolve().parent.parent / "data" / "paper_trader_v4_state.json"
-        if not p.exists():
-            return out
-        d = _json.loads(p.read_text())
-        trades = d.get("paper_trades", [])
-        cutoff = (datetime.now(timezone.utc).timestamp()) - minutes * 60.0
-        for t in trades:
-            ts = t.get("ts", 0.0)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        cutoff = datetime.now(timezone.utc).timestamp() - minutes * 60.0
+        for trade in payload.get("paper_trades", []):
+            ts = _timestamp(trade.get("ts"))
             if ts < cutoff:
                 continue
-            pid = t.get("product_id", "")
-            side = "BUY" if t.get("side", "").upper() == "BUY" else "SELL"
-            out[pid] = {"side": side, "ts": ts, "strategy": t.get("strategy", "")}
-    except Exception:
+            product_id = trade.get("product_id", "")
+            side = "BUY" if str(trade.get("side", "")).upper() == "BUY" else "SELL"
+            out[product_id] = {"side": side, "ts": ts, "strategy": trade.get("strategy", "")}
+    except (OSError, json.JSONDecodeError, TypeError):
         return out
     return out
 
 
-def recent_stats(led: dict | None = None, n: int = 10) -> dict:
-    if led is None:
-        led = load_ledger()
-    closed = [t for t in led.get("trades", []) if "realized_pnl" in t]
+def recent_stats(ledger: dict | None = None, n: int = 10) -> dict:
+    ledger = ledger or load_ledger()
+    closed = [trade for trade in ledger.get("trades", []) if "realized_pnl" in trade]
     window = closed[-n:] if n else closed
-    wins = sum(1 for t in window if t["realized_pnl"] >= 0)
-    losses = len(window) - wins
-    pnl = sum(t["realized_pnl"] for t in window)
-    peak = 0.0
-    dd = 0.0
-    run = 0.0
-    for t in window:
-        run += t["realized_pnl"]
-        peak = max(peak, run)
-        dd = min(dd, run - peak)
+    pnls = [float(trade.get("realized_pnl", 0.0)) for trade in window]
+    wins = sum(1 for pnl in pnls if pnl >= 0)
+    running = peak = 0.0
+    drawdown = 0.0
+    for pnl in pnls:
+        running += pnl
+        peak = max(peak, running)
+        drawdown = min(drawdown, running - peak)
     return {
-        "n": len(window), "wins": wins, "losses": losses,
-        "win_rate": round(wins / len(window) * 100.0, 2) if window else 0.0,
-        "pnl": round(pnl, 4), "max_drawdown": round(dd, 4),
+        "n": len(pnls),
+        "wins": wins,
+        "losses": len(pnls) - wins,
+        "win_rate": round(wins / len(pnls) * 100.0, 2) if pnls else 0.0,
+        "pnl": round(sum(pnls), 4),
+        "max_drawdown": round(drawdown, 4),
     }
 
 
 def size_for(mom: float, cap: float | None = None) -> float:
-    """Kelly-lite sizing (Phase 4): stronger |momentum| -> larger notional,
-    clamped to [30%, 100%] of the cap. Small signals stay small."""
-    if cap is None:
-        cap = MAX_NOTIONAL
-    MOM_REF = 0.02  # 2% move -> ~full size
-    frac = max(0.3, min(1.0, abs(mom) / MOM_REF))
-    return round(cap * frac * 0.99, 2)  # 99% of cap to avoid notional breach
+    cap = MAX_NOTIONAL if cap is None else cap
+    fraction = max(0.3, min(1.0, abs(mom) / 0.02))
+    return round(cap * fraction * 0.99, 2)
 
 
-def equity_drawdown_pct(led: dict | None = None) -> float:
-    """Peak-to-current equity drawdown as a NEGATIVE percent (e.g. -5.3 == -5.3%).
-    Uses the ledger's live equity vs peak_equity (both mark-to-market)."""
-    if led is None:
-        led = load_ledger()
-    eq = led.get("equity")
-    peak = led.get("peak_equity")
-    if not eq or not peak or peak <= 0:
-        return 0.0
-    return round((eq - peak) / peak * 100.0, 4)
+def equity_drawdown_pct(ledger: dict | None = None) -> float:
+    ledger = ledger or load_ledger()
+    equity = float(ledger.get("equity", 0.0) or 0.0)
+    peak = float(ledger.get("peak_equity", 0.0) or 0.0)
+    return round((equity - peak) / peak * 100.0, 4) if peak > 0 else 0.0
 
 
-def drawdown_circuit(led: dict | None = None, n: int = 10,
-                     min_win_rate: float = 33.0,
-                     max_dd_pct: float = -9.0) -> dict:
-    """Return whether NEW entries should be blocked (circuit open) + reason.
-
-    Circuit TRIPS (open=False -> block new entries) when EITHER:
-      * peak-to-current EQUITY drawdown breaches max_dd_pct (percent, e.g. -9%), OR
-      * recent closed-trade win-rate < min_win_rate AND we've taken a real hit
-        (equity DD worse than half the threshold — win-rate alone shouldn't gate
-        a book that's flat-to-green).
-
-    NOTE (2026-07-17 fix): the prior version compared a DOLLAR realized-P&L
-    drawdown against -5.0, i.e. it tripped after just $5 of peak-to-trough
-    realized loss on a $10k book — far too aggressive. Now percent-of-equity
-    based and softened to -9% so normal volatility no longer locks the book out.
-    Managing existing positions is never gated; only NEW entries are.
-    """
-    if led is None:
-        led = load_ledger()
-    s = recent_stats(led, n)
-    eq_dd = equity_drawdown_pct(led)
-    s = {**s, "equity_dd_pct": eq_dd}
-
-    if s["n"] < 4:
-        # Not enough closed trades to judge win-rate, but still honor a hard
-        # equity drawdown so a bad open book can't keep adding risk.
-        if eq_dd < max_dd_pct:
-            return {"open": False,
-                    "reason": f"equity_dd {eq_dd}% < {max_dd_pct}%", "stats": s}
-        return {"open": True, "reason": "warming_up", "stats": s}
-
-    # Hard equity drawdown gate (the real risk stop).
-    if eq_dd < max_dd_pct:
-        return {"open": False,
-                "reason": f"equity_dd {eq_dd}% < {max_dd_pct}%", "stats": s}
-
-    # Soft win-rate gate: only bites if we're ALSO drawing down meaningfully.
-    if s["win_rate"] < min_win_rate and eq_dd < (max_dd_pct / 2.0):
-        return {"open": False,
-                "reason": f"win_rate {s['win_rate']}% < {min_win_rate}% "
-                          f"while dd {eq_dd}%", "stats": s}
-
-    return {"open": True, "reason": "ok", "stats": s}
+def drawdown_circuit(ledger: dict | None = None, n: int = 10,
+                     min_win_rate: float = 33.0, max_dd_pct: float = -9.0) -> dict:
+    try:
+        ledger = ledger or load_ledger()
+    except LegacyLedgerError as exc:
+        return {"open": False, "reason": str(exc), "stats": {"n": 0, "equity_dd_pct": 0.0}}
+    stats = {**recent_stats(ledger, n), "equity_dd_pct": equity_drawdown_pct(ledger)}
+    if stats["equity_dd_pct"] < max_dd_pct:
+        return {"open": False, "reason": f"equity_dd {stats['equity_dd_pct']}% < {max_dd_pct}%", "stats": stats}
+    if stats["n"] >= 4 and stats["win_rate"] < min_win_rate and stats["equity_dd_pct"] < max_dd_pct / 2.0:
+        return {"open": False, "reason": f"win_rate {stats['win_rate']}% < {min_win_rate}% while dd {stats['equity_dd_pct']}%", "stats": stats}
+    return {"open": True, "reason": "warming_up" if stats["n"] < 4 else "ok", "stats": stats}
 
 
-def close_all(note: str = "close-all") -> dict:
-    """Close every open long and short (used on CRISIS / shutdown)."""
-    led = load_ledger()
-    longs = [p for p, v in led["positions"].items()
-             if not p.startswith("SHORT:") and v.get("base", 0) > 1e-12]
-    shorts = [p.replace("SHORT:", "") for p, v in led["positions"].items()
-              if p.startswith("SHORT:") and v.get("base", 0) > 1e-12]
-    res = {"longs": [], "shorts": []}
-    for p in longs:
-        res["longs"].append({p: close_position(p, note=note).get("action")})
-    for p in shorts:
-        res["shorts"].append({p: close_short(p, note=note).get("action")})
-    return res
+def _marks_for(ledger: dict) -> tuple[dict[str, float], list[str]]:
+    marks: dict[str, float] = {}
+    missing: list[str] = []
+    for position in ledger.get("positions", {}).values():
+        product_id = str(position.get("product_id", ""))
+        if not product_id or product_id in marks:
+            continue
+        mark = _current_price(product_id)
+        if mark > 0:
+            marks[product_id] = mark
+        else:
+            missing.append(product_id)
+    return marks, sorted(set(missing))
 
 
 def mark_to_market() -> dict:
-    """Value open positions at current real quotes (read-only). Returns unrealized P&L."""
     if KILL_SWITCH:
         return {"error": "KILL_SWITCH active"}
-    led = load_ledger()
-    out = {}
-    total_unreal = 0.0
-    for pid, pos in led["positions"].items():
-        if pos.get("base", 0.0) <= 1e-12:
-            continue
-        try:
-            true_pid = pid.replace("SHORT:", "") if pid.startswith("SHORT:") else pid
-            bid = _current_price(true_pid)  # candles mark (best-bid-ask ignores product_id)
-            if bid <= 0:
-                continue
-            if pid.startswith("SHORT:"):
-                # short: unrealized = (entry - mark) * magnitude * leverage
-                entry = pos.get("entry_price", bid)
-                lev = pos.get("leverage", AGENT_LEVERAGE)
-                unreal = (entry - bid) * pos["base"] * lev
-                out[true_pid] = {"side": "SHORT", "magnitude": round(pos["base"], 6),
-                                "entry": round(entry, 4), "mark": bid, "leverage": lev,
-                                "unrealized_pnl": round(unreal, 4)}
-            else:
-                avg_cost = pos.get("entry_price", bid)
-                lev = pos.get("leverage", AGENT_LEVERAGE)
-                unreal = (bid - avg_cost) * pos["base"] * lev
-                out[pid] = {"side": "LONG", "base": pos["base"],
-                            "avg_cost": round(avg_cost, 4), "bid": bid, "leverage": lev,
-                            "unrealized_pnl": round(unreal, 4)}
-            total_unreal += unreal
-        except Exception:
-            continue
-    return {"positions": out, "total_unrealized_pnl": round(total_unreal, 4)}
+    try:
+        ledger = load_ledger()
+        marks, missing = _marks_for(ledger)
+        snapshot = accounting_mark_to_market(ledger, marks)
+        snapshot["missing_marks"] = sorted(set(snapshot.get("missing_marks", []) + missing))
+        return snapshot
+    except (LegacyLedgerError, ValueError, AssertionError) as exc:
+        return {"error": str(exc), "positions": {}, "total_unrealized_pnl": 0.0, "equity": None}
 
 
 def update_equity() -> dict:
-    """Recompute agent EQUITY (cash + open mark-to-market) and persist it the
-    same way the bot tracks paper_equity_curve / paper_peak_equity, so the
-    head-to-head digest compares apples-to-apples from a $10k start. Returns the
-    current equity snapshot."""
-    led = load_ledger()
-    cash = led.get("cash", 10000.0)
-    mtm = mark_to_market()
-    unreal = mtm.get("total_unrealized_pnl", 0.0)
-    equity = cash + unreal
-    start = led.get("starting_capital", 10000.0)
-    peak = max(led.get("peak_equity", equity), equity)
-    curve = led.get("equity_curve", [start])
-    curve.append(round(equity, 2))
-    if len(curve) > 5000:
-        curve = curve[-5000:]
-    led["cash"] = round(cash, 2)
-    led["equity"] = round(equity, 2)
-    led["peak_equity"] = round(peak, 2)
-    led["equity_curve"] = curve
-    led["return_pct"] = round((equity - start) / start * 100.0, 4)
-    save_ledger(led)
-    return {"cash": round(cash, 2), "unrealized": round(unreal, 2),
-            "equity": round(equity, 2), "peak_equity": round(peak, 2),
-            "return_pct": led["return_pct"]}
+    try:
+        ledger = load_ledger()
+        marks, missing = _marks_for(ledger)
+        if missing:
+            return {"action": "equity_not_updated", "reason": "missing_position_marks", "missing_marks": missing}
+        updated = _mutate(lambda current: accounting_apply_marks(current, marks))
+        unrealized = accounting_mark_to_market(updated, marks)["total_unrealized_pnl"]
+        return {
+            "cash": round(float(updated["cash"]), 2),
+            "unrealized": round(float(unrealized), 2),
+            "equity": round(float(updated["equity"]), 2),
+            "peak_equity": round(float(updated["peak_equity"]), 2),
+            "return_pct": round(float(updated["return_pct"]), 4),
+            "accounting_version": ACCOUNTING_VERSION,
+        }
+    except (LegacyLedgerError, ValueError, AssertionError) as exc:
+        return {"action": "equity_not_updated", "reason": str(exc)}
 
 
-def propose_live(product_id: str, side: str, quote_size: float,
-                 note: str = "") -> dict:
-    """Live proposal. REFUSED unless HERMES_AGENT_LIVE=true AND no safety gate active.
-    The agent never sets HERMES_AGENT_LIVE itself — operator must authorize."""
+def close_all(note: str = "close-all") -> dict:
+    try:
+        ledger = load_ledger()
+    except LegacyLedgerError as exc:
+        return {"longs": [], "shorts": [], "error": str(exc)}
+    longs = [key for key in ledger.get("positions", {}) if not key.startswith("SHORT:")]
+    shorts = [key.removeprefix("SHORT:") for key in ledger.get("positions", {}) if key.startswith("SHORT:")]
+    return {
+        "longs": [{product: close_position(product, note=note).get("action")} for product in longs],
+        "shorts": [{product: close_short(product, note=note).get("action")} for product in shorts],
+    }
+
+
+def propose_live(product_id: str, side: str, quote_size: float, note: str = "") -> dict:
     if not HERMES_AGENT_LIVE:
         return _refuse("HERMES_AGENT_LIVE not set — agent may not trade live")
     if KILL_SWITCH:
         return _refuse("KILL_SWITCH is active")
     if REQUIRE_MANUAL_APPROVAL:
         return _refuse("REQUIRE_MANUAL_APPROVAL active — needs human gate")
-    if quote_size > MAX_NOTIONAL:
-        return _refuse(f"quote_size {quote_size} exceeds MAX_NOTIONAL {MAX_NOTIONAL}")
-    # Gated path exists but is intentionally not auto-executed. Log intent only.
-    return {"action": "live_proposal_blocked",
-            "reason": "live execution requires explicit operator confirmation step",
-            "would_preview": quote(product_id, side, quote_size=quote_size)}
+    return {
+        "action": "live_proposal_blocked",
+        "reason": "this competition facade is paper-only; live execution requires a separate operator-approved executor",
+        "would_preview": quote(product_id, side, quote_size=quote_size),
+        "note": note,
+    }
 
 
 def ledger_summary() -> dict:
-    led = load_ledger()
-    return {"trades": len(led["trades"]), "positions": led["positions"],
-            "realized_pnl": round(led["realized_pnl"], 6),
-            "unrealized_note": "mark-to-market requires live quotes; compute on demand"}
+    try:
+        ledger = load_ledger()
+        return {
+            "accounting_version": ledger["accounting_version"],
+            "ranking_eligible": ledger["ranking_eligible"],
+            "trades": len(ledger.get("trades", [])),
+            "positions": ledger.get("positions", {}),
+            "cash": round(float(ledger.get("cash", 0.0)), 6),
+            "equity": round(float(ledger.get("equity", 0.0)), 6),
+            "realized_pnl": round(float(ledger.get("realized_pnl", 0.0)), 6),
+            "fees_paid": round(float(ledger.get("fees_paid", 0.0)), 6),
+        }
+    except LegacyLedgerError as exc:
+        return {"accounting_version": 0, "ranking_eligible": False, "error": str(exc)}
 
 
 def status() -> dict:
     return {
         "kill_switch": KILL_SWITCH,
         "require_manual_approval": REQUIRE_MANUAL_APPROVAL,
-        "max_notional": MAX_NOTIONAL,
+        "max_margin_per_trade_usd": MAX_NOTIONAL,
+        "default_leverage": AGENT_LEVERAGE,
+        "fee_rate": FEE_RATE,
         "hermes_agent_live": HERMES_AGENT_LIVE,
-        "mode": "LIVE-PROPOSED" if HERMES_AGENT_LIVE else "PAPER/SIM (no money at risk)",
+        "mode": "PAPER/SIM (accounting v2; no money at risk)",
         "ledger": ledger_summary(),
     }
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Hermes agent paper-trading harness (read-only quotes)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    pq = sub.add_parser("quote"); pq.add_argument("product"); pq.add_argument("side")
-    pq.add_argument("--quote-size", type=float); pq.add_argument("--base-size", type=float)
-    ps = sub.add_parser("signal"); ps.add_argument("product"); ps.add_argument("side")
-    ps.add_argument("--quote-size", type=float); ps.add_argument("--base-size", type=float)
-    ps.add_argument("--note", default="")
-    pl = sub.add_parser("ledger")
-    pc = sub.add_parser("close"); pc.add_argument("product")
-    psh = sub.add_parser("short"); psh.add_argument("product")
-    psh.add_argument("--quote-size", type=float, required=True); psh.add_argument("--note", default="short")
-    pcs = sub.add_parser("closeshort"); pcs.add_argument("product")
-    pca = sub.add_parser("closeall")
-    pm = sub.add_parser("mtm")
-    pp = sub.add_parser("propose-live"); pp.add_argument("product"); pp.add_argument("side")
-    pp.add_argument("--quote-size", type=float, required=True); pp.add_argument("--note", default="")
-    pst = sub.add_parser("status")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    quote_cmd = sub.add_parser("quote")
+    quote_cmd.add_argument("product")
+    quote_cmd.add_argument("side")
+    quote_cmd.add_argument("--quote-size", type=float)
+    quote_cmd.add_argument("--base-size", type=float)
+    signal_cmd = sub.add_parser("signal")
+    signal_cmd.add_argument("product")
+    signal_cmd.add_argument("side")
+    signal_cmd.add_argument("--quote-size", type=float)
+    signal_cmd.add_argument("--base-size", type=float)
+    signal_cmd.add_argument("--note", default="")
+    sub.add_parser("ledger")
+    close_cmd = sub.add_parser("close")
+    close_cmd.add_argument("product")
+    short_cmd = sub.add_parser("short")
+    short_cmd.add_argument("product")
+    short_cmd.add_argument("--quote-size", type=float, required=True)
+    short_cmd.add_argument("--note", default="short")
+    close_short_cmd = sub.add_parser("closeshort")
+    close_short_cmd.add_argument("product")
+    sub.add_parser("closeall")
+    sub.add_parser("mtm")
+    proposal_cmd = sub.add_parser("propose-live")
+    proposal_cmd.add_argument("product")
+    proposal_cmd.add_argument("side")
+    proposal_cmd.add_argument("--quote-size", type=float, required=True)
+    proposal_cmd.add_argument("--note", default="")
+    sub.add_parser("status")
+    args = parser.parse_args()
 
     if args.cmd == "quote":
-        print(json.dumps(quote(args.product, args.side, args.quote_size, args.base_size), indent=2))
+        result = quote(args.product, args.side, args.quote_size, args.base_size)
     elif args.cmd == "signal":
-        print(json.dumps(record_signal(args.product, args.side, args.quote_size,
-                                        args.base_size, args.note), indent=2))
+        result = record_signal(args.product, args.side, args.quote_size, args.base_size, args.note)
     elif args.cmd == "ledger":
-        print(json.dumps(ledger_summary(), indent=2))
+        result = ledger_summary()
     elif args.cmd == "close":
-        print(json.dumps(close_position(args.product), indent=2))
+        result = close_position(args.product)
     elif args.cmd == "short":
-        print(json.dumps(open_short(args.product, args.quote_size, args.note), indent=2))
+        result = open_short(args.product, args.quote_size, args.note)
     elif args.cmd == "closeshort":
-        print(json.dumps(close_short(args.product), indent=2))
+        result = close_short(args.product)
     elif args.cmd == "closeall":
-        print(json.dumps(close_all(), indent=2))
+        result = close_all()
     elif args.cmd == "mtm":
-        print(json.dumps(mark_to_market(), indent=2))
+        result = mark_to_market()
     elif args.cmd == "propose-live":
-        print(json.dumps(propose_live(args.product, args.side, args.quote_size, args.note), indent=2))
-    elif args.cmd == "status":
-        print(json.dumps(status(), indent=2))
+        result = propose_live(args.product, args.side, args.quote_size, args.note)
+    else:
+        result = status()
+    print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

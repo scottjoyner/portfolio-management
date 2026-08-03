@@ -1,16 +1,17 @@
 import importlib.util
-import os
+from pathlib import Path
 import unittest
 from unittest import mock
 
-ROOT = "/home/scott/git/portfolio-management"
-VERSIONS = os.path.join(ROOT, "trading_system", "alembic", "versions")
+ROOT = Path(__file__).resolve().parents[3]
+VERSIONS = ROOT / "trading_system" / "alembic" / "versions"
 
 
 def load_module(filename, modname):
-    path = os.path.join(VERSIONS, filename)
+    path = VERSIONS / filename
     spec = importlib.util.spec_from_file_location(modname, path)
     module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
 

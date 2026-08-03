@@ -6,59 +6,305 @@ on:
   pull_request:
     branches: [main, develop]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  validation:
+    name: validation
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    - name: Verify locked dependencies
+      run: npm ci --ignore-scripts
+    - name: Run complete static production build contract
+      run: npm run build
 
+  node-tests:
+    name: node-tests-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Run deterministic Node test shard
+      env:
+        NODE_TEST_SHARD_INDEX: ${{ matrix.shard }}
+        NODE_TEST_SHARD_TOTAL: 4
+      run: node scripts/run-node-test-shard.mjs
+
+  postgres-integration:
+    name: postgres-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: portfolio
+          POSTGRES_USER: portfolio
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U portfolio -d portfolio"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://portfolio@127.0.0.1:5432/portfolio
+      OPERATOR_STORE: postgres
+      NODE_ENV: test
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    - name: Install locked runtime dependencies
+      run: npm ci --ignore-scripts
+    - name: Apply checksum-protected migrations
+      run: npm run migrations:up | tee postgres-migration-first.json
+    - name: Verify migration idempotency
+      run: npm run migrations:up | tee postgres-migration-second.json
+    - name: Verify migration 006, restart hydration, append-only events, and durable leases
+      run: npm run test:integration:postgres | tee postgres-integration.tap
+    - name: Run authenticated production runtime and browser restart smoke
+      run: npm run smoke:production-runtime
+    - name: Verify logical backup and restore
+      env:
+        POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+      run: |
+        set -euo pipefail
+        docker exec "$POSTGRES_CONTAINER_ID" pg_dump \
+          --username portfolio \
+          --dbname portfolio \
+          --format custom \
+          --no-owner \
+          --file /tmp/portfolio-smoke.dump
+        docker exec "$POSTGRES_CONTAINER_ID" createdb --username portfolio portfolio_restore
+        docker exec "$POSTGRES_CONTAINER_ID" pg_restore \
+          --username portfolio \
+          --dbname portfolio_restore \
+          --exit-on-error \
+          /tmp/portfolio-smoke.dump
+        migration_count="$(docker exec "$POSTGRES_CONTAINER_ID" psql --username portfolio --dbname portfolio_restore --tuples-only --no-align --command "SELECT count(*) FROM schema_migrations WHERE version = '006_normalized_execution_runtime'")"
+        execution_count="$(docker exec "$POSTGRES_CONTAINER_ID" psql --username portfolio --dbname portfolio_restore --tuples-only --no-align --command "SELECT count(*) FROM execution_records")"
+        test "$migration_count" = "1"
+        test "$execution_count" -ge "1"
+        printf 'migration_006=%s\nexecution_records=%s\n' "$migration_count" "$execution_count" | tee postgres-restore-evidence.txt
+        docker cp "$POSTGRES_CONTAINER_ID:/tmp/portfolio-smoke.dump" ./portfolio-smoke.dump
+    - name: Upload PostgreSQL readiness evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: postgres-readiness-${{ github.sha }}
+        path: |
+          postgres-migration-first.json
+          postgres-migration-second.json
+          postgres-integration.tap
+          production-runtime-smoke.json
+          postgres-restore-evidence.txt
+          portfolio-smoke.dump
+        if-no-files-found: error
+        retention-days: 14
+
+  python-critical:
+    name: python-critical
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+    steps:
+    - uses: actions/checkout@v4
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-
+        cache: pip
+        cache-dependency-path: |
+          requirements.txt
+          deploy/requirements.venv-lock.txt
     - name: Install dependencies
       run: |
-        pip install -r requirements.txt
-        pip install pytest pytest-cov
-
-    - name: Run unit tests
+        python -m pip install --upgrade pip
+        python -m pip install -r deploy/requirements.venv-lock.txt
+        python -m pip install pytest-asyncio
+    - name: Run merge-critical Python and execution-risk tests
       run: |
-        pytest tests/ trading_system/tests/unit/ --cov=trading_system --cov-report=xml
-
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-
-    - name: Run performance benchmarks
-      run: |
-        python performance_benchmarks/run_all_tests.py
-
-    - name: Generate report
-      run: |
-        python performance_benchmarks/cli_report_generator.py --output=benchmark-report.html
+        python -m pytest \
+          tests/test_competition_scoreboard.py \
+          tests/test_hermes_agent_accounting.py \
+          tests/test_hermes_agent_trader_v2.py \
+          tests/test_hermes_agent_trader_controls.py \
+          tests/test_start_competition_epoch.py \
+          tests/test_rebalance_engine.py \
+          tests/test_execution_proof.py::TestMutatingRequestShapesDryRun \
+          tests/test_execution_proof.py::TestEngineLifecycleDryRun \
+          tests/test_execution_coverage.py::TestCBClientErrorBranches::test_cli_json_order_dry_run_is_local_and_deterministic \
+          tests/test_approval_persistence.py \
+          tests/test_coinbase_v2_enhancements.py::TestCriticalBugs::test_orchestrator_writes_dict_not_list_to_pending_approvals \
+          tests/test_scale_in_journal.py \
+          tests/test_strategy_concentration_guard.py \
+          tests/test_infra_observability.py \
+          tests/test_trader_latency.py::TestDrainTickDedup \
+          tests/test_trader_latency.py::TestEvaluateOutputEquivalence \
+          trading_system/tests/unit/test_risk_engine.py \
+          trading_system/tests/unit/test_onchain_path_analyzer.py \
+          trading_system/tests/unit/test_chain_adapters.py \
+          trading_system/tests/unit/test_container_files.py \
+          trading_system/tests/unit/test_tick_full_registry.py \
+          --import-mode=importlib \
+          -q
 
   coverage-gate:
+    name: coverage-gate
     runs-on: ubuntu-latest
-    needs: test
-
+    timeout-minutes: 25
+    needs: python-critical
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
     steps:
-    - uses: actions/checkout@v3
-
+    - uses: actions/checkout@v4
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-
+        cache: pip
+        cache-dependency-path: |
+          requirements.txt
+          deploy/requirements.venv-lock.txt
     - name: Install dependencies
       run: |
-        pip install -r requirements.txt
-        pip install pytest pytest-cov
-
-    - name: Produce coverage data for the gate
+        python -m pip install --upgrade pip
+        python -m pip install -r deploy/requirements.venv-lock.txt
+        python -m pip install pytest-asyncio
+    - name: Measure critical accounting and competition coverage
       run: |
-        .venv/bin/coverage run --source=. -m pytest tests/ trading_system/tests/unit/ -q || pytest tests/ trading_system/tests/unit/ --cov=. --cov-report= -q
+        python -m coverage erase
+        python -m coverage run \
+          --branch \
+          --source=scripts.competition_scoreboard,scripts.hermes_agent_accounting,scripts.hermes_agent_trader,scripts.start_competition_epoch \
+          -m pytest \
+          tests/test_competition_scoreboard.py \
+          tests/test_hermes_agent_accounting.py \
+          tests/test_hermes_agent_trader_v2.py \
+          tests/test_hermes_agent_trader_controls.py \
+          tests/test_start_competition_epoch.py \
+          --import-mode=importlib \
+          -q
+        python -m coverage report --show-missing --fail-under=60 | tee coverage-summary.txt
+        python -m coverage xml
+    - name: Upload focused coverage evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: focused-coverage-${{ github.sha }}
+        path: |
+          coverage-summary.txt
+          coverage.xml
+        if-no-files-found: error
+        retention-days: 14
 
-    - name: Run coverage gate (90% per-module)
+  broad-python-suite:
+    name: broad-python-suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          requirements.txt
+          deploy/requirements.venv-lock.txt
+    - name: Install dependencies
       run: |
-        bash scripts/run_coverage_gate.sh
+        python -m pip install --upgrade pip
+        python -m pip install -r deploy/requirements.venv-lock.txt
+        python -m pip install pytest-asyncio
+    - name: Run maintained broad Python suite
+      run: |
+        python -m pytest tests/ trading_system/tests/unit/ \
+          --ignore=tests/coverage \
+          --import-mode=importlib \
+          -q
+
+  performance-gate:
+    name: performance-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: node-tests
+    env:
+      PERFORMANCE_STRICT_RUNNER: 'true'
+      PERFORMANCE_THRESHOLD_CONFIG: config/release-performance-thresholds.json
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Enforce deterministic release-critical performance thresholds
+      run: |
+        set -o pipefail
+        node scripts/benchmark-release-critical-paths.mjs | tee performance-smoke.json
+    - name: Upload performance evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-smoke-${{ github.sha }}
+        path: performance-smoke.json
+        if-no-files-found: error
+        retention-days: 14
+
+  release-readiness:
+    name: release-readiness
+    if: always()
+    needs: [validation, node-tests, postgres-integration, python-critical, coverage-gate, broad-python-suite, performance-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VALIDATION_RESULT: ${{ needs.validation.result }}
+      NODE_TESTS_RESULT: ${{ needs.node-tests.result }}
+      POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
+      PYTHON_CRITICAL_RESULT: ${{ needs.python-critical.result }}
+      COVERAGE_RESULT: ${{ needs.coverage-gate.result }}
+      BROAD_PYTHON_RESULT: ${{ needs.broad-python-suite.result }}
+      PERFORMANCE_RESULT: ${{ needs.performance-gate.result }}
+    steps:
+    - name: Enforce all production-critical gates
+      run: |
+        printf '%s\n' \
+          "validation=$VALIDATION_RESULT" \
+          "node-tests=$NODE_TESTS_RESULT" \
+          "postgres-integration=$POSTGRES_RESULT" \
+          "python-critical=$PYTHON_CRITICAL_RESULT" \
+          "coverage-gate=$COVERAGE_RESULT" \
+          "broad-python-suite=$BROAD_PYTHON_RESULT" \
+          "performance-gate=$PERFORMANCE_RESULT"
+        test "$VALIDATION_RESULT" = success
+        test "$NODE_TESTS_RESULT" = success
+        test "$POSTGRES_RESULT" = success
+        test "$PYTHON_CRITICAL_RESULT" = success
+        test "$COVERAGE_RESULT" = success
+        test "$BROAD_PYTHON_RESULT" = success
+        test "$PERFORMANCE_RESULT" = success

@@ -1,248 +1,354 @@
 import http from 'node:http';
-import { handleRequest as handleBaseRequest } from './server.mjs';
-import { createInitialOperatorState } from '../../../packages/storage/src/operatorStore.mjs';
+import { Readable } from 'node:stream';
+
+import {
+  createInitialState,
+  handleRequest as legacyHandleRequest,
+} from './server.p1Legacy.mjs';
+import { assertRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
 import { createOperatorStore } from '../../../packages/storage/src/operatorStoreFactory.mjs';
-import { handleOperatorRoute } from './operatorRouter.mjs';
-import { authResponse, authStatus, authorizeRoute, requestId } from './auth.mjs';
-import { csrfStatus, preflightResponse, securityResponse, withSecurityHeaders } from './security.mjs';
-import { assertRuntimeEnv, validateRuntimeEnv } from '../../../packages/config/src/runtimeEnv.mjs';
-import { logRequest, recordResponse, renderPrometheusMetrics } from './metrics.mjs';
-import { verifyAuditIntegrity } from '../../../packages/audit/src/integrity.mjs';
+import { startAutoRotate, stopAutoRotate } from './secrets.mjs';
+import {
+  authResponse,
+  authStatus,
+  authorizeRoute,
+  requestId,
+} from './auth.mjs';
+import {
+  csrfStatus,
+  securityResponse,
+  withSecurityHeaders,
+} from './security.mjs';
+import {
+  evaluateRemoteIntelligencePolicy,
+  intelligenceRoutingPolicyView,
+  normalizeIntelligenceRoutingPolicy,
+  updateIntelligenceRoutingPolicy,
+  validateIntelligenceRoutingPolicy,
+} from './intelligencePolicy.mjs';
 
 const JSON_TYPE = 'application/json; charset=utf-8';
+const POLICY_ROUTE = '/api/economics/intelligence/policy';
+const MODEL_QUOTE_ROUTE = '/api/economics/model-quotes';
+const INTELLIGENCE_EXECUTE_ROUTE = '/api/economics/intelligence/execute';
+const SESSION_UI_ASSET = '<script src="/ui/operator-session.js"></script>';
+const POLICY_UI_ASSET = '<script type="module" src="/ui/intelligence-policy.js"></script>';
 
-export const createInitialState = createInitialOperatorState;
+export { createInitialState };
 
-function json(status, body, headers = {}) {
-  return { status, headers: { 'content-type': JSON_TYPE, ...headers }, body: JSON.stringify(body, null, 2) };
+function requestNow(options = {}) {
+  const value = options.now instanceof Date ? options.now : options.now ? new Date(options.now) : new Date();
+  return Number.isNaN(value.getTime()) ? new Date().toISOString() : value.toISOString();
 }
 
-function text(status, body, contentType = 'text/plain; charset=utf-8') {
-  return { status, headers: { 'content-type': contentType }, body };
+function researchMutation(pathname, method) {
+  return method === 'POST'
+    && (pathname === '/api/agents/jobs' || /^\/api\/opportunities\/[^/]+\/request-research$/.test(pathname));
 }
 
-function readJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', chunk => {
-      data += chunk;
-      if (data.length > 1_000_000) {
-        reject(new Error('request_body_too_large'));
-        req.destroy();
-      }
-    });
-    req.on('end', () => {
-      if (!data) return resolve({});
-      try { resolve(JSON.parse(data)); } catch { reject(new Error('invalid_json')); }
-    });
-    req.on('error', reject);
-  });
-}
-
-function storeStatus(store) {
-  return typeof store.getStatus === 'function' ? store.getStatus() : { kind: 'unknown', durable: false };
-}
-
-async function loadState(store) {
-  try {
-    return { state: await store.load(), error: null };
-  } catch (error) {
-    return { state: createInitialOperatorState(), error };
+async function readBody(req) {
+  let data = '';
+  for await (const chunk of req) {
+    data += chunk;
+    if (data.length > 1_000_000) throw new Error('request_body_too_large');
   }
+  if (!data.trim()) return {};
+  try { return JSON.parse(data); } catch { throw new Error('invalid_json'); }
 }
 
-function isP1Route(pathname) {
-  return pathname === '/api/accounts'
-    || pathname === '/api/instruments'
-    || pathname === '/api/strategy-templates'
-    || pathname === '/api/paper-executions'
-    || pathname === '/api/strategies/from-template'
-    || pathname === '/api/backtests/run'
-    || pathname === '/api/approvals/request'
-    || pathname === '/api/kill-switch/stop-paper'
-    || pathname === '/api/audit/verify'
-    || pathname === '/api/opportunity-dashboard'
-    || pathname === '/api/opportunities'
-    || pathname === '/api/risk-breakdowns'
-    || pathname === '/api/agents/jobs'
-    || pathname === '/api/agents/budgets'
-    || pathname === '/api/agents/budget-approvals'
-    || pathname === '/api/agents/costs'
-    || pathname === '/api/market-data/snapshots'
-    || pathname === '/api/connectors/market-data/ingest'
-    || pathname === '/api/opportunities/generate-from-connectors'
-    || pathname === '/api/opportunities/generate-from-strategies'
-    || pathname === '/api/opportunities/generate-from-prediction-markets'
-    || pathname === '/api/opportunities/generate-from-arbitrage'
-    || pathname === '/api/polymarket/opportunities'
-    || /^\/api\/agents\/budget-approvals\/[^/]+\/decision$/.test(pathname)
-    || /^\/api\/opportunities\/[^/]+$/.test(pathname)
-    || /^\/api\/opportunities\/[^/]+\/(approve|reject|defer|request-research)$/.test(pathname)
-    || /^\/api\/strategies\/[^/]+\/(clone|status)$/.test(pathname)
-    || /^\/api\/backtests\/[^/]+\/report$/.test(pathname)
-    || /^\/api\/approvals\/[^/]+\/decision$/.test(pathname)
-    || /^\/api\/paper-executions\/[^/]+\/(stop|signal)$/.test(pathname)
-    || pathname === '/api/execution/plan'
-    || pathname === '/api/execution/execute'
-    || pathname === '/api/executions'
-    || pathname === '/api/execution/adapters'
-    || pathname === '/api/execution/events'
-    || /^\/api\/executions\/[^/]+$/.test(pathname)
-    || /^\/api\/executions\/[^/]+\/events$/.test(pathname)
-    || /^\/api\/execution\/[^/]+\/(approve|reject|cancel)$/.test(pathname)
-    || pathname === '/api/config'
-    || pathname === '/api/coinbase/sync'
-    || pathname === '/api/execution/graph-signals'
-    || pathname === '/api/execution/strategy-signals'
-    || /^\/api\/execution\/[^/]+\/(reconcile|settle|retry-settlement)$/.test(pathname)
-    || /^\/api\/execution\/graph-signals\/ingest$/.test(pathname)
-    || pathname === '/api/kalshi/markets'
-    || pathname === '/api/kalshi/balance'
-    || pathname === '/api/prediction-markets/scan'
-    || pathname === '/api/polymarket/markets'
-    || pathname === '/api/polymarket/balance'
-    || /^\/api\/polymarket\/orderbook\/[^/]+$/.test(pathname)
-    || pathname === '/api/activity-feed'
-    || pathname === '/api/arbitrage/scan'
-    || pathname === '/api/arbitrage/opportunities'
-    || pathname === '/api/arbitrage/opportunities/persist'
-    || pathname === '/api/paper/sweep'
-    || pathname === '/api/paper/sweep/history'
-    || pathname === '/api/market-data/live-quotes'
-    || pathname === '/api/secrets'
-    || pathname === '/api/secrets/auto-rotate/config'
-    || pathname === '/api/secrets/auto-rotate/run'
-    || /^\/api\/secrets\/rotate\/[^/]+$/.test(pathname);
+function replacementRequest(req, body, url = req.url, method = req.method) {
+  const stream = new Readable({ read() {} });
+  stream.method = method;
+  stream.url = url;
+  stream.headers = { ...(req.headers || {}), 'content-type': 'application/json' };
+  stream.push(JSON.stringify(body || {}));
+  stream.push(null);
+  return stream;
 }
 
-function makeSummary(state, store, runtime) {
-  const execs = state.executions || [];
-  const execFilled = execs.filter(e => e.status === 'filled').length;
-  const execPending = execs.filter(e => e.status === 'draft' || e.status === 'submitted').length;
-  const execFailed = execs.filter(e => e.status === 'failed').length;
-  const execFills = execs.flatMap(e => e.fills || []);
-  const execSettled = execFills.filter(f => f.settlementStatus === 'settled').length;
-  const execPendingSettlement = execFills.filter(f => f.settlementStatus === 'pending' || !f.settlementStatus).length;
+function parsedBody(response) {
+  try { return JSON.parse(response.body); } catch { return {}; }
+}
 
+function jsonFrom(response, status, body) {
   return {
-    counts: {
-      accounts: state.accounts.length,
-      instruments: state.instruments.length,
-      templates: state.strategyTemplates.length,
-      strategies: state.strategies.length,
-      backtests: state.backtests.length,
-      approvals: state.approvals.length,
-      opportunities: state.opportunities?.length || 0,
-      researchJobs: state.researchJobs?.length || 0,
-      budgetApprovals: state.budgetApprovals?.length || 0,
-      paperExecutions: state.paperExecutions.length,
-      executions: execs.length,
-      executions_filled: execFilled,
-      executions_pending: execPending,
-      executions_failed: execFailed,
-      settlement_fills: execFills.length,
-      settlement_settled: execSettled,
-      settlement_pending: execPendingSettlement,
-      positions: state.positions.length,
-      auditEvents: state.audit.length
-    },
-    killSwitch: state.killSwitch,
-    storage: storeStatus(store),
-    runtime,
-    p0p1: {
-      operatorProductLayer: true,
-      strategyVersioning: true,
-      approvalDecisions: true,
-      backtestReports: true,
-      paperExecution: true,
-      opportunityReview: true,
-      agentCostLedger: true,
-      budgetApprovals: true,
-      liveTradingCertified: false
-    }
+    status,
+    headers: { ...(response.headers || {}), 'content-type': JSON_TYPE },
+    body: JSON.stringify(body, null, 2),
   };
 }
 
-function productionPaperReadiness({ runtime, storage, audit }) {
-  const blockers = [];
-  if (!runtime.ok) blockers.push(...runtime.errors);
-  if (storage.kind !== 'postgres-p1' && storage.kind !== 'postgres') blockers.push('postgres_storage_required');
-  if (!storage.durable || !storage.sql) blockers.push('sql_durable_storage_required');
-  if (!storage.migrations?.ok) blockers.push('postgres_migrations_not_ready');
-  if (audit && !audit.ok) blockers.push(`audit_integrity_${audit.reason}`);
-  if (runtime.safeSummary?.LIVE_TRADING === 'true') blockers.push('live_trading_must_be_false');
-  return { ok: blockers.length === 0, productionPaperReady: blockers.length === 0, liveTradingCertified: false, blockers, storage, runtime, audit };
+function json(status, body) {
+  return {
+    status,
+    headers: { 'content-type': JSON_TYPE },
+    body: JSON.stringify(body, null, 2),
+  };
 }
 
-async function dispatchRequest(req, options = {}) {
-  const env = { ...process.env, ...(options.env || {}) };
-  const runtime = validateRuntimeEnv(env);
+function withPolicyUiAsset(response, method, pathname) {
+  if (method !== 'GET' || !['/', '/ui/index.html'].includes(pathname) || response.status !== 200) return response;
+  if (!String(response.headers?.['content-type'] || '').includes('text/html')) return response;
+  let body = response.body;
+  if (!body.includes(SESSION_UI_ASSET)) body = body.replace('</head>', `${SESSION_UI_ASSET}\n</head>`);
+  if (!body.includes(POLICY_UI_ASSET)) body = body.replace('</body>', `${POLICY_UI_ASSET}\n</body>`);
+  return body === response.body ? response : { ...response, body };
+}
+
+function requestEnvironment(options = {}) {
+  return { ...process.env, ...(options.env || {}) };
+}
+
+async function policyState(store) {
+  return typeof store?.load === 'function' ? store.load() : store?.state || createInitialState();
+}
+
+function authorizePolicyRequest(req, options) {
+  const env = requestEnvironment(options);
   const id = requestId(req.headers || {});
-  const url = new URL(req.url || '/', 'http://localhost');
-
-  if ((req.method || 'GET') === 'OPTIONS') return preflightResponse(req, env);
-  if ((req.method || 'GET') === 'GET' && url.pathname === '/metrics.prom') return withSecurityHeaders(text(200, renderPrometheusMetrics(), 'text/plain; version=0.0.4; charset=utf-8'), req, env);
-
   const csrf = csrfStatus(req, env);
-  if (!csrf.ok) return securityResponse(csrf.status, csrf.error, id, req, env);
-
+  if (!csrf.ok) return { response: securityResponse(csrf.status, csrf.error, id, req, env) };
   const auth = authStatus(req, env);
-  if (!auth.ok && !['/health', '/ready', '/ready/production-paper'].includes(url.pathname)) {
-    return withSecurityHeaders(authResponse(auth.status, auth.error, id), req, env);
+  if (!auth.ok) return { response: withSecurityHeaders(authResponse(auth.status, auth.error, id), req, env) };
+  const authorization = authorizeRoute(auth, req, POLICY_ROUTE);
+  if (!authorization.ok) {
+    return { response: withSecurityHeaders(authResponse(authorization.status, authorization.error, id), req, env) };
+  }
+  return { env, id, auth };
+}
+
+function policyJson(req, env, id, status, body) {
+  return withSecurityHeaders(json(status, { ...body, requestId: id }), req, env);
+}
+
+async function handlePolicyRequest(req, options, store, method) {
+  const security = authorizePolicyRequest(req, options);
+  if (security.response) return security.response;
+  const { env, id, auth } = security;
+
+  if (method === 'GET') {
+    const view = intelligenceRoutingPolicyView(await policyState(store), env, options.now || new Date());
+    return policyJson(req, env, id, 200, { ok: true, ...view, actor: auth.actor, role: auth.role });
   }
 
-  const authorization = authorizeRoute(auth, req, url.pathname);
-  if (!authorization.ok && !['/health', '/ready', '/ready/production-paper'].includes(url.pathname)) {
-    return withSecurityHeaders(authResponse(authorization.status, authorization.error, id), req, env);
+  if (!['PUT', 'POST'].includes(method)) {
+    return policyJson(req, env, id, 405, { ok: false, error: 'method_not_allowed', actor: auth.actor, role: auth.role });
   }
 
-  const store = createOperatorStore(options);
-  const method = req.method || 'GET';
-
-  if (method === 'GET' && url.pathname === '/ready/production-paper') {
-    const { state, error } = await loadState(store);
-    const audit = error ? { ok: false, reason: 'operator_store_unavailable' } : verifyAuditIntegrity(state.audit || []);
-    const readiness = productionPaperReadiness({ runtime, storage: storeStatus(store), audit });
-    return withSecurityHeaders(json(readiness.ok ? 200 : 503, { ...readiness, requestId: id }), req, env);
+  const body = await readBody(req);
+  const validation = validateIntelligenceRoutingPolicy(body);
+  if (!validation.ok) {
+    return policyJson(req, env, id, 400, {
+      ok: false,
+      errors: validation.errors,
+      actor: auth.actor,
+      role: auth.role,
+    });
   }
 
-  if (url.pathname === '/api/operator/summary' || isP1Route(url.pathname)) {
-    const { state, error } = await loadState(store);
-    if (error) return withSecurityHeaders(json(503, { ok: false, error: 'operator_store_unavailable', reason: error.message, storage: storeStatus(store), requestId: id }), req, env);
+  const now = requestNow(options);
+  const persisted = await store.mutate(state => updateIntelligenceRoutingPolicy(state, {
+    ...body,
+    updatedBy: auth.actor,
+  }, now));
+  if (persisted?.errors?.length) {
+    return policyJson(req, env, id, 400, {
+      ok: false,
+      errors: persisted.errors,
+      actor: auth.actor,
+      role: auth.role,
+    });
+  }
+  const view = intelligenceRoutingPolicyView(await policyState(store), env, options.now || new Date());
+  return policyJson(req, env, id, 200, { ok: true, ...view, actor: auth.actor, role: auth.role });
+}
 
-    if (method === 'GET' && url.pathname === '/api/operator/summary') {
-      const base = await handleBaseRequest(req, { ...options, store });
-      const body = JSON.parse(base.body);
-      return withSecurityHeaders(json(200, { ...body, ...makeSummary(state, store, runtime), requestId: id, actor: auth.actor, role: auth.role }), req, env);
+async function markQuoteRoutingDecision(store, quoteId, decision, status = null) {
+  if (!quoteId || typeof store?.mutate !== 'function') return;
+  await store.mutate(state => {
+    const quote = state.modelUsageLedger?.find(row => row.id === quoteId);
+    if (!quote) return { errors: ['model_quote_not_found'] };
+    quote.routingPolicyDecision = decision;
+    quote.expectedDecisionImprovementUsd = decision.expectedDecisionImprovementUsd;
+    quote.routingPolicyMode = decision.policy.mode;
+    if (status) {
+      quote.status = status;
+      quote.failureReason = decision.blockers?.[0] || 'intelligence_routing_policy_blocked';
     }
+    return { modelQuote: quote };
+  });
+}
 
-    if (method === 'GET' && url.pathname === '/api/audit/verify') {
-      const audit = verifyAuditIntegrity(state.audit || []);
-      return withSecurityHeaders(json(audit.ok ? 200 : 409, { ...audit, requestId: id, actor: auth.actor, role: auth.role }), req, env);
-    }
+async function quoteAutomaticLocal(req, options, body, policy, details = {}) {
+  const localOut = await legacyHandleRequest(replacementRequest(req, {
+    ...body,
+    localOrRemote: 'local',
+    model: body.localModel || body.model,
+  }), options);
+  if (localOut.status >= 400) return localOut;
+  const localResponse = parsedBody(localOut);
+  localResponse.routingDecision = {
+    selected: 'local',
+    automatic: true,
+    policy,
+    ...details,
+  };
+  return jsonFrom(localOut, localOut.status, localResponse);
+}
 
-    const route = await handleOperatorRoute({ method, pathname: url.pathname, state, store, readJsonBody: () => readJsonBody(req) });
-    if (route) return withSecurityHeaders(json(route.status, { ...route.body, requestId: id, actor: auth.actor, role: auth.role }), req, env);
+async function handleModelQuoteRequest(req, options, store) {
+  const body = await readBody(req);
+  const env = requestEnvironment(options);
+  const stateBefore = await policyState(store);
+  const policy = normalizeIntelligenceRoutingPolicy(stateBefore.config?.intelligenceRoutingPolicy);
+  const automatic = body.localOrRemote === 'auto';
+
+  if (automatic && (policy.mode === 'local_only' || (policy.mode === 'openrouter_allowed' && body.preferRemote !== true))) {
+    return quoteAutomaticLocal(req, options, body, policy, {
+      reason: policy.mode === 'local_only' ? 'intelligence_policy_local_only' : 'remote_not_preferred',
+    });
   }
 
-  const out = await handleBaseRequest(req, { ...options, store });
-  return withSecurityHeaders({ ...out, headers: { ...out.headers, 'x-request-id': id } }, req, env);
+  const requested = automatic
+    ? { ...body, localOrRemote: 'remote', model: body.remoteModel || body.model }
+    : body;
+  const out = await legacyHandleRequest(replacementRequest(req, requested), options);
+  if (out.status >= 400) {
+    if (automatic && policy.fallbackToLocalOnRemoteBlock) {
+      const remoteFailure = parsedBody(out);
+      return quoteAutomaticLocal(req, options, body, policy, {
+        reason: 'remote_quote_unavailable',
+        remoteStatus: out.status,
+        remoteBlockers: remoteFailure.errors || [remoteFailure.error || 'remote_quote_unavailable'],
+      });
+    }
+    return out;
+  }
+  if (requested.localOrRemote === 'local') return out;
+
+  const response = parsedBody(out);
+  const quote = response.modelQuote;
+  if (!quote) return out;
+  const state = await policyState(store);
+  const decision = evaluateRemoteIntelligencePolicy(state, {
+    estimatedCostUsd: quote.estimatedCostUsd,
+    expectedDecisionImprovementUsd: body.expectedDecisionImprovementUsd ?? body.expectedValueOfInformationUsd,
+    excludeQuoteId: quote.id,
+  }, env, options.now || new Date());
+
+  if (decision.allowed) {
+    await markQuoteRoutingDecision(store, quote.id, decision);
+    response.modelQuote.routingPolicyDecision = decision;
+    response.routingDecision = { selected: 'remote', automatic, ...decision };
+    return jsonFrom(out, out.status, response);
+  }
+
+  await markQuoteRoutingDecision(store, quote.id, decision, automatic ? 'comparison_only' : 'policy_blocked');
+  if (automatic && policy.fallbackToLocalOnRemoteBlock) {
+    return quoteAutomaticLocal(req, options, body, decision.policy, {
+      reason: 'remote_policy_blocked',
+      remoteComparisonQuoteId: quote.id,
+      remoteBlockers: decision.blockers,
+    });
+  }
+
+  return jsonFrom(out, 409, {
+    ok: false,
+    error: 'remote_intelligence_policy_blocked',
+    errors: decision.blockers,
+    routingDecision: decision,
+    modelQuoteId: quote.id,
+    requestId: response.requestId,
+    actor: response.actor,
+    role: response.role,
+  });
+}
+
+async function handleIntelligenceExecution(req, options, store) {
+  const body = await readBody(req);
+  const state = await policyState(store);
+  const quote = state.modelUsageLedger?.find(row => row.id === body.modelQuoteId);
+  if (!quote || quote.localOrRemote !== 'remote') {
+    return legacyHandleRequest(replacementRequest(req, body), options);
+  }
+
+  const economicDecision = state.economicDecisions?.find(row => row.id === body.economicDecisionId);
+  const policyDecision = evaluateRemoteIntelligencePolicy(state, {
+    estimatedCostUsd: quote.authoritativeCostUsd ?? quote.estimatedCostUsd,
+    expectedDecisionImprovementUsd: quote.expectedDecisionImprovementUsd
+      ?? quote.routingPolicyDecision?.expectedDecisionImprovementUsd
+      ?? economicDecision?.expectedDecisionImprovementUsd,
+    excludeQuoteId: quote.id,
+  }, requestEnvironment(options), options.now || new Date());
+
+  if (!policyDecision.allowed) {
+    const authenticated = await legacyHandleRequest(replacementRequest(req, {}, '/api/economics/dashboard', 'GET'), options);
+    if (authenticated.status >= 400) return authenticated;
+    const metadata = parsedBody(authenticated);
+    return jsonFrom(authenticated, 409, {
+      ok: false,
+      error: 'remote_intelligence_policy_blocked',
+      errors: policyDecision.blockers,
+      routingDecision: policyDecision,
+      modelQuoteId: quote.id,
+      requestId: metadata.requestId,
+      actor: metadata.actor,
+      role: metadata.role,
+    });
+  }
+
+  return legacyHandleRequest(replacementRequest(req, body), options);
 }
 
 export async function handleRequest(req, options = {}) {
-  const started = Date.now();
-  const id = requestId(req.headers || {});
   const url = new URL(req.url || '/', 'http://localhost');
-  const out = await dispatchRequest(req, options);
-  recordResponse(out.status);
-  logRequest({ requestId: id, method: req.method || 'GET', path: url.pathname, status: out.status, durationMs: Date.now() - started });
-  return out;
+  const method = req.method || 'GET';
+  const store = options.store || createOperatorStore(options);
+  const delegatedOptions = options.store ? options : { ...options, store };
+
+  if (method === 'GET' && url.pathname === '/metrics') {
+    const alias = Object.create(req);
+    alias.url = '/metrics.prom';
+    return legacyHandleRequest(alias, delegatedOptions);
+  }
+
+  if (url.pathname === POLICY_ROUTE) {
+    return handlePolicyRequest(req, delegatedOptions, store, method);
+  }
+
+  if (method === 'POST' && url.pathname === MODEL_QUOTE_ROUTE) {
+    return handleModelQuoteRequest(req, delegatedOptions, store);
+  }
+
+  if (method === 'POST' && url.pathname === INTELLIGENCE_EXECUTE_ROUTE) {
+    return handleIntelligenceExecution(req, delegatedOptions, store);
+  }
+
+  if (researchMutation(url.pathname, method)) {
+    const body = await readBody(req);
+    if (!body.localOrRemote && body.modelQuoteId) {
+      const state = await policyState(store);
+      const quote = state.modelUsageLedger?.find(row => row.id === body.modelQuoteId);
+      if (quote && ['local', 'remote'].includes(quote.localOrRemote)) {
+        body.localOrRemote = quote.localOrRemote;
+        body.provider ||= quote.provider;
+        body.model ||= quote.model;
+      }
+    }
+    body.localOrRemote ||= 'local';
+    body.status ||= 'queued';
+    body.requestedAt ||= requestNow(options);
+    return legacyHandleRequest(replacementRequest(req, body), delegatedOptions);
+  }
+
+  const out = await legacyHandleRequest(req, delegatedOptions);
+  return withPolicyUiAsset(out, method, url.pathname);
 }
 
-export async function startServer(port = Number(process.env.PORT || 3000), options = {}) {
+export function startServer(port = Number(process.env.PORT || 3000), options = {}) {
   assertRuntimeEnv({ ...process.env, ...(options.env || {}) });
   const store = createOperatorStore(options);
-  const s = http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const out = await handleRequest(req, { ...options, store });
       res.writeHead(out.status, out.headers);
@@ -252,14 +358,14 @@ export async function startServer(port = Number(process.env.PORT || 3000), optio
       res.end(JSON.stringify({ ok: false, error: error.message || 'internal_error' }, null, 2));
     }
   });
-  s.listen(port);
-  const { startAutoRotate } = await import('./secrets.mjs');
+  server.listen(port);
   startAutoRotate({
     getConfig: () => store.state?.config || {},
     mutate: fn => store.mutate(fn),
     intervalMs: Number(process.env.SECRET_AUTO_ROTATE_MS || 86_400_000),
   });
-  return s;
+  server.once('close', stopAutoRotate);
+  return server;
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) startServer();

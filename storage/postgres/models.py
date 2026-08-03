@@ -1,437 +1,315 @@
-"""SQLAlchemy ORM Models for Trading System PostgreSQL Database (19 Tables)
+"""Canonical SQLAlchemy models for the operational PostgreSQL schema.
 
-These models define the schema for P0-P2 foundation tables and P3 evaluation tables:
-
-P0 Foundation Tables (8):
-- portfolios, capital_buckets, orders, fills, trade_history
-- strategy_configs, approvals, approval_requests
-
-P1.4 Runtime Tables (4):
-- onchain_runtime_events, webhooks, webhook_deliveries
-- instrument_metadata
-
-P3 Evaluation Tables (7):
-- price_estimates, analyst_ratings, market_data_feeds
-- research_hypotheses, sentiment_analysis
-- drawdowns, value_at_risk, position_limits
+The table and column definitions in this module intentionally mirror
+``trading_system/alembic/versions/0001_initial.py``.  Older revisions of this
+file described a different portfolio schema, which made Alembic, the API, and
+``OpsRepository`` disagree depending on Python import order.
 """
 
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean, Text, Enum, ForeignKey, Text
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
 )
-from sqlalchemy.orm import declarative_base, relationship
-from sqlalchemy.sql import func
+from sqlalchemy.orm import declarative_base, relationship, synonym
 
 Base = declarative_base()
 
 
-# ============================================================================
-# P0 FOUNDATION TABLES - Portfolio Capital Management
-# ============================================================================
-
 class Portfolio(Base):
-    """Portfolio representing a Plaid-connected investment account."""
-    
     __tablename__ = "portfolios"
-    
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False)
-    type = Column(Enum("ACTIVE", "INACTIVE", "ARCHIVED"), default="ACTIVE")
-    provider = Column(String(50), nullable=False)  # e.g., "chase_checking", "fidelity_cash"
-    account_number = Column(String(50))
-    
-    # Balance tracking
-    balance_usd = Column(Float, default=0.0)
-    fiat_balance_usd = Column(Float, default=0.0)
-    
-    # Timestamps and state
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), 
-        server_default=func.now(),
-        onupdate=func.now()
-    )
-    last_synced = Column(DateTime(timezone=True))
-    status = Column(Enum("CONNECTED", "DISCONNECTED", "ERROR"), default="CONNECTED")
-    
-    # Relationship to capital buckets and positions
-    capital_buckets = relationship(
-        "CapitalBucket", 
-        back_populates="portfolio",
-        cascade="all, delete-orphan"
-    )
-    trade_history = relationship(
-        "TradeHistory", 
-        back_populates="portfolio"
-    )
-    orders = relationship(
-        "Order", 
-        back_populates="portfolio"
-    )
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(128), nullable=False)
+    objective = Column(String(64), nullable=False)
+    nav = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    available_capital = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    locked_capital = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    realized_pnl = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    unrealized_pnl = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    liquidity_score = Column(Numeric(6, 4), nullable=False, default=0, server_default="0")
+    capital_efficiency = Column(Numeric(6, 4), nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    sleeves = relationship("PortfolioSleeve", back_populates="portfolio", cascade="all, delete-orphan")
+    orders = relationship("Order", back_populates="portfolio")
+    capital_buckets = relationship("CapitalBucket", back_populates="portfolio", cascade="all, delete-orphan")
+
+    # Non-persistent compatibility views for callers from the retired account
+    # schema. They deliberately do not add columns absent from Alembic 0001.
+    @property
+    def balance_usd(self) -> float:
+        return float(self.nav or 0)
+
+    @balance_usd.setter
+    def balance_usd(self, value: float) -> None:
+        self.nav = value
+
+    @property
+    def fiat_balance_usd(self) -> float:
+        return float(self.available_capital or 0)
+
+    @fiat_balance_usd.setter
+    def fiat_balance_usd(self, value: float) -> None:
+        self.available_capital = value
 
 
-class CapitalBucket(Base):
-    """Capital allocation bucket for diversified investing."""
-    
-    __tablename__ = "capital_buckets"
-    
-    id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"), nullable=False)
-    
-    # Allocation metadata
-    name = Column(String(100), nullable=False)  # e.g., "Core Equity", "Bond Bond Allocation"
-    bucket_type = Column(Enum("EQUITY", "FIXED_INCOME", "CASH", "ALTERNATIVE"))
-    
-    # Target and current allocations
-    target_percentage = Column(Float, default=25.0)  # 25% of portfolio
-    current_percentage = Column(Float, default=0.0)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+class PortfolioSleeve(Base):
+    __tablename__ = "portfolio_sleeves"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id = Column(String(64), ForeignKey("portfolios.id"), nullable=False)
+    name = Column(String(64), nullable=False)
+    weight = Column(Numeric(6, 4), nullable=False)
+
+    portfolio = relationship("Portfolio", back_populates="sleeves")
 
 
-# ============================================================================
-# P0 ORDERS AND TRADES - Order Execution Lifecycle
-# ============================================================================
+class StrategyConfig(Base):
+    __tablename__ = "strategy_configs"
+
+    strategy_id = Column(String(128), primary_key=True)
+    strategy_type = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, default="implemented", server_default="implemented")
+    paper_mode = Column(Boolean, nullable=False, default=True, server_default="true")
+    live_supported = Column(Boolean, nullable=False, default=False, server_default="false")
+    replay_supported = Column(Boolean, nullable=False, default=True, server_default="true")
+    backtest_supported = Column(Boolean, nullable=False, default=True, server_default="true")
+    risk_mode_hint = Column(String(32), nullable=False, default="NORMAL", server_default="NORMAL")
+    capital_bucket = Column(String(32), nullable=False, default="ACTIVE_TRADING", server_default="ACTIVE_TRADING")
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    config_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    runs = relationship("StrategyRun", back_populates="strategy")
+
+    # Compatibility aliases used by a small amount of older strategy code.
+    id = synonym("strategy_id")
+    config_key = synonym("strategy_id")
+    category = synonym("strategy_type")
+
+
+class StrategyRun(Base):
+    __tablename__ = "strategy_runs"
+
+    task_id = Column(String(64), primary_key=True)
+    strategy_id = Column(String(128), ForeignKey("strategy_configs.strategy_id"), nullable=False)
+    status = Column(String(32), nullable=False, default="queued", server_default="queued")
+    mode = Column(String(32), nullable=False, default="paper", server_default="paper")
+    queued_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    strategy = relationship("StrategyConfig", back_populates="runs")
+
 
 class Order(Base):
-    """Order with execution lifecycle tracking."""
-    
     __tablename__ = "orders"
-    
-    id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"), nullable=False)
-    
-    # Order metadata
-    product_id = Column(String(50), nullable=False)  # e.g., "AAPL", "BTC-USD"
-    side = Column(Enum("BUY", "SELL"), nullable=False)
-    order_type = Column(Enum("MARKET", "LIMIT", "STOP_LIMIT"))
-    
-    # Size tracking
-    original_size = Column(Float, nullable=False)  # Quantity or USD value
-    remaining_size = Column(Float, default=0.0)
-    filled_size = Column(Float, default=0.0)
-    
-    # Price (nullable for market orders)
-    price = Column(Float, nullable=True)
-    
-    # Order state and timing
-    status = Column(Enum("PENDING", "OPEN", "PARTIALLY_FILLED", "CLOSED", "CANCELLED"), 
-                    default="PENDING")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), 
-        server_default=func.now(),
-        onupdate=func.now()
-    )
-    filled_at = Column(DateTime(timezone=True))
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String(64), unique=True, index=True, nullable=True)
+    preview_id = Column(String(64), nullable=True)
+    strategy_id = Column(String(128), ForeignKey("strategy_configs.strategy_id"), nullable=False)
+    portfolio_id = Column(String(64), ForeignKey("portfolios.id"), nullable=False)
+    sleeve_id = Column(String(64), nullable=True)
+    product_id = Column(String(64), nullable=False)
+    side = Column(String(16), nullable=False)
+    size = Column(Numeric(20, 8), nullable=False)
+    remaining_size = Column(Numeric(20, 8), nullable=False, default=0, server_default="0")
+    price = Column(Numeric(20, 8), nullable=True)
+    notional = Column(Numeric(20, 4), nullable=True)
+    order_type = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False)
+    maker_taker_expectation = Column(String(16), nullable=True)
+    queue_age_s = Column(Integer, nullable=False, default=0, server_default="0")
+    risk_mode = Column(String(32), nullable=False, default="NORMAL", server_default="NORMAL")
+    reduce_only = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    portfolio = relationship("Portfolio", back_populates="orders")
+    fills = relationship("Fill", back_populates="order", cascade="all, delete-orphan")
+
+    # Retired execution-schema compatibility aliases.
+    original_size = synonym("size")
+
+    @property
+    def filled_size(self) -> Decimal:
+        return (self.size or Decimal("0")) - (self.remaining_size or Decimal("0"))
+
+
+class StrategyAllocation(Base):
+    __tablename__ = "strategy_allocations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id = Column(String(64), ForeignKey("portfolios.id"), nullable=False)
+    strategy_id = Column(String(128), nullable=False)
+    weight = Column(Numeric(6, 4), nullable=False)
 
 
 class Fill(Base):
-    """Individual order fill (execution of portion of order)."""
-    
     __tablename__ = "fills"
-    
-    id = Column(Integer, primary_key=True)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=False)
-    
-    # Fill details
-    size_filled = Column(Float, nullable=False)  # Quantity or USD filled
-    price_per_unit = Column(Float, nullable=False)
-    commission_fee = Column(Float, default=0.0)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fill_id = Column(String(64), unique=True, index=True, nullable=True)
+    order_id = Column(String(64), ForeignKey("orders.order_id"), nullable=False)
+    product_id = Column(String(64), nullable=False)
+    side = Column(String(16), nullable=True)
+    size = Column(Numeric(20, 8), nullable=False)
+    price = Column(Numeric(20, 8), nullable=False)
+    notional = Column(Numeric(20, 4), nullable=False)
+    slippage_bps = Column(Numeric(10, 4), nullable=False, default=0, server_default="0")
+    fee = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    fee_currency = Column(String(16), nullable=True)
+    liquidity = Column(String(16), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    order = relationship("Order", back_populates="fills")
+
+    size_filled = synonym("size")
+    price_per_unit = synonym("price")
+    commission_fee = synonym("fee")
+    timestamp = synonym("created_at")
 
 
-class TradeHistory(Base):
-    """Executed trade with final aggregation."""
-    
-    __tablename__ = "trade_history"
-    
-    id = Column(Integer, primary_key=True)
-    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)  # Can be standalone
-    
-    # Trade details
-    product_id = Column(String(50), nullable=False)
-    side = Column(Enum("BUY", "SELL"), nullable=False)
-    quantity = Column(Float, nullable=False)  # Shares/units purchased/sold
-    price_per_unit = Column(Float, nullable=False)
-    
-    # P&L tracking
-    cost_basis = Column(Float, default=0.0)
-    proceeds = Column(Float, default=0.0)
-    profit_loss = Column(Float, default=0.0)  # Realized P&L
-    
-    # Metadata
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+class CapitalBucket(Base):
+    __tablename__ = "capital_buckets"
 
+    id = Column(String(64), primary_key=True)
+    portfolio_id = Column(String(64), ForeignKey("portfolios.id"), nullable=False)
+    name = Column(String(64), nullable=False)
+    bucket_type = Column(String(32), nullable=False)
+    amount = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    target_weight = Column(Numeric(6, 4), nullable=False, default=0, server_default="0")
+    min_weight = Column(Numeric(6, 4), nullable=False, default=0, server_default="0")
+    max_weight = Column(Numeric(6, 4), nullable=False, default=1, server_default="1")
+    locked = Column(Boolean, nullable=False, default=False, server_default="false")
+    status = Column(String(32), nullable=False, default="idle", server_default="idle")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
-# ============================================================================
-# P0 STRATEGIES - Strategy Configuration and Performance
-# ============================================================================
+    portfolio = relationship("Portfolio", back_populates="capital_buckets")
+    target_percentage = synonym("target_weight")
+    current_percentage = synonym("amount")
 
-class StrategyConfig(Base):
-    """Strategy configuration from backtesting database."""
-    
-    __tablename__ = "strategy_configs"
-    
-    id = Column(Integer, primary_key=True)
-    config_key = Column(String(50), unique=True, nullable=False)
-    name = Column(String(100))
-    description = Column(Text)
-    
-    # Category and metadata
-    category = Column(String(50), default="momentum")  # momentum, mean_reversion, etc.
-    
-    # Backtesting results
-    backtested = Column(Boolean, default=True)
-    sharpe_ratio = Column(Float, nullable=True)
-    max_drawdown = Column(Float, nullable=True)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-# ============================================================================
-# P0 APPROVALS - Approval Workflow for Trades
-# ============================================================================
 
 class Approval(Base):
-    """Approval request for trade execution."""
-    
     __tablename__ = "approvals"
-    
-    id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    strategy_id = Column(Integer, ForeignKey("strategy_configs.id"))
-    
-    # Request details
-    product_id = Column(String(50))
-    side = Column(Enum("BUY", "SELL"))
-    quantity = Column(Float)
-    estimated_cost = Column(Float)
-    
-    # Status tracking
-    status = Column(Enum("PENDING", "IN_REVIEW", "APPROVED", "REJECTED"), default="PENDING")
-    reviewer_notes = Column(Text, nullable=True)
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    reviewed_at = Column(DateTime(timezone=True))
+
+    approval_id = Column(String(64), primary_key=True)
+    approval_type = Column(String(32), nullable=False)
+    summary = Column(String(256), nullable=False)
+    capital_affected = Column(Numeric(20, 4), nullable=False, default=0, server_default="0")
+    liquidity_impact = Column(String(32), nullable=True)
+    risk_impact = Column(String(32), nullable=True)
+    status = Column(String(32), nullable=False, default="pending", server_default="pending")
+    approved_by = Column(String(128), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    id = synonym("approval_id")
 
 
-# ============================================================================
-# P1.4 RUNTIME TABLES - On-Chain Execution and Webhooks
-# ============================================================================
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
 
-class OnchainRuntimeEvent(Base):
-    """On-chain execution event from smart contract."""
-    
-    __tablename__ = "onchain_runtime_events"
-    
-    id = Column(Integer, primary_key=True)
-    event_type = Column(String(50), nullable=False)  # e.g., "TOKEN_SWAP", "LIQUIDITY_ADD"
-    
-    # Event data
-    chain_id = Column(Integer, nullable=False)  # Ethereum chain ID
-    transaction_hash = Column(String(64))
-    contract_address = Column(String(64))
-    
-    status = Column(Enum("PENDING", "COMPLETED", "FAILED"), default="PENDING")
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String(64), index=True, nullable=False)
+    actor = Column(String(128), nullable=True)
+    resource_type = Column(String(64), nullable=True)
+    resource_id = Column(String(64), nullable=True)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
-class Webhook(Base):
-    """Webhook subscription for event delivery."""
-    
-    __tablename__ = "webhooks"
-    
-    id = Column(Integer, primary_key=True)
-    url = Column(String(512), nullable=False)
-    event_type = Column(String(50))  # e.g., "TRADE_EXECUTED", "APPROVAL_REVIEWED"
-    
-    # Status and authentication
-    status = Column(Enum("ACTIVE", "INACTIVE", "ERROR"), default="ACTIVE")
-    secret_key = Column(String(64), nullable=True)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    alert_id = Column(String(64), primary_key=True)
+    severity = Column(String(16), nullable=False)
+    summary = Column(String(256), nullable=False)
+    acknowledged = Column(Boolean, nullable=False, default=False, server_default="false")
+    acknowledged_by = Column(String(128), nullable=True)
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    id = synonym("alert_id")
+    message = synonym("summary")
 
 
-class WebhookDelivery(Base):
-    """Webhook delivery tracking."""
-    
-    __tablename__ = "webhook_deliveries"
-    
-    id = Column(Integer, primary_key=True)
-    webhook_id = Column(Integer, ForeignKey("webhooks.id"))
-    event_data = Column(Text, nullable=False)  # JSON payload
-    
-    # Delivery status
-    status = Column(Enum("PENDING", "SUCCESS", "FAILED"), default="PENDING")
-    response_status_code = Column(Integer, nullable=True)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+class Incident(Base):
+    __tablename__ = "incidents"
+
+    incident_id = Column(String(64), primary_key=True)
+    severity = Column(String(16), nullable=False)
+    summary = Column(String(256), nullable=False)
+    status = Column(String(32), nullable=False, default="monitoring", server_default="monitoring")
+    assigned_to = Column(String(128), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    id = synonym("incident_id")
 
 
-# ============================================================================
-# P3 EVALUATION TABLES - Valuation and Market Data
-# ============================================================================
+class ExchangeState(Base):
+    __tablename__ = "exchange_states"
 
-class PriceEstimate(Base):
-    """Price estimates from multiple valuation models."""
-    
-    __tablename__ = "price_estimates"
-    
-    id = Column(Integer, primary_key=True)
-    instrument = Column(String(50), nullable=False)  # e.g., "AAPL", "BTC-USD"
-    
-    # DCF valuation
-    dcf_intrinsic_value = Column(Float, nullable=True)
-    
-    # Technical indicators
-    technical_score = Column(Float, nullable=True)  # 0-1 signal strength
-    
-    # Consensus and confidence
-    current_market_price = Column(Float, nullable=True)
-    consensus_vs_current_pct = Column(Float, nullable=True)  # e.g., -5.2 means 5% below market
-    
-    # Model confidence
-    confidence_score = Column(Float, default=0.7)  # 0-1
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class AnalystRating(Base):
-    """Analyst consensus ratings and price targets."""
-    
-    __tablename__ = "analyst_ratings"
-    
-    id = Column(Integer, primary_key=True)
-    instrument = Column(String(50))
-    analyst_firm = Column(String(100))
-    
-    rating = Column(String(20), nullable=True)  # e.g., "Overweight", "Buy"
-    price_target = Column(Float, nullable=True)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    exchange = Column(String(32), nullable=False, default="coinbase", server_default="coinbase")
+    trust_score = Column(String(16), nullable=False, default="HEALTHY", server_default="HEALTHY")
+    open_orders_count = Column(Integer, nullable=False, default=0, server_default="0")
+    unknown_fills = Column(Integer, nullable=False, default=0, server_default="0")
+    duplicate_events = Column(Integer, nullable=False, default=0, server_default="0")
+    stale_sequence_gaps = Column(Integer, nullable=False, default=0, server_default="0")
+    snapshot_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class MarketDataFeed(Base):
-    """Historical market data (OHLCV) feed."""
-    
     __tablename__ = "market_data_feeds"
-    
-    id = Column(Integer, primary_key=True)
-    instrument = Column(String(50), nullable=False)
-    
-    # OHLCV data
-    open_price = Column(Float)
-    high_price = Column(Float)
-    low_price = Column(Float)
-    close_price = Column(Float)
-    volume = Column(Float, default=0.0)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feed_name = Column(String(64), nullable=False)
+    state = Column(String(16), nullable=False, default="healthy", server_default="healthy")
+    freshness_ms = Column(Integer, nullable=False, default=0, server_default="0")
+    update_rate_hz = Column(Numeric(10, 4), nullable=False, default=0, server_default="0")
+    dropped_messages_1m = Column(Integer, nullable=False, default=0, server_default="0")
+    failover_active = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
-class InstrumentMetadata(Base):
-    """Current price and market cap metadata."""
-    
-    __tablename__ = "instrument_metadata"
-    
-    id = Column(Integer, primary_key=True)
-    instrument = Column(String(50), unique=True, nullable=False)
-    
-    # Market data
-    current_price = Column(Float)
-    market_cap = Column(Float, nullable=True)
-    volume_24h = Column(Float, default=0.0)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class ResearchHypothesis(Base):
-    """Trading hypothesis generated from agentic research."""
-    
-    __tablename__ = "research_hypotheses"
-    
-    id = Column(Integer, primary_key=True)
-    strategy_id = Column(Integer, ForeignKey("strategy_configs.id"))
-    product_id = Column(String(50), nullable=True)
-    
-    # Hypothesis content
-    hypothesis_text = Column(Text, nullable=False)
-    
-    # Confidence and timing
-    confidence_score = Column(Float, default=0.6)
-    expiration_datetime = Column(DateTime(timezone=True), nullable=True)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class SentimentAnalysis(Base):
-    """Sentiment analysis from news/articles."""
-    
-    __tablename__ = "sentiment_analysis"
-    
-    id = Column(Integer, primary_key=True)
-    instrument = Column(String(50))
-    source = Column(String(100))  # e.g., "Bloomberg", "Reuters"
-    
-    sentiment_score = Column(Float, default=0.0)  # -1 to +1
-    sentiment_label = Column(Enum("POSITIVE", "NEGATIVE", "NEUTRAL"), default="NEUTRAL")
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-# ============================================================================
-# P3 RISK MANAGEMENT TABLES
-# ============================================================================
-
-class Drawdown(Base):
-    """Drawdown period tracking."""
-    
-    __tablename__ = "drawdowns"
-    
-    id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    
-    # Drawdown details
-    peak_value = Column(Float, nullable=False)
-    trough_value = Column(Float, nullable=False)
-    drawdown_pct = Column(Float, nullable=False)  # e.g., -15.3 means 15.3% below peak
-    
-    start_date = Column(DateTime(timezone=True), server_default=func.now())
-    end_date = Column(DateTime(timezone=True), nullable=True)  # NULL if ongoing
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class ValueAtRisk(Base):
-    """Value at Risk (VaR) calculations."""
-    
-    __tablename__ = "value_at_risk"
-    
-    id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    
-    # VaR metrics
-    var_95_pct = Column(Float)  # 95% confidence VaR
-    var_99_pct = Column(Float)  # 99% confidence VaR
-    expected_shortfall = Column(Float, nullable=True)
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class PositionLimit(Base):
-    """Position size limits by instrument type."""
-    
-    __tablename__ = "position_limits"
-    
-    id = Column(Integer, primary_key=True)
-    portfolio_id = Column(Integer, ForeignKey("portfolios.id"))
-    
-    # Limit configuration
-    instrument_type = Column(String(50), nullable=False)  # e.g., "CRYPTO", "EQUITY"
-    limit_percentage_of_portfolio = Column(Float, default=25.0)  # 25% of portfolio max
-    
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+__all__ = [
+    "Base",
+    "Portfolio",
+    "PortfolioSleeve",
+    "StrategyConfig",
+    "StrategyRun",
+    "Order",
+    "StrategyAllocation",
+    "Fill",
+    "CapitalBucket",
+    "Approval",
+    "AuditEvent",
+    "Alert",
+    "Incident",
+    "ExchangeState",
+    "MarketDataFeed",
+]

@@ -1,36 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  agentBudgetFromRow,
-  agentBudgetParams,
   agentCostFromRow,
   agentCostParams,
   budgetApprovalFromRow,
   budgetApprovalParams,
-  marketSnapshotFromRow,
-  marketSnapshotParams,
   opportunityFromRow,
   opportunityParams,
   researchJobFromRow,
   researchJobParams,
   riskBreakdownFromRow,
-  riskBreakdownParams
+  riskBreakdownParams,
 } from '../packages/storage/src/productRowMappers.mjs';
 
-test('maps market snapshots between app objects and SQL rows', () => {
-  const snapshot = {
-    id: 'md-1', symbol: 'BTC-USD', venue: 'coinbase-paper', assetClass: 'crypto', bid: 10, ask: 11, spreadBps: 90.9, volume24h: 1000,
-    liquidityScore: 80, volatilityScore: 55, status: 'watching', source: 'test', timestamp: '2026-05-30T00:00:00.000Z'
-  };
-  assert.deepEqual(marketSnapshotParams(snapshot).slice(0, 4), ['md-1', 'BTC-USD', 'coinbase-paper', 'crypto']);
-  assert.deepEqual(marketSnapshotFromRow({ id: 'md-1', symbol: 'BTC-USD', venue: 'coinbase-paper', asset_class: 'crypto', bid: '10', ask: '11', spread_bps: '90.9', volume_24h: '1000', liquidity_score: '80', volatility_score: '55', status: 'watching', source: 'test', timestamp: '2026-05-30T00:00:00.000Z' }), snapshot);
-});
-
-test('maps agent budgets and budget approvals', () => {
-  const budget = { agentId: 'agent-a', dailyTokenLimit: 100, dailyCostLimit: 10, perJobTokenLimit: 50, perMarketCostLimit: 5, requireApprovalAboveCost: 2, enabled: true, updatedAt: '2026-05-30T00:00:00.000Z' };
-  assert.deepEqual(agentBudgetParams(budget), ['agent-a', 100, 10, 50, 5, 2, true, '2026-05-30T00:00:00.000Z']);
-  assert.deepEqual(agentBudgetFromRow({ agent_id: 'agent-a', daily_token_limit: '100', daily_cost_limit: '10', per_job_token_limit: '50', per_market_cost_limit: '5', require_approval_above_cost: '2', enabled: true, updated_at: '2026-05-30T00:00:00.000Z' }), budget);
-
+test('maps budget approval rows and params', () => {
   const approval = { id: 'budget-001', agentId: 'agent-a', marketScope: 'ETH-USD', opportunityId: 'opp-1', requestedBy: 'operator', reason: 'deep research', status: 'approved', projectedCost: 12, projectedTokens: 60000, approvedCostLimit: 12, approvedTokenLimit: 60000, reviewer: 'risk', decisionReason: 'ok', requestedAt: '2026-05-30T00:00:00.000Z', reviewedAt: '2026-05-30T00:05:00.000Z', expiresAt: null };
   assert.equal(budgetApprovalParams(approval)[0], 'budget-001');
   assert.equal(budgetApprovalParams(approval)[14], '2026-05-30T00:05:00.000Z');
@@ -46,7 +29,8 @@ test('maps research jobs with budget approval linkage', () => {
 test('maps opportunities with cost and risk fields', () => {
   const opportunity = { id: 'opp-1', sourceAgentId: 'agent-a', researchJobId: 'job-1', strategyId: null, marketType: 'crypto_spot', venue: 'coinbase-paper', symbol: 'ETH-USD', marketSlug: null, title: 'ETH setup', recommendation: 'paper_review', confidenceScore: 0.6, winProbability: 0.55, lossProbability: 0.45, expectedValue: 90, grossExpectedValue: 100, totalMoneyRisked: 1000, maxLoss: 200, potentialUpside: 400, rewardRiskRatio: 2, liquidityScore: 80, dataFreshnessScore: 90, backtestId: null, backtestStatus: 'backtest_missing', riskBreakdownId: 'risk-1', status: 'needs_review', approvalStatus: 'needs_review', estimatedFees: 2, estimatedSlippage: 3, estimatedGas: 0, agentResearchCost: 4, modelInferenceCost: 1, netExpectedValue: 90, notes: 'note', evidence: [{ type: 'test' }], expiresAt: null, reviewedAt: null, reviewer: null, decisionReason: null, createdAt: '2026-05-30T00:00:00.000Z', updatedAt: '2026-05-30T00:01:00.000Z' };
   assert.equal(opportunityParams(opportunity)[0], 'opp-1');
-  assert.equal(opportunityParams(opportunity)[32], 90);
+  assert.equal(opportunityParams(opportunity)[31], 90);
+  assert.equal(opportunityParams(opportunity)[32], 'note');
   assert.deepEqual(opportunityFromRow({ id: 'opp-1', source_agent_id: 'agent-a', research_job_id: 'job-1', strategy_id: null, market_type: 'crypto_spot', venue: 'coinbase-paper', symbol: 'ETH-USD', market_slug: null, title: 'ETH setup', recommendation: 'paper_review', confidence_score: '0.6', win_probability: '0.55', loss_probability: '0.45', expected_value: '90', gross_expected_value: '100', total_money_risked: '1000', max_loss: '200', potential_upside: '400', reward_risk_ratio: '2', liquidity_score: '80', data_freshness_score: '90', backtest_id: null, backtest_status: 'backtest_missing', risk_breakdown_id: 'risk-1', status: 'needs_review', approval_status: 'needs_review', estimated_fees: '2', estimated_slippage: '3', estimated_gas: '0', agent_research_cost: '4', model_inference_cost: '1', net_expected_value: '90', notes: 'note', evidence_json: '[{"type":"test"}]', expires_at: null, reviewed_at: null, reviewer: null, decision_reason: null, created_at: '2026-05-30T00:00:00.000Z', updated_at: '2026-05-30T00:01:00.000Z' }), opportunity);
 });
 

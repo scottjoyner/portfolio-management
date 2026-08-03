@@ -1,114 +1,143 @@
-"""Tests for approval workflow engine."""
+"""Tests for the approval workflow engine."""
+
+import asyncio
 
 import pytest
 
+from approval.workflow_engine import (
+    ApprovalRequest,
+    ApprovalTier,
+    WorkflowEngine,
+)
+
 
 def test_approval_request_creation():
-    """Test ApprovalRequest creation with various risk levels."""
-    from approval.workflow_engine import (
-        ApprovalTier, 
-        ApprovalRequest
-    )
-    
-    # Test low-risk request
     low_risk = ApprovalRequest(
         strategy_key="ema_crossover_v1",
         version="1.0.0",
-        risk_level=0.2,  # Low risk
+        risk_level=0.2,
         capital_allocation=5000,
-        target_performance=8.0
+        target_performance=8.0,
     )
-    assert low_risk.requires_approval(ApprovalTier.AUTO_APPROVE) == False
+    assert not low_risk.requires_approval(ApprovalTier.AUTO_APPROVE)
 
 
 def test_approval_request_high_risk():
-    """Test high-risk request requires human approval."""
-    from approval.workflow_engine import (
-        ApprovalTier, 
-        ApprovalRequest
-    )
-    
-    # Test high-risk request
     high_risk = ApprovalRequest(
         strategy_key="momentum_strategy_v1",
         version="1.0.0",
-        risk_level=0.65,  # High risk
-        capital_allocation=50000,
-        target_performance=15.0
+        risk_level=0.65,
+        capital_allocation=50_000,
+        target_performance=15.0,
     )
-    assert high_risk.requires_approval(ApprovalTier.AUTO_APPROVE) == True
+    assert high_risk.requires_approval(ApprovalTier.AUTO_APPROVE)
 
 
 def test_workflow_engine_auto_approve():
-    """Test workflow engine auto-approval for low-risk strategies."""
-    from approval.workflow_engine import WorkflowEngine
-    
-    engine = WorkflowEngine(config={
-        "risk_threshold_canary": 0.3,
-        "risk_threshold_production": 0.6,
-        "auto_approve_capital_limit": 10000,
-    })
-    
-    # Create low-risk request
+    engine = WorkflowEngine(
+        {
+            "risk_threshold_canary": 0.3,
+            "risk_threshold_production": 0.6,
+            "auto_approve_capital_limit": 10_000,
+        }
+    )
     request = ApprovalRequest(
         strategy_key="ema_crossover_v1",
         version="1.2.0",
         risk_level=0.2,
         capital_allocation=5000,
-        target_performance=8.5
+        target_performance=8.5,
     )
-    
+
     result = engine.route_strategy(request)
     assert result["status"] == "approved"
     assert result["tier"] == "auto"
-    assert result["requires_human_approval"] == False
+    assert not result["requires_human_approval"]
+
+
+def test_workflow_engine_remains_await_compatible():
+    engine = WorkflowEngine()
+    result = engine.route_strategy(
+        ApprovalRequest(
+            strategy_key="ema_crossover_v1",
+            version="1.2.0",
+            risk_level=0.2,
+            capital_allocation=1000,
+            target_performance=8.5,
+        )
+    )
+
+    async def resolve():
+        return await result
+
+    assert asyncio.run(resolve()) is result
 
 
 def test_workflow_engine_canary_approve():
-    """Test workflow engine canary approval for medium-risk strategies."""
-    from approval.workflow_engine import WorkflowEngine
-    
     engine = WorkflowEngine()
-    
-    # Create medium-risk request
     request = ApprovalRequest(
         strategy_key="momentum_strategy_v1",
         version="1.0.0",
-        risk_level=0.4,  # Medium-high risk
-        capital_allocation=25000,
-        target_performance=12.0
+        risk_level=0.4,
+        capital_allocation=25_000,
+        target_performance=12.0,
     )
-    
+
     result = engine.route_strategy(request)
     assert result["status"] == "canary_approved"
     assert result["tier"] == "canary"
-    assert result["requires_human_approval"] == False
+    assert not result["requires_human_approval"]
 
 
 def test_workflow_engine_production_approve():
-    """Test workflow engine production approval for high-risk strategies."""
-    from approval.workflow_engine import WorkflowEngine
-    
-    engine = WorkflowEngine(config={
-        "risk_threshold_canary": 0.4,
-        "risk_threshold_production": 0.6,
-        "auto_approve_capital_limit": 10000,
-    })
-    
-    # Create high-risk request
+    engine = WorkflowEngine(
+        {
+            "risk_threshold_canary": 0.4,
+            "risk_threshold_production": 0.6,
+            "auto_approve_capital_limit": 10_000,
+        }
+    )
     request = ApprovalRequest(
         strategy_key="trend_breakout_v1",
         version="1.0.0",
-        risk_level=0.75,  # High risk
-        capital_allocation=75000,
-        target_performance=20.0
+        risk_level=0.75,
+        capital_allocation=75_000,
+        target_performance=20.0,
     )
-    
+
     result = engine.route_strategy(request)
     assert result["status"] == "pending_review"
     assert result["tier"] == "production"
-    assert result["requires_human_approval"] == True
+    assert result["requires_human_approval"]
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_failed_validation_rejects_before_risk_routing():
+    engine = WorkflowEngine()
+    request = ApprovalRequest(
+        strategy_key="ema_crossover_v1",
+        version="1.0.0",
+        risk_level=0.1,
+        capital_allocation=100,
+        target_performance=5.0,
+    )
+
+    result = engine.route_strategy(
+        request,
+        {"security_scan_passed": False},
+    )
+    assert result["status"] == "rejected"
+    assert result["requires_human_approval"]
+    assert result["rejection_reasons"] == [
+        "validation_failed:security_scan_passed"
+    ]
+
+
+def test_invalid_request_fails_closed():
+    with pytest.raises(ValueError, match="risk_level"):
+        ApprovalRequest(
+            strategy_key="bad",
+            version="1",
+            risk_level=1.5,
+            capital_allocation=100,
+            target_performance=5.0,
+        )

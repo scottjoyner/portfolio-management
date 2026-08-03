@@ -1,3 +1,10 @@
-from apps.paper_exchange.engine import PaperExchangeEngine
+"""Canonical paper-exchange package."""
 
-__all__ = ["PaperExchangeEngine"]
+from .engine import PaperExchangeEngine, PaperFill, PaperOrder, PaperPosition
+
+__all__ = [
+    "PaperExchangeEngine",
+    "PaperFill",
+    "PaperOrder",
+    "PaperPosition",
+]

@@ -1,0 +1,230 @@
+name: portfolio-production
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DEPLOYMENT_ENV: production
+  STRICT_RUNTIME_VALIDATION: "true"
+  OPERATOR_STORE: postgres
+  DATABASE_URL: postgresql://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+  OPERATOR_AUTH_REQUIRED: "true"
+  OPERATOR_ADMIN_TOKEN: ${OPERATOR_ADMIN_TOKEN:?set OPERATOR_ADMIN_TOKEN}
+  CSRF_REQUIRED: "true"
+  OPERATOR_CSRF_TOKEN: ${OPERATOR_CSRF_TOKEN:?set OPERATOR_CSRF_TOKEN}
+  CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
+  MODE: paper
+  PAPER_TRADING: "true"
+  LIVE_TRADING: "false"
+  LIVE_TRADING_ENABLED: "false"
+  ALLOW_POLYMARKET_ORDER_SUBMISSION: "false"
+  ALLOW_LIVE_SETTLEMENT_REDEMPTION: "false"
+  REQUIRE_RUNTIME_CONFIRMATION: "true"
+  REQUIRE_MANUAL_APPROVAL: "true"
+  REQUIRE_APPROVED_MARKET_PAIR: "true"
+  LOCAL_LLM_EXECUTION_REQUIRED: ${LOCAL_LLM_EXECUTION_REQUIRED:-true}
+  LOCAL_LLM_ENDPOINTS: ${LOCAL_LLM_ENDPOINTS:-}
+  LOCAL_LLM_NODES_JSON: ${LOCAL_LLM_NODES_JSON:-}
+  LOCAL_LLM_API_KEY: ${LOCAL_LLM_API_KEY:-}
+  LOCAL_LLM_DEFAULT_PREFILL_TPS: ${LOCAL_LLM_DEFAULT_PREFILL_TPS:-80}
+  LOCAL_LLM_DEFAULT_DECODE_TPS: ${LOCAL_LLM_DEFAULT_DECODE_TPS:-20}
+  LOCAL_LLM_DEFAULT_WATTS: ${LOCAL_LLM_DEFAULT_WATTS:-110}
+  LOCAL_LLM_DEFAULT_CONTEXT_LENGTH: ${LOCAL_LLM_DEFAULT_CONTEXT_LENGTH:-32768}
+  LOCAL_LLM_ELECTRICITY_RATE_PER_KWH: ${LOCAL_LLM_ELECTRICITY_RATE_PER_KWH:-0.14}
+  LOCAL_LLM_HARDWARE_DEPRECIATION_PER_HOUR: ${LOCAL_LLM_HARDWARE_DEPRECIATION_PER_HOUR:-0.18}
+  MODEL_CALL_STALE_SECONDS: ${MODEL_CALL_STALE_SECONDS:-300}
+  COINBASE_DRY_RUN: "true"
+  COINBASE_API_KEY: ${COINBASE_API_KEY:-}
+  COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
+  ECONOMIC_RUNTIME_ENABLED: "true"
+  ECONOMIC_MAINTENANCE_INTERVAL_MS: ${ECONOMIC_MAINTENANCE_INTERVAL_MS:-60000}
+  ECONOMIC_JOB_LEASE_SECONDS: ${ECONOMIC_JOB_LEASE_SECONDS:-300}
+  ECONOMIC_JOB_RETRY_SECONDS: ${ECONOMIC_JOB_RETRY_SECONDS:-60}
+  ECONOMIC_JOB_MAX_ATTEMPTS: ${ECONOMIC_JOB_MAX_ATTEMPTS:-5}
+  ECONOMIC_SHUTDOWN_GRACE_MS: ${ECONOMIC_SHUTDOWN_GRACE_MS:-30000}
+  ECONOMIC_WORKER_HEALTH_FILE: ${ECONOMIC_WORKER_HEALTH_FILE:-/tmp/economic-worker-health.json}
+  ECONOMIC_WORKER_HEALTH_MAX_AGE_MS: ${ECONOMIC_WORKER_HEALTH_MAX_AGE_MS:-180000}
+  OPERATOR_TRANSACTION_ISOLATION: SERIALIZABLE
+  OPERATOR_WRITE_LOCK_KEY: ${OPERATOR_WRITE_LOCK_KEY:-1347375700}
+
+x-remote-safety-default: &remote-safety-default
+  REMOTE_LLM_EXECUTION_ENABLED: "false"
+
+x-openrouter-environment: &openrouter-environment
+  <<: *remote-safety-default
+  REMOTE_LLM_EXECUTION_ENABLED: ${REMOTE_LLM_EXECUTION_ENABLED:-false}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_APP_URL: ${OPENROUTER_APP_URL:-}
+  OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Portfolio OS}
+  OPENROUTER_RECONCILIATION_TIMEOUT_MS: ${OPENROUTER_RECONCILIATION_TIMEOUT_MS:-10000}
+  OPENROUTER_RECONCILIATION_RETRY_MS: ${OPENROUTER_RECONCILIATION_RETRY_MS:-30000}
+  OPENROUTER_RECONCILIATION_MAX_RETRY_MS: ${OPENROUTER_RECONCILIATION_MAX_RETRY_MS:-3600000}
+  OPENROUTER_RECONCILIATION_MAX_ATTEMPTS: ${OPENROUTER_RECONCILIATION_MAX_ATTEMPTS:-8}
+
+x-app-security: &app-security
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  stop_grace_period: 45s
+  networks:
+    - backend
+    - inference-egress
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-6GB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-512MB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-16MB}
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - log_min_duration_statement=${POSTGRES_SLOW_QUERY_MS:-500}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - postgres-backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    shm_size: 1gb
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      <<: *app-environment
+    command: ["npm", "run", "migrations:up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      <<: [*app-environment, *openrouter-environment]
+      PORT: "3000"
+    command: ["npm", "run", "api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    mem_limit: ${API_MEMORY_LIMIT:-4g}
+    cpus: ${API_CPU_LIMIT:-4}
+    <<: *app-security
+
+  economic-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      <<: [*app-environment, *openrouter-environment]
+      ECONOMIC_WORKER_ID: ${ECONOMIC_WORKER_ID:-economic-worker-1}
+    command: ["npm", "run", "economics:worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "scripts/check-economic-worker-health.mjs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    mem_limit: ${WORKER_MEMORY_LIMIT:-6g}
+    cpus: ${WORKER_CPU_LIMIT:-6}
+    <<: *app-security
+
+  postgres-backup:
+    image: postgres:17-bookworm
+    profiles: ["backup"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGUSER: ${POSTGRES_USER:?set POSTGRES_USER}
+      PGDATABASE: ${POSTGRES_DB:?set POSTGRES_DB}
+      PGHOST: postgres
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-21600}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        while true; do
+          stamp="$$(date -u +%Y%m%dT%H%M%SZ)"
+          pg_dump --format=custom --no-owner --file="/backups/portfolio-$${stamp}.dump"
+          find /backups -type f -name 'portfolio-*.dump' -mtime +"$$BACKUP_RETENTION_DAYS" -delete
+          sleep "$$BACKUP_INTERVAL_SECONDS"
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - postgres-backups:/backups
+    networks:
+      - backend
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:
+  postgres-backups:
+
+networks:
+  backend:
+    internal: true
+  inference-egress:
+    driver: bridge

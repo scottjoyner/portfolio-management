@@ -13,10 +13,34 @@ function tokenMap(env = process.env) {
   return new Map(entries);
 }
 
+function publicOperatorShell(req) {
+  const method = req.method || 'GET';
+  if (!READ_METHODS.has(method)) return false;
+  let pathname = '/';
+  try {
+    pathname = new URL(req.url || '/', 'http://localhost').pathname;
+  } catch {
+    return false;
+  }
+  return pathname === '/'
+    || pathname === '/ui/index.html'
+    || pathname === '/favicon.ico'
+    || pathname.startsWith('/ui/');
+}
+
 export function authStatus(req, env = process.env) {
   const mode = env.MODE || 'mock';
   const authRequired = env.OPERATOR_AUTH_REQUIRED === 'true' || mode === 'live';
   if (!authRequired) return { ok: true, actor: 'dev-operator', role: 'admin', mode: 'dev-bypass' };
+
+  // The browser must be able to load the inert console shell and session helper
+  // before it can attach a bearer token to protected same-origin API requests.
+  // Only read-only static UI paths bypass bearer authentication; every API path
+  // continues through the normal token and role checks below.
+  if (publicOperatorShell(req)) {
+    return { ok: true, actor: 'public-operator-shell', role: 'readonly', mode: 'public-ui-shell' };
+  }
+
   const tokens = tokenMap(env);
   const header = req.headers?.authorization || req.headers?.Authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';

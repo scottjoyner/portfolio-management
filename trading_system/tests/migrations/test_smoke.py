@@ -1,30 +1,37 @@
-"""Migration smoke tests."""
+"""Migration smoke tests that require an explicitly provisioned Postgres DB."""
 
 from __future__ import annotations
 
-import pytest
-from sqlalchemy import text
+import os
 
-# Test that migration can be applied successfully
+import pytest
+from sqlalchemy import create_engine, inspect
 
 
 @pytest.fixture(scope="module")
 def fresh_postgres_connection():
-    """Create fresh Postgres database for migration testing."""
-    # This fixture would connect to a test database
-    # For now, we'll skip actual DB tests in CI and rely on manual verification
-    pytest.skip("Requires database container - run locally with make ci", allow=True)
+    """Connect only when a migration smoke database is explicitly configured."""
+
+    database_url = os.getenv("MIGRATION_SMOKE_DATABASE_URL")
+    if not database_url:
+        pytest.skip("Set MIGRATION_SMOKE_DATABASE_URL to run Postgres migration smoke tests")
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    connection = engine.connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
+        engine.dispose()
 
 
 def test_migration_completes(fresh_postgres_connection):
-    """Test that all migrations complete successfully."""
-    result = fresh_postgres_connection.execute(text("SELECT 1"))
-    assert result.fetchone()[0] == 1
+    result = fresh_postgres_connection.exec_driver_sql("SELECT 1")
+    assert result.scalar_one() == 1
 
 
 def test_tables_exist(fresh_postgres_connection):
-    """Test that all expected tables exist after migration."""
-    expected_tables = [
+    expected_tables = {
         "portfolios",
         "portfolio_sleeves",
         "strategy_configs",
@@ -32,52 +39,37 @@ def test_tables_exist(fresh_postgres_connection):
         "orders",
         "strategy_allocations",
         "fills",
-        "audit_logs",
+        "approvals",
+        "audit_events",
         "alerts",
         "incidents",
-        "market_data_snapshots",
-        "market_book_snapshots",
-        "exchange_state",
-        "market_data_feed_health",
-    ]
-    
-    result = fresh_postgres_connection.execute(
-        text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        "exchange_states",
+        "market_data_feeds",
+        "capital_buckets",
+    }
+    inspector = inspect(fresh_postgres_connection)
+    existing_tables = set(inspector.get_table_names())
+    assert expected_tables.issubset(existing_tables), (
+        f"Missing migrated tables: {expected_tables - existing_tables}"
     )
-    existing_tables = [row[0] for row in result.fetchall()]
-    
-    for table in expected_tables:
-        assert table in existing_tables, f"Table {table} not found after migration"
 
 
 def test_primary_keys_exist(fresh_postgres_connection):
-    """Test that all tables have primary keys."""
-    pk_check = text("""
-        SELECT tablename 
-        FROM information_schema.tables 
-        WHERE table_catalog = 'trading_system'
-        AND table_type = 'BASE TABLE'
-        AND constraints表名 LIKE '%PRIMARY KEY%'
-        GROUP BY tablename
-    """)
-    
-    result = fresh_postgres_connection.execute(pk_check)
-    pk_tables = [row[0] for row in result.fetchall()]
-    
-    assert len(pk_tables) > 0, "No tables with primary keys found"
+    inspector = inspect(fresh_postgres_connection)
+    tables = inspector.get_table_names()
+    missing = [
+        table
+        for table in tables
+        if table != "alembic_version" and not inspector.get_pk_constraint(table).get("constrained_columns")
+    ]
+    assert not missing, f"Tables without primary keys: {missing}"
 
 
 def test_foreign_keys_exist(fresh_postgres_connection):
-    """Test that foreign key constraints exist where expected."""
-    fk_check = text("""
-        SELECT tc.constraint_name, tc.table_name, kcu.column_name
-        FROM information_schema.table_constraints AS tc
-        JOIN information_schema.key_column_usage AS kcu
-          ON tc.constraint_name = kcu.constraint_name
-        WHERE constraint_type = 'FOREIGN KEY'
-    """)
-    
-    result = fresh_postgres_connection.execute(fk_check)
-    fk_rows = result.fetchall()
-    
-    assert len(fk_rows) > 0, "No foreign key constraints found"
+    inspector = inspect(fresh_postgres_connection)
+    foreign_keys = [
+        foreign_key
+        for table in inspector.get_table_names()
+        for foreign_key in inspector.get_foreign_keys(table)
+    ]
+    assert foreign_keys, "No foreign key constraints found"

@@ -1,0 +1,121 @@
+name: Full Python Test Inventory
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: full-python-test-inventory-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  maintained-python-inventory:
+    name: maintained-python-inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+      TRADING_SYSTEM_STATE_DIR: .test-state
+      TEST_DATABASE_URL: postgresql://postgres:testpass@127.0.0.1:54433/trading_int
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          requirements.txt
+          deploy/requirements.venv-lock.txt
+    - name: Install locked dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r deploy/requirements.venv-lock.txt
+        python -m pip install pytest-asyncio
+        mkdir -p .venv/bin
+        ln -sf "$(command -v alembic)" .venv/bin/alembic
+    - name: Start owned PostgreSQL integration database
+      run: |
+        docker rm -f trading-integration-test >/dev/null 2>&1 || true
+        docker run -d --name trading-integration-test \
+          -e POSTGRES_USER=postgres \
+          -e POSTGRES_PASSWORD=testpass \
+          -e POSTGRES_DB=trading_int \
+          -p 127.0.0.1:54433:5432 \
+          postgres:16-alpine
+        for attempt in $(seq 1 60); do
+          if docker exec trading-integration-test pg_isready -U postgres -d trading_int >/dev/null 2>&1 \
+            && python -c 'import os, psycopg2; c = psycopg2.connect(os.environ["TEST_DATABASE_URL"]); c.close()'; then
+            exit 0
+          fi
+          sleep 1
+        done
+        docker logs trading-integration-test
+        exit 1
+    - name: Collect every maintained Python test in an isolated process
+      run: |
+        set -o pipefail
+        python -m pytest tests/ trading_system/tests/ \
+          --ignore=tests/coverage \
+          --import-mode=importlib \
+          --collect-only \
+          -q | tee maintained-python-collection.txt
+    - name: Run every maintained Python test
+      run: |
+        set -o pipefail
+        python -m pytest tests/ trading_system/tests/ \
+          --ignore=tests/coverage \
+          --import-mode=importlib \
+          -q | tee maintained-python-results.txt
+    - name: Upload maintained test evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: maintained-python-inventory-${{ github.sha }}
+        path: |
+          maintained-python-collection.txt
+          maintained-python-results.txt
+        if-no-files-found: warn
+        retention-days: 14
+
+  coverage-python-inventory:
+    name: coverage-python-inventory-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          requirements.txt
+          deploy/requirements.venv-lock.txt
+    - name: Install locked dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r deploy/requirements.venv-lock.txt
+        python -m pip install pytest-asyncio
+        mkdir -p .venv/bin
+        ln -sf "$(command -v alembic)" .venv/bin/alembic
+    - name: Run assigned coverage files in bounded fresh processes
+      run: |
+        python scripts/run-isolated-coverage-inventory.py \
+          --shard-index "${{ matrix.shard }}" \
+          --shard-total 8 \
+          --file-timeout-seconds 180
+    - name: Upload isolated coverage evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-python-inventory-${{ matrix.shard }}-${{ github.sha }}
+        path: full-python-inventory/coverage/shard-${{ matrix.shard }}/
+        if-no-files-found: error
+        retention-days: 14

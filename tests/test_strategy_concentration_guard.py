@@ -3,6 +3,11 @@ Unit tests for the strategy-concentration + sample-depth anti-fragility guards
 added to run_trader_v4 (_paper_execute_impl) and live_performance
 (strategy_total_pnl). These prevent a few low-sample lucky trades from
 dominating the book (observed: top-3 strategies = 110% of total pnl).
+
+The production-paper competition profile deliberately uses a 60% default. It
+allows a genuinely dominant strategy to keep proving itself while still
+blocking new entries before one strategy accounts for nearly the whole book.
+The knob remains operator-tunable downward; this is not a live-trading limit.
 """
 import sys
 import unittest
@@ -22,11 +27,11 @@ class TestConcentrationGuard(unittest.TestCase):
         # Redirect state file so we never touch the real running bot's data.
         self.t._paper_state_path = Path(self._tmp) / "paper_trader_v4_state.json"
 
-    def test_new_knobs_seeded_with_defaults(self):
+    def test_new_knobs_seeded_with_paper_competition_defaults(self):
         # The __init__ seed loop must create both guards from TUNABLE_KNOBS.
         self.assertTrue(hasattr(self.t, "max_strategy_pnl_share"))
         self.assertTrue(hasattr(self.t, "min_trades_for_full_sizing"))
-        self.assertEqual(self.t.max_strategy_pnl_share, 0.30)
+        self.assertEqual(self.t.max_strategy_pnl_share, 0.60)
         self.assertEqual(self.t.min_trades_for_full_sizing, 20)
 
     def test_strategy_total_pnl_sums_across_products(self):
@@ -40,7 +45,6 @@ class TestConcentrationGuard(unittest.TestCase):
         self.assertEqual(tr.strategy_total_pnl("rsi_revert"), 0.0)
 
     def test_concentration_cap_blocks_new_entries(self):
-        # Seed a strategy that already exceeds 30% of a $10k book (= $3000).
         self.t.paper_starting_capital = 10000.0
         self.t._paper_state_path.write_text(
             '{"paper_starting_capital": 10000.0, "paper_cash": 10000.0, '
@@ -48,22 +52,24 @@ class TestConcentrationGuard(unittest.TestCase):
             '"paper_wins": 0, "paper_losses": 0, "paper_peak_equity": 10000.0}'
         )
         self.t._load_paper_state()
-        # Inject a strategy with $4000 live pnl into the perf tracker.
+
         import os
         p = os.path.join(self._tmp, "lp.json")
         tr = LivePerformanceTracker(path=p)
-        tr.record_trade("hot_strat", "BTC-USD", 4000.0, 1000.0, 1.0, "LONG")
         self.t._perf_tracker = tr
         self.t._last_price = {"BTC-USD": 100.0}
-        # Equity ~ $14000 (10k + 4k). 30% cap = $4200. $4000 < $4200 -> still allowed.
-        # Push it over: add another $500.
-        tr.record_trade("hot_strat", "ETH-USD", 500.0, 1000.0, 1.0, "LONG")
-        # Now hot_strat pnl = $4500 > 30% of ~$14500 = $4350 -> should be blocked.
+
         eq = self.t._paper_equity(self.t._last_price)
-        self.assertGreater(tr.strategy_total_pnl("hot_strat"),
-                          self.t.max_strategy_pnl_share * eq)
-        # The guard logic itself (mirrors _paper_execute_impl):
+        threshold = self.t.max_strategy_pnl_share * eq
+        self.assertEqual(threshold, 6000.0)
+
+        tr.record_trade("hot_strat", "BTC-USD", 5900.0, 1000.0, 1.0, "LONG")
+        self.assertLess(tr.strategy_total_pnl("hot_strat"), threshold)
+
+        tr.record_trade("hot_strat", "ETH-USD", 200.0, 1000.0, 1.0, "LONG")
         strat_pnl = tr.strategy_total_pnl("hot_strat")
+        self.assertGreater(strat_pnl, threshold)
+
         blocked = eq > 0 and self.t.max_strategy_pnl_share > 0 and \
                   strat_pnl > self.t.max_strategy_pnl_share * eq
         self.assertTrue(blocked, "concentration guard should block hot_strat")

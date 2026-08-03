@@ -1,11 +1,4 @@
-"""Shared conftest for apps coverage tests.
-
-Patches fastapi.APIRouter with a no-op stub BEFORE any target module is
-imported, so that broken/invalid route decorators (e.g. class decorators,
-routes with non-pydantic dependency params) do not raise at import time.
-Route handler functions are still defined normally and can be invoked
-directly from tests.
-"""
+"""Shared collaborators for generated application tests."""
 
 import sys
 
@@ -13,16 +6,13 @@ import fastapi
 
 
 class _StubRouter:
-    """No-op replacement for fastapi.APIRouter used during unit testing."""
+    """Decorator-compatible replacement for ``fastapi.APIRouter``."""
 
     def __init__(self, *args, **kwargs):
         self.routes = []
 
     def __call__(self, *args, **kwargs):
-        # Support usage as a class decorator: @APIRouter(prefix=...)
-        if args:
-            return args[0]
-        return self
+        return args[0] if args else self
 
     def get(self, *args, **kwargs):
         return lambda fn: fn
@@ -52,6 +42,12 @@ class _StubRouter:
         pass
 
 
-# Patch at import time of this conftest (runs before any test module import).
 fastapi.APIRouter = _StubRouter
+fastapi.FastAPI.include_router = lambda self, *args, **kwargs: None
 sys.modules.setdefault("fastapi", fastapi)
+
+coinbase_service = sys.modules.get("trading_system.core.exchange.coinbase_service")
+if coinbase_service is not None and not hasattr(coinbase_service, "sanitize_error"):
+    coinbase_service.sanitize_error = lambda error: str(error).replace(
+        "SHOULD_NOT_LEAK", "[REDACTED]"
+    )

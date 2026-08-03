@@ -634,7 +634,7 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertEqual(stub.action, "BUY")
 
     def test_orchestrator_writes_dict_not_list_to_pending_approvals(self):
-        from coinbase.src.orchestrator import ExecutionOrchestrator, TradeSignal
+        from coinbase.src.orchestrator import ExecutionOrchestrator, TradeSignal, TradeMode
         from coinbase.src.protocols import Direction
 
         sig = TradeSignal(
@@ -649,21 +649,20 @@ class TestCriticalBugs(unittest.TestCase):
             reason="test",
         )
         with tempfile.TemporaryDirectory() as tmp:
-            orig = os.getcwd()
-            os.chdir(tmp)
-            try:
-                from coinbase.src.orchestrator import TradeMode
-                orch = ExecutionOrchestrator(mode=TradeMode.PAPER, dry_run=True)
-                orch._approval_execute(sig)
-                with open("pending_approvals.json") as f:
-                    data = json.load(f)
-                self.assertIsInstance(data, dict)
-                self.assertEqual(len(data), 1)
-                token = list(data.keys())[0]
-                self.assertEqual(data[token]["product_id"], "BTC-USD")
-                self.assertEqual(data[token]["status"], "pending")
-            finally:
-                os.chdir(orig)
+            pending_path = Path(tmp) / "nested" / "pending_approvals.json"
+            orch = ExecutionOrchestrator(
+                mode=TradeMode.PAPER,
+                dry_run=True,
+                pending_file=str(pending_path),
+            )
+            result = orch._approval_execute(sig)
+            data = json.loads(pending_path.read_text())
+            self.assertIsInstance(data, dict)
+            self.assertEqual(list(data), [result["token"]])
+            self.assertEqual(data[result["token"]]["product_id"], "BTC-USD")
+            self.assertEqual(data[result["token"]]["status"], "pending")
+            self.assertEqual(orch.state.pending_approvals[0]["token"], result["token"])
+            self.assertTrue(Path(f"{pending_path}.lock").exists())
 
 
 class TestFearGreed(unittest.TestCase):

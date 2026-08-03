@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAuditEvent, verifyAuditChain } from '../packages/storage/src/auditChain.mjs';
+import {
+  buildAuditEvent,
+  completeAuditChain,
+  verifyAuditChain,
+} from '../packages/storage/src/auditChain.mjs';
 import { OperatorRowRepository } from '../packages/storage/src/operatorRowRepository.mjs';
+import {
+  createInitialOperatorState,
+  MemoryOperatorStore,
+} from '../packages/storage/src/operatorStore.mjs';
 
 class AuditStore {
   constructor() { this.rows = []; }
@@ -32,6 +40,49 @@ test('audit chain detects tampering', () => {
   const result = verifyAuditChain([first, tampered]);
   assert.equal(result.ok, false);
   assert.ok(result.issues.some(issue => issue.issue === 'event_hash_mismatch'));
+});
+
+test('legacy plain audit rows are completed deterministically and idempotently', () => {
+  const plain = [
+    { id: 'legacy-1', action: 'created', actor: 'test', at: '2026-05-29T00:00:00.000Z', payload: { x: 1 } },
+    { id: 'legacy-2', action: 'updated', actor: 'test', at: '2026-05-29T00:01:00.000Z', payload: { x: 2 } },
+  ];
+  const completed = completeAuditChain(plain);
+  const repeated = completeAuditChain(completed);
+  assert.equal(completed[0].sequenceNumber, 1);
+  assert.equal(completed[1].sequenceNumber, 2);
+  assert.equal(completed[1].previousHash, completed[0].eventHash);
+  assert.deepEqual(repeated, completed);
+  assert.equal(verifyAuditChain(completed).ok, true);
+});
+
+test('audit completion rejects conflicting persisted metadata', () => {
+  const first = buildAuditEvent({ id: 'a1', action: 'created', actor: 'test', at: '2026-05-29T00:00:00.000Z' });
+  const second = buildAuditEvent({ id: 'a2', action: 'updated', actor: 'test', at: '2026-05-29T00:01:00.000Z' }, first);
+  assert.throws(
+    () => completeAuditChain([first, { ...second, eventHash: 'tampered' }]),
+    /audit_chain_event_hash_conflict:a2/,
+  );
+  assert.throws(
+    () => completeAuditChain([first, { ...second, previousHash: 'wrong' }]),
+    /audit_chain_previous_hash_conflict:a2/,
+  );
+});
+
+test('generic stores preserve missing audit metadata for integrity checks', async () => {
+  const store = new MemoryOperatorStore(createInitialOperatorState());
+  await store.mutate(state => {
+    state.audit.push({
+      id: 'audit-memory-1',
+      action: 'memory_mutation',
+      actor: 'test',
+      at: '2026-05-29T00:00:00.000Z',
+      payload: { ok: true },
+    });
+  });
+  const state = await store.load();
+  assert.equal(state.audit[0].sequenceNumber, undefined);
+  assert.equal(state.audit[0].eventHash, undefined);
 });
 
 test('row repository insertAudit appends hash chain fields', async () => {

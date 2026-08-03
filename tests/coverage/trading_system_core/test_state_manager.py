@@ -58,7 +58,6 @@ def test_load_no_file_returns_empty(mgr):
 
 
 def test_save_writes_list_format(mgr):
-    # save_brackets writes {"brackets": [...]} (matches load_brackets format)
     mgr.save_brackets([_make_bracket()])
     with open(mgr.brackets_path) as f:
         data = json.load(f)
@@ -68,7 +67,6 @@ def test_save_writes_list_format(mgr):
 
 
 def test_save_uses_dict_fallback(mgr):
-    # Cover the `else b.dict()` branch when object lacks model_dump.
     class FakeB:
         def dict(self):
             return _bracket_dict("fake")
@@ -80,7 +78,6 @@ def test_save_uses_dict_fallback(mgr):
 
 
 def test_load_success_with_brackets_key(mgr):
-    # load_brackets expects {"brackets": [...]} format
     with open(mgr.brackets_path, "w") as f:
         json.dump({"brackets": [_bracket_dict("c1")]}, f)
     loaded = mgr.load_brackets()
@@ -89,10 +86,11 @@ def test_load_success_with_brackets_key(mgr):
     assert loaded[0].stop_loss == 90.0
 
 
-def test_load_corrupt_json_returns_empty(mgr):
+def test_load_corrupt_json_fails_closed_without_backup(mgr):
     with open(mgr.brackets_path, "w") as f:
         f.write("{ this is not json ")
-    assert mgr.load_brackets() == []
+    with pytest.raises(Exception):
+        mgr.load_brackets()
 
 
 def test_load_missing_brackets_key(mgr):
@@ -102,8 +100,6 @@ def test_load_missing_brackets_key(mgr):
 
 
 def test_add_bracket(mgr):
-    # Fixed: source now uses a reentrant RLock so add_bracket() can safely call
-    # load_brackets() while holding the lock (no deadlock).
     mgr.add_bracket(_make_bracket("a"))
     assert os.path.exists(mgr.brackets_path)
     loaded = mgr.load_brackets()
@@ -112,11 +108,9 @@ def test_add_bracket(mgr):
 
 
 def test_remove_bracket_by_id(mgr):
-    # Pre-seed with the load-expected format so remove can find it.
     with open(mgr.brackets_path, "w") as f:
         json.dump({"brackets": [_bracket_dict("a"), _bracket_dict("b")]}, f)
     mgr.remove_bracket_by_id("a")
-    # save_brackets writes {"brackets": [...]}; verify removal via the raw file
     with open(mgr.brackets_path) as f:
         raw = json.load(f)
     assert len(raw["brackets"]) == 1

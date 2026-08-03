@@ -32,7 +32,7 @@ test('persistRouteArtifacts uses bundle upsert when available', async () => {
   assert.deepEqual(store.calls[0].value.opportunities.map(row => row.id), ['opp-1']);
 });
 
-test('persistRouteArtifacts falls back to individual targeted methods', async () => {
+test('persistRouteArtifacts falls back to grouped individual targeted methods', async () => {
   const store = fakeStore({
     upsertMarketDataSnapshots: null,
     upsertBudgetApproval: null,
@@ -58,14 +58,18 @@ test('persistRouteArtifacts falls back to individual targeted methods', async ()
     'upsertMarketDataSnapshots',
     'upsertBudgetApproval',
     'upsertResearchJob',
-    'upsertAgentCost',
-    'upsertOpportunity',
-    'upsertRiskBreakdown',
     'upsertResearchJob',
     'upsertAgentCost',
+    'upsertAgentCost',
     'upsertOpportunity',
+    'upsertOpportunity',
+    'upsertRiskBreakdown',
     'upsertRiskBreakdown'
   ]);
+  assert.deepEqual(
+    store.calls.filter(call => call.method === 'upsertResearchJob').map(call => call.value.id),
+    ['job-1', 'job-2']
+  );
 });
 
 test('persistRouteArtifacts is a no-op for validation errors and unsupported stores', async () => {

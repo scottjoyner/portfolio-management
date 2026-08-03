@@ -33,6 +33,7 @@ def _parse_bool_env(name: str, default: bool) -> bool:
 class Settings(BaseModel):
     app_env: str = "dev"
     trading_mode: TradingMode = TradingMode.PAPER
+    onchain_mode: str = "paper"
     coinbase_api_key: str = ""
     coinbase_api_secret: str = ""
     coinbase_passphrase: str = ""
@@ -55,11 +56,23 @@ class Settings(BaseModel):
             raise ValueError(f"QUEUE_MODEL must be one of {sorted(allowed)}")
         return normalized
 
+    @field_validator("onchain_mode")
+    @classmethod
+    def _onchain_mode_supported(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        allowed = {"disabled", "paper", "shadow"}
+        if normalized not in allowed:
+            raise ValueError(
+                f"ONCHAIN_MODE must be one of {sorted(allowed)} in this build"
+            )
+        return normalized
+
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
             app_env=os.getenv("APP_ENV", "dev"),
             trading_mode=TradingMode(os.getenv("TRADING_MODE", TradingMode.PAPER.value)),
+            onchain_mode=os.getenv("ONCHAIN_MODE", "paper"),
             coinbase_api_key=os.getenv("COINBASE_API_KEY", ""),
             coinbase_api_secret=os.getenv("COINBASE_API_SECRET", ""),
             coinbase_passphrase=os.getenv("COINBASE_PASSPHRASE", ""),

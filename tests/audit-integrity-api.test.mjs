@@ -41,10 +41,20 @@ test('audit verify endpoint returns valid chain result', async () => {
 
 test('audit verify endpoint detects missing hashes', async () => {
   const store = new MemoryOperatorStore(createInitialState());
+  // Seed normalization intentionally completes legacy hashes. Tamper the loaded
+  // store afterward so this test verifies an actually broken runtime chain.
+  store.state.audit = [{
+    id: 'audit-unhashed-001',
+    action: 'test_unhashed_event',
+    actor: 'test',
+    at: '2026-05-29T00:00:00.000Z',
+    details: 'explicit unhashed evidence',
+  }];
   const out = await call('GET', '/api/audit/verify', store);
   assert.equal(out.status, 409);
   assert.equal(out.data.ok, false);
   assert.equal(out.data.reason, 'audit_hashes_missing');
+  assert.deepEqual(out.data.missing, ['audit-unhashed-001']);
 });
 
 test('production-paper readiness fails closed for non-postgres store', async () => {
