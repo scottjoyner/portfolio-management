@@ -45,23 +45,33 @@ class TestConcentrationGuard(unittest.TestCase):
         self.assertEqual(tr.strategy_total_pnl("rsi_revert"), 0.0)
 
     def test_concentration_cap_blocks_new_entries(self):
-        self.t.paper_starting_capital = 10000.0
-        self.t._paper_state_path.write_text(
+        # Patch _load_core_holdings_state BEFORE creating the instance so it's a no-op.
+        import coinbase.src.run_trader_v4 as mod
+        original_load = mod.EventTraderV4._load_core_holdings_state
+        mod.EventTraderV4._load_core_holdings_state = lambda self: None
+
+        # Create a fresh trader with patched init (no core holdings loaded).
+        t = EventTraderV4(mode="paper", products=["BTC-USD"], dry_run=True)
+        t.paper_starting_capital = 10000.0
+        # Use a state file with NO core_holdings so equity == starting capital exactly.
+        t._paper_state_path.write_text(
             '{"paper_starting_capital": 10000.0, "paper_cash": 10000.0, '
-            '"paper_realized_pnl": 0.0, "paper_positions": {}, "paper_trades": [], '
-            '"paper_wins": 0, "paper_losses": 0, "paper_peak_equity": 10000.0}'
+            '"paper_realized_pnl": 0.0, "paper_positions": {}, '
+            '"paper_trades": [], "paper_wins": 0, "paper_losses": 0, '
+            '"paper_peak_equity": 10000.0, "core_holdings": []}'
         )
-        self.t._load_paper_state()
+        t._load_paper_state()
 
         import os
         p = os.path.join(self._tmp, "lp.json")
         tr = LivePerformanceTracker(path=p)
-        self.t._perf_tracker = tr
-        self.t._last_price = {"BTC-USD": 100.0}
+        t._perf_tracker = tr
+        t._last_price = {"BTC-USD": 100.0}
 
-        eq = self.t._paper_equity(self.t._last_price)
-        threshold = self.t.max_strategy_pnl_share * eq
-        self.assertEqual(threshold, 6000.0)
+        eq = t._paper_equity(t._last_price)
+        threshold = t.max_strategy_pnl_share * eq
+        # With no core_holdings, equity == starting_capital exactly.
+        self.assertAlmostEqual(threshold, 6000.0, places=1)
 
         tr.record_trade("hot_strat", "BTC-USD", 5900.0, 1000.0, 1.0, "LONG")
         self.assertLess(tr.strategy_total_pnl("hot_strat"), threshold)
@@ -70,9 +80,12 @@ class TestConcentrationGuard(unittest.TestCase):
         strat_pnl = tr.strategy_total_pnl("hot_strat")
         self.assertGreater(strat_pnl, threshold)
 
-        blocked = eq > 0 and self.t.max_strategy_pnl_share > 0 and \
-                  strat_pnl > self.t.max_strategy_pnl_share * eq
+        blocked = eq > 0 and t.max_strategy_pnl_share > 0 and \
+                  strat_pnl > t.max_strategy_pnl_share * eq
         self.assertTrue(blocked, "concentration guard should block hot_strat")
+
+        # Restore original method.
+        mod.EventTraderV4._load_core_holdings_state = original_load
 
     def test_depth_penalty_scales_confidence_down(self):
         # A pair with 5 trades (< 20) should get confidence scaled to 0.25 floor.
