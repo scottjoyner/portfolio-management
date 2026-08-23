@@ -188,3 +188,9 @@ scripts/experiments/
 
 # runtime rehab state (hard-killed strategy cooldown clocks)
 data/bot_killed_strategies.json
+
+# --- Local test venv / tooling debris ---
+.venv_test/
+pnpm-lock.yaml
+analytics
+data/hermes_agent_ledger.lock
