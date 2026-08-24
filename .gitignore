@@ -194,3 +194,9 @@ data/bot_killed_strategies.json
 pnpm-lock.yaml
 analytics
 data/hermes_agent_ledger.lock
+
+# --- Runtime state (issue #32): never track generated data ---
+data/*.json
+data/*.jsonl
+data/approvals_inbox/
+!data/.gitkeep
