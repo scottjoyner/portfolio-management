@@ -1,0 +1,5 @@
+#!/bin/bash
+# Pre-commit hook: block commits that add generated runtime state (issue #32).
+# Install:  ln -sf ../../scripts/pre-commit-runtime-state .git/hooks/pre-commit
+#           (or copy into .git/hooks/pre-commit and chmod +x)
+exec bash "$(dirname "$0")/check_no_runtime_state.sh"
