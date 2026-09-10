@@ -8,6 +8,8 @@ export const DEFAULT_MARKET_DATA_MAX_AGE_MS = 120_000;
 export const DEFAULT_MIN_EDGE_BPS = 1;
 
 const PENDING_EXECUTION_STATUSES = new Set(['draft', 'approved', 'submitted', 'partially_filled']);
+const CASH_SIDES = new Set(['buy', 'yes', 'no']);
+const MARKET_READY_STATUSES = new Set(['connected', 'active', 'ready']);
 
 function finite(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
@@ -30,23 +32,21 @@ function unique(values = []) {
   return [...new Set(values.filter(Boolean))];
 }
 
-function clone(value) {
-  if (value === undefined) return undefined;
-  if (typeof structuredClone === 'function') return structuredClone(value);
-  return JSON.parse(JSON.stringify(value));
-}
-
 function latestByTimestamp(rows = []) {
   return [...rows].sort((a, b) => (timestamp(b?.timestamp ?? b?.asOf ?? b?.updatedAt ?? b?.createdAt) || 0)
     - (timestamp(a?.timestamp ?? a?.asOf ?? a?.updatedAt ?? a?.createdAt) || 0))[0] || null;
 }
 
-function paperVenueCompatible(intentVenue, marketVenue, mode) {
-  const left = String(intentVenue || '').toLowerCase();
-  const right = String(marketVenue || '').toLowerCase();
+function normalizeVenue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function paperVenueCompatible(intentVenue, sourceVenue, mode) {
+  const left = normalizeVenue(intentVenue);
+  const right = normalizeVenue(sourceVenue);
   if (!left || !right || left === right) return true;
   if (!['paper', 'demo'].includes(String(mode || '').toLowerCase())) return false;
-  if (left === 'paper' || left === 'demo') return true;
+  if (left === 'paper' || left === 'demo' || right === 'paper' || right === 'demo') return true;
   const normalize = value => value.replace(/-paper$|-demo$/, '');
   return normalize(left) === normalize(right);
 }
@@ -60,24 +60,77 @@ function marketReferencePrice(snapshot) {
   return null;
 }
 
-function requestedQuantity(intent) {
-  const direct = finite(intent?.quantity, null);
-  if (direct != null && direct > 0) return direct;
-  const quantities = (intent?.orders || []).map(order => finite(order?.quantity, null));
-  if (quantities.length && quantities.every(value => value != null && value > 0)) {
-    return quantities.reduce((sum, value) => sum + value, 0);
+function deriveOrderBundle(intent = {}, marketPrice = null) {
+  const orders = Array.isArray(intent.orders) ? intent.orders : [];
+  const first = orders[0] || {};
+  const symbol = intent.symbol || first.symbol || null;
+  const venue = intent.venue || first.venue || null;
+  const side = String(intent.side || first.side || '').toLowerCase();
+  const invalid = [];
+  const facts = [];
+  let quantity = 0;
+  let orderNotionalUsd = 0;
+
+  if (!orders.length) invalid.push('order_bundle_empty');
+  for (let index = 0; index < orders.length; index += 1) {
+    const order = orders[index] || {};
+    const orderSymbol = order.symbol || symbol;
+    const orderVenue = order.venue || venue;
+    const orderSide = String(order.side || side || '').toLowerCase();
+    const orderQuantity = finite(order.quantity, null);
+    if (symbol && orderSymbol && orderSymbol !== symbol) invalid.push('order_bundle_mixed_symbol');
+    if (side && orderSide && orderSide !== side) invalid.push('order_bundle_mixed_side');
+    if (venue && orderVenue && normalizeVenue(orderVenue) !== normalizeVenue(venue)) invalid.push('order_bundle_mixed_venue');
+    if (orderQuantity == null || orderQuantity <= 0) invalid.push(`order_quantity:${index}`);
+
+    const requestedPrice = finite(order.price ?? intent.entryPrice, null);
+    let conservativePrice = marketPrice;
+    if (CASH_SIDES.has(orderSide) && requestedPrice != null && requestedPrice > 0) {
+      conservativePrice = conservativePrice == null ? requestedPrice : Math.max(conservativePrice, requestedPrice);
+    } else if (conservativePrice == null && requestedPrice != null && requestedPrice > 0) {
+      conservativePrice = requestedPrice;
+    }
+    if (conservativePrice == null || conservativePrice <= 0) invalid.push(`order_reference_price:${index}`);
+
+    const notional = orderQuantity != null && orderQuantity > 0 && conservativePrice != null && conservativePrice > 0
+      ? orderQuantity * conservativePrice
+      : null;
+    if (notional != null) {
+      quantity += orderQuantity;
+      orderNotionalUsd += notional;
+    }
+    facts.push({
+      id: order.id ?? null,
+      symbol: orderSymbol ?? null,
+      venue: orderVenue ?? null,
+      side: orderSide || null,
+      quantity: orderQuantity,
+      requestedPrice,
+      conservativePrice,
+      notionalUsd: notional,
+    });
   }
-  return null;
+
+  return {
+    symbol,
+    venue,
+    side,
+    quantity: quantity > 0 ? quantity : null,
+    orderNotionalUsd: orderNotionalUsd > 0 ? orderNotionalUsd : null,
+    orders: facts,
+    invalid: unique(invalid).sort(),
+  };
 }
 
-function pendingExecutionNotional(execution, marketPrice) {
+function pendingExecutionNotional(execution, marketPrice, targetSymbol) {
   const direct = finite(execution?.notional ?? execution?.notionalUsd, null);
   if (direct != null && direct >= 0) return direct;
   const orders = Array.isArray(execution?.orders) ? execution.orders : [];
   let total = 0;
   for (const order of orders) {
     const quantity = finite(order?.quantity, null);
-    const price = finite(order?.price, marketPrice);
+    const sameSymbol = (order?.symbol || execution?.symbol || null) === targetSymbol;
+    const price = finite(order?.price ?? execution?.entryPrice, sameSymbol ? marketPrice : null);
     if (quantity == null || quantity < 0 || price == null || price <= 0) return null;
     total += quantity * price;
   }
@@ -88,11 +141,15 @@ function positionQuantity(position) {
   return finite(position?.quantity ?? position?.qty, null);
 }
 
-function executionMatchesIntent(execution, intent, excludeExecutionId) {
-  if (!execution || execution.id === excludeExecutionId) return false;
-  if (intent?.symbol && execution.symbol && execution.symbol !== intent.symbol) return false;
-  if (intent?.accountId && execution.accountId && execution.accountId !== intent.accountId) return false;
-  return true;
+function executionSameAccount(execution, accountId) {
+  if (!execution) return false;
+  if (!accountId) return true;
+  return execution.accountId === accountId;
+}
+
+function executionSameSymbol(execution, symbol) {
+  if (!execution || !symbol) return true;
+  return execution.symbol === symbol || (!execution.symbol && (execution.orders || []).some(order => order?.symbol === symbol));
 }
 
 function sourceRecord(sourceType, sourceId, observedAt, value, extra = {}) {
@@ -116,7 +173,11 @@ function reconciliationState(state, intent, excludeExecutionId, observedAt) {
     };
   }
 
-  const relevant = state.executions.filter(execution => executionMatchesIntent(execution, intent, excludeExecutionId));
+  const relevant = state.executions.filter(execution => {
+    if (!execution || execution.id === excludeExecutionId) return false;
+    if (intent?.accountId && execution.accountId) return execution.accountId === intent.accountId;
+    return executionSameSymbol(execution, intent?.symbol);
+  });
   const relevantIds = new Set(relevant.map(row => row.id).filter(Boolean));
   const issues = [];
 
@@ -181,7 +242,11 @@ function economicEdgeState(state, intent, orderNotionalUsd, nowMs, policy) {
       minEdgeBps: 0,
       netExecutableEdgeUsd: null,
       decisionId: null,
+      forecastId: null,
+      executionCostSnapshotId: null,
+      modelQuoteId: null,
       blockers: [],
+      expiryCandidates: [],
       sources: [sourceRecord('risk_policy', 'manual-paper-edge-policy', new Date(nowMs).toISOString(), { edgeRequired: false })],
     };
   }
@@ -190,6 +255,7 @@ function economicEdgeState(state, intent, orderNotionalUsd, nowMs, policy) {
   const decision = (state?.economicDecisions || []).find(row => row?.id === intent?.economicDecisionId) || null;
   if (!decision) blockers.push('economic_decision_required');
   if (decision && decision.executionAllowed !== true) blockers.push('economic_decision_execution_not_allowed');
+  if (decision?.supersededByReconciliation === true) blockers.push('economic_decision_superseded');
   if (decision?.symbol && intent?.symbol && decision.symbol !== intent.symbol) blockers.push('economic_decision_symbol_mismatch');
   if (intent?.forecastId && decision?.forecastId !== intent.forecastId) blockers.push('economic_decision_forecast_mismatch');
   if (intent?.executionCostSnapshotId && decision?.executionCostSnapshotId !== intent.executionCostSnapshotId) blockers.push('economic_decision_cost_snapshot_mismatch');
@@ -205,16 +271,34 @@ function economicEdgeState(state, intent, orderNotionalUsd, nowMs, policy) {
     ? (state?.modelUsageLedger || []).find(row => row?.id === decision.modelQuoteId) || null
     : null;
 
+  const forecastExpiry = timestamp(forecast?.expiresAt);
+  const executionCostExpiry = timestamp(executionCost?.validUntil);
   if (!forecast) blockers.push('economic_forecast_required');
   else {
-    if (forecast.status !== 'valid' || (timestamp(forecast.expiresAt) || 0) < nowMs) blockers.push('economic_forecast_stale');
+    if (forecast.status !== 'valid' || forecastExpiry == null || forecastExpiry < nowMs) blockers.push('economic_forecast_stale');
     if (forecast.symbol && intent?.symbol && forecast.symbol !== intent.symbol) blockers.push('economic_forecast_symbol_mismatch');
   }
   if (!executionCost) blockers.push('economic_execution_cost_required');
-  else if ((timestamp(executionCost.validUntil) || 0) < nowMs) blockers.push('economic_execution_cost_stale');
+  else {
+    if (executionCostExpiry == null || executionCostExpiry < nowMs) blockers.push('economic_execution_cost_stale');
+    if (executionCost.symbol && intent?.symbol && executionCost.symbol !== intent.symbol) blockers.push('economic_execution_cost_symbol_mismatch');
+  }
+
+  const expiryCandidates = [forecastExpiry, executionCostExpiry].filter(Number.isFinite);
   if (decision?.modelQuoteId) {
     if (!quote) blockers.push('model_quote_required');
-    else if (quote.status !== 'reconciled') blockers.push('model_usage_not_reconciled');
+    else {
+      if (quote.status !== 'reconciled') blockers.push('model_usage_not_reconciled');
+      const decisionCreatedAt = timestamp(decision.createdAt);
+      const quoteReconciledAt = timestamp(quote.reconciledAt);
+      if (quoteReconciledAt != null && (decisionCreatedAt == null || decisionCreatedAt < quoteReconciledAt)) {
+        blockers.push('economic_decision_requires_post_reconciliation_refresh');
+      }
+      const quoteRequestedAt = timestamp(quote.requestedAt);
+      const quoteMaxAgeSeconds = Math.max(1, finite(state?.config?.maximumModelPricingAgeSeconds, 86400));
+      if (quoteRequestedAt == null || quoteRequestedAt < nowMs - quoteMaxAgeSeconds * 1000) blockers.push('model_quote_stale');
+      else expiryCandidates.push(quoteRequestedAt + quoteMaxAgeSeconds * 1000);
+    }
   }
 
   const netExecutableEdgeUsd = finite(decision?.netExecutableEdgeUsd, null);
@@ -244,6 +328,7 @@ function economicEdgeState(state, intent, orderNotionalUsd, nowMs, policy) {
     executionCostSnapshotId: executionCost?.id || null,
     modelQuoteId: quote?.id || null,
     blockers: unique(blockers),
+    expiryCandidates,
     sources,
   };
 }
@@ -252,13 +337,8 @@ function validUntilForSources(nowMs, providerObservedMs, maxProviderAgeMs, marke
   const candidates = [nowMs + 30_000];
   if (providerObservedMs != null) candidates.push(providerObservedMs + maxProviderAgeMs);
   if (marketObservedMs != null) candidates.push(marketObservedMs + maxMarketAgeMs);
-  const sourceExpiries = edgeState?.required ? [
-    edgeState?.forecast?.expiresAt,
-    edgeState?.executionCost?.validUntil,
-  ] : [];
-  for (const value of sourceExpiries) {
-    const ms = timestamp(value);
-    if (ms != null) candidates.push(ms);
+  for (const value of edgeState?.expiryCandidates || []) {
+    if (Number.isFinite(value)) candidates.push(value);
   }
   return new Date(Math.min(...candidates.filter(Number.isFinite))).toISOString();
 }
@@ -280,6 +360,7 @@ export function buildCapitalRiskSnapshot({
   const maxMarketDataAgeMs = Math.max(1, finite(state?.config?.maxOrderbookStalenessMs, finite(policy.maxMarketDataAgeMs, DEFAULT_MARKET_DATA_MAX_AGE_MS)));
   const missingRequiredState = [];
   const staleRequiredState = [];
+  const invalidRequiredState = [];
   const derivationReasons = [];
   const sources = [];
 
@@ -289,28 +370,28 @@ export function buildCapitalRiskSnapshot({
 
   const intent = tradeIntentEnvelope || {};
   const accountId = intent.accountId || null;
-  const symbol = intent.symbol || intent.orders?.[0]?.symbol || null;
-  const venue = intent.venue || intent.orders?.[0]?.venue || null;
   const mode = String(intent.mode || 'paper').toLowerCase();
-  const side = String(intent.side || intent.orders?.[0]?.side || '').toLowerCase();
-  const quantity = requestedQuantity(intent);
+  const provisionalSymbol = intent.symbol || intent.orders?.[0]?.symbol || null;
+  const provisionalVenue = intent.venue || intent.orders?.[0]?.venue || null;
   if (!accountId) missingRequiredState.push('account_id');
-  if (!symbol) missingRequiredState.push('symbol');
-  if (quantity == null || quantity <= 0) missingRequiredState.push('order_quantity');
+  if (!provisionalSymbol) missingRequiredState.push('symbol');
 
   const account = (state?.accounts || []).find(row => row?.id === accountId) || null;
   const accountCash = finite(account?.cash, null);
   const accountNav = finite(account?.nav, null);
+  const accountUpdatedAt = iso(account?.updatedAt ?? account?.asOf ?? account?.timestamp);
   if (!account) missingRequiredState.push('account');
   if (account && accountCash == null) missingRequiredState.push('account_cash');
-  if (account && !iso(account.updatedAt ?? account.asOf ?? account.timestamp)) missingRequiredState.push('account_timestamp');
-  if (account) sources.push(sourceRecord('account', account.id, account.updatedAt ?? account.asOf ?? account.timestamp ?? observedAt, {
+  if (account && accountUpdatedAt == null) missingRequiredState.push('account_timestamp');
+  if (account && String(account.status || '').toLowerCase() !== 'connected') invalidRequiredState.push('account_not_connected');
+  if (account && String(account.currency || '').toUpperCase() !== 'USD') invalidRequiredState.push('account_currency_not_usd');
+  if (account) sources.push(sourceRecord('account', account.id, accountUpdatedAt ?? observedAt, {
     id: account.id,
     status: account.status ?? null,
     currency: account.currency ?? null,
     cash: accountCash,
     nav: accountNav,
-    updatedAt: iso(account.updatedAt ?? account.asOf ?? account.timestamp),
+    updatedAt: accountUpdatedAt,
   }));
 
   const killSwitch = state?.killSwitch;
@@ -323,14 +404,19 @@ export function buildCapitalRiskSnapshot({
     updatedAt: killSwitchUpdatedAt,
   }));
 
-  const snapshots = (state?.marketDataSnapshots || []).filter(row => row?.symbol === symbol && paperVenueCompatible(venue, row?.venue, mode));
-  const market = latestByTimestamp(snapshots);
+  const symbolMarketSnapshots = (state?.marketDataSnapshots || []).filter(row => row?.symbol === provisionalSymbol);
+  const venueMarketSnapshots = symbolMarketSnapshots.filter(row => paperVenueCompatible(provisionalVenue, row?.venue, mode));
+  if (symbolMarketSnapshots.length && !venueMarketSnapshots.length) invalidRequiredState.push('market_venue_mismatch');
+  const market = latestByTimestamp(venueMarketSnapshots);
   const marketObservedMs = timestamp(market?.timestamp ?? market?.asOf ?? market?.createdAt);
   const marketAgeMs = marketObservedMs == null ? null : Math.max(0, nowMs - marketObservedMs);
   const marketPrice = marketReferencePrice(market);
   if (!market || marketObservedMs == null || marketPrice == null) missingRequiredState.push('market_data');
-  else if (marketObservedMs > nowMs + 1000 || marketAgeMs > maxMarketDataAgeMs) staleRequiredState.push('market_data');
-  if (market) sources.push(sourceRecord('market_data', market.id || `${symbol}:${venue || 'any'}`, iso(market?.timestamp ?? market?.asOf ?? market?.createdAt), {
+  else {
+    if (marketObservedMs > nowMs + 1000 || marketAgeMs > maxMarketDataAgeMs) staleRequiredState.push('market_data');
+    if (!MARKET_READY_STATUSES.has(String(market.status || '').toLowerCase())) invalidRequiredState.push('market_data_not_ready');
+  }
+  if (market) sources.push(sourceRecord('market_data', market.id || `${provisionalSymbol}:${provisionalVenue || 'any'}`, iso(market?.timestamp ?? market?.asOf ?? market?.createdAt), {
     id: market.id ?? null,
     symbol: market.symbol ?? null,
     venue: market.venue ?? null,
@@ -342,38 +428,39 @@ export function buildCapitalRiskSnapshot({
     timestamp: iso(market?.timestamp ?? market?.asOf ?? market?.createdAt),
   }));
 
-  const entryPrice = finite(intent.entryPrice ?? intent.orders?.[0]?.price, null);
-  const riskUnitPrice = marketPrice == null
-    ? entryPrice
-    : side === 'buy' && entryPrice != null
-      ? Math.max(marketPrice, entryPrice)
-      : marketPrice;
-  const orderNotionalUsd = quantity != null && riskUnitPrice != null && riskUnitPrice > 0
-    ? quantity * riskUnitPrice
-    : null;
+  const orderBundle = deriveOrderBundle(intent, marketPrice);
+  invalidRequiredState.push(...orderBundle.invalid);
+  const symbol = orderBundle.symbol || provisionalSymbol;
+  const venue = orderBundle.venue || provisionalVenue;
+  const side = orderBundle.side;
+  const quantity = orderBundle.quantity;
+  const orderNotionalUsd = orderBundle.orderNotionalUsd;
+  if (quantity == null || quantity <= 0) missingRequiredState.push('order_quantity');
   if (orderNotionalUsd == null || orderNotionalUsd <= 0) missingRequiredState.push('order_notional');
 
-  const pendingExecutions = (state?.executions || []).filter(execution => (
+  const pendingAccountExecutions = (state?.executions || []).filter(execution => (
     PENDING_EXECUTION_STATUSES.has(String(execution?.status || '').toLowerCase())
-    && executionMatchesIntent(execution, { accountId, symbol }, excludeExecutionId)
+    && execution?.id !== excludeExecutionId
+    && executionSameAccount(execution, accountId)
   ));
+  const pendingSymbolExecutions = pendingAccountExecutions.filter(execution => executionSameSymbol(execution, symbol));
   let pendingExposureUsd = 0;
   let pendingBuyExposureUsd = 0;
   let pendingSellQuantity = 0;
-  for (const execution of pendingExecutions) {
-    const amount = pendingExecutionNotional(execution, marketPrice);
+  for (const execution of pendingAccountExecutions) {
+    const amount = pendingExecutionNotional(execution, marketPrice, symbol);
     if (amount == null) {
       missingRequiredState.push(`pending_execution_notional:${execution.id || 'unknown'}`);
       continue;
     }
-    pendingExposureUsd += amount;
     const executionSide = String(execution.side || execution.orders?.[0]?.side || '').toLowerCase();
-    if (executionSide === 'buy') pendingBuyExposureUsd += amount;
-    if (executionSide === 'sell') {
+    if (CASH_SIDES.has(executionSide)) pendingBuyExposureUsd += amount;
+    if (executionSide === 'sell' && executionSameSymbol(execution, symbol)) {
       const pendingQuantity = finite(execution.quantity, null)
         ?? (execution.orders || []).reduce((sum, order) => sum + Math.max(0, finite(order?.quantity, 0)), 0);
       pendingSellQuantity += Math.max(0, pendingQuantity || 0);
     }
+    if (executionSameSymbol(execution, symbol)) pendingExposureUsd += amount;
   }
 
   const positions = (state?.positions || []).filter(position => {
@@ -406,15 +493,23 @@ export function buildCapitalRiskSnapshot({
   const projectedExposureUsd = orderNotionalUsd == null ? null : positionExposureUsd + pendingExposureUsd + orderNotionalUsd;
   const availableCashAfterPendingUsd = accountCash == null ? null : accountCash - pendingBuyExposureUsd;
   let balanceSufficient = false;
-  if (side === 'buy') {
+  if (CASH_SIDES.has(side)) {
     balanceSufficient = availableCashAfterPendingUsd != null && orderNotionalUsd != null && availableCashAfterPendingUsd >= orderNotionalUsd;
   } else if (side === 'sell') {
     balanceSufficient = sellAccountLineageComplete && quantity != null && positionQuantityTotal - pendingSellQuantity >= quantity;
+  } else if (side) {
+    invalidRequiredState.push('order_side_unsupported');
   }
 
-  const instrument = (state?.instruments || []).find(row => row?.symbol === symbol) || null;
+  const symbolInstruments = Array.isArray(state?.instruments) ? state.instruments.filter(row => row?.symbol === symbol) : [];
   if (!Array.isArray(state?.instruments)) missingRequiredState.push('instrument_catalog');
+  const instrument = symbolInstruments.find(row => paperVenueCompatible(venue, row?.venue, mode)) || null;
+  if (!instrument) {
+    if (symbolInstruments.length) invalidRequiredState.push('instrument_venue_mismatch');
+    else missingRequiredState.push('instrument');
+  }
   const pairApproved = Boolean(instrument && String(instrument.status || '').toLowerCase() === 'active');
+  if (instrument && !pairApproved) invalidRequiredState.push('instrument_not_active');
   if (instrument) sources.push(sourceRecord('instrument', instrument.id || instrument.symbol, observedAt, instrument));
   const complianceApproved = ['paper', 'demo'].includes(mode) && pairApproved;
 
@@ -423,7 +518,7 @@ export function buildCapitalRiskSnapshot({
   if (reconciliation.source) sources.push(reconciliation.source);
 
   const edgeState = economicEdgeState(state, intent, orderNotionalUsd || 0, nowMs, policy);
-  if (!edgeState.verified) missingRequiredState.push(...edgeState.blockers.map(reason => `edge_lineage:${reason}`));
+  if (!edgeState.verified) invalidRequiredState.push(...edgeState.blockers.map(reason => `edge_lineage:${reason}`));
   sources.push(...edgeState.sources);
 
   const riskInputs = {
@@ -466,6 +561,7 @@ export function buildCapitalRiskSnapshot({
     observedAt: new Date(nowMs).toISOString(),
     validUntil,
     sources,
+    orderBundle,
     accountState: {
       found: Boolean(account),
       status: account?.status ?? null,
@@ -481,7 +577,8 @@ export function buildCapitalRiskSnapshot({
       accountLineageComplete: sellAccountLineageComplete,
     },
     pendingExecutionState: {
-      executionIds: pendingExecutions.map(row => row.id).filter(Boolean).sort(),
+      accountExecutionIds: pendingAccountExecutions.map(row => row.id).filter(Boolean).sort(),
+      symbolExecutionIds: pendingSymbolExecutions.map(row => row.id).filter(Boolean).sort(),
       pendingExposureUsd,
       pendingBuyExposureUsd,
       pendingSellQuantity,
@@ -505,15 +602,16 @@ export function buildCapitalRiskSnapshot({
       maxAgeMs: maxMarketDataAgeMs,
       referencePrice: marketPrice,
       source: market?.source ?? null,
+      status: market?.status ?? null,
       fresh: marketObservedMs != null && marketAgeMs <= maxMarketDataAgeMs,
     },
     edgeState: {
       required: edgeState.required,
       verified: edgeState.verified,
       economicDecisionId: edgeState.decisionId,
-      forecastId: edgeState.forecastId ?? null,
-      executionCostSnapshotId: edgeState.executionCostSnapshotId ?? null,
-      modelQuoteId: edgeState.modelQuoteId ?? null,
+      forecastId: edgeState.forecastId,
+      executionCostSnapshotId: edgeState.executionCostSnapshotId,
+      modelQuoteId: edgeState.modelQuoteId,
       netExecutableEdgeUsd: edgeState.netExecutableEdgeUsd,
       edgeBps: edgeState.edgeBps,
       minEdgeBps: edgeState.minEdgeBps,
@@ -527,6 +625,7 @@ export function buildCapitalRiskSnapshot({
     riskInputs,
     missingRequiredState: unique(missingRequiredState).sort(),
     staleRequiredState: unique(staleRequiredState).sort(),
+    invalidRequiredState: unique(invalidRequiredState).sort(),
     derivationReasons: unique(derivationReasons).sort(),
   };
   return { ...core, snapshotHash: stableHash(core) };
@@ -554,6 +653,7 @@ export function verifyCapitalRiskSnapshot(snapshot, { tradeIntentHash, now = new
   if (!snapshot.riskInputs || typeof snapshot.riskInputs !== 'object') reasons.push('capital_risk_inputs_required');
   if (!Array.isArray(snapshot.missingRequiredState)) reasons.push('capital_risk_missing_state_invalid');
   if (!Array.isArray(snapshot.staleRequiredState)) reasons.push('capital_risk_stale_state_invalid');
+  if (!Array.isArray(snapshot.invalidRequiredState)) reasons.push('capital_risk_invalid_state_invalid');
   return { ok: reasons.length === 0, reasons: unique(reasons) };
 }
 
@@ -562,6 +662,7 @@ export function evaluateCapitalRiskSnapshot(snapshot, options = {}) {
   const reasons = [...verification.reasons];
   for (const field of snapshot?.missingRequiredState || []) reasons.push(`capital_risk_missing:${field}`);
   for (const field of snapshot?.staleRequiredState || []) reasons.push(`capital_risk_stale:${field}`);
+  for (const field of snapshot?.invalidRequiredState || []) reasons.push(`capital_risk_invalid:${field}`);
   if (snapshot?.riskInputs) {
     const evaluated = evaluateRisk(snapshot.riskInputs);
     reasons.push(...evaluated.reasons);
@@ -576,4 +677,3 @@ export function evaluateCapitalRiskSnapshot(snapshot, options = {}) {
     policyVersion: snapshot?.policyVersion || CAPITAL_RISK_POLICY_VERSION,
   };
   return { ...core, decisionHash: stableHash(core) };
-}
