@@ -270,6 +270,17 @@ class ChallengerRegistry:
                 "evidence_hash": validation_evidence.get("evidence_hash"),
                 "evidence_schema_version": validation_evidence.get("schema_version"),
             }
+        elif validation_evidence.get("candidate_config") != challenger.get("parameters"):
+            result = {
+                "approved": False,
+                "reasons": ["alpha_validation_candidate_config_mismatch"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": validation_evidence.get("evidence_hash"),
+                "evidence_schema_version": validation_evidence.get("schema_version"),
+            }
         else:
             result = evaluate_challenger_evidence(
                 incumbent_metrics, validation_evidence, thresholds,
@@ -325,6 +336,8 @@ class ChallengerRegistry:
             )
         if evidence.get("candidate_id") != challenger_id:
             raise ValueError("challenger alpha-validation candidate mismatch")
+        if evidence.get("candidate_config") != challenger.get("parameters"):
+            raise ValueError("challenger alpha-validation candidate config mismatch")
         if evidence.get("evidence_hash") != evidence_hash:
             raise ValueError("challenger alpha-validation evidence hash mismatch")
         if challenger.get("evaluation", {}).get("evidence_hash") != evidence_hash:

@@ -193,7 +193,7 @@ def _registry(tmp_path: Path) -> tuple[ChallengerRegistry, dict]:
         lineage=FakeLineage(),
     )
     challenger = registry.propose(
-        {"lookback": 20},
+        {"lookback": 20, "threshold": 0.7},
         rationale="test",
         model_request_id="model-request-1",
     )
@@ -245,6 +245,25 @@ def test_registry_rejects_evidence_for_different_candidate(tmp_path):
     )
     assert result["approved"] is False
     assert result["reasons"] == ["alpha_validation_candidate_mismatch"]
+
+
+def test_registry_rejects_evidence_for_different_candidate_config(tmp_path):
+    registry, challenger = _registry(tmp_path)
+    evidence = _evidence(challenger["id"])
+    evidence["candidate_config"] = {"lookback": 99, "threshold": 0.7}
+    evidence["candidate_config_hash"] = stable_hash(evidence["candidate_config"])
+    evidence.pop("evidence_hash", None)
+    evidence["evidence_hash"] = stable_hash(evidence)
+    valid, reasons = verify_alpha_validation_evidence(evidence)
+    assert valid, reasons
+
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+    )
+    assert result["approved"] is False
+    assert result["reasons"] == ["alpha_validation_candidate_config_mismatch"]
 
 
 def test_registry_rejects_unbound_alpha_evidence(tmp_path):
