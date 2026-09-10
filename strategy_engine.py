@@ -2681,7 +2681,8 @@ def _close_backtest_trade(
         gross = (exit_price - trade.entry_price) / trade.entry_price * 100.0
     else:
         gross = (trade.entry_price - exit_price) / trade.entry_price * 100.0
-    return_pct = gross - (fee_bps / 100.0) * 2.0 * 100.0
+    # fee_bps is per-side basis points; /100 converts bps to percentage points.
+    return_pct = gross - (fee_bps / 100.0) * 2.0
     trade.exit_bar = exit_bar
     trade.exit_price = exit_price
     trade.return_pct = return_pct
