@@ -218,6 +218,8 @@ export async function handleTargetedExecutionRoute({
         strategyId: result.execution?.strategyId || null,
         status: result.execution?.status || null,
         confidenceScore: result.execution?.confidenceScore ?? null,
+        overseerDecision: result.execution?.overseerDecision?.decision || null,
+        tradeIntentHash: result.execution?.tradeIntentHash || null,
       },
       now,
     });
@@ -225,7 +227,17 @@ export async function handleTargetedExecutionRoute({
 
   if (executionApprove) {
     const result = await engine.approve(executionApprove.id);
-    return persistResult({ store, state, result, action: 'execution_approved', now });
+    return persistResult({
+      store,
+      state,
+      result,
+      action: 'execution_approved',
+      payload: {
+        overseerDecision: result.execution?.overseerDecision?.decision || null,
+        tradeIntentHash: result.execution?.tradeIntentHash || null,
+      },
+      now,
+    });
   }
 
   if (executionReject) {
