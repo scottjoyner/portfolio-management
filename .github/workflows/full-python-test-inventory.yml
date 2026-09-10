@@ -131,12 +131,29 @@ jobs:
         set -o pipefail
         site_dir="$(python -c 'import site; print(site.getsitepackages()[0])')"
         cd /tmp
-        PYTHONPATH="$site_dir:${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}/trading_system" \
-          python -m pytest \
-          "${GITHUB_WORKSPACE}/tests/test_canonical_replay.py" \
-          "${GITHUB_WORKSPACE}/tests/coverage/backtest_framework/test_backtest_correctness.py" \
-          --import-mode=importlib \
-          -q | tee "${GITHUB_WORKSPACE}/canonical-replay-rust-results.txt"
+        PYTHONPATH="$site_dir" python - <<'PY' | tee "${GITHUB_WORKSPACE}/canonical-replay-rust-results.txt"
+        import os
+        import pathlib
+        import rust_core
+        import sys
+        import pytest
+
+        workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+        assert rust_core.RUST_CORE_AVAILABLE is True
+        assert callable(rust_core.backtest_strategy_py)
+        assert "site-packages" in str(pathlib.Path(rust_core.__file__).resolve())
+
+        # Keep the already-certified installed native package cached in
+        # sys.modules, then expose the checkout for strategy/replay source.
+        sys.path.insert(1, str(workspace))
+        sys.path.insert(2, str(workspace / "trading_system"))
+        raise SystemExit(pytest.main([
+            str(workspace / "tests/test_canonical_replay.py"),
+            str(workspace / "tests/coverage/backtest_framework/test_backtest_correctness.py"),
+            "--import-mode=importlib",
+            "-q",
+        ]))
+        PY
     - name: Upload canonical replay certification evidence
       if: always()
       uses: actions/upload-artifact@v4
