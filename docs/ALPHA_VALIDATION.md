@@ -6,6 +6,8 @@
 
 This slice introduces a canonical evidence boundary. A challenger can no longer become promotion-eligible through metric booleans alone.
 
+It also repairs an existing walk-forward correctness defect: `scripts/backtest_framework/walk_forward.py` previously returned `n_folds` copies of the same final holdout. That meant a report such as `oos_passed=4` could represent the same OOS interval evaluated four times. The framework now uses distinct chronological expanding OOS intervals.
+
 ## Safety boundary
 
 This work does **not** enable live trading or add broker authority.
@@ -18,7 +20,7 @@ candidate strategy/config
   -> leakage-safe walk-forward folds
   -> realized OOS return observations
   -> alpha_validation.py
-  -> immutable AlphaValidationEvidence
+  -> AlphaValidationEvidence
   -> challenger_manager.py
   -> approved/rejected challenger
   -> canary metadata only
@@ -39,7 +41,18 @@ candidate strategy/config
 
 `expanding=True` creates anchored expanding windows. `expanding=False` keeps a fixed rolling training window.
 
-The split generator does not itself run a strategy. Upstream replay/backtest code must obey these boundaries exactly and pass only realized OOS trade returns into evidence generation.
+The existing backtest framework now delegates its fold boundaries to this canonical splitter. With 1,000 observations, four folds, and no gap, the framework creates:
+
+```text
+train 0:200 -> test 200:400
+train 0:400 -> test 400:600
+train 0:600 -> test 600:800
+train 0:800 -> test 800:1000
+```
+
+Earlier OOS intervals can legitimately become training history for a later fold because they are in the past at that later evaluation time. A fold may never train on its own test interval or future observations.
+
+The split generator itself does not run a strategy. Replay/backtest code must obey these boundaries exactly and pass only realized OOS trade returns into evidence generation.
 
 ## Evidence integrity
 
@@ -61,6 +74,8 @@ The artifact contains provenance for:
 - final evidence hash.
 
 Changing any hashed field without rebuilding the artifact causes `verify_alpha_validation_evidence()` to fail.
+
+For an approved challenger, the registry persists both the complete validation evidence artifact and its hash. Promotion re-verifies the complete artifact, candidate binding, evidence hash, and evaluation-to-evidence hash binding before writing canary configuration. A registry edit that alters previously approved evidence therefore fails closed at promotion time.
 
 ## Initial generated metrics
 
@@ -108,9 +123,18 @@ Before metric evaluation:
 3. the evidence `candidate_id` must match the proposed challenger ID;
 4. canonical evidence is mapped to the existing metric-gate contract;
 5. detailed validation failure reasons are preserved;
-6. the evidence hash is persisted into challenger evaluation state.
+6. approved evidence and its hash are persisted with the challenger.
 
-`promote()` additionally requires the challenger to carry a verified alpha-validation evidence hash and copies that hash into canary configuration and promotion lineage.
+Before canary promotion:
+
+1. challenger and recorded evaluation must still be approved;
+2. persisted evidence is re-verified from its full contents;
+3. candidate ID must still match the challenger;
+4. persisted evidence hash must equal the artifact hash;
+5. recorded evaluation hash must equal the same evidence hash;
+6. only then is canary configuration written.
+
+The canary configuration and promotion lineage carry the verified evidence hash.
 
 ## Default evidence policy
 
@@ -136,13 +160,13 @@ Passing alpha evidence therefore does not automatically mean a challenger beats 
 
 Still required before this becomes a complete scientific-validation system:
 
-1. Wire the split contract into a canonical historical replay runner.
+1. Wire canonical replay output to realized per-trade OOS returns automatically.
 2. Generate parameter stability from actual neighborhood sweeps.
 3. Add multiple-testing / selection-bias correction across candidate searches.
 4. Add block/bootstrap methods for serially correlated returns.
 5. Add explicit asset/session/regime concentration metrics.
 6. Add empirical slippage/latency distributions from shadow/live executions.
-7. Add immutable storage/indexing for evidence artifacts, rather than only carrying the evidence hash in challenger state.
+7. Move complete evidence artifacts to an append-only/immutable evidence store; the current registry persistence is integrity-checked but not externally immutable.
 8. Add source/dataset snapshot tooling that produces the supplied provenance hashes.
 9. Add regime-labelled fold construction where appropriate.
 10. Add explicit final holdout rules so agents cannot repeatedly optimize against the terminal test set.
