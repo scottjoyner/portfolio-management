@@ -207,6 +207,17 @@ def test_registry_fails_closed_without_alpha_evidence(tmp_path):
         registry.promote(challenger["id"])
 
 
+def test_registry_rejects_non_object_evidence(tmp_path):
+    registry, challenger = _registry(tmp_path)
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=["not", "evidence"],
+    )
+    assert result["approved"] is False
+    assert "alpha_validation_evidence_invalid:evidence_not_object" in result["reasons"]
+
+
 def test_registry_rejects_evidence_for_different_candidate(tmp_path):
     registry, challenger = _registry(tmp_path)
     result = registry.evaluate(
@@ -227,9 +238,31 @@ def test_registry_canary_carries_verified_evidence_hash(tmp_path):
         validation_evidence=evidence,
     )
     assert result["approved"] is True, result["reasons"]
+    stored = registry.load()["challengers"][0]
+    assert stored["alpha_validation_evidence"] == evidence
+    assert stored["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
+
     config = registry.promote(challenger["id"], canary_fraction=0.05)
     assert config["deployment"] == "canary"
     assert config["canary_fraction"] == 0.05
     assert config["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
     persisted = json.loads((tmp_path / "active.json").read_text())
     assert persisted["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
+
+
+def test_registry_reverifies_persisted_evidence_at_promotion(tmp_path):
+    registry, challenger = _registry(tmp_path)
+    evidence = _evidence(challenger["id"])
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+    )
+    assert result["approved"] is True
+
+    state = registry.load()
+    state["challengers"][0]["alpha_validation_evidence"]["net_pnl_after_cost_usd"] = 9_999_999.0
+    registry.save(state)
+
+    with pytest.raises(ValueError, match="evidence is invalid"):
+        registry.promote(challenger["id"])
