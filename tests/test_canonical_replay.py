@@ -113,6 +113,7 @@ def test_canonical_replay_trade_returns_match_rust_backtester():
             lows=lows,
             warmup=21,
             fee_bps=10.0,
+            min_trades=1,
         )
         assert verdict is not None
         assert verdict.total_trades == len(returns)

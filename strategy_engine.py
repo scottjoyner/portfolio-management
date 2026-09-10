@@ -2715,6 +2715,7 @@ def backtest_strategy(
             strategy_name, currency, closes, volumes,
             highs=highs, lows=lows, warmup=warmup,
             opens=opens, fee_bps=fee_bps, max_hold_bars=max_hold_bars,
+            min_trades=min_trades,
         )
         if rust_result is not None:
             return rust_result
@@ -2747,6 +2748,7 @@ def backtest_strategy(
     needs_vol = strategy_name in VOLUME_STRATEGIES
 
     for i in range(warmup, len(closes)):
+        _clear_cache()
         bar_closes = closes[: i + 1]
         bar_volumes = volumes[: i + 1] if volumes else []
         bar_highs = highs[: i + 1] if highs and needs_hl else None
@@ -2792,11 +2794,11 @@ def backtest_strategy(
         _close_backtest_trade(open_trade, closes[-1], len(closes) - 1, trades, equity, fee_bps)
         peak = max(peak, equity[-1])
 
-    if len(trades) < min_trades:
+    if not trades:
         return BacktestVerdict(
             strategy_name,
             currency,
-            len(trades),
+            0,
             0,
             0,
             0.0,
@@ -2806,13 +2808,13 @@ def backtest_strategy(
             0.0,
             "UNKNOWN",
             False,
-            f"Only {len(trades)} trades (< {min_trades})",
+            "No completed trades",
         )
 
     winning = sum(1 for t in trades if t.return_pct is not None and t.return_pct > 0)
     losing = len(trades) - winning
     win_rate = winning / len(trades)
-    total_return = sum(t.return_pct for t in trades if t.return_pct is not None)
+    total_return = (equity[-1] - 1.0) * 100.0
 
     gross_profit = sum(
         t.return_pct for t in trades if t.return_pct is not None and t.return_pct > 0
@@ -2827,7 +2829,7 @@ def backtest_strategy(
     profit_factor = (
         gross_profit / gross_loss
         if gross_loss > 0
-        else (gross_profit if gross_profit > 0 else 1.0)
+        else max(gross_profit, 1.0)
     )
 
     returns = [t.return_pct / 100.0 for t in trades if t.return_pct is not None]
@@ -2837,13 +2839,16 @@ def backtest_strategy(
         if len(returns) > 1
         else 0.0
     )
-    vol = math.sqrt(variance) if variance > 0 else 0.001
-    # P0-4: unify Sharpe definition with Rust: mean per-trade return / std(ret) * sqrt(n).
-    # (The previous (avg_ret*100)/(vol*100) canceled the *100, so this is numerically
-    #  identical for the python path, but now it matches the Rust engine exactly.)
+    vol = math.sqrt(variance) if variance > 0 else 0.0
+    # Same definition as Rust: a zero-variance sample has no measurable Sharpe.
     sharpe = (avg_ret / vol) * math.sqrt(len(returns)) if vol > 0 and returns else 0.0
 
-    dd = max(0.0, (peak - min(equity)) / peak) if equity else 0.0
+    running_peak = equity[0] if equity else 1.0
+    dd = 0.0
+    for value in equity:
+        running_peak = max(running_peak, value)
+        if running_peak > 0:
+            dd = max(dd, (running_peak - value) / running_peak)
 
     # Regime classification
     regime = _classify_regime(closes)
@@ -2851,7 +2856,8 @@ def backtest_strategy(
     dd_pct = dd * 100.0
     # P1-6: thresholds single-sourced from BACKTEST_PASS (shared with Rust).
     passed = (
-        win_rate >= BACKTEST_PASS["min_win_rate"]
+        len(trades) >= min_trades
+        and win_rate >= BACKTEST_PASS["min_win_rate"]
         and sharpe > BACKTEST_PASS["min_sharpe"]
         and profit_factor > BACKTEST_PASS["min_profit_factor"]
         and dd_pct < BACKTEST_PASS["max_drawdown_pct"]
@@ -2860,6 +2866,8 @@ def backtest_strategy(
 
     reasons = []
     if not passed:
+        if len(trades) < min_trades:
+            reasons.append(f"trades {len(trades)} < {min_trades}")
         if win_rate < BACKTEST_PASS["min_win_rate"]:
             reasons.append(f"win_rate {win_rate:.0%} < {BACKTEST_PASS['min_win_rate']:.0%}")
         if sharpe <= BACKTEST_PASS["min_sharpe"]:
@@ -3065,6 +3073,7 @@ def batch_signals_fast(
 def batch_backtest_rust(
     strategies: List[Tuple[str, str, List[float], List[float], Optional[List[float]], Optional[List[float]]]],
     warmup: int = 30,
+    min_trades: int = 3,
 ) -> Dict[str, "BacktestVerdict"]:
     """Backtest Rust-supported strategies grouped by product, in parallel via rayon.
 
@@ -3112,6 +3121,7 @@ def batch_backtest_rust(
                 min_pf=BACKTEST_PASS["min_profit_factor"],
                 max_dd_pct=BACKTEST_PASS["max_drawdown_pct"],
                 min_ret_pct=BACKTEST_PASS["min_total_return_pct"],
+                min_trades=min_trades,
             )
             for s_name, metrics in raw:
                 ck = f"{s_name}/{currency}"
@@ -3178,6 +3188,7 @@ def _rust_backtest_strategy(
     opens: Optional[List[float]] = None,
     fee_bps: float = 0.0,
     max_hold_bars: int = 0,
+    min_trades: int = 3,
 ) -> Optional[BacktestVerdict]:
     """Run backtest in Rust for supported strategies, returning None for unsupported ones.
 
@@ -3201,6 +3212,7 @@ def _rust_backtest_strategy(
             min_pf=BACKTEST_PASS["min_profit_factor"],
             max_dd_pct=BACKTEST_PASS["max_drawdown_pct"],
             min_ret_pct=BACKTEST_PASS["min_total_return_pct"],
+            min_trades=min_trades,
         )
         if bt is None or len(bt) < 10:
             return None

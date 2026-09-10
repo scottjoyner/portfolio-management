@@ -119,6 +119,8 @@ def test_specific_new_strategies_grouped():
 
 # ── P0-4: Python vs Rust Sharpe parity ──────────────────────────────
 def test_sharpe_parity_python_vs_rust():
+    if not S._HAS_RUST:
+        pytest.skip("native Rust extension required")
     closes = _wave_sin(300)
     volumes = [1000.0] * len(closes)
     # Run the public dispatcher and compare to its direct Rust path on the same
@@ -187,18 +189,16 @@ def test_fee_basis_point_cost_matches_python_and_rust(monkeypatch):
     # Re-enable Rust and exercise the direct native path with identical inputs.
     monkeypatch.setattr(S, "_HAS_RUST", True)
     rust_free = S._rust_backtest_strategy("ema_cross", "BTC", closes, volumes,
-                                          warmup=21, fee_bps=0.0)
+                                          warmup=21, fee_bps=0.0, min_trades=1)
     rust_fee = S._rust_backtest_strategy("ema_cross", "BTC", closes, volumes,
-                                         warmup=21, fee_bps=10.0)
+                                         warmup=21, fee_bps=10.0, min_trades=1)
     assert rust_free is not None and rust_fee is not None
 
     for free, fee in ((py_free, py_fee), (rust_free, rust_fee)):
         assert free.total_trades == fee.total_trades
         assert free.total_trades > 0
-        observed_cost_per_trade = (
-            free.total_return_pct - fee.total_return_pct
-        ) / free.total_trades
-        assert observed_cost_per_trade == pytest.approx(0.20, abs=1e-9)
+        observed_cost_per_trade = free.avg_trade_pct - fee.avg_trade_pct
+        assert observed_cost_per_trade == pytest.approx(0.20, abs=1e-4)
 
 
 def test_fee_kills_thin_edge():
@@ -216,6 +216,8 @@ def test_fee_kills_thin_edge():
 
 # ── P1-6: threshold single-sourcing ─────────────────────────────────
 def test_backtest_pass_single_sourced():
+    if not S._HAS_RUST:
+        pytest.skip("native Rust extension required")
     p = S.BACKTEST_PASS
     assert p["min_win_rate"] == 0.50
     assert abs(p["min_sharpe"] - 0.5) < 1e-9
