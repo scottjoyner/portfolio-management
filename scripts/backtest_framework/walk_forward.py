@@ -1,52 +1,88 @@
 """Walk-forward (out-of-sample) evaluation for the backtesting framework.
 
-A single trailing-window backtest can look good purely by overfitting one
-market regime. Walk-forward splits each symbol's history into K contiguous
-folds: the strategy is backtested on folds 1..K-1 (in-sample) and then
-evaluated on fold K (out-of-sample). We report:
+A single trailing-window backtest can look good purely by overfitting one market
+regime.  This module performs chronological expanding-window evaluation: every
+OOS fold is a distinct future interval and no fold trains on observations from
+its own future.
 
-  * OOS mean sharpe / profit factor across folds (the honest number)
-  * ``stable`` strategies: those that PASS both in-sample AND out-of-sample
-  * a ``oos_degradation`` measure (IS sharpe - OOS sharpe)
-
-This mirrors how the paper trader would actually experience the strategy
-across shifting regimes, not just on a cherry-picked window.
-
-The underlying engine (``strategy_engine.backtest_strategy``) already performs
-its own internal walk-forward over whatever series it is given; here we
-additionally hold out the final fold so the reported OOS metrics were never
-seen during training.
+The previous implementation returned ``n_folds`` copies of one final holdout.
+That preserved an old caller count but made four reported OOS folds equivalent
+to testing the same holdout four times.  That can overstate stability and is no
+longer permitted.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from scripts.alpha_validation import generate_walk_forward_splits
 
-def make_folds(rows: List[Any], n_folds: int = 4) -> List[Tuple[List[Any], List[Any]]]:
-    """Split ``rows`` (oldest-first) into ``n_folds`` honest out-of-sample folds.
 
-    Every fold uses the SAME train/test split: training is ``rows[:-fold_size]``
-    (everything except the final ``fold_size`` bars) and the test set is the
-    reserved, never-trained final fold ``rows[-fold_size:]``. The previously
-    held-out tail is therefore genuinely out-of-sample for every fold and is
-    excluded from all training data (fixes the old bug where the reserved fold
-    was never tested and every fold's "OOS" overlapped someone's training).
+def make_folds(
+    rows: List[Any],
+    n_folds: int = 4,
+    *,
+    purge_size: int = 0,
+    embargo_size: int = 0,
+) -> List[Tuple[List[Any], List[Any]]]:
+    """Create distinct chronological expanding walk-forward train/test folds.
+
+    With 1,000 observations and ``n_folds=4`` (no gap), the logical layout is::
+
+        train 0:200   -> test 200:400
+        train 0:400   -> test 400:600
+        train 0:600   -> test 600:800
+        train 0:800   -> test 800:1000
+
+    Earlier OOS intervals may become training data for *later* folds, which is
+    valid chronological walk-forward behavior: those observations are already
+    in the past by the time the later fold is evaluated.  What is forbidden is
+    any observation from the current/future test interval entering that fold's
+    training data.
+
+    ``purge_size`` and ``embargo_size`` insert an excluded pre-test gap through
+    the canonical split generator.  They are zero by default to preserve the
+    historical public call shape while allowing stricter callers to opt in.
     """
-    if n_folds < 2 or len(rows) < n_folds * 40:
+
+    if n_folds < 2:
         return []
-    fold_size = len(rows) // (n_folds + 1)  # reserve last fold as the OOS holdout
+    if purge_size < 0 or embargo_size < 0:
+        raise ValueError("purge_size and embargo_size must be non-negative")
+
+    # We need n_folds test windows plus at least one initial training window.
+    # Account for the one pre-test gap that the canonical expanding splitter
+    # applies before each current test boundary.
+    available = len(rows) - purge_size - embargo_size
+    fold_size = available // (n_folds + 1) if available > 0 else 0
     if fold_size < 40:
         return []
-    # Honest split: train excludes the reserved OOS tail; test IS that tail.
-    # Every returned fold uses this SAME disjoint train/test split (no fold's
-    # "OOS" overlaps anyone's training), so the reported OOS is genuinely
-    # out-of-sample. We return ``n_folds`` copies so callers iterating folds
-    # keep their folding count semantics while all folds agree on the split.
-    train = rows[: len(rows) - fold_size]
-    test = rows[len(rows) - fold_size:]
-    if len(test) < 40 or len(train) < 40:
+
+    boundaries = generate_walk_forward_splits(
+        len(rows),
+        train_size=fold_size,
+        test_size=fold_size,
+        step_size=fold_size,
+        purge_size=purge_size,
+        embargo_size=embargo_size,
+        expanding=True,
+    )
+    boundaries = boundaries[:n_folds]
+    if len(boundaries) != n_folds:
         return []
-    return [(train, test) for _ in range(n_folds)]
+
+    folds: List[Tuple[List[Any], List[Any]]] = []
+    seen_tests: set[tuple[int, int]] = set()
+    for boundary in boundaries:
+        test_key = (boundary.test_start, boundary.test_end)
+        if test_key in seen_tests:
+            raise RuntimeError("walk-forward generator produced a duplicate OOS interval")
+        seen_tests.add(test_key)
+        train = rows[boundary.train_start:boundary.train_end]
+        test = rows[boundary.test_start:boundary.test_end]
+        if len(train) < 40 or len(test) < 40:
+            return []
+        folds.append((train, test))
+    return folds
 
 
 def _bt(strategy_engine, name, currency, rows) -> Any:
@@ -65,11 +101,8 @@ def _bt(strategy_engine, name, currency, rows) -> Any:
 
 def walk_forward(strategy_engine, name: str, currency: str, rows: List[Any],
                  n_folds: int = 4) -> Dict[str, Any]:
-    """Run walk-forward for a single (strategy, symbol). Returns OOS summary.
+    """Run chronological walk-forward for one (strategy, symbol)."""
 
-    ``strategy_engine`` is the imported ``strategy_engine`` module, passed in to
-    avoid import cycles in the test harness.
-    """
     folds = make_folds(rows, n_folds)
     if not folds:
         return {"strategy": name, "currency": currency, "n_folds": 0,
