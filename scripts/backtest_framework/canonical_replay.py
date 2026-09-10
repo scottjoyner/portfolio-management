@@ -37,11 +37,16 @@ from scripts.alpha_validation import (
     verify_alpha_validation_evidence,
 )
 
-ATTESTATION_SCHEMA_VERSION = 1
-ATTESTATION_TYPE = "canonical_feed_cache_rust_replay_v1"
+ATTESTATION_SCHEMA_VERSION = 2
+ATTESTATION_TYPE = "canonical_feed_cache_rust_replay_v2"
 DATASET_KIND = "coinbase_candles"
 RUNNER_ID = "scripts.backtest_framework.canonical_replay"
-REQUIRED_RUST_SYMBOLS = ("run_strategy_opens_py", "backtest_strategy_py")
+REQUIRED_RUST_SYMBOLS = (
+    "run_strategy_opens_py",
+    "run_rsi_revert_opens_configured_py",
+    "backtest_strategy_py",
+)
+RSI_REVERT_CONFIG_KEYS = frozenset({"period", "oversold", "overbought"})
 
 
 def canonical_rust_backend_available() -> bool:
@@ -87,6 +92,31 @@ def _finite_float(value: Any, *, name: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result
+
+
+def normalize_strategy_config(strategy_name: str, config: Any = None) -> dict[str, Any]:
+    """Normalize the typed strategy parameters that canonical replay can execute."""
+    if config is None or config == {}:
+        return {}
+    if not isinstance(config, dict):
+        raise TypeError("strategy_config must be an object")
+    if strategy_name != "rsi_revert":
+        raise ValueError(f"configured canonical replay is not supported for {strategy_name!r}")
+    if set(config) != RSI_REVERT_CONFIG_KEYS:
+        missing = sorted(RSI_REVERT_CONFIG_KEYS - set(config))
+        extra = sorted(set(config) - RSI_REVERT_CONFIG_KEYS)
+        raise ValueError(f"rsi_revert strategy_config keys mismatch: missing={missing}, extra={extra}")
+    period_number = _finite_float(config["period"], name="strategy_config.period")
+    if isinstance(config["period"], bool) or not period_number.is_integer():
+        raise ValueError("strategy_config.period must be an integer")
+    period = int(period_number)
+    oversold = _finite_float(config["oversold"], name="strategy_config.oversold")
+    overbought = _finite_float(config["overbought"], name="strategy_config.overbought")
+    if period < 2 or period > 200:
+        raise ValueError("strategy_config.period must be in [2, 200]")
+    if not (0.0 < oversold < overbought < 100.0):
+        raise ValueError("strategy_config thresholds must satisfy 0 < oversold < overbought < 100")
+    return {"period": period, "oversold": oversold, "overbought": overbought}
 
 
 def normalize_candle_rows(rows: Sequence[Sequence[Any]]) -> list[list[float]]:
@@ -197,6 +227,7 @@ def replay_trade_returns_rust(
     warmup: int = 30,
     fee_bps: float = 0.0,
     max_hold_bars: int = 0,
+    strategy_config: dict[str, Any] | None = None,
 ) -> list[float]:
     """Replay one strategy and return realized trade returns as decimals.
 
@@ -207,6 +238,7 @@ def replay_trade_returns_rust(
 
     if not strategy_name:
         raise ValueError("strategy_name is required")
+    normalized_strategy_config = normalize_strategy_config(strategy_name, strategy_config)
     normalized = normalize_candle_rows(rows)
     warmup = int(warmup)
     max_hold_bars = int(max_hold_bars)
@@ -239,14 +271,26 @@ def replay_trade_returns_rust(
         return value
 
     for index in range(warmup, len(normalized)):
-        signal = rust_core.run_strategy_opens_py(
-            strategy_name,
-            closes[: index + 1],
-            opens[: index + 1],
-            volumes[: index + 1],
-            highs[: index + 1],
-            lows[: index + 1],
-        )
+        if normalized_strategy_config:
+            signal = rust_core.run_rsi_revert_opens_configured_py(
+                closes[: index + 1],
+                opens[: index + 1],
+                volumes[: index + 1],
+                highs[: index + 1],
+                lows[: index + 1],
+                period=normalized_strategy_config["period"],
+                oversold=normalized_strategy_config["oversold"],
+                overbought=normalized_strategy_config["overbought"],
+            )
+        else:
+            signal = rust_core.run_strategy_opens_py(
+                strategy_name,
+                closes[: index + 1],
+                opens[: index + 1],
+                volumes[: index + 1],
+                highs[: index + 1],
+                lows[: index + 1],
+            )
         if signal is None:
             continue
         action = signal[0]
@@ -317,11 +361,13 @@ def attest_snapshot_replay(
     warmup: int = 30,
     fee_bps: float = 0.0,
     max_hold_bars: int = 0,
+    strategy_config: dict[str, Any] | None = None,
 ) -> tuple[list[list[float]], dict[str, Any]]:
     """Run leakage-safe OOS folds and return returns plus deterministic attestation."""
 
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("manifest"), dict):
         raise TypeError("snapshot must come from load_canonical_snapshot/snapshot_from_rows")
+    normalized_strategy_config = normalize_strategy_config(strategy_name, strategy_config)
     rows = normalize_candle_rows(snapshot.get("rows", []))
     rebuilt = snapshot_from_rows(
         rows,
@@ -348,6 +394,7 @@ def attest_snapshot_replay(
             warmup=int(warmup),
             fee_bps=float(fee_bps),
             max_hold_bars=int(max_hold_bars),
+            strategy_config=normalized_strategy_config,
         )
         fold_returns.append(returns)
         fold_rows.append({
@@ -372,6 +419,9 @@ def attest_snapshot_replay(
         "runner_source_sha256": _runner_source_sha256(),
         "dataset": snapshot["manifest"],
         "strategy_name": strategy_name,
+        "strategy_config": normalized_strategy_config,
+        "strategy_config_hash": stable_hash(normalized_strategy_config),
+        "execution_config_bound": bool(normalized_strategy_config),
         "warmup": int(warmup),
         "fee_bps": float(fee_bps),
         "max_hold_bars": int(max_hold_bars),
@@ -391,7 +441,8 @@ def _basic_attestation_reasons(attestation: Any, fold_returns: Any) -> list[str]
         return ["replay_attestation_missing"]
     required = {
         "schema_version", "attestation_type", "runner", "runner_source_sha256",
-        "dataset", "strategy_name", "warmup", "fee_bps", "max_hold_bars",
+        "dataset", "strategy_name", "strategy_config", "strategy_config_hash",
+        "execution_config_bound", "warmup", "fee_bps", "max_hold_bars",
         "n_folds", "purge_size", "embargo_size", "folds",
         "fold_returns_hash", "attestation_hash",
     }
@@ -403,6 +454,18 @@ def _basic_attestation_reasons(attestation: Any, fold_returns: Any) -> list[str]
         reasons.append("replay_attestation_schema_mismatch")
     if attestation["attestation_type"] != ATTESTATION_TYPE or attestation["runner"] != RUNNER_ID:
         reasons.append("replay_attestation_runner_mismatch")
+    try:
+        normalized_config = normalize_strategy_config(
+            attestation["strategy_name"], attestation["strategy_config"]
+        )
+        if normalized_config != attestation["strategy_config"]:
+            reasons.append("replay_strategy_config_not_normalized")
+        if stable_hash(normalized_config) != attestation["strategy_config_hash"]:
+            reasons.append("replay_strategy_config_hash_mismatch")
+        if bool(normalized_config) != (attestation["execution_config_bound"] is True):
+            reasons.append("replay_execution_config_binding_mismatch")
+    except (TypeError, ValueError, KeyError, OverflowError):
+        reasons.append("replay_strategy_config_invalid")
     if attestation["runner_source_sha256"] != _runner_source_sha256():
         reasons.append("replay_runner_source_mismatch")
     core = dict(attestation)
@@ -482,6 +545,7 @@ def verify_evidence_replay_binding(
                     warmup=int(attestation["warmup"]),
                     fee_bps=float(attestation["fee_bps"]),
                     max_hold_bars=int(attestation["max_hold_bars"]),
+                    strategy_config=attestation["strategy_config"],
                 )
                 if replay_returns != fold_returns:
                     reasons.append("replay_regenerated_returns_mismatch")
@@ -507,6 +571,8 @@ def bind_evidence_to_replay(
         replay_reasons.append("replay_dataset_id_mismatch")
     if evidence.get("dataset_hash") != attestation.get("dataset", {}).get("dataset_hash"):
         replay_reasons.append("replay_dataset_hash_mismatch")
+    if attestation.get("execution_config_bound") is True and evidence.get("candidate_config") != attestation.get("strategy_config"):
+        replay_reasons.append("replay_candidate_execution_config_mismatch")
     if replay_reasons:
         raise ValueError("cannot bind mismatched replay: " + ",".join(replay_reasons))
 
@@ -527,6 +593,7 @@ def build_alpha_evidence_from_canonical_replay(
     candidate_source_sha: str,
     candidate_config: dict[str, Any],
     strategy_name: str,
+    strategy_config: dict[str, Any] | None = None,
     symbol: str,
     granularity: int,
     net_pnl_after_cost_usd: float,
@@ -548,6 +615,10 @@ def build_alpha_evidence_from_canonical_replay(
 ) -> dict[str, Any]:
     """End-to-end constructor: cache bytes -> Rust OOS returns -> alpha evidence."""
 
+    normalized_strategy_config = normalize_strategy_config(strategy_name, strategy_config)
+    if normalized_strategy_config and candidate_config != normalized_strategy_config:
+        raise ValueError("candidate_config must equal the executable strategy_config")
+
     snapshot = load_canonical_snapshot(
         kind=DATASET_KIND,
         symbol=symbol,
@@ -565,6 +636,7 @@ def build_alpha_evidence_from_canonical_replay(
         warmup=warmup,
         fee_bps=fee_bps,
         max_hold_bars=max_hold_bars,
+        strategy_config=normalized_strategy_config,
     )
     manifest = snapshot["manifest"]
     evidence = build_alpha_validation_evidence(

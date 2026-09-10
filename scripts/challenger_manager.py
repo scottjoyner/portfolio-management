@@ -139,6 +139,29 @@ def evaluate_challenger_evidence(
                 "evidence_hash": evidence.get("evidence_hash"),
                 "evidence_schema_version": evidence.get("schema_version"),
             }
+        attestation = evidence.get("replay_attestation")
+        if not isinstance(attestation, dict) or attestation.get("execution_config_bound") is not True:
+            return {
+                "approved": False,
+                "reasons": ["alpha_validation_execution_config_binding_required"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
+        if attestation.get("strategy_config") != evidence.get("candidate_config"):
+            return {
+                "approved": False,
+                "reasons": ["alpha_validation_execution_config_mismatch"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
         replay_valid, replay_reasons = verify_evidence_replay_binding(
             evidence, reverify_source=True
         )
@@ -326,6 +349,11 @@ class ChallengerRegistry:
             raise ValueError("challenger alpha-validation evidence is invalid: " + ",".join(evidence_reasons))
         if evidence.get("replay_provenance_bound") is not True:
             raise ValueError("challenger alpha-validation replay provenance is required")
+        attestation = evidence.get("replay_attestation")
+        if not isinstance(attestation, dict) or attestation.get("execution_config_bound") is not True:
+            raise ValueError("challenger alpha-validation executable config binding is required")
+        if attestation.get("strategy_config") != challenger.get("parameters"):
+            raise ValueError("challenger alpha-validation executable config mismatch")
         replay_valid, replay_reasons = verify_evidence_replay_binding(
             evidence, reverify_source=True
         )
