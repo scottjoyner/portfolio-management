@@ -1,0 +1,65 @@
+name: One-shot replay-derived RSI stability
+
+on:
+  push:
+    branches:
+      - agent/derived-rsi-stability
+    paths:
+      - .github/workflows/patch-derived-rsi-stability.yml
+      - scripts/_tmp_patch_derived_rsi_stability.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/derived-rsi-stability
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guarded stability patch
+        run: |
+          python scripts/_tmp_patch_derived_rsi_stability.py
+          git diff --check
+          git diff --stat
+      - name: Install locked Python dependencies
+        run: python -m pip install -q -r deploy/requirements.venv-lock.txt
+      - name: Run portable alpha and replay tests
+        run: python -m pytest tests/test_alpha_validation.py tests/test_alpha_validation_recompute.py tests/test_canonical_replay.py --import-mode=importlib -q
+      - name: Build exact checked-out Rust package
+        run: python -m pip install -q .
+      - name: Run rebuilt-native replay and stability tests
+        shell: bash
+        run: |
+          cd /tmp
+          python - <<'PY'
+          import os
+          import pathlib
+          import pytest
+          import rust_core
+          import sys
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          assert rust_core.RUST_CORE_AVAILABLE is True
+          assert callable(rust_core.run_rsi_revert_opens_configured_py)
+          sys.path.insert(1, str(workspace))
+          sys.path.insert(2, str(workspace / 'trading_system'))
+          raise SystemExit(pytest.main([
+              str(workspace / 'tests/test_canonical_replay.py'),
+              str(workspace / 'tests/test_alpha_validation.py'),
+              str(workspace / 'tests/test_alpha_validation_recompute.py'),
+              '--import-mode=importlib', '-q',
+          ]))
+          PY
+      - name: Commit validated stability implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/backtest_framework/canonical_replay.py tests/test_canonical_replay.py docs/ALPHA_VALIDATION.md
+          git commit -m "feat: derive RSI parameter stability from canonical replay"
+          git push origin HEAD:agent/derived-rsi-stability
