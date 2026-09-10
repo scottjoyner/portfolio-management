@@ -218,6 +218,31 @@ describe('ExecutionEngine', () => {
     assert.equal(approveResult.execution.status, 'draft');
   });
 
+  it('rejects direct submit when the capital risk snapshot has expired', async () => {
+    const fixedNow = '2026-09-10T20:30:00.000Z';
+    const riskStateProvider = async () => {
+      const state = createInitialOperatorState(fixedNow);
+      state.killSwitch = { enabled: false, reason: 'test_ready', updatedAt: fixedNow };
+      state.marketDataSnapshots = [{
+        id: 'md-expiry-test',
+        symbol: 'BTC-USD',
+        venue: 'paper',
+        bid: 68240,
+        ask: 68260,
+        status: 'connected',
+        source: 'test-fixture',
+        timestamp: fixedNow,
+      }];
+      return { state, observedAt: fixedNow, source: 'test_operator_state', revision: 'expiry-test' };
+    };
+    const engine = new ExecutionEngine({ requireApproval: true, riskStateProvider });
+    const createResult = await engine.execute(sampleRequest(), { now: fixedNow });
+    const submitResult = await engine.submit(createResult.execution, { now: '2026-09-10T20:31:00.000Z' });
+    assert.equal(submitResult.ok, false);
+    assert.ok(submitResult.errors.includes('capital_risk_snapshot_expired'));
+    assert.equal(submitResult.execution.status, 'draft');
+  });
+
   it('blocks live execution even with healthy canonical risk state', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest({
@@ -352,11 +377,12 @@ describe('ExecutionEngine', () => {
   it('includes fee calculations in fills', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const req = sampleRequest({
-      orders: [sampleOrder({ feeBps: 10, price: 50000, quantity: 1 })],
+      orders: [sampleOrder({ feeBps: 10, price: 50000, quantity: 0.5 })],
     });
     const result = await engine.execute(req);
+    assert.equal(result.ok, true);
     const fill = result.execution.fills[0];
-    assert.equal(fill.fee, 50); // 1 * 50000 * 10 / 10000
+    assert.equal(fill.fee, 25); // 0.5 * 50000 * 10 / 10000
   });
 });
 
