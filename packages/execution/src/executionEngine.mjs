@@ -2,6 +2,12 @@
 // PostgreSQL remains the durable source of truth; this engine hydrates its
 // compatibility map from the read model published by the transactional store.
 
+import {
+  DEFAULT_OVERSEER_TTL_MS,
+  evaluateTradeIntent,
+  verifyStoredExecutionAuthorization,
+} from './overseer.mjs';
+
 const VALID_TRANSITIONS = {
   draft: ['approved', 'rejected', 'cancelled'],
   approved: ['submitted', 'rejected'],
@@ -55,11 +61,22 @@ export default class ExecutionEngine {
     this.minConfidence = config.minConfidence ?? 0.6;
     this.requireApproval = config.requireApproval !== false;
     this.requireRiskCheck = config.requireRiskCheck !== false;
+    this.overseerTtlMs = config.overseerTtlMs ?? DEFAULT_OVERSEER_TTL_MS;
     this.maxRetries = config.maxExecutionRetries ?? 3;
     this.executions = new Map();
     this.events = [];
     this.lastHydratedRevision = null;
     this.lastHydratedAt = null;
+  }
+
+  overseerOptions(now) {
+    return {
+      minConfidence: this.minConfidence,
+      requireApproval: this.requireApproval,
+      requireRiskCheck: this.requireRiskCheck,
+      ttlMs: this.overseerTtlMs,
+      now,
+    };
   }
 
   hydrateDurableReadModel() {
@@ -113,18 +130,23 @@ export default class ExecutionEngine {
   }
 
   async plan(request) {
-    const overallScore = request.orders[0]?.confidenceScore ?? request.confidenceScore ?? 0.5;
-    const riskDecision = request.riskDecision || { approved: true, reasons: [] };
+    const overallScore = request.orders?.[0]?.confidenceScore ?? request.confidenceScore ?? 0.5;
     const convictionWeight = request.convictionWeight ?? (0.5 + overallScore * 0.5);
-    const approved = overallScore >= this.minConfidence && riskDecision.approved;
+    const evaluation = evaluateTradeIntent(
+      { ...request, confidenceScore: overallScore, convictionWeight },
+      this.overseerOptions(),
+    );
     return {
       id: `plan-${Date.now()}`,
       requests: [request],
       confidenceScore: overallScore,
       convictionWeight,
-      riskDecision,
+      riskDecision: evaluation.riskDecision,
       createdAt: new Date().toISOString(),
-      approved,
+      approved: evaluation.overseerDecision.approved,
+      tradeIntentEnvelope: evaluation.tradeIntentEnvelope,
+      tradeIntentHash: evaluation.tradeIntentHash,
+      overseerDecision: evaluation.overseerDecision,
       tradePlan: request.tradePlan || null,
       entryPrice: request.entryPrice ?? request.orders?.[0]?.price ?? null,
       takeProfitPrice: request.takeProfitPrice ?? request.orders?.[0]?.takeProfitPrice ?? null,
@@ -144,16 +166,22 @@ export default class ExecutionEngine {
     this.hydrateDurableReadModel();
     const plan = await this.plan(request);
     if (!plan.approved) {
-      const reasons = [];
-      if (plan.confidenceScore < this.minConfidence) reasons.push('confidence_below_threshold');
-      if (!plan.riskDecision.approved) reasons.push(...plan.riskDecision.reasons);
       const state = this.createState(request, plan);
+      const reasons = plan.overseerDecision?.reasons?.length
+        ? plan.overseerDecision.reasons
+        : ['overseer_rejected'];
       return { ok: false, execution: state, errors: reasons };
     }
 
     const state = this.createState(request, plan);
     this.executions.set(state.id, state);
-    this.emit({ executionId: state.id, type: 'created', economicDecisionId: state.economicDecisionId });
+    this.emit({
+      executionId: state.id,
+      type: 'created',
+      economicDecisionId: state.economicDecisionId,
+      overseerDecision: state.overseerDecision?.decision || null,
+      tradeIntentHash: state.tradeIntentHash || null,
+    });
 
     if (this.requireApproval) return { ok: true, execution: state, warnings: ['awaiting_approval'] };
     return this.submit(state);
@@ -164,9 +192,38 @@ export default class ExecutionEngine {
     const state = this.executions.get(executionId);
     if (!state) return { ok: false, errors: ['execution_not_found'] };
     if (state.status !== 'draft') return { ok: false, execution: state, errors: [`invalid_status: ${state.status}`] };
+
+    const storedAuthorization = verifyStoredExecutionAuthorization(state);
+    if (!storedAuthorization.ok) {
+      return { ok: false, execution: state, errors: storedAuthorization.reasons };
+    }
+
+    const refreshed = evaluateTradeIntent(state, this.overseerOptions());
+    if (refreshed.tradeIntentHash !== state.tradeIntentHash) {
+      return { ok: false, execution: state, errors: ['trade_intent_mutated'] };
+    }
+    if (!refreshed.overseerDecision.approved) {
+      return {
+        ok: false,
+        execution: state,
+        errors: refreshed.overseerDecision.reasons.length
+          ? refreshed.overseerDecision.reasons
+          : ['overseer_rejected'],
+      };
+    }
+
+    state.riskDecision = refreshed.riskDecision;
+    state.tradeIntentEnvelope = refreshed.tradeIntentEnvelope;
+    state.overseerDecision = refreshed.overseerDecision;
     state.status = 'approved';
     state.updatedAt = new Date().toISOString();
-    this.emit({ executionId, type: 'approved', economicDecisionId: state.economicDecisionId });
+    this.emit({
+      executionId,
+      type: 'approved',
+      economicDecisionId: state.economicDecisionId,
+      overseerDecision: state.overseerDecision.decision,
+      tradeIntentHash: state.tradeIntentHash,
+    });
     return this.submit(state);
   }
 
@@ -195,11 +252,22 @@ export default class ExecutionEngine {
   }
 
   async submit(state) {
+    const authorization = verifyStoredExecutionAuthorization(state);
+    if (!authorization.ok) {
+      return { ok: false, execution: state, errors: authorization.reasons };
+    }
+
     try {
       state.status = 'submitted';
       state.lastHeartbeatAt = new Date().toISOString();
       state.updatedAt = state.lastHeartbeatAt;
-      this.emit({ executionId: state.id, type: 'submitted', economicDecisionId: state.economicDecisionId });
+      this.emit({
+        executionId: state.id,
+        type: 'submitted',
+        economicDecisionId: state.economicDecisionId,
+        overseerDecision: state.overseerDecision?.decision || null,
+        tradeIntentHash: state.tradeIntentHash || null,
+      });
 
       for (const order of state.orders) {
         await this.delay(100);
@@ -275,7 +343,7 @@ export default class ExecutionEngine {
       symbol: request.symbol || firstOrder.symbol || null,
       side: request.side || firstOrder.side || null,
       quantity: request.quantity ?? firstOrder.quantity ?? null,
-      notional: request.notional ?? request.notionalUsd ?? null,
+      notional: request.notional ?? request.notionalUsd ?? firstOrder.notional ?? null,
       orders: request.orders,
       tradePlan: request.tradePlan || plan.tradePlan || null,
       tradeIntent: request.tradeIntent || plan.tradeIntent || null,
@@ -288,6 +356,9 @@ export default class ExecutionEngine {
       confidenceScore: plan.confidenceScore,
       convictionWeight: plan.convictionWeight,
       riskDecision: plan.riskDecision,
+      tradeIntentEnvelope: clone(plan.tradeIntentEnvelope),
+      tradeIntentHash: plan.tradeIntentHash,
+      overseerDecision: clone(plan.overseerDecision),
       economicDecisionId: request.economicDecisionId || plan.economicDecisionId || null,
       modelQuoteId: request.modelQuoteId || plan.modelQuoteId || null,
       forecastId: request.forecastId || plan.forecastId || null,
