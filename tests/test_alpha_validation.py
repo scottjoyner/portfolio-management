@@ -53,7 +53,11 @@ def _fixture_replay_bound(evidence: dict) -> dict:
     """
     bound = copy.deepcopy(evidence)
     bound.pop("evidence_hash", None)
-    bound["replay_attestation"] = {"fixture": "registry-mechanics-only"}
+    bound["replay_attestation"] = {
+        "fixture": "registry-mechanics-only",
+        "execution_config_bound": True,
+        "strategy_config": copy.deepcopy(bound["candidate_config"]),
+    }
     bound["replay_provenance_bound"] = True
     bound["evidence_hash"] = stable_hash(bound)
     valid, reasons = verify_alpha_validation_evidence(bound)
@@ -275,6 +279,44 @@ def test_registry_rejects_unbound_alpha_evidence(tmp_path):
     )
     assert result["approved"] is False
     assert result["reasons"] == ["alpha_validation_replay_provenance_required"]
+
+
+def test_registry_rejects_replay_without_executable_config_binding(tmp_path, monkeypatch):
+    registry, challenger = _registry(tmp_path)
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    evidence["replay_attestation"]["execution_config_bound"] = False
+    evidence.pop("evidence_hash", None)
+    evidence["evidence_hash"] = stable_hash(evidence)
+    monkeypatch.setattr(
+        "scripts.challenger_manager.verify_evidence_replay_binding",
+        lambda evidence, reverify_source=True: (True, []),
+    )
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+    )
+    assert result["approved"] is False
+    assert result["reasons"] == ["alpha_validation_execution_config_binding_required"]
+
+
+def test_registry_rejects_attested_execution_config_mismatch(tmp_path, monkeypatch):
+    registry, challenger = _registry(tmp_path)
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    evidence["replay_attestation"]["strategy_config"] = {"lookback": 99, "threshold": 0.7}
+    evidence.pop("evidence_hash", None)
+    evidence["evidence_hash"] = stable_hash(evidence)
+    monkeypatch.setattr(
+        "scripts.challenger_manager.verify_evidence_replay_binding",
+        lambda evidence, reverify_source=True: (True, []),
+    )
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+    )
+    assert result["approved"] is False
+    assert result["reasons"] == ["alpha_validation_execution_config_mismatch"]
 
 
 def test_registry_canary_carries_verified_evidence_hash(tmp_path, monkeypatch):

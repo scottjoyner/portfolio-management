@@ -39,17 +39,38 @@ pub fn ema_crossover(closes: &[f64]) -> Option<Signal> {
 
 /// ── Strategy 2: RSI Mean Reversion ────────────────────────────────
 
-pub fn rsi_mean_reversion(closes: &[f64]) -> Option<Signal> {
-    let rsi_val = indicators::rsi(closes, 14);
-    if rsi_val < 30.0 {
-        let conf = ((30.0 - rsi_val) / 30.0).min(1.0);
+pub fn rsi_mean_reversion_configured(
+    closes: &[f64],
+    period: usize,
+    oversold: f64,
+    overbought: f64,
+) -> Option<Signal> {
+    if period < 2
+        || !oversold.is_finite()
+        || !overbought.is_finite()
+        || oversold <= 0.0
+        || oversold >= overbought
+        || overbought >= 100.0
+    {
+        return None;
+    }
+    let rsi_val = indicators::rsi(closes, period);
+    if !rsi_val.is_finite() {
+        return None;
+    }
+    if rsi_val < oversold {
+        let conf = ((oversold - rsi_val) / oversold).clamp(0.0, 1.0);
         Some(Signal { action: "BUY".into(), confidence: conf, reason: format!("RSI oversold {:.1}", rsi_val) })
-    } else if rsi_val > 70.0 {
-        let conf = ((rsi_val - 70.0) / (100.0 - 70.0)).min(1.0);
+    } else if rsi_val > overbought {
+        let conf = ((rsi_val - overbought) / (100.0 - overbought)).clamp(0.0, 1.0);
         Some(Signal { action: "SELL".into(), confidence: conf, reason: format!("RSI overbought {:.1}", rsi_val) })
     } else {
         None
     }
+}
+
+pub fn rsi_mean_reversion(closes: &[f64]) -> Option<Signal> {
+    rsi_mean_reversion_configured(closes, 14, 30.0, 70.0)
 }
 
 /// ── Strategy 3: Bollinger Breakout ────────────────────────────────

@@ -198,3 +198,79 @@ def test_runner_source_is_part_of_attestation_integrity():
     valid, reasons = C.verify_evidence_replay_binding(tampered, reverify_source=False)
     assert not valid
     assert "replay_runner_source_mismatch" in reasons
+
+
+def test_configured_rsi_defaults_match_legacy_replay():
+    _require_native_replay()
+    rows = _rows()
+    legacy = C.replay_trade_returns_rust("rsi_revert", rows, warmup=14, fee_bps=10.0)
+    configured = C.replay_trade_returns_rust(
+        "rsi_revert", rows, warmup=14, fee_bps=10.0,
+        strategy_config={"period": 14, "oversold": 30.0, "overbought": 70.0},
+    )
+    assert configured == legacy
+
+
+def test_configured_rsi_attestation_binds_exact_execution_config():
+    _require_native_replay()
+    snapshot = C.snapshot_from_rows(
+        _rows(), kind=C.DATASET_KIND, symbol="BTC-USD", granularity=3600
+    )
+    config = {"period": 10, "oversold": 25.0, "overbought": 75.0}
+    fold_returns, attestation = C.attest_snapshot_replay(
+        snapshot, strategy_name="rsi_revert", strategy_config=config, n_folds=3, warmup=10
+    )
+    assert len(fold_returns) == 3
+    assert attestation["execution_config_bound"] is True
+    assert attestation["strategy_config"] == config
+    assert attestation["strategy_config_hash"] == C.stable_hash(config)
+
+
+def test_strategy_config_normalization_fails_closed():
+    assert C.normalize_strategy_config("rsi_revert", None) == {}
+    assert C.normalize_strategy_config(
+        "rsi_revert", {"period": 14, "oversold": 30, "overbought": 70}
+    ) == {"period": 14, "oversold": 30.0, "overbought": 70.0}
+    with pytest.raises(ValueError, match="keys mismatch"):
+        C.normalize_strategy_config("rsi_revert", {"period": 14, "oversold": 30.0})
+    with pytest.raises(ValueError, match="integer"):
+        C.normalize_strategy_config(
+            "rsi_revert", {"period": 14.5, "oversold": 30.0, "overbought": 70.0}
+        )
+    with pytest.raises(ValueError, match="thresholds"):
+        C.normalize_strategy_config(
+            "rsi_revert", {"period": 14, "oversold": 80.0, "overbought": 70.0}
+        )
+    with pytest.raises(ValueError, match="not supported"):
+        C.normalize_strategy_config(
+            "ema_cross", {"period": 14, "oversold": 30.0, "overbought": 70.0}
+        )
+
+
+def test_binding_rejects_candidate_metadata_different_from_executed_config():
+    _require_native_replay()
+    snapshot = C.snapshot_from_rows(
+        _rows(), kind=C.DATASET_KIND, symbol="BTC-USD", granularity=3600
+    )
+    config = {"period": 14, "oversold": 30.0, "overbought": 70.0}
+    fold_returns, attestation = C.attest_snapshot_replay(
+        snapshot, strategy_name="rsi_revert", strategy_config=config, n_folds=3, warmup=14
+    )
+    evidence = build_alpha_validation_evidence(
+        candidate_id="challenger-config-mismatch",
+        candidate_source_sha="a" * 40,
+        candidate_config={"period": 7, "oversold": 30.0, "overbought": 70.0},
+        dataset_id=snapshot["manifest"]["dataset_id"],
+        dataset_hash=snapshot["manifest"]["dataset_hash"],
+        fold_returns=fold_returns,
+        net_pnl_after_cost_usd=1.0,
+        cost_coverage_ratio=2.0,
+        regimes_tested=["up", "down", "range"],
+        accounting_invariants_ok=True,
+        lineage_verified=True,
+        parameter_stability_score=0.9,
+        bootstrap_samples=20,
+        created_at="2026-09-10T12:00:00+00:00",
+    )
+    with pytest.raises(ValueError, match="replay_candidate_execution_config_mismatch"):
+        C.bind_evidence_to_replay(evidence, attestation)

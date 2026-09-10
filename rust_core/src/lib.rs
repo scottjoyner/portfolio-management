@@ -555,6 +555,34 @@ fn run_strategy_opens_py(strategy_name: &str, closes: Vec<f64>, opens: Vec<f64>,
     sig.map(|s| (s.action, s.confidence, s.reason))
 }
 
+/// Typed configured RSI replay entry point.
+#[pyfunction]
+#[pyo3(signature = (closes, opens, volumes, highs, lows, period=14, oversold=30.0, overbought=70.0))]
+fn run_rsi_revert_opens_configured_py(
+    closes: Vec<f64>,
+    opens: Vec<f64>,
+    volumes: Vec<f64>,
+    highs: Vec<f64>,
+    lows: Vec<f64>,
+    period: usize,
+    oversold: f64,
+    overbought: f64,
+) -> PyResult<Option<(String, f64, String)>> {
+    let _ = (opens, volumes, highs, lows);
+    if !(2..=200).contains(&period) {
+        return Err(pyo3::exceptions::PyValueError::new_err("RSI period must be in [2, 200]"));
+    }
+    if !oversold.is_finite() || !overbought.is_finite()
+        || oversold <= 0.0 || oversold >= overbought || overbought >= 100.0
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "RSI thresholds must satisfy 0 < oversold < overbought < 100",
+        ));
+    }
+    let sig = strategies::rsi_mean_reversion_configured(&closes, period, oversold, overbought);
+    Ok(sig.map(|s| (s.action, s.confidence, s.reason)))
+}
+
 /// Python wrapper: backtest a strategy. Returns a dict-like tuple.
 ///
 /// P0-1: `opens` now forwarded (defaults to None = synthesize prev-close, legacy
@@ -851,6 +879,7 @@ fn rust_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_all_py, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_all_opens_py, m)?)?;
     m.add_function(wrap_pyfunction!(run_strategy_opens_py, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rsi_revert_opens_configured_py, m)?)?;
     m.add_function(wrap_pyfunction!(backtest_strategy_py, m)?)?;
     m.add_function(wrap_pyfunction!(backtest_multi_py, m)?)?;
     m.add_function(wrap_pyfunction!(confidence_aggregate_py, m)?)?;
