@@ -263,7 +263,7 @@ test('caller edge mismatch cannot override persisted economic lineage', () => {
   const decision = evaluateCapitalRiskSnapshot(snapshotFor(state, envelope), { tradeIntentHash: stableHash(envelope), now: NOW });
 
   assert.equal(decision.approved, false);
-  assert.ok(decision.reasons.includes('capital_risk_missing:edge_lineage:caller_edge_mismatch'));
+  assert.ok(decision.reasons.includes('capital_risk_invalid:edge_lineage:caller_edge_mismatch'));
 });
 
 test('snapshot tampering is detected after hashing', () => {
