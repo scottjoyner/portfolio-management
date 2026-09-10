@@ -3,8 +3,15 @@
 // compatibility map from the read model published by the transactional store.
 
 import {
+  buildCapitalRiskSnapshot,
+  evaluateCapitalRiskSnapshot,
+  verifyCapitalRiskSnapshot,
+} from './capitalRiskSnapshot.mjs';
+import {
   DEFAULT_OVERSEER_TTL_MS,
+  buildTradeIntentEnvelope,
   evaluateTradeIntent,
+  stableHash,
   verifyStoredExecutionAuthorization,
 } from './overseer.mjs';
 
@@ -25,6 +32,7 @@ function validateTransition(from, to) {
 }
 
 function clone(value) {
+  if (value === undefined) return undefined;
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 }
@@ -56,6 +64,33 @@ function durableReadModel() {
   return model;
 }
 
+function evaluationTime(context = {}) {
+  const value = context.now instanceof Date ? context.now : new Date(context.now ?? Date.now());
+  if (!Number.isFinite(value.getTime())) throw new TypeError('execution evaluation time invalid');
+  return value.toISOString();
+}
+
+function providerResultState(result) {
+  if (!result || typeof result !== 'object') return { state: null, source: {} };
+  if (result.state && typeof result.state === 'object') {
+    return {
+      state: result.state,
+      source: {
+        source: result.source || result.type || 'operator_store',
+        revision: result.revision ?? null,
+        observedAt: result.observedAt ?? null,
+      },
+    };
+  }
+  return { state: result, source: {} };
+}
+
+function currentEvaluationTime(context = {}) {
+  return context.now !== undefined && context.now !== null
+    ? evaluationTime(context)
+    : new Date().toISOString();
+}
+
 export default class ExecutionEngine {
   constructor(config = {}) {
     this.minConfidence = config.minConfidence ?? 0.6;
@@ -63,19 +98,22 @@ export default class ExecutionEngine {
     this.requireRiskCheck = config.requireRiskCheck !== false;
     this.overseerTtlMs = config.overseerTtlMs ?? DEFAULT_OVERSEER_TTL_MS;
     this.maxRetries = config.maxExecutionRetries ?? 3;
+    this.riskStateProvider = config.riskStateProvider || null;
+    this.riskPolicy = config.riskPolicy || {};
     this.executions = new Map();
     this.events = [];
     this.lastHydratedRevision = null;
     this.lastHydratedAt = null;
   }
 
-  overseerOptions(now) {
+  overseerOptions(now, bindings = {}) {
     return {
       minConfidence: this.minConfidence,
       requireApproval: this.requireApproval,
       requireRiskCheck: this.requireRiskCheck,
       ttlMs: this.overseerTtlMs,
       now,
+      ...bindings,
     };
   }
 
@@ -129,23 +167,110 @@ export default class ExecutionEngine {
     };
   }
 
-  async plan(request) {
+  async canonicalRiskFor(input, tradeIntentEnvelope, tradeIntentHash, context = {}, excludeExecutionId = null) {
+    if (!this.requireRiskCheck) {
+      const evaluatedAt = currentEvaluationTime(context);
+      const riskDecision = { approved: true, reasons: ['risk_check_disabled_by_config'] };
+      return {
+        capitalRiskSnapshot: null,
+        capitalRiskSnapshotHash: null,
+        riskDecision,
+        riskDecisionHash: stableHash(riskDecision),
+        capitalRiskPolicyVersion: null,
+        evaluatedAt,
+      };
+    }
+
+    const providerRequestedAt = currentEvaluationTime(context);
+    const provider = context.riskStateProvider || this.riskStateProvider;
+    let resolved = null;
+    if (typeof provider === 'function') {
+      try {
+        resolved = await provider({
+          tradeIntentEnvelope: clone(tradeIntentEnvelope),
+          tradeIntentHash,
+          excludeExecutionId,
+          now: providerRequestedAt,
+        });
+      } catch (error) {
+        resolved = {
+          state: null,
+          source: 'risk_state_provider_error',
+          revision: null,
+          observedAt: null,
+          error: String(error?.message || error),
+        };
+      }
+    }
+    const { state, source } = providerResultState(resolved);
+    const evaluatedAt = currentEvaluationTime(context);
+    const snapshot = buildCapitalRiskSnapshot({
+      state,
+      source,
+      tradeIntentEnvelope,
+      tradeIntentHash,
+      now: evaluatedAt,
+      excludeExecutionId,
+      policy: { ...this.riskPolicy, ...(context.riskPolicy || {}) },
+    });
+    const riskDecision = evaluateCapitalRiskSnapshot(snapshot, { tradeIntentHash, now: evaluatedAt });
+    return {
+      capitalRiskSnapshot: snapshot,
+      capitalRiskSnapshotHash: snapshot.snapshotHash,
+      riskDecision,
+      riskDecisionHash: stableHash(riskDecision),
+      capitalRiskPolicyVersion: snapshot.policyVersion,
+      evaluatedAt,
+    };
+  }
+
+  async evaluateRequest(request, context = {}, excludeExecutionId = null) {
     const overallScore = request.orders?.[0]?.confidenceScore ?? request.confidenceScore ?? 0.5;
     const convictionWeight = request.convictionWeight ?? (0.5 + overallScore * 0.5);
-    const evaluation = evaluateTradeIntent(
-      { ...request, confidenceScore: overallScore, convictionWeight },
-      this.overseerOptions(),
+    const normalized = { ...request, confidenceScore: overallScore, convictionWeight };
+    const tradeIntentEnvelope = buildTradeIntentEnvelope(normalized);
+    const tradeIntentHash = stableHash(tradeIntentEnvelope);
+    const canonicalRisk = await this.canonicalRiskFor(
+      normalized,
+      tradeIntentEnvelope,
+      tradeIntentHash,
+      context,
+      excludeExecutionId,
     );
+    const evaluation = evaluateTradeIntent(
+      { ...normalized, riskDecision: canonicalRisk.riskDecision },
+      this.overseerOptions(canonicalRisk.evaluatedAt, {
+        capitalRiskSnapshotHash: canonicalRisk.capitalRiskSnapshotHash,
+        capitalRiskPolicyVersion: canonicalRisk.capitalRiskPolicyVersion,
+        riskDecisionHash: canonicalRisk.riskDecisionHash,
+      }),
+    );
+    return {
+      ...evaluation,
+      confidenceScore: overallScore,
+      convictionWeight,
+      capitalRiskSnapshot: canonicalRisk.capitalRiskSnapshot,
+      capitalRiskSnapshotHash: canonicalRisk.capitalRiskSnapshotHash,
+      riskDecisionHash: canonicalRisk.riskDecisionHash,
+      evaluatedAt: canonicalRisk.evaluatedAt,
+    };
+  }
+
+  async plan(request, context = {}) {
+    const evaluation = await this.evaluateRequest(request, context);
     return {
       id: `plan-${Date.now()}`,
       requests: [request],
-      confidenceScore: overallScore,
-      convictionWeight,
+      confidenceScore: evaluation.confidenceScore,
+      convictionWeight: evaluation.convictionWeight,
       riskDecision: evaluation.riskDecision,
+      riskDecisionHash: evaluation.riskDecisionHash,
       createdAt: new Date().toISOString(),
       approved: evaluation.overseerDecision.approved,
       tradeIntentEnvelope: evaluation.tradeIntentEnvelope,
       tradeIntentHash: evaluation.tradeIntentHash,
+      capitalRiskSnapshot: clone(evaluation.capitalRiskSnapshot),
+      capitalRiskSnapshotHash: evaluation.capitalRiskSnapshotHash,
       overseerDecision: evaluation.overseerDecision,
       tradePlan: request.tradePlan || null,
       entryPrice: request.entryPrice ?? request.orders?.[0]?.price ?? null,
@@ -158,13 +283,13 @@ export default class ExecutionEngine {
       modelQuoteId: request.modelQuoteId || null,
       forecastId: request.forecastId || null,
       executionCostSnapshotId: request.executionCostSnapshotId || null,
-      netExecutableEdgeUsd: request.netExecutableEdgeUsd ?? null,
+      netExecutableEdgeUsd: evaluation.capitalRiskSnapshot?.edgeState?.netExecutableEdgeUsd ?? null,
     };
   }
 
-  async execute(request) {
+  async execute(request, context = {}) {
     this.hydrateDurableReadModel();
-    const plan = await this.plan(request);
+    const plan = await this.plan(request, context);
     if (!plan.approved) {
       const state = this.createState(request, plan);
       const reasons = plan.overseerDecision?.reasons?.length
@@ -181,24 +306,25 @@ export default class ExecutionEngine {
       economicDecisionId: state.economicDecisionId,
       overseerDecision: state.overseerDecision?.decision || null,
       tradeIntentHash: state.tradeIntentHash || null,
+      capitalRiskSnapshotHash: state.capitalRiskSnapshotHash || null,
     });
 
     if (this.requireApproval) return { ok: true, execution: state, warnings: ['awaiting_approval'] };
-    return this.submit(state);
+    return this.submit(state, context);
   }
 
-  async approve(executionId) {
+  async approve(executionId, context = {}) {
     this.hydrateDurableReadModel();
     const state = this.executions.get(executionId);
     if (!state) return { ok: false, errors: ['execution_not_found'] };
     if (state.status !== 'draft') return { ok: false, execution: state, errors: [`invalid_status: ${state.status}`] };
 
-    const storedAuthorization = verifyStoredExecutionAuthorization(state);
+    const storedAuthorization = verifyStoredExecutionAuthorization(state, { now: currentEvaluationTime(context) });
     if (!storedAuthorization.ok) {
       return { ok: false, execution: state, errors: storedAuthorization.reasons };
     }
 
-    const refreshed = evaluateTradeIntent(state, this.overseerOptions());
+    const refreshed = await this.evaluateRequest(state, context, executionId);
     if (refreshed.tradeIntentHash !== state.tradeIntentHash) {
       return { ok: false, execution: state, errors: ['trade_intent_mutated'] };
     }
@@ -213,8 +339,12 @@ export default class ExecutionEngine {
     }
 
     state.riskDecision = refreshed.riskDecision;
+    state.riskDecisionHash = refreshed.riskDecisionHash;
     state.tradeIntentEnvelope = refreshed.tradeIntentEnvelope;
+    state.capitalRiskSnapshot = clone(refreshed.capitalRiskSnapshot);
+    state.capitalRiskSnapshotHash = refreshed.capitalRiskSnapshotHash;
     state.overseerDecision = refreshed.overseerDecision;
+    state.netExecutableEdgeUsd = refreshed.capitalRiskSnapshot?.edgeState?.netExecutableEdgeUsd ?? null;
     state.status = 'approved';
     state.updatedAt = new Date().toISOString();
     this.emit({
@@ -223,8 +353,9 @@ export default class ExecutionEngine {
       economicDecisionId: state.economicDecisionId,
       overseerDecision: state.overseerDecision.decision,
       tradeIntentHash: state.tradeIntentHash,
+      capitalRiskSnapshotHash: state.capitalRiskSnapshotHash,
     });
-    return this.submit(state);
+    return this.submit(state, context);
   }
 
   async reject(executionId, reason) {
@@ -251,8 +382,20 @@ export default class ExecutionEngine {
     return { ok: true, execution: state };
   }
 
-  async submit(state) {
-    const authorization = verifyStoredExecutionAuthorization(state);
+  verifyCapitalRiskFreshness(state, context = {}) {
+    if (!state?.capitalRiskSnapshot) return { ok: true, reasons: [] };
+    return verifyCapitalRiskSnapshot(state.capitalRiskSnapshot, {
+      tradeIntentHash: state.tradeIntentHash,
+      now: currentEvaluationTime(context),
+    });
+  }
+
+  async submit(state, context = {}) {
+    const freshness = this.verifyCapitalRiskFreshness(state, context);
+    if (!freshness.ok) {
+      return { ok: false, execution: state, errors: freshness.reasons };
+    }
+    const authorization = verifyStoredExecutionAuthorization(state, { now: currentEvaluationTime(context) });
     if (!authorization.ok) {
       return { ok: false, execution: state, errors: authorization.reasons };
     }
@@ -267,10 +410,19 @@ export default class ExecutionEngine {
         economicDecisionId: state.economicDecisionId,
         overseerDecision: state.overseerDecision?.decision || null,
         tradeIntentHash: state.tradeIntentHash || null,
+        capitalRiskSnapshotHash: state.capitalRiskSnapshotHash || null,
       });
 
       for (const order of state.orders) {
+        const loopFreshness = this.verifyCapitalRiskFreshness(state, context);
+        if (!loopFreshness.ok) throw new Error(loopFreshness.reasons[0]);
         await this.delay(100);
+        const fillPrice = Number(order.price ?? state.entryPrice ?? state.capitalRiskSnapshot?.marketDataState?.referencePrice);
+        if (!Number.isFinite(fillPrice) || fillPrice <= 0) throw new Error('execution_fill_price_unavailable');
+        const quantity = Number(order.quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('execution_fill_quantity_invalid');
+        const feeBps = Number(order.feeBps ?? 5);
+        if (!Number.isFinite(feeBps) || feeBps < 0) throw new Error('execution_fee_bps_invalid');
         const fill = {
           id: `fill-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           orderId: order.id || state.id,
@@ -279,9 +431,9 @@ export default class ExecutionEngine {
           symbol: order.symbol || state.symbol,
           venue: order.venue || state.venue,
           side: order.side || state.side,
-          quantity: order.quantity,
-          price: order.price || state.entryPrice || 100,
-          fee: order.quantity * (order.price || state.entryPrice || 100) * (order.feeBps || 5) / 10000,
+          quantity,
+          price: fillPrice,
+          fee: quantity * fillPrice * feeBps / 10000,
           feeCurrency: 'USD',
           liquidity: 'taker',
           filledAt: new Date().toISOString(),
@@ -355,15 +507,18 @@ export default class ExecutionEngine {
       fills: [],
       confidenceScore: plan.confidenceScore,
       convictionWeight: plan.convictionWeight,
-      riskDecision: plan.riskDecision,
+      riskDecision: clone(plan.riskDecision),
+      riskDecisionHash: plan.riskDecisionHash,
       tradeIntentEnvelope: clone(plan.tradeIntentEnvelope),
       tradeIntentHash: plan.tradeIntentHash,
+      capitalRiskSnapshot: clone(plan.capitalRiskSnapshot),
+      capitalRiskSnapshotHash: plan.capitalRiskSnapshotHash,
       overseerDecision: clone(plan.overseerDecision),
       economicDecisionId: request.economicDecisionId || plan.economicDecisionId || null,
       modelQuoteId: request.modelQuoteId || plan.modelQuoteId || null,
       forecastId: request.forecastId || plan.forecastId || null,
       executionCostSnapshotId: request.executionCostSnapshotId || plan.executionCostSnapshotId || null,
-      netExecutableEdgeUsd: request.netExecutableEdgeUsd ?? plan.netExecutableEdgeUsd ?? null,
+      netExecutableEdgeUsd: plan.netExecutableEdgeUsd ?? null,
       counterfactualPnlUsd: request.counterfactualPnlUsd ?? null,
       tags: {
         ...(request.tags || {}),
