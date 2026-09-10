@@ -54,28 +54,33 @@ Earlier OOS intervals can legitimately become training history for a later fold 
 
 The split generator itself does not run a strategy. Replay/backtest code must obey these boundaries exactly and pass only realized OOS trade returns into evidence generation.
 
-## Evidence integrity
+## Evidence integrity — schema v2
 
 Evidence is canonicalized with sorted, compact JSON and SHA-256. NaN and Infinity are rejected.
 
-The artifact contains provenance for:
+Schema v2 embeds the data required to recompute the statistical claims, including:
 
-- candidate ID;
-- candidate source SHA;
-- candidate config hash;
-- dataset ID;
-- dataset hash;
-- creation timestamp;
-- validation method;
-- fold metrics;
-- policy used for pass/fail;
-- bootstrap parameters/results;
-- transaction-cost stress results;
+- candidate ID and source SHA;
+- complete candidate config plus its hash;
+- dataset ID and dataset hash;
+- raw OOS return observations grouped by fold;
+- annualization convention;
+- bootstrap sample count, seed, and ruin threshold;
+- cost-stress scenarios;
+- validation policy;
+- regime labels;
+- fold metrics and aggregate metrics;
 - final evidence hash.
 
-Changing any hashed field without rebuilding the artifact causes `verify_alpha_validation_evidence()` to fail.
+`verify_alpha_validation_evidence()` does more than recompute the artifact hash. It rebuilds the candidate-config hash, fold metrics, aggregate metrics, cost-stress results, bootstrap results, pass/fail decision, and failure reasons from the embedded OOS observations. Therefore, changing a reported `profit_factor`, `max_drawdown_pct`, or `walk_forward_passed` value and simply re-hashing the JSON still fails verification.
 
 For an approved challenger, the registry persists both the complete validation evidence artifact and its hash. Promotion re-verifies the complete artifact, candidate binding, evidence hash, and evaluation-to-evidence hash binding before writing canary configuration. A registry edit that alters previously approved evidence therefore fails closed at promotion time.
+
+### Important provenance limitation
+
+Hashing and statistical recomputation prove internal consistency; they do **not** prove that embedded OOS returns actually came from the dataset identified by `dataset_hash`, nor that the supplied accounting/lineage assertions were produced by the canonical systems.
+
+The next implementation slice must close that boundary by wiring evidence generation directly to the canonical historical replay/data-snapshot path and adding runner/attestation provenance that an agent cannot self-assert. Until then, a self-consistent artifact is stronger evidence than caller booleans, but it is not yet cryptographic proof of dataset origin.
 
 ## Initial generated metrics
 
@@ -118,11 +123,11 @@ Legacy `challenger_metrics` remain accepted as an argument for compatibility/aud
 
 Before metric evaluation:
 
-1. evidence schema is checked;
-2. evidence hash is recomputed;
-3. the evidence `candidate_id` must match the proposed challenger ID;
-4. canonical evidence is mapped to the existing metric-gate contract;
-5. detailed validation failure reasons are preserved;
+1. evidence schema and canonical hash are checked;
+2. candidate config hash is recomputed;
+3. raw OOS returns are re-evaluated into fold/aggregate/bootstrap/stress metrics;
+4. reported derived metrics and pass/fail state must match recomputation;
+5. evidence `candidate_id` must match the proposed challenger ID;
 6. approved evidence and its hash are persisted with the challenger.
 
 Before canary promotion:
@@ -160,14 +165,14 @@ Passing alpha evidence therefore does not automatically mean a challenger beats 
 
 Still required before this becomes a complete scientific-validation system:
 
-1. Wire canonical replay output to realized per-trade OOS returns automatically.
-2. Generate parameter stability from actual neighborhood sweeps.
-3. Add multiple-testing / selection-bias correction across candidate searches.
-4. Add block/bootstrap methods for serially correlated returns.
-5. Add explicit asset/session/regime concentration metrics.
-6. Add empirical slippage/latency distributions from shadow/live executions.
-7. Move complete evidence artifacts to an append-only/immutable evidence store; the current registry persistence is integrity-checked but not externally immutable.
-8. Add source/dataset snapshot tooling that produces the supplied provenance hashes.
+1. Wire canonical replay output to realized per-trade OOS returns automatically and bind the dataset hash to the bytes actually replayed.
+2. Add trusted runner/attestation provenance so an agent cannot invent a self-consistent raw-return artifact.
+3. Generate parameter stability from actual neighborhood sweeps.
+4. Add multiple-testing / selection-bias correction across candidate searches.
+5. Add block/bootstrap methods for serially correlated returns.
+6. Add explicit asset/session/regime concentration metrics.
+7. Add empirical slippage/latency distributions from shadow/live executions.
+8. Move complete evidence artifacts to an append-only/immutable evidence store; the current registry persistence is integrity-checked but not externally immutable.
 9. Add regime-labelled fold construction where appropriate.
 10. Add explicit final holdout rules so agents cannot repeatedly optimize against the terminal test set.
 
