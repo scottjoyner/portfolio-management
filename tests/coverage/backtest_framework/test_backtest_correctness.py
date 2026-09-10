@@ -2,7 +2,7 @@
 
 Covers:
   P0-1  Backtest must match live opens=closes (pattern strategies read opens).
-  P0-2  Walk-forward OOS fold is disjoint from training (honest OOS).
+  P0-2  Walk-forward OOS folds are chronological, distinct, and future-safe.
   P0-3  Every rust strategy maps to a non-"other" independence group.
   P0-4  Python vs Rust Sharpe parity (same per-trade definition).
   P1-5  Fee sensitivity: a thin-edge strategy fails under high fee_bps.
@@ -66,28 +66,39 @@ def test_opens_changes_signal_for_pattern_strategy():
     assert v_closes.total_trades >= 0 and v_shifted.total_trades >= 0
 
 
-# ── P0-2: walk-forward OOS disjointness ─────────────────────────────
-def test_walk_forward_oos_disjoint_from_training():
+# ── P0-2: walk-forward temporal correctness ─────────────────────────
+def test_walk_forward_oos_is_chronological_distinct_and_future_safe():
     rows = list(range(1000))
     folds = make_folds(rows, n_folds=4)
-    # n_folds copies of the SAME honest split (callers keep fold count semantics).
     assert len(folds) == 4
-    for train, test in folds:
+
+    # Five equal chronological segments: one initial train segment followed by
+    # four genuinely different OOS intervals.
+    expected_tests = [
+        rows[200:400],
+        rows[400:600],
+        rows[600:800],
+        rows[800:1000],
+    ]
+    for index, (train, test) in enumerate(folds):
         assert set(train).isdisjoint(set(test))
-    # All folds share the identical split.
-    assert all(f == folds[0] for f in folds)
-    train, test = folds[0]
-    # Test is the reserved final fold; train excludes it.
-    assert test == rows[-len(test):]
-    assert train == rows[: len(rows) - len(test)]
-    assert len(train) + len(test) == len(rows)
+        assert max(train) < min(test)
+        assert test == expected_tests[index]
+        assert train == rows[: 200 * (index + 1)]
+
+    # The old implementation returned the same final holdout four times. That
+    # is specifically forbidden because it inflates the apparent fold count.
+    assert len({(test[0], test[-1]) for _, test in folds}) == 4
 
 
 def test_walk_forward_no_overlap_small_split():
     rows = list(range(600))
     folds = make_folds(rows, n_folds=4)
-    train, test = folds[0]
-    assert set(train).isdisjoint(set(test))
+    assert len(folds) == 4
+    for train, test in folds:
+        assert set(train).isdisjoint(set(test))
+        assert max(train) < min(test)
+    assert len({tuple(test) for _, test in folds}) == 4
 
 
 # ── P0-3: all rust strategies mapped to a group ─────────────────────
