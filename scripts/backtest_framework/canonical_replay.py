@@ -37,8 +37,9 @@ from scripts.alpha_validation import (
     verify_alpha_validation_evidence,
 )
 
-ATTESTATION_SCHEMA_VERSION = 2
-ATTESTATION_TYPE = "canonical_feed_cache_rust_replay_v2"
+ATTESTATION_SCHEMA_VERSION = 3
+ATTESTATION_TYPE = "canonical_feed_cache_rust_replay_v3"
+PARAMETER_STABILITY_METHOD = "rsi_one_at_a_time_log_growth_v1"
 DATASET_KIND = "coinbase_candles"
 RUNNER_ID = "scripts.backtest_framework.canonical_replay"
 REQUIRED_RUST_SYMBOLS = (
@@ -117,6 +118,194 @@ def normalize_strategy_config(strategy_name: str, config: Any = None) -> dict[st
     if not (0.0 < oversold < overbought < 100.0):
         raise ValueError("strategy_config thresholds must satisfy 0 < oversold < overbought < 100")
     return {"period": period, "oversold": oversold, "overbought": overbought}
+
+
+def rsi_parameter_neighbors(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return deterministic one-at-a-time neighbors for local robustness testing."""
+
+    base = normalize_strategy_config("rsi_revert", config)
+    specs = [
+        ("period_minus_2", "period", max(2, base["period"] - 2)),
+        ("period_plus_2", "period", min(200, base["period"] + 2)),
+        ("oversold_minus_5", "oversold", base["oversold"] - 5.0),
+        ("oversold_plus_5", "oversold", base["oversold"] + 5.0),
+        ("overbought_minus_5", "overbought", base["overbought"] - 5.0),
+        ("overbought_plus_5", "overbought", base["overbought"] + 5.0),
+    ]
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for label, key, value in specs:
+        candidate = dict(base)
+        candidate[key] = value
+        try:
+            normalized = normalize_strategy_config("rsi_revert", candidate)
+        except (TypeError, ValueError):
+            continue
+        if normalized == base:
+            continue
+        config_hash = stable_hash(normalized)
+        if config_hash in seen:
+            continue
+        seen.add(config_hash)
+        out.append({"label": label, "config": normalized, "config_hash": config_hash})
+    return out
+
+
+def _fold_log_growth(fold_returns: Sequence[Sequence[Any]]) -> tuple[float, int]:
+    growth = 0.0
+    count = 0
+    for fold_index, fold in enumerate(fold_returns):
+        if not isinstance(fold, (list, tuple)):
+            raise TypeError(f"fold_returns[{fold_index}] must be a sequence")
+        for return_index, raw in enumerate(fold):
+            value = _finite_float(raw, name=f"fold_returns[{fold_index}][{return_index}]")
+            if value <= -1.0:
+                raise ValueError("parameter-stability return cannot be <= -100%")
+            growth += math.log1p(value)
+            count += 1
+    return growth, count
+
+
+def _stability_summary(base_fold_returns: Sequence[Sequence[Any]], neighbors: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    base_log_growth, base_trade_count = _fold_log_growth(base_fold_returns)
+    retentions: list[float] = []
+    viable = 0
+    normalized_rows: list[dict[str, Any]] = []
+    for row in neighbors:
+        fold_returns = row["fold_returns"]
+        log_growth, trade_count = _fold_log_growth(fold_returns)
+        profitable = trade_count > 0 and log_growth > 0.0
+        if profitable:
+            viable += 1
+        retention = 0.0
+        if profitable and base_log_growth > 0.0:
+            retention = min(1.0, max(0.0, log_growth / base_log_growth))
+        retentions.append(retention)
+        normalized_rows.append({
+            "label": row["label"],
+            "config": row["config"],
+            "config_hash": stable_hash(row["config"]),
+            "fold_returns": fold_returns,
+            "fold_returns_hash": stable_hash(fold_returns),
+            "trade_count": trade_count,
+            "log_growth": round(log_growth, 12),
+            "profitable": profitable,
+            "growth_retention": round(retention, 10),
+        })
+    count = len(normalized_rows)
+    viable_fraction = viable / count if count else 0.0
+    mean_retention = sum(retentions) / count if count else 0.0
+    score = min(viable_fraction, mean_retention) if base_log_growth > 0.0 else 0.0
+    return {
+        "base_trade_count": base_trade_count,
+        "base_log_growth": round(base_log_growth, 12),
+        "neighbors": normalized_rows,
+        "neighbor_count": count,
+        "profitable_neighbor_count": viable,
+        "profitable_neighbor_fraction": round(viable_fraction, 10),
+        "mean_growth_retention": round(mean_retention, 10),
+        "score": round(score, 10),
+    }
+
+
+def _build_parameter_stability_attestation(
+    rows: Sequence[Sequence[Any]],
+    boundaries: Sequence[Any],
+    base_fold_returns: Sequence[Sequence[float]],
+    *,
+    strategy_config: dict[str, Any],
+    warmup: int,
+    fee_bps: float,
+    max_hold_bars: int,
+) -> dict[str, Any]:
+    base = normalize_strategy_config("rsi_revert", strategy_config)
+    neighbor_rows: list[dict[str, Any]] = []
+    for spec in rsi_parameter_neighbors(base):
+        fold_returns: list[list[float]] = []
+        for boundary in boundaries:
+            test_rows = rows[boundary.test_start:boundary.test_end]
+            fold_returns.append(replay_trade_returns_rust(
+                "rsi_revert",
+                test_rows,
+                warmup=warmup,
+                fee_bps=fee_bps,
+                max_hold_bars=max_hold_bars,
+                strategy_config=spec["config"],
+            ))
+        neighbor_rows.append({**spec, "fold_returns": fold_returns})
+    summary = _stability_summary(base_fold_returns, neighbor_rows)
+    core = {
+        "method": PARAMETER_STABILITY_METHOD,
+        "base_config": base,
+        "base_config_hash": stable_hash(base),
+        "base_fold_returns_hash": stable_hash(base_fold_returns),
+        **summary,
+    }
+    return {**core, "stability_hash": stable_hash(core)}
+
+
+def _parameter_stability_reasons(
+    payload: Any,
+    *,
+    base_config: dict[str, Any],
+    base_fold_returns: Sequence[Sequence[float]],
+) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["replay_parameter_stability_missing"]
+    required = {
+        "method", "base_config", "base_config_hash", "base_fold_returns_hash",
+        "base_trade_count", "base_log_growth", "neighbors", "neighbor_count",
+        "profitable_neighbor_count", "profitable_neighbor_fraction",
+        "mean_growth_retention", "score", "stability_hash",
+    }
+    missing = sorted(required - set(payload))
+    if missing:
+        return [f"replay_parameter_stability_missing_field:{name}" for name in missing]
+    reasons: list[str] = []
+    try:
+        normalized_base = normalize_strategy_config("rsi_revert", base_config)
+        if payload["method"] != PARAMETER_STABILITY_METHOD:
+            reasons.append("replay_parameter_stability_method_mismatch")
+        if payload["base_config"] != normalized_base:
+            reasons.append("replay_parameter_stability_base_config_mismatch")
+        if payload["base_config_hash"] != stable_hash(normalized_base):
+            reasons.append("replay_parameter_stability_base_hash_mismatch")
+        if payload["base_fold_returns_hash"] != stable_hash(base_fold_returns):
+            reasons.append("replay_parameter_stability_base_returns_mismatch")
+        expected_specs = rsi_parameter_neighbors(normalized_base)
+        supplied_neighbors = payload["neighbors"]
+        if not isinstance(supplied_neighbors, list) or len(supplied_neighbors) != len(expected_specs):
+            reasons.append("replay_parameter_stability_neighbor_count_mismatch")
+        else:
+            raw_neighbors: list[dict[str, Any]] = []
+            for index, (expected, supplied) in enumerate(zip(expected_specs, supplied_neighbors)):
+                if not isinstance(supplied, dict):
+                    reasons.append(f"replay_parameter_stability_neighbor_invalid:{index}")
+                    continue
+                if supplied.get("label") != expected["label"] or supplied.get("config") != expected["config"]:
+                    reasons.append(f"replay_parameter_stability_neighbor_config_mismatch:{index}")
+                    continue
+                folds = supplied.get("fold_returns")
+                if not isinstance(folds, list) or len(folds) != len(base_fold_returns):
+                    reasons.append(f"replay_parameter_stability_neighbor_folds_mismatch:{index}")
+                    continue
+                raw_neighbors.append({
+                    "label": expected["label"],
+                    "config": expected["config"],
+                    "fold_returns": folds,
+                })
+            if not reasons:
+                expected_summary = _stability_summary(base_fold_returns, raw_neighbors)
+                for name, expected_value in expected_summary.items():
+                    if payload.get(name) != expected_value:
+                        reasons.append(f"replay_parameter_stability_{name}_mismatch")
+        core = dict(payload)
+        supplied_hash = core.pop("stability_hash", None)
+        if stable_hash(core) != supplied_hash:
+            reasons.append("replay_parameter_stability_hash_mismatch")
+    except (TypeError, ValueError, KeyError, OverflowError):
+        reasons.append("replay_parameter_stability_invalid")
+    return list(dict.fromkeys(reasons))
 
 
 def normalize_candle_rows(rows: Sequence[Sequence[Any]]) -> list[list[float]]:
@@ -412,6 +601,18 @@ def attest_snapshot_replay(
             "returns_hash": stable_hash(returns),
         })
 
+    parameter_stability = None
+    if normalized_strategy_config:
+        parameter_stability = _build_parameter_stability_attestation(
+            rows,
+            boundaries,
+            fold_returns,
+            strategy_config=normalized_strategy_config,
+            warmup=int(warmup),
+            fee_bps=float(fee_bps),
+            max_hold_bars=int(max_hold_bars),
+        )
+
     core = {
         "schema_version": ATTESTATION_SCHEMA_VERSION,
         "attestation_type": ATTESTATION_TYPE,
@@ -422,6 +623,7 @@ def attest_snapshot_replay(
         "strategy_config": normalized_strategy_config,
         "strategy_config_hash": stable_hash(normalized_strategy_config),
         "execution_config_bound": bool(normalized_strategy_config),
+        "parameter_stability": parameter_stability,
         "warmup": int(warmup),
         "fee_bps": float(fee_bps),
         "max_hold_bars": int(max_hold_bars),
@@ -442,7 +644,7 @@ def _basic_attestation_reasons(attestation: Any, fold_returns: Any) -> list[str]
     required = {
         "schema_version", "attestation_type", "runner", "runner_source_sha256",
         "dataset", "strategy_name", "strategy_config", "strategy_config_hash",
-        "execution_config_bound", "warmup", "fee_bps", "max_hold_bars",
+        "execution_config_bound", "parameter_stability", "warmup", "fee_bps", "max_hold_bars",
         "n_folds", "purge_size", "embargo_size", "folds",
         "fold_returns_hash", "attestation_hash",
     }
@@ -464,6 +666,14 @@ def _basic_attestation_reasons(attestation: Any, fold_returns: Any) -> list[str]
             reasons.append("replay_strategy_config_hash_mismatch")
         if bool(normalized_config) != (attestation["execution_config_bound"] is True):
             reasons.append("replay_execution_config_binding_mismatch")
+        if normalized_config:
+            reasons.extend(_parameter_stability_reasons(
+                attestation["parameter_stability"],
+                base_config=normalized_config,
+                base_fold_returns=fold_returns,
+            ))
+        elif attestation["parameter_stability"] is not None:
+            reasons.append("replay_unconfigured_parameter_stability_present")
     except (TypeError, ValueError, KeyError, OverflowError):
         reasons.append("replay_strategy_config_invalid")
     if attestation["runner_source_sha256"] != _runner_source_sha256():
@@ -573,6 +783,10 @@ def bind_evidence_to_replay(
         replay_reasons.append("replay_dataset_hash_mismatch")
     if attestation.get("execution_config_bound") is True and evidence.get("candidate_config") != attestation.get("strategy_config"):
         replay_reasons.append("replay_candidate_execution_config_mismatch")
+    if attestation.get("execution_config_bound") is True:
+        stability = attestation.get("parameter_stability")
+        if not isinstance(stability, dict) or evidence.get("parameter_stability_score") != stability.get("score"):
+            replay_reasons.append("replay_parameter_stability_score_mismatch")
     if replay_reasons:
         raise ValueError("cannot bind mismatched replay: " + ",".join(replay_reasons))
 
@@ -601,7 +815,7 @@ def build_alpha_evidence_from_canonical_replay(
     regimes_tested: Sequence[str],
     accounting_invariants_ok: bool,
     lineage_verified: bool,
-    parameter_stability_score: float,
+    parameter_stability_score: float | None = None,
     start_ts: float | None = None,
     end_ts: float | None = None,
     window_bars: int | None = None,
@@ -639,6 +853,20 @@ def build_alpha_evidence_from_canonical_replay(
         strategy_config=normalized_strategy_config,
     )
     manifest = snapshot["manifest"]
+    if normalized_strategy_config:
+        stability = attestation.get("parameter_stability")
+        if not isinstance(stability, dict):
+            raise ValueError("configured canonical replay did not derive parameter stability")
+        derived_stability_score = float(stability["score"])
+        if parameter_stability_score is not None:
+            supplied_stability = _finite_float(parameter_stability_score, name="parameter_stability_score")
+            if supplied_stability != derived_stability_score:
+                raise ValueError("caller parameter_stability_score does not match replay-derived stability")
+    else:
+        if parameter_stability_score is None:
+            raise ValueError("parameter_stability_score remains required for unconfigured research replay")
+        derived_stability_score = _finite_float(parameter_stability_score, name="parameter_stability_score")
+
     evidence = build_alpha_validation_evidence(
         candidate_id=candidate_id,
         candidate_source_sha=candidate_source_sha,
@@ -651,7 +879,7 @@ def build_alpha_evidence_from_canonical_replay(
         regimes_tested=regimes_tested,
         accounting_invariants_ok=accounting_invariants_ok,
         lineage_verified=lineage_verified,
-        parameter_stability_score=parameter_stability_score,
+        parameter_stability_score=derived_stability_score,
         **alpha_kwargs,
     )
     return bind_evidence_to_replay(evidence, attestation)

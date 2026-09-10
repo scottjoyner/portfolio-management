@@ -224,6 +224,10 @@ def test_configured_rsi_attestation_binds_exact_execution_config():
     assert attestation["execution_config_bound"] is True
     assert attestation["strategy_config"] == config
     assert attestation["strategy_config_hash"] == C.stable_hash(config)
+    stability = attestation["parameter_stability"]
+    assert stability["method"] == C.PARAMETER_STABILITY_METHOD
+    assert stability["neighbor_count"] == 6
+    assert 0.0 <= stability["score"] <= 1.0
 
 
 def test_strategy_config_normalization_fails_closed():
@@ -274,3 +278,87 @@ def test_binding_rejects_candidate_metadata_different_from_executed_config():
     )
     with pytest.raises(ValueError, match="replay_candidate_execution_config_mismatch"):
         C.bind_evidence_to_replay(evidence, attestation)
+
+def test_rsi_parameter_neighbors_are_deterministic_and_one_at_a_time():
+    base = {"period": 14, "oversold": 30.0, "overbought": 70.0}
+    neighbors = C.rsi_parameter_neighbors(base)
+    assert [row["label"] for row in neighbors] == [
+        "period_minus_2", "period_plus_2",
+        "oversold_minus_5", "oversold_plus_5",
+        "overbought_minus_5", "overbought_plus_5",
+    ]
+    assert len(neighbors) == 6
+    for row in neighbors:
+        changed = [key for key in base if row["config"][key] != base[key]]
+        assert len(changed) == 1
+        assert row["config_hash"] == C.stable_hash(row["config"])
+
+
+def test_parameter_stability_score_is_recomputed_from_neighbor_returns():
+    _require_native_replay()
+    snapshot = C.snapshot_from_rows(
+        _rows(), kind=C.DATASET_KIND, symbol="BTC-USD", granularity=3600
+    )
+    config = {"period": 14, "oversold": 30.0, "overbought": 70.0}
+    fold_returns, attestation = C.attest_snapshot_replay(
+        snapshot, strategy_name="rsi_revert", strategy_config=config, n_folds=3, warmup=14
+    )
+    tampered = copy.deepcopy(attestation)
+    stability = tampered["parameter_stability"]
+    stability["score"] = 1.0 if stability["score"] != 1.0 else 0.0
+    stability_core = dict(stability)
+    stability_core.pop("stability_hash")
+    stability["stability_hash"] = C.stable_hash(stability_core)
+    outer_core = dict(tampered)
+    outer_core.pop("attestation_hash")
+    tampered["attestation_hash"] = C.stable_hash(outer_core)
+    reasons = C._basic_attestation_reasons(tampered, fold_returns)
+    assert "replay_parameter_stability_score_mismatch" in reasons
+
+
+def test_canonical_builder_derives_stability_and_rejects_fake_override(monkeypatch):
+    _require_native_replay()
+    rows = _rows()
+    monkeypatch.setattr(C, "load_candles", lambda kind, symbol, granularity: copy.deepcopy(rows))
+    config = {"period": 14, "oversold": 30.0, "overbought": 70.0}
+    evidence = C.build_alpha_evidence_from_canonical_replay(
+        candidate_id="challenger-derived-stability",
+        candidate_source_sha="a" * 40,
+        candidate_config=config,
+        strategy_name="rsi_revert",
+        strategy_config=config,
+        symbol="BTC-USD",
+        granularity=3600,
+        net_pnl_after_cost_usd=10.0,
+        cost_coverage_ratio=2.0,
+        regimes_tested=["up", "down", "range"],
+        accounting_invariants_ok=True,
+        lineage_verified=True,
+        n_folds=3,
+        warmup=14,
+        bootstrap_samples=20,
+        created_at="2026-09-10T12:00:00+00:00",
+    )
+    derived = evidence["replay_attestation"]["parameter_stability"]["score"]
+    assert evidence["parameter_stability_score"] == derived
+    fake = 0.0 if derived != 0.0 else 1.0
+    with pytest.raises(ValueError, match="does not match replay-derived stability"):
+        C.build_alpha_evidence_from_canonical_replay(
+            candidate_id="challenger-derived-stability",
+            candidate_source_sha="a" * 40,
+            candidate_config=config,
+            strategy_name="rsi_revert",
+            strategy_config=config,
+            symbol="BTC-USD",
+            granularity=3600,
+            net_pnl_after_cost_usd=10.0,
+            cost_coverage_ratio=2.0,
+            regimes_tested=["up", "down", "range"],
+            accounting_invariants_ok=True,
+            lineage_verified=True,
+            parameter_stability_score=fake,
+            n_folds=3,
+            warmup=14,
+            bootstrap_samples=20,
+            created_at="2026-09-10T12:00:00+00:00",
+        )
