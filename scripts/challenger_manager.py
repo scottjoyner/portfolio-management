@@ -106,7 +106,7 @@ def evaluate_challenger(
 
 def evaluate_challenger_evidence(
     incumbent: dict[str, Any],
-    evidence: dict[str, Any],
+    evidence: Any,
     thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Verify immutable alpha evidence before applying the metric gate."""
@@ -200,7 +200,7 @@ class ChallengerRegistry:
         challenger_metrics: dict[str, Any] | None = None,
         thresholds: dict[str, Any] | None = None,
         *,
-        validation_evidence: dict[str, Any] | None = None,
+        validation_evidence: Any = None,
     ) -> dict[str, Any]:
         """Evaluate a proposed challenger, requiring canonical evidence.
 
@@ -224,6 +224,8 @@ class ChallengerRegistry:
                 "evidence_hash": None,
                 "evidence_schema_version": None,
             }
+        elif not isinstance(validation_evidence, dict):
+            result = evaluate_challenger_evidence(incumbent_metrics, validation_evidence, thresholds)
         elif validation_evidence.get("candidate_id") != challenger_id:
             result = {
                 "approved": False,
@@ -253,8 +255,12 @@ class ChallengerRegistry:
         challenger["status"] = "approved" if result["approved"] else "rejected"
         challenger["evaluation"] = result
         challenger["evaluation_lineage_id"] = event["id"]
-        if result.get("evidence_hash"):
+        if result["approved"] and isinstance(validation_evidence, dict):
             challenger["alpha_validation_evidence_hash"] = result["evidence_hash"]
+            challenger["alpha_validation_evidence"] = validation_evidence
+        else:
+            challenger.pop("alpha_validation_evidence_hash", None)
+            challenger.pop("alpha_validation_evidence", None)
         self.save(registry)
         return result
 
@@ -263,11 +269,21 @@ class ChallengerRegistry:
         challenger = next((row for row in registry["challengers"] if row["id"] == challenger_id), None)
         if not challenger:
             raise KeyError(challenger_id)
-        if challenger.get("status") != "approved":
+        if challenger.get("status") != "approved" or challenger.get("evaluation", {}).get("approved") is not True:
             raise ValueError("challenger has not passed the promotion gate")
+
+        evidence = challenger.get("alpha_validation_evidence")
         evidence_hash = challenger.get("alpha_validation_evidence_hash")
-        if not evidence_hash:
-            raise ValueError("challenger has no verified alpha-validation evidence")
+        valid, evidence_reasons = verify_alpha_validation_evidence(evidence)
+        if not valid:
+            raise ValueError("challenger alpha-validation evidence is invalid: " + ",".join(evidence_reasons))
+        if evidence.get("candidate_id") != challenger_id:
+            raise ValueError("challenger alpha-validation candidate mismatch")
+        if evidence.get("evidence_hash") != evidence_hash:
+            raise ValueError("challenger alpha-validation evidence hash mismatch")
+        if challenger.get("evaluation", {}).get("evidence_hash") != evidence_hash:
+            raise ValueError("challenger evaluation/evidence hash mismatch")
+
         previous = None
         if self.active_config_path.exists():
             previous = json.loads(self.active_config_path.read_text(encoding="utf-8"))
