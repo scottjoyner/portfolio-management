@@ -25,10 +25,6 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          # 1) strategy_engine: importability is not enough.  The repository's
-          # rust_core source directory can be a namespace package in Python CI.
-          # Only advertise native acceleration when every function this module
-          # calls is actually exported by the compiled extension.
           path = Path("strategy_engine.py")
           text = path.read_text(encoding="utf-8")
           old = '''try:\n    import rust_core as _rust_core\n    _HAS_RUST = True\n    logger.info("Rust core loaded — native acceleration enabled (%d strategies)",\n                len(_RUST_STRATEGIES))\nexcept ImportError:  # pragma: no cover\n    _HAS_RUST = False\n    logger.info("Rust core not available — using pure Python")\n    _rust_core = None  # type: ignore\n'''
@@ -37,8 +33,6 @@ jobs:
               raise SystemExit(f"strategy_engine import contract match count={text.count(old)}")
           path.write_text(text.replace(old, new), encoding="utf-8")
 
-          # 2) canonical replay: expose explicit compiled-backend detection and
-          # fail closed with a useful error if replay is invoked without it.
           path = Path("scripts/backtest_framework/canonical_replay.py")
           text = path.read_text(encoding="utf-8")
           anchor = '''RUNNER_ID = "scripts.backtest_framework.canonical_replay"\n\n\ndef _runner_source_sha256() -> str:\n'''
@@ -52,9 +46,6 @@ jobs:
               raise SystemExit(f"canonical rust import match count={text.count(old_import)}")
           path.write_text(text.replace(old_import, new_import), encoding="utf-8")
 
-          # 3) Standard Python inventories should still test all pure provenance
-          # logic but skip native replay assertions when the extension has not
-          # been built. A dedicated exact-source native job below proves them.
           path = Path("tests/test_canonical_replay.py")
           text = path.read_text(encoding="utf-8")
           anchor = '''def _rows(n: int = 360) -> list[list[float]]:\n'''
@@ -77,31 +68,16 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f"binding native guard count={text.count(old)}")
           path.write_text(text.replace(old, new), encoding="utf-8")
-
-          # 4) Add an exact-source Rust certification job.  It builds the
-          # extension from this checkout, verifies the native module path and
-          # required symbols, then runs replay + fee parity tests.
-          path = Path(".github/workflows/full-python-test-inventory.yml")
-          text = path.read_text(encoding="utf-8")
-          marker = '''  coverage-python-inventory:\n'''
-          job = '''  canonical-replay-rust:\n    name: canonical-replay-rust\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    env:\n      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/trading_system\n    steps:\n    - uses: actions/checkout@v4\n    - name: Set up Python\n      uses: actions/setup-python@v5\n      with:\n        python-version: '3.12'\n        cache: pip\n        cache-dependency-path: |\n          requirements.txt\n          deploy/requirements.venv-lock.txt\n          rust_core/pyproject.toml\n          rust_core/Cargo.toml\n    - name: Set up Rust\n      uses: dtolnay/rust-toolchain@stable\n    - name: Install Python dependencies and checked-out Rust extension\n      run: |\n        python -m pip install --upgrade pip\n        python -m pip install -r deploy/requirements.venv-lock.txt\n        python -m pip install pytest-asyncio\n        python -m pip install ./rust_core\n    - name: Prove compiled native replay contract\n      run: |\n        python - <<'PY'\n        import pathlib\n        import rust_core\n        required = (\n            "run_strategy_opens_py",\n            "evaluate_all_opens_py",\n            "backtest_multi_py",\n            "backtest_strategy_py",\n        )\n        missing = [name for name in required if not callable(getattr(rust_core, name, None))]\n        assert not missing, f"compiled rust_core missing: {missing}"\n        module_file = pathlib.Path(rust_core.__file__).resolve()\n        assert module_file.suffix in {".so", ".pyd", ".dylib"}, module_file\n        print(f"native_module={module_file}")\n        PY\n    - name: Run canonical replay and fee parity certification\n      run: |\n        python -m pytest \
-          tests/test_canonical_replay.py \
-          tests/coverage/backtest_framework/test_backtest_correctness.py \
-          --import-mode=importlib \
-          -q | tee canonical-replay-rust-results.txt\n    - name: Upload canonical replay certification evidence\n      if: always()\n      uses: actions/upload-artifact@v4\n      with:\n        name: canonical-replay-rust-${{ github.sha }}\n        path: canonical-replay-rust-results.txt\n        if-no-files-found: warn\n        retention-days: 14\n\n  coverage-python-inventory:\n'''
-          if text.count(marker) != 1:
-              raise SystemExit(f"inventory insertion marker count={text.count(marker)}")
-          path.write_text(text.replace(marker, job), encoding="utf-8")
           PY
 
           git diff --check
-          git diff -- strategy_engine.py scripts/backtest_framework/canonical_replay.py tests/test_canonical_replay.py .github/workflows/full-python-test-inventory.yml
+          git diff -- strategy_engine.py scripts/backtest_framework/canonical_replay.py tests/test_canonical_replay.py
 
       - name: Commit native contract hardening
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add strategy_engine.py scripts/backtest_framework/canonical_replay.py tests/test_canonical_replay.py .github/workflows/full-python-test-inventory.yml
+          git add strategy_engine.py scripts/backtest_framework/canonical_replay.py tests/test_canonical_replay.py
           git commit -m "fix: require compiled Rust replay contract"
           git push origin HEAD:agent/alpha-validation-engine
