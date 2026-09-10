@@ -188,7 +188,7 @@ pub fn backtest_strategy(
     }
 
     let total_trades = trades.len();
-    if total_trades < 2 {
+    if total_trades == 0 {
         return BacktestVerdict {
             strategy: strategy_name.to_string(),
             total_trades,
@@ -291,14 +291,18 @@ mod tests {
     }
 
     #[test]
-    fn test_too_few_trades_monotonic() {
-        // Strictly increasing -> single BUY, no SELL -> 1 trade -> "Too few".
-        let n = 60usize;
-        let closes: Vec<f64> = (0..n).map(|i| 100.0 + i as f64).collect();
+    fn test_one_trade_metrics_are_preserved() {
+        // Sixty flat bars seed equal EMAs. The first step to 120 creates one
+        // bullish crossover; the plateau prevents a bearish crossover, so the
+        // final force-close produces exactly one completed trade.
+        let mut closes = vec![100.0; 60];
+        closes.extend(vec![120.0; 20]);
         let verdict = bt("ema_cross", &closes, 21);
-        assert!(verdict.total_trades < 2);
+        assert_eq!(verdict.total_trades, 1);
         assert!(!verdict.passed);
-        assert_eq!(verdict.reason, "Too few trades");
+        assert_eq!(verdict.reason, "Below thresholds");
+        assert!(verdict.total_return_pct.is_finite());
+        assert!(verdict.avg_trade_pct.is_finite());
     }
 
     #[test]

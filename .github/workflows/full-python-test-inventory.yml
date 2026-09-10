@@ -78,6 +78,91 @@ jobs:
         if-no-files-found: warn
         retention-days: 14
 
+  canonical-replay-rust:
+    name: canonical-replay-rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          requirements.txt
+          deploy/requirements.venv-lock.txt
+          pyproject.toml
+          rust_core/Cargo.toml
+          rust_core/Cargo.lock
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Install Python dependencies and checked-out Rust package
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -r deploy/requirements.venv-lock.txt
+        python -m pip install pytest-asyncio
+        python -m pip install .
+    - name: Prove compiled native replay contract
+      run: |
+        site_dir="$(python -c 'import site; print(site.getsitepackages()[0])')"
+        cd /tmp
+        PYTHONPATH="$site_dir" python - <<'PY'
+        import importlib
+        import pathlib
+        import rust_core
+
+        native = importlib.import_module("rust_core.rust_core")
+        required = (
+            "run_strategy_opens_py",
+            "evaluate_all_opens_py",
+            "backtest_multi_py",
+            "backtest_strategy_py",
+        )
+        assert rust_core.RUST_CORE_AVAILABLE is True
+        missing = [name for name in required if not callable(getattr(rust_core, name, None))]
+        assert not missing, f"rust_core package missing native exports: {missing}"
+        module_file = pathlib.Path(native.__file__).resolve()
+        assert module_file.suffix in {".so", ".pyd", ".dylib"}, module_file
+        print(f"native_module={module_file}")
+        PY
+    - name: Run canonical replay and fee parity certification
+      run: |
+        set -o pipefail
+        site_dir="$(python -c 'import site; print(site.getsitepackages()[0])')"
+        cd /tmp
+        PYTHONPATH="$site_dir" python - <<'PY' | tee "${GITHUB_WORKSPACE}/canonical-replay-rust-results.txt"
+        import os
+        import pathlib
+        import rust_core
+        import sys
+        import pytest
+
+        workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+        assert rust_core.RUST_CORE_AVAILABLE is True
+        assert callable(rust_core.backtest_strategy_py)
+        assert "site-packages" in str(pathlib.Path(rust_core.__file__).resolve())
+
+        # Keep the already-certified installed native package cached in
+        # sys.modules, then expose the checkout for strategy/replay source.
+        sys.path.insert(1, str(workspace))
+        sys.path.insert(2, str(workspace / "trading_system"))
+        raise SystemExit(pytest.main([
+            str(workspace / "tests/test_canonical_replay.py"),
+            str(workspace / "tests/coverage/backtest_framework/test_backtest_correctness.py"),
+            "--import-mode=importlib",
+            "-q",
+        ]))
+        PY
+    - name: Upload canonical replay certification evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: canonical-replay-rust-${{ github.sha }}
+        path: canonical-replay-rust-results.txt
+        if-no-files-found: warn
+        retention-days: 14
+
   coverage-python-inventory:
     name: coverage-python-inventory-${{ matrix.shard }}
     runs-on: ubuntu-latest

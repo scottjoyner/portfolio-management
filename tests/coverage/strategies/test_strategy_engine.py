@@ -724,6 +724,8 @@ def test_polymarket_fetch_fail():
 
 @pytest.fixture
 def with_rust():
+    if not se._HAS_RUST:
+        pytest.skip("compiled rust_core bindings unavailable in portable Python lane")
     with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):
         yield
 

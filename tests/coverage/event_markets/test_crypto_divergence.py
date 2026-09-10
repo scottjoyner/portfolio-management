@@ -344,8 +344,11 @@ class TestDetector(TestCase):
         self.assertEqual(r.signal, "PM_UNDERPRICING_YES")
 
     def test_analyze_fair(self):
+        # No explicit expiry + no end date exercises the detector's deterministic
+        # 0.5-year fallback. A calendar-dated market makes this assertion age as
+        # wall-clock time approaches expiry and eventually ceases to be FAIR.
         d = CryptoPriceDivergenceDetector(coinbase_prices={"BTC-USD": 85000.0})
-        m = mk_market("Will BTC reach $100k by Dec 2026?", mid=0.41)
+        m = mk_market("Will BTC reach $100k?", mid=0.41, end_date="")
         r = d.analyze(m)
         self.assertIsNotNone(r)
         self.assertEqual(r.signal, "FAIR")
@@ -509,4 +512,3 @@ def test_main_cointimeout(monkeypatch):
         with mock.patch.dict("os.environ", {}, clear=True):
             with mock.patch("coinbase.src.cb_client.CBClient", return_value=cb_mock):
                 CD.main()
-

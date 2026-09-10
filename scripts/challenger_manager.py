@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from scripts.alpha_validation import evidence_to_challenger_metrics, verify_alpha_validation_evidence
+from scripts.backtest_framework.canonical_replay import verify_evidence_replay_binding
 from scripts.learning_lineage import LineageStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +64,13 @@ def evaluate_challenger(
     challenger: dict[str, Any],
     thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Low-level metric gate.
+
+    New promotion workflows must reach this function through
+    :func:`evaluate_challenger_evidence`; the registry fails closed when no
+    canonical alpha-validation evidence is supplied.
+    """
+
     limits = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     reasons: list[str] = []
     if int(_num(challenger.get("total_trades"))) < int(limits["min_total_trades"]):
@@ -94,6 +103,71 @@ def evaluate_challenger(
         "thresholds": limits,
         "evaluated_at": _utc_now(),
     }
+
+
+def evaluate_challenger_evidence(
+    incumbent: dict[str, Any],
+    evidence: Any,
+    thresholds: dict[str, Any] | None = None,
+    *,
+    require_replay_provenance: bool = False,
+) -> dict[str, Any]:
+    """Verify immutable alpha evidence before applying the metric gate."""
+
+    valid, evidence_reasons = verify_alpha_validation_evidence(evidence)
+    if not valid:
+        return {
+            "approved": False,
+            "reasons": [f"alpha_validation_evidence_invalid:{reason}" for reason in evidence_reasons],
+            "pnl_improvement_usd": 0.0,
+            "drawdown_increase_pct_points": 0.0,
+            "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+            "evaluated_at": _utc_now(),
+            "evidence_hash": evidence.get("evidence_hash") if isinstance(evidence, dict) else None,
+            "evidence_schema_version": evidence.get("schema_version") if isinstance(evidence, dict) else None,
+        }
+
+    if require_replay_provenance:
+        if evidence.get("replay_provenance_bound") is not True:
+            return {
+                "approved": False,
+                "reasons": ["alpha_validation_replay_provenance_required"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
+        replay_valid, replay_reasons = verify_evidence_replay_binding(
+            evidence, reverify_source=True
+        )
+        if not replay_valid:
+            return {
+                "approved": False,
+                "reasons": [
+                    f"alpha_validation_replay_invalid:{reason}"
+                    for reason in replay_reasons
+                ],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
+
+    challenger_metrics = evidence_to_challenger_metrics(evidence)
+    result = evaluate_challenger(incumbent, challenger_metrics, thresholds)
+    detailed_failures = [f"alpha_validation:{reason}" for reason in evidence.get("fail_reasons", [])]
+    if detailed_failures:
+        result["reasons"] = list(dict.fromkeys([*result["reasons"], *detailed_failures]))
+        result["approved"] = False
+    result["evidence_hash"] = evidence["evidence_hash"]
+    result["evidence_schema_version"] = evidence["schema_version"]
+    result["candidate_id"] = evidence["candidate_id"]
+    result["challenger_metrics"] = challenger_metrics
+    return result
 
 
 class ChallengerRegistry:
@@ -156,20 +230,70 @@ class ChallengerRegistry:
         self,
         challenger_id: str,
         incumbent_metrics: dict[str, Any],
-        challenger_metrics: dict[str, Any],
+        challenger_metrics: dict[str, Any] | None = None,
         thresholds: dict[str, Any] | None = None,
+        *,
+        validation_evidence: Any = None,
     ) -> dict[str, Any]:
+        """Evaluate a proposed challenger, requiring canonical evidence.
+
+        `challenger_metrics` is retained only for call compatibility and audit
+        visibility. It can no longer authorize promotion by itself.
+        """
+
         registry = self.load()
         challenger = next((row for row in registry["challengers"] if row["id"] == challenger_id), None)
         if not challenger:
             raise KeyError(challenger_id)
-        result = evaluate_challenger(incumbent_metrics, challenger_metrics, thresholds)
+
+        if validation_evidence is None:
+            result = {
+                "approved": False,
+                "reasons": ["alpha_validation_evidence_required"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": None,
+                "evidence_schema_version": None,
+            }
+        elif not isinstance(validation_evidence, dict):
+            result = evaluate_challenger_evidence(incumbent_metrics, validation_evidence, thresholds)
+        elif validation_evidence.get("candidate_id") != challenger_id:
+            result = {
+                "approved": False,
+                "reasons": ["alpha_validation_candidate_mismatch"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": validation_evidence.get("evidence_hash"),
+                "evidence_schema_version": validation_evidence.get("schema_version"),
+            }
+        elif validation_evidence.get("candidate_config") != challenger.get("parameters"):
+            result = {
+                "approved": False,
+                "reasons": ["alpha_validation_candidate_config_mismatch"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": validation_evidence.get("evidence_hash"),
+                "evidence_schema_version": validation_evidence.get("schema_version"),
+            }
+        else:
+            result = evaluate_challenger_evidence(
+                incumbent_metrics, validation_evidence, thresholds,
+                require_replay_provenance=True,
+            )
+
         event = self.lineage.append(
             "evaluation",
             {
                 "challenger_id": challenger_id,
                 "incumbent_metrics": incumbent_metrics,
-                "challenger_metrics": challenger_metrics,
+                "legacy_challenger_metrics": challenger_metrics or {},
+                "alpha_validation_evidence_hash": result.get("evidence_hash"),
                 "result": result,
             },
             actor="promotion-gate",
@@ -178,6 +302,12 @@ class ChallengerRegistry:
         challenger["status"] = "approved" if result["approved"] else "rejected"
         challenger["evaluation"] = result
         challenger["evaluation_lineage_id"] = event["id"]
+        if result["approved"] and isinstance(validation_evidence, dict):
+            challenger["alpha_validation_evidence_hash"] = result["evidence_hash"]
+            challenger["alpha_validation_evidence"] = validation_evidence
+        else:
+            challenger.pop("alpha_validation_evidence_hash", None)
+            challenger.pop("alpha_validation_evidence", None)
         self.save(registry)
         return result
 
@@ -186,8 +316,33 @@ class ChallengerRegistry:
         challenger = next((row for row in registry["challengers"] if row["id"] == challenger_id), None)
         if not challenger:
             raise KeyError(challenger_id)
-        if challenger.get("status") != "approved":
+        if challenger.get("status") != "approved" or challenger.get("evaluation", {}).get("approved") is not True:
             raise ValueError("challenger has not passed the promotion gate")
+
+        evidence = challenger.get("alpha_validation_evidence")
+        evidence_hash = challenger.get("alpha_validation_evidence_hash")
+        valid, evidence_reasons = verify_alpha_validation_evidence(evidence)
+        if not valid:
+            raise ValueError("challenger alpha-validation evidence is invalid: " + ",".join(evidence_reasons))
+        if evidence.get("replay_provenance_bound") is not True:
+            raise ValueError("challenger alpha-validation replay provenance is required")
+        replay_valid, replay_reasons = verify_evidence_replay_binding(
+            evidence, reverify_source=True
+        )
+        if not replay_valid:
+            raise ValueError(
+                "challenger alpha-validation replay provenance is invalid: "
+                + ",".join(replay_reasons)
+            )
+        if evidence.get("candidate_id") != challenger_id:
+            raise ValueError("challenger alpha-validation candidate mismatch")
+        if evidence.get("candidate_config") != challenger.get("parameters"):
+            raise ValueError("challenger alpha-validation candidate config mismatch")
+        if evidence.get("evidence_hash") != evidence_hash:
+            raise ValueError("challenger alpha-validation evidence hash mismatch")
+        if challenger.get("evaluation", {}).get("evidence_hash") != evidence_hash:
+            raise ValueError("challenger evaluation/evidence hash mismatch")
+
         previous = None
         if self.active_config_path.exists():
             previous = json.loads(self.active_config_path.read_text(encoding="utf-8"))
@@ -197,13 +352,18 @@ class ChallengerRegistry:
             "parameters": challenger["parameters"],
             "deployment": "canary",
             "canary_fraction": max(0.01, min(1.0, _num(canary_fraction, 0.10))),
+            "alpha_validation_evidence_hash": evidence_hash,
             "promoted_at": _utc_now(),
             "rollback_config": previous,
             "promotion_lineage_id": None,
         }
         event = self.lineage.append(
             "promotion",
-            {"challenger_id": challenger_id, "canary_fraction": config["canary_fraction"]},
+            {
+                "challenger_id": challenger_id,
+                "canary_fraction": config["canary_fraction"],
+                "alpha_validation_evidence_hash": evidence_hash,
+            },
             actor="promotion-gate",
             parents=[challenger["evaluation_lineage_id"]],
         )
@@ -212,7 +372,14 @@ class ChallengerRegistry:
         challenger["status"] = "canary"
         challenger["promotion_lineage_id"] = event["id"]
         registry["incumbent_id"] = challenger_id
-        registry["promotions"].append({"challenger_id": challenger_id, "at": _utc_now(), "lineage_id": event["id"]})
+        registry["promotions"].append(
+            {
+                "challenger_id": challenger_id,
+                "at": _utc_now(),
+                "lineage_id": event["id"],
+                "alpha_validation_evidence_hash": evidence_hash,
+            }
+        )
         self.save(registry)
         return config
 
