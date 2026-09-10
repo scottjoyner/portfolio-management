@@ -1,0 +1,121 @@
+name: One-shot backtest semantic parity repair v3
+
+on:
+  push:
+    branches:
+      - agent/alpha-validation-engine
+    paths:
+      - .github/workflows/patch-backtest-semantic-parity-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/alpha-validation-engine
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply semantic repair plus Rust call-site updates
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/patch-backtest-semantic-parity-v2.yml').read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "          PY\n          git diff --check"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          lines = workflow[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          exec(compile(script, '<semantic-parity-v2>', 'exec'), globals(), globals())
+
+          def replace_once(path: str, old: str, new: str, label: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              'rust_core/src/lib.rs',
+              'let bt = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()), None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0).unwrap();',
+              'let bt = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()), None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0, 3).unwrap();',
+              'binding unit test full-data min_trades',
+          )
+          replace_once(
+              'rust_core/src/lib.rs',
+              'let bt2 = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, None, None, None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0).unwrap();',
+              'let bt2 = backtest_strategy_py("ema_cross", c.clone(), v.clone(), 20, None, None, None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0, 3).unwrap();',
+              'binding unit test minimal-data min_trades',
+          )
+          replace_once(
+              'rust_core/src/lib.rs',
+              'let multi = backtest_multi_py(vec!["ema_cross".to_string(), "rsi_revert".to_string()], c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()), None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0);',
+              'let multi = backtest_multi_py(vec!["ema_cross".to_string(), "rsi_revert".to_string()], c.clone(), v.clone(), 20, Some(h.clone()), Some(l.clone()), None, 0.0, 0, 0.50, 0.5, 1.20, 15.0, -10.0, 3);',
+              'batch binding unit test min_trades',
+          )
+          replace_once(
+              'rust_core/src/backtest.rs',
+              '''        assert!(verdict.total_trades < 2);\n        assert!(!verdict.passed);\n        assert_eq!(verdict.reason, "Too few trades");\n''',
+              '''        assert_eq!(verdict.total_trades, 1);\n        assert!(!verdict.passed);\n        assert_eq!(verdict.reason, "Below thresholds");\n        assert!(verdict.total_return_pct.is_finite());\n        assert!(verdict.avg_trade_pct.is_finite());\n''',
+              'one-trade Rust metric preservation test',
+          )
+          PY
+          git diff --check
+          git diff --stat
+
+      - name: Run Rust unit tests
+        working-directory: rust_core
+        run: cargo test --locked
+
+      - name: Run portable Python correctness tests
+        run: |
+          python -m pip install -q -r deploy/requirements.venv-lock.txt
+          python -m pytest \
+            tests/coverage/backtest_framework/test_backtest_correctness.py \
+            tests/test_canonical_replay.py \
+            --import-mode=importlib -q
+
+      - name: Build package and run native parity tests
+        shell: bash
+        run: |
+          python -m pip install -q .
+          cd /tmp
+          python - <<'PY'
+          import os
+          import pathlib
+          import rust_core
+          import sys
+          import pytest
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          assert rust_core.RUST_CORE_AVAILABLE is True
+          sys.path.insert(1, str(workspace))
+          sys.path.insert(2, str(workspace / 'trading_system'))
+          raise SystemExit(pytest.main([
+              str(workspace / 'tests/coverage/backtest_framework/test_backtest_correctness.py'),
+              str(workspace / 'tests/test_canonical_replay.py'),
+              '--import-mode=importlib', '-q',
+          ]))
+          PY
+
+      - name: Commit semantic parity repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/workflows/patch-backtest-semantic-parity.yml \
+                    .github/workflows/patch-backtest-semantic-parity-v2.yml
+          git add rust_core/src/backtest.rs rust_core/src/lib.rs strategy_engine.py \
+            tests/test_canonical_replay.py tests/coverage/backtest_framework/test_backtest_correctness.py
+          git commit -m "fix: unify Python and Rust backtest semantics"
+          git push origin HEAD:agent/alpha-validation-engine
