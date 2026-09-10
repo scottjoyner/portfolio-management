@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.alpha_validation import evidence_to_challenger_metrics, verify_alpha_validation_evidence
+from scripts.backtest_framework.canonical_replay import verify_evidence_replay_binding
 from scripts.learning_lineage import LineageStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -108,6 +109,8 @@ def evaluate_challenger_evidence(
     incumbent: dict[str, Any],
     evidence: Any,
     thresholds: dict[str, Any] | None = None,
+    *,
+    require_replay_provenance: bool = False,
 ) -> dict[str, Any]:
     """Verify immutable alpha evidence before applying the metric gate."""
 
@@ -123,6 +126,36 @@ def evaluate_challenger_evidence(
             "evidence_hash": evidence.get("evidence_hash") if isinstance(evidence, dict) else None,
             "evidence_schema_version": evidence.get("schema_version") if isinstance(evidence, dict) else None,
         }
+
+    if require_replay_provenance:
+        if evidence.get("replay_provenance_bound") is not True:
+            return {
+                "approved": False,
+                "reasons": ["alpha_validation_replay_provenance_required"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
+        replay_valid, replay_reasons = verify_evidence_replay_binding(
+            evidence, reverify_source=True
+        )
+        if not replay_valid:
+            return {
+                "approved": False,
+                "reasons": [
+                    f"alpha_validation_replay_invalid:{reason}"
+                    for reason in replay_reasons
+                ],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
 
     challenger_metrics = evidence_to_challenger_metrics(evidence)
     result = evaluate_challenger(incumbent, challenger_metrics, thresholds)
@@ -238,7 +271,10 @@ class ChallengerRegistry:
                 "evidence_schema_version": validation_evidence.get("schema_version"),
             }
         else:
-            result = evaluate_challenger_evidence(incumbent_metrics, validation_evidence, thresholds)
+            result = evaluate_challenger_evidence(
+                incumbent_metrics, validation_evidence, thresholds,
+                require_replay_provenance=True,
+            )
 
         event = self.lineage.append(
             "evaluation",
@@ -277,6 +313,16 @@ class ChallengerRegistry:
         valid, evidence_reasons = verify_alpha_validation_evidence(evidence)
         if not valid:
             raise ValueError("challenger alpha-validation evidence is invalid: " + ",".join(evidence_reasons))
+        if evidence.get("replay_provenance_bound") is not True:
+            raise ValueError("challenger alpha-validation replay provenance is required")
+        replay_valid, replay_reasons = verify_evidence_replay_binding(
+            evidence, reverify_source=True
+        )
+        if not replay_valid:
+            raise ValueError(
+                "challenger alpha-validation replay provenance is invalid: "
+                + ",".join(replay_reasons)
+            )
         if evidence.get("candidate_id") != challenger_id:
             raise ValueError("challenger alpha-validation candidate mismatch")
         if evidence.get("evidence_hash") != evidence_hash:
