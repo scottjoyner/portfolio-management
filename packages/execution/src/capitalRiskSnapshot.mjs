@@ -677,3 +677,4 @@ export function evaluateCapitalRiskSnapshot(snapshot, options = {}) {
     policyVersion: snapshot?.policyVersion || CAPITAL_RISK_POLICY_VERSION,
   };
   return { ...core, decisionHash: stableHash(core) };
+}
