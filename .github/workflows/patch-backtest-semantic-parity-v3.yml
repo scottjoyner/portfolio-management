@@ -70,6 +70,18 @@ jobs:
               '''    #[test]\n    fn test_one_trade_metrics_are_preserved() {\n        // Sixty flat bars seed equal EMAs. The first step to 120 creates one\n        // bullish crossover; the plateau prevents a bearish crossover, so the\n        // final force-close produces exactly one completed trade.\n        let mut closes = vec![100.0; 60];\n        closes.extend(vec![120.0; 20]);\n        let verdict = bt("ema_cross", &closes, 21);\n        assert_eq!(verdict.total_trades, 1);\n        assert!(!verdict.passed);\n        assert_eq!(verdict.reason, "Below thresholds");\n        assert!(verdict.total_return_pct.is_finite());\n        assert!(verdict.avg_trade_pct.is_finite());\n    }\n''',
               'deterministic one-trade Rust metric preservation test',
           )
+          replace_once(
+              'tests/coverage/backtest_framework/test_backtest_correctness.py',
+              '''def test_sharpe_parity_python_vs_rust():\n    closes = _wave_sin(300)\n''',
+              '''def test_sharpe_parity_python_vs_rust():\n    if not S._HAS_RUST:\n        pytest.skip("native Rust extension required")\n    closes = _wave_sin(300)\n''',
+              'native-only Sharpe parity classification',
+          )
+          replace_once(
+              'tests/coverage/backtest_framework/test_backtest_correctness.py',
+              '''def test_backtest_pass_single_sourced():\n    p = S.BACKTEST_PASS\n''',
+              '''def test_backtest_pass_single_sourced():\n    if not S._HAS_RUST:\n        pytest.skip("native Rust extension required")\n    p = S.BACKTEST_PASS\n''',
+              'native-only threshold parity classification',
+          )
           PY
           git diff --check
           git diff --stat
