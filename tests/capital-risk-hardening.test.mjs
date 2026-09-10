@@ -195,6 +195,24 @@ test('same-account pending cash is reserved even when it belongs to another symb
   assert.ok(decision.reasons.includes('insufficient_balance'));
 });
 
+test('pending execution without account lineage fails closed instead of escaping capital accounting', () => {
+  const state = stateFixture();
+  state.executions.push({
+    id: 'pending-unscoped',
+    symbol: 'ETH-USD',
+    side: 'buy',
+    status: 'draft',
+    notional: 1000,
+    orders: [{ symbol: 'ETH-USD', side: 'buy', quantity: 1, price: 1000 }],
+    fills: [],
+  });
+  const { snapshot, decision } = evaluate(state);
+
+  assert.deepEqual(snapshot.pendingExecutionState.unscopedExecutionIds, ['pending-unscoped']);
+  assert.equal(decision.approved, false);
+  assert.ok(decision.reasons.includes('capital_risk_missing:pending_execution_account_lineage:pending-unscoped'));
+});
+
 test('sell intent cannot pass without sufficient account-owned inventory', () => {
   const state = stateFixture();
   const intent = envelope({
@@ -205,6 +223,66 @@ test('sell intent cannot pass without sufficient account-owned inventory', () =>
 
   assert.equal(decision.approved, false);
   assert.ok(decision.reasons.includes('insufficient_balance'));
+});
+
+test('inventory-reducing sell lowers projected exposure instead of adding new notional', () => {
+  const state = stateFixture();
+  state.config.maxPositionSizeUsd = 50000;
+  state.positions.push({
+    id: 'position-btc-long',
+    accountId: 'acct-paper-primary',
+    symbol: 'BTC-USD',
+    side: 'long',
+    quantity: 0.5,
+    averagePrice: 100000,
+    markPrice: 100000,
+    status: 'open',
+    openedAt: NOW,
+    updatedAt: NOW,
+  });
+  const intent = envelope({
+    side: 'sell',
+    orders: [order({ side: 'sell', quantity: 0.1 })],
+  });
+  const { snapshot, decision } = evaluate(state, intent);
+
+  assert.equal(snapshot.positionState.currentExposureUsd, 50000);
+  assert.equal(snapshot.limits.orderNotionalUsd, 10000);
+  assert.equal(snapshot.limits.projectedExposureUsd, 40000);
+  assert.equal(decision.approved, true);
+});
+
+test('pending sell quantity and notional are both reserved before a second sell', () => {
+  const state = stateFixture();
+  state.positions.push({
+    id: 'position-btc-pending-sell',
+    accountId: 'acct-paper-primary',
+    symbol: 'BTC-USD',
+    side: 'long',
+    quantity: 0.5,
+    averagePrice: 100000,
+    markPrice: 100000,
+    status: 'open',
+  });
+  state.executions.push({
+    id: 'pending-btc-sell',
+    accountId: 'acct-paper-primary',
+    symbol: 'BTC-USD',
+    side: 'sell',
+    status: 'draft',
+    orders: [{ symbol: 'BTC-USD', venue: 'coinbase-paper', side: 'sell', quantity: 0.1, price: 100000 }],
+    fills: [],
+  });
+  const intent = envelope({
+    side: 'sell',
+    orders: [order({ side: 'sell', quantity: 0.1 })],
+  });
+  const { snapshot, decision } = evaluate(state, intent);
+
+  assert.equal(snapshot.pendingExecutionState.pendingSellQuantity, 0.1);
+  assert.equal(snapshot.pendingExecutionState.pendingSellExposureUsd, 10000);
+  assert.equal(snapshot.limits.projectedExposureUsd, 30000);
+  assert.equal(decision.approved, true);
 });
 
 test('economic forecast expiry constrains the capital-risk snapshot lifetime', () => {
