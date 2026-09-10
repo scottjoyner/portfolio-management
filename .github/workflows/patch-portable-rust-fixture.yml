@@ -1,0 +1,44 @@
+name: One-shot portable Rust fixture correction
+
+on:
+  push:
+    branches:
+      - agent/alpha-validation-engine
+    paths:
+      - .github/workflows/patch-portable-rust-fixture.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/alpha-validation-engine
+          fetch-depth: 1
+      - name: Make native-only coverage explicit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/coverage/strategies/test_strategy_engine.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''@pytest.fixture\ndef with_rust():\n    with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):\n        yield\n'''
+          new = '''@pytest.fixture\ndef with_rust():\n    if not se._HAS_RUST:\n        pytest.skip("compiled rust_core bindings unavailable in portable Python lane")\n    with patch("urllib.request.urlopen", side_effect=AssertionError("no network")):\n        yield\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"with_rust fixture match count={text.count(old)}")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          git diff --check
+          git diff -- tests/coverage/strategies/test_strategy_engine.py
+      - name: Commit fixture correction
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/coverage/strategies/test_strategy_engine.py
+          git commit -m "test: separate portable and native Rust coverage"
+          git push origin HEAD:agent/alpha-validation-engine
