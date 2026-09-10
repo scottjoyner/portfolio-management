@@ -3138,13 +3138,31 @@ def batch_backtest_rust(
             logger.debug("Rust batch backtest for %s failed: %s", currency, e)
     return results
 
+_RUST_REQUIRED_SYMBOLS = (
+    "run_strategy_opens_py",
+    "evaluate_all_opens_py",
+    "backtest_multi_py",
+    "backtest_strategy_py",
+)
+
 try:
     import rust_core as _rust_core
-    _HAS_RUST = True
-    logger.info("Rust core loaded — native acceleration enabled (%d strategies)",
-                len(_RUST_STRATEGIES))
+    _RUST_MISSING_SYMBOLS = tuple(
+        name for name in _RUST_REQUIRED_SYMBOLS
+        if not callable(getattr(_rust_core, name, None))
+    )
+    _HAS_RUST = not _RUST_MISSING_SYMBOLS
+    if _HAS_RUST:
+        logger.info("Rust core loaded — native acceleration enabled (%d strategies)",
+                    len(_RUST_STRATEGIES))
+    else:
+        logger.warning(
+            "rust_core import resolved without required native symbols %s — using pure Python",
+            ", ".join(_RUST_MISSING_SYMBOLS),
+        )
 except ImportError:  # pragma: no cover
     _HAS_RUST = False
+    _RUST_MISSING_SYMBOLS = _RUST_REQUIRED_SYMBOLS
     logger.info("Rust core not available — using pure Python")
     _rust_core = None  # type: ignore
 

@@ -10,6 +10,11 @@ from scripts.alpha_validation import build_alpha_validation_evidence
 from scripts.backtest_framework import canonical_replay as C
 
 
+def _require_native_replay() -> None:
+    if not C.canonical_rust_backend_available():
+        pytest.skip("compiled rust_core replay bindings unavailable")
+
+
 def _rows(n: int = 360) -> list[list[float]]:
     rows = []
     for i in range(n):
@@ -26,6 +31,7 @@ def _rows(n: int = 360) -> list[list[float]]:
 
 
 def _bound_evidence(rows: list[list[float]]) -> tuple[dict, dict]:
+    _require_native_replay()
     snapshot = C.snapshot_from_rows(
         rows,
         kind=C.DATASET_KIND,
@@ -76,8 +82,8 @@ def test_snapshot_hash_is_bound_to_exact_replayed_rows():
 
 
 def test_canonical_replay_trade_returns_match_rust_backtester():
-    if not S._HAS_RUST:
-        pytest.skip("Rust extension unavailable")
+    _require_native_replay()
+    assert S._HAS_RUST, "strategy_engine must recognize the compiled native backend"
 
     rows = _rows()
     snapshot = C.snapshot_from_rows(
@@ -151,6 +157,7 @@ def test_source_reverification_regenerates_rows_and_returns(monkeypatch):
 
 
 def test_binding_rejects_attestation_for_other_returns():
+    _require_native_replay()
     rows = _rows()
     snapshot = C.snapshot_from_rows(
         rows, kind=C.DATASET_KIND, symbol="BTC-USD", granularity=3600

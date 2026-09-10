@@ -41,6 +41,36 @@ ATTESTATION_SCHEMA_VERSION = 1
 ATTESTATION_TYPE = "canonical_feed_cache_rust_replay_v1"
 DATASET_KIND = "coinbase_candles"
 RUNNER_ID = "scripts.backtest_framework.canonical_replay"
+REQUIRED_RUST_SYMBOLS = ("run_strategy_opens_py", "backtest_strategy_py")
+
+
+def canonical_rust_backend_available() -> bool:
+    """Return True only for a compiled rust_core with replay-required exports."""
+
+    try:
+        import rust_core
+    except ImportError:
+        return False
+    return all(callable(getattr(rust_core, name, None)) for name in REQUIRED_RUST_SYMBOLS)
+
+
+def _require_rust_core():
+    """Return the compiled backend or fail closed on namespace/stale modules."""
+
+    try:
+        import rust_core
+    except ImportError as exc:
+        raise RuntimeError("compiled rust_core is required for canonical replay") from exc
+    missing = [
+        name for name in REQUIRED_RUST_SYMBOLS
+        if not callable(getattr(rust_core, name, None))
+    ]
+    if missing:
+        raise RuntimeError(
+            "compiled rust_core is missing required canonical replay symbols: "
+            + ", ".join(missing)
+        )
+    return rust_core
 
 
 def _runner_source_sha256() -> str:
@@ -186,10 +216,7 @@ def replay_trade_returns_rust(
     if len(normalized) < warmup + 10:
         return []
 
-    try:
-        import rust_core
-    except ImportError as exc:  # fail closed: this is the canonical Rust path
-        raise RuntimeError("rust_core is required for canonical replay") from exc
+    rust_core = _require_rust_core()
 
     closes = [row[4] for row in normalized]
     opens = list(closes)  # matches strategy_engine._rust_backtest_strategy default
