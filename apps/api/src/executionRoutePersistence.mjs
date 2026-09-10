@@ -232,7 +232,6 @@ export async function handleTargetedExecutionRoute({
   const engine = await getExecutionEngine();
   const now = new Date().toISOString();
   const riskContext = {
-    now,
     riskStateProvider: createRiskStateProvider(store, state),
   };
 
