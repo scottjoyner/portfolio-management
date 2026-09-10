@@ -43,6 +43,24 @@ def _evidence(candidate_id: str = "challenger-test") -> dict:
     )
 
 
+def _fixture_replay_bound(evidence: dict) -> dict:
+    """Bind registry-mechanics fixtures without pretending to test real replay.
+
+    The real canonical replay verifier is exercised in test_canonical_replay.py.
+    These registry tests only need an alpha artifact that survives re-hashing so
+    they can focus on persistence/promotion mechanics while the verifier call is
+    explicitly monkeypatched to success.
+    """
+    bound = copy.deepcopy(evidence)
+    bound.pop("evidence_hash", None)
+    bound["replay_attestation"] = {"fixture": "registry-mechanics-only"}
+    bound["replay_provenance_bound"] = True
+    bound["evidence_hash"] = stable_hash(bound)
+    valid, reasons = verify_alpha_validation_evidence(bound)
+    assert valid, reasons
+    return bound
+
+
 def test_stable_hash_is_order_independent():
     assert stable_hash({"b": 2, "a": 1}) == stable_hash({"a": 1, "b": 2})
 
@@ -229,9 +247,24 @@ def test_registry_rejects_evidence_for_different_candidate(tmp_path):
     assert result["reasons"] == ["alpha_validation_candidate_mismatch"]
 
 
-def test_registry_canary_carries_verified_evidence_hash(tmp_path):
+def test_registry_rejects_unbound_alpha_evidence(tmp_path):
     registry, challenger = _registry(tmp_path)
-    evidence = _evidence(challenger["id"])
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=_evidence(challenger["id"]),
+    )
+    assert result["approved"] is False
+    assert result["reasons"] == ["alpha_validation_replay_provenance_required"]
+
+
+def test_registry_canary_carries_verified_evidence_hash(tmp_path, monkeypatch):
+    registry, challenger = _registry(tmp_path)
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    monkeypatch.setattr(
+        "scripts.challenger_manager.verify_evidence_replay_binding",
+        lambda evidence, reverify_source=True: (True, []),
+    )
     result = registry.evaluate(
         challenger["id"],
         {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
@@ -250,9 +283,13 @@ def test_registry_canary_carries_verified_evidence_hash(tmp_path):
     assert persisted["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
 
 
-def test_registry_reverifies_persisted_evidence_at_promotion(tmp_path):
+def test_registry_reverifies_persisted_evidence_at_promotion(tmp_path, monkeypatch):
     registry, challenger = _registry(tmp_path)
-    evidence = _evidence(challenger["id"])
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    monkeypatch.setattr(
+        "scripts.challenger_manager.verify_evidence_replay_binding",
+        lambda evidence, reverify_source=True: (True, []),
+    )
     result = registry.evaluate(
         challenger["id"],
         {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
