@@ -5,7 +5,7 @@ Covers:
   P0-2  Walk-forward OOS folds are chronological, distinct, and future-safe.
   P0-3  Every rust strategy maps to a non-"other" independence group.
   P0-4  Python vs Rust Sharpe parity (same per-trade definition).
-  P1-5  Fee sensitivity: a thin-edge strategy fails under high fee_bps.
+  P1-5  Fee sensitivity and exact per-side basis-point arithmetic.
   P1-6  Pass thresholds are single-sourced (BACKTEST_PASS == Rust defaults).
   P1-7  max_hold_bars caps position lifetime (no free ride to last bar).
 """
@@ -17,6 +17,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 import math
+
+import pytest
 
 import strategy_engine as S
 from confidence_matrix import STRATEGY_GROUP
@@ -119,11 +121,9 @@ def test_specific_new_strategies_grouped():
 def test_sharpe_parity_python_vs_rust():
     closes = _wave_sin(300)
     volumes = [1000.0] * len(closes)
-    # Run the pure-python path by forcing a non-rust strategy that exists in
-    # ALL_STRATEGIES but is not in _RUST_STRATEGIES... fall back to a rust one
-    # and compare to the direct rust call via the same data.
+    # Run the public dispatcher and compare to its direct Rust path on the same
+    # inputs. This locks metric extraction/indexing at the Python/Rust boundary.
     py_v = S.backtest_strategy("ema_cross", "BTC", closes, volumes, warmup=21)
-    # Direct rust call (same engine) should match the python-dispatched rust call.
     rust_v = S._rust_backtest_strategy("ema_cross", "BTC", closes, volumes, warmup=21)
     assert rust_v is not None
     assert abs(py_v.sharpe_ratio - rust_v.sharpe_ratio) < 1e-9
@@ -134,7 +134,6 @@ def test_sharpe_parity_python_vs_rust():
 def test_sharpe_definition_matches_rust_formula():
     """Replicate the Rust sharpe formula on a known return series and confirm
     the python path computes the same value documented in backtest.rs."""
-    import math
     closes = _wave_sin(260)
     volumes = [1000.0] * len(closes)
     v = S.backtest_strategy("ema_cross", "BTC", closes, volumes, warmup=21)
@@ -145,7 +144,63 @@ def test_sharpe_definition_matches_rust_formula():
     assert -5.0 < v.sharpe_ratio < 5.0
 
 
-# ── P1-5: fee sensitivity ───────────────────────────────────────────
+# ── P1-5: fee sensitivity / exact basis-point semantics ─────────────
+def test_round_trip_fee_basis_points_arithmetic():
+    """10 bps per side is a 0.20 percentage-point round-trip cost, not 20%."""
+    cases = [
+        ("BUY", 100.0, 105.0, 4.8),
+        ("SELL", 100.0, 95.0, 4.8),
+        ("BUY", 100.0, 100.0, -0.2),
+    ]
+    for side, entry, exit_price, expected_return_pct in cases:
+        trades = []
+        equity = [1.0]
+        trade = S.BacktestTrade(entry_bar=0, entry_price=entry, side=side)
+        S._close_backtest_trade(
+            trade,
+            exit_price=exit_price,
+            exit_bar=1,
+            trades=trades,
+            equity=equity,
+            fee_bps=10.0,
+        )
+        assert trade.return_pct == pytest.approx(expected_return_pct, abs=1e-12)
+        assert trades == [trade]
+        assert equity[-1] == pytest.approx(1.0 + expected_return_pct / 100.0, abs=1e-12)
+
+
+def test_fee_basis_point_cost_matches_python_and_rust(monkeypatch):
+    """Both engines must charge 0.20 percentage points/trade at 10 bps/side."""
+    if not S._HAS_RUST:
+        pytest.skip("Rust extension unavailable")
+
+    closes = _wave_sin(320)
+    volumes = [1000.0] * len(closes)
+
+    # Force the public backtester down the pure-Python path.
+    monkeypatch.setattr(S, "_HAS_RUST", False)
+    py_free = S.backtest_strategy("ema_cross", "BTC", closes, volumes,
+                                  warmup=21, min_trades=1, fee_bps=0.0)
+    py_fee = S.backtest_strategy("ema_cross", "BTC", closes, volumes,
+                                 warmup=21, min_trades=1, fee_bps=10.0)
+
+    # Re-enable Rust and exercise the direct native path with identical inputs.
+    monkeypatch.setattr(S, "_HAS_RUST", True)
+    rust_free = S._rust_backtest_strategy("ema_cross", "BTC", closes, volumes,
+                                          warmup=21, fee_bps=0.0)
+    rust_fee = S._rust_backtest_strategy("ema_cross", "BTC", closes, volumes,
+                                         warmup=21, fee_bps=10.0)
+    assert rust_free is not None and rust_fee is not None
+
+    for free, fee in ((py_free, py_fee), (rust_free, rust_fee)):
+        assert free.total_trades == fee.total_trades
+        assert free.total_trades > 0
+        observed_cost_per_trade = (
+            free.total_return_pct - fee.total_return_pct
+        ) / free.total_trades
+        assert observed_cost_per_trade == pytest.approx(0.20, abs=1e-9)
+
+
 def test_fee_kills_thin_edge():
     # Mild uptrend with tiny oscillation: marginally profitable gross.
     closes = [100.0 + i * 0.05 + 0.03 * math.sin(i / 7.0) for i in range(300)]
@@ -179,8 +234,8 @@ def test_backtest_pass_single_sourced():
         p["min_win_rate"], p["min_sharpe"], p["min_profit_factor"],
         p["max_drawdown_pct"], p["min_total_return_pct"])
     default = rust_core.backtest_strategy_py("ema_cross", closes, volumes, 21)
-    # passed flag (index 8) must match between explicit(BACKTEST_PASS) and defaults.
-    assert explicit[8] == default[8]
+    # passed flag (index 9) must match between explicit(BACKTEST_PASS) and defaults.
+    assert explicit[9] == default[9]
 
 
 # ── P1-7: max_hold_bars cap ─────────────────────────────────────────
