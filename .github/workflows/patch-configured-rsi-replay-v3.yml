@@ -1,0 +1,150 @@
+name: One-shot configured RSI replay v3
+
+on:
+  push:
+    branches:
+      - agent/configured-rsi-replay
+    paths:
+      - .github/workflows/patch-configured-rsi-replay-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/configured-rsi-replay
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Apply guarded configured RSI replay patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/patch-configured-rsi-replay.yml').read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "          PY\n          git diff --check"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          lines = workflow[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+
+          def replace_labeled_call(source: str, label: str, replacement: str) -> str:
+              label_token = f"    '{label}',\n)"
+              label_pos = source.index(label_token)
+              call_start = source.rfind('replace_once(', 0, label_pos)
+              if call_start < 0:
+                  raise SystemExit(f'could not find replace_once start for {label}')
+              call_end = label_pos + len(label_token)
+              return source[:call_start] + replacement + source[call_end:]
+
+          builder_scoped = '''p = Path('scripts/backtest_framework/canonical_replay.py')
+text = p.read_text(encoding='utf-8')
+marker = 'def build_alpha_evidence_from_canonical_replay(\\n'
+start = text.index(marker)
+needle = '    snapshot = load_canonical_snapshot(\\n'
+pos = text.index(needle, start)
+insert = '    normalized_strategy_config = normalize_strategy_config(strategy_name, strategy_config)\\n    if normalized_strategy_config and candidate_config != normalized_strategy_config:\\n        raise ValueError("candidate_config must equal the executable strategy_config")\\n\\n'
+text = text[:pos] + insert + text[pos:]
+p.write_text(text, encoding='utf-8')'''
+          script = replace_labeled_call(
+              script, 'builder executable candidate config check', builder_scoped
+          )
+
+          evaluation_scoped = '''p = Path('scripts/challenger_manager.py')
+text = p.read_text(encoding='utf-8')
+fn_start = text.index('def evaluate_challenger_evidence(\\n')
+fn_end = text.index('\\n\\nclass ChallengerRegistry:', fn_start)
+segment = text[fn_start:fn_end]
+needle = '        replay_valid, replay_reasons = verify_evidence_replay_binding(\\n            evidence, reverify_source=True\\n        )\\n'
+if segment.count(needle) != 1:
+    raise SystemExit(f'evaluation replay verifier anchor count={segment.count(needle)}')
+replacement = '''        attestation = evidence.get("replay_attestation")
+        if not isinstance(attestation, dict) or attestation.get("execution_config_bound") is not True:
+            return {
+                "approved": False,
+                "reasons": ["alpha_validation_execution_config_binding_required"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
+        if attestation.get("strategy_config") != evidence.get("candidate_config"):
+            return {
+                "approved": False,
+                "reasons": ["alpha_validation_execution_config_mismatch"],
+                "pnl_improvement_usd": 0.0,
+                "drawdown_increase_pct_points": 0.0,
+                "thresholds": {**DEFAULT_THRESHOLDS, **(thresholds or {})},
+                "evaluated_at": _utc_now(),
+                "evidence_hash": evidence.get("evidence_hash"),
+                "evidence_schema_version": evidence.get("schema_version"),
+            }
+        replay_valid, replay_reasons = verify_evidence_replay_binding(
+            evidence, reverify_source=True
+        )
+'''
+segment = segment.replace(needle, replacement)
+text = text[:fn_start] + segment + text[fn_end:]
+p.write_text(text, encoding='utf-8')'''
+          script = replace_labeled_call(
+              script, 'evaluation executable-config gate', evaluation_scoped
+          )
+
+          exec(compile(script, '<configured-rsi-v3>', 'exec'), globals(), globals())
+          PY
+          git diff --check
+          git diff --stat
+
+      - name: Run Rust unit tests
+        working-directory: rust_core
+        run: cargo test --locked
+
+      - name: Run portable focused tests
+        run: |
+          python -m pip install -q -r deploy/requirements.venv-lock.txt
+          python -m pytest tests/test_alpha_validation.py tests/test_canonical_replay.py --import-mode=importlib -q
+
+      - name: Build exact Rust package and run native configured replay tests
+        shell: bash
+        run: |
+          python -m pip install -q .
+          cd /tmp
+          python - <<'PY'
+          import os
+          import pathlib
+          import rust_core
+          import sys
+          import pytest
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          assert rust_core.RUST_CORE_AVAILABLE is True
+          assert callable(rust_core.run_rsi_revert_opens_configured_py)
+          sys.path.insert(1, str(workspace))
+          sys.path.insert(2, str(workspace / 'trading_system'))
+          raise SystemExit(pytest.main([
+              str(workspace / 'tests/test_canonical_replay.py'),
+              str(workspace / 'tests/test_alpha_validation.py'),
+              '--import-mode=importlib', '-q',
+          ]))
+          PY
+
+      - name: Commit typed configured replay slice
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rust_core/src/strategies.rs rust_core/src/lib.rs \
+            scripts/backtest_framework/canonical_replay.py scripts/challenger_manager.py \
+            tests/test_canonical_replay.py tests/test_alpha_validation.py
+          git commit -m "feat: bind typed RSI parameters to canonical replay"
+          git push origin HEAD:agent/configured-rsi-replay
