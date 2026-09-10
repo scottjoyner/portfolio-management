@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Deterministic alpha-validation evidence for challenger promotion.
 
-This module deliberately contains no broker/order-routing code.  It turns already
+This module deliberately contains no broker/order-routing code. It turns already
 realized out-of-sample trade returns into reproducible validation evidence and
 provides leakage-safe walk-forward split boundaries for upstream backtest/replay
 runners.
 
 Return convention: decimal return per evaluated trade/period (0.01 == +1%).
 All evidence hashes use canonical JSON and reject NaN/Infinity.
+
+Important trust boundary: the verifier proves artifact integrity and recomputes
+all statistics from the embedded OOS observations. It does not, by itself,
+prove that those observations came from the claimed dataset. Dataset/replay
+attestation is a separate upstream requirement.
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -99,10 +104,10 @@ def generate_walk_forward_splits(
 
     `purge_size` removes observations immediately after the training sample that
     could still carry information from overlapping labels/holding periods.
-    `embargo_size` adds an additional no-train/no-test separation.  Both regions
+    `embargo_size` adds an additional no-train/no-test separation. Both regions
     are excluded from training and test data.
 
-    When `expanding=True`, every fold is anchored at index 0.  Otherwise a fixed
+    When `expanding=True`, every fold is anchored at index 0. Otherwise a fixed
     rolling train window of `train_size` observations is used.
     """
 
@@ -179,6 +184,8 @@ def _max_drawdown_pct(returns: Sequence[float]) -> float:
     worst = 0.0
     for ret in returns:
         equity *= 1.0 + ret
+        if not math.isfinite(equity):
+            raise ValueError("return path overflows finite equity")
         peak = max(peak, equity)
         if peak > 0:
             worst = max(worst, (peak - equity) / peak)
@@ -220,6 +227,8 @@ def performance_metrics(
         }
 
     equity = math.prod(1.0 + value for value in rows)
+    if not math.isfinite(equity):
+        raise ValueError("return path overflows finite equity")
     total_return = equity - 1.0
     mean_return = statistics.mean(rows)
     stdev = statistics.stdev(rows) if len(rows) > 1 else 0.0
@@ -233,12 +242,16 @@ def performance_metrics(
     gross_loss = abs(sum(value for value in rows if value < 0))
     profit_factor = gross_profit / max(gross_loss, 1e-12) if gross_profit > 0 else 0.0
 
-    # Annualize the geometric trade/period return only when mathematically valid.
-    annualized = equity ** (periods_per_year / len(rows)) - 1.0 if equity > 0 else -1.0
+    try:
+        annualized = equity ** (periods_per_year / len(rows)) - 1.0 if equity > 0 else -1.0
+    except OverflowError as exc:
+        raise ValueError("annualized return overflows finite range") from exc
+    if not math.isfinite(annualized):
+        raise ValueError("annualized return is not finite")
     max_dd = _max_drawdown_pct(rows)
     calmar = (annualized * 100.0) / max_dd if max_dd > 0 else (annualized * 100.0 if annualized > 0 else 0.0)
 
-    return {
+    metrics = {
         "trade_count": len(rows),
         "total_return_pct": round(total_return * 100.0, 10),
         "annualized_return_pct": round(annualized * 100.0, 10),
@@ -252,6 +265,9 @@ def performance_metrics(
         "expected_shortfall_pct": round(_expected_shortfall_pct(rows), 10),
         "win_rate": round(sum(1 for value in rows if value > 0) / len(rows), 10),
     }
+    if any(isinstance(value, float) and not math.isfinite(value) for value in metrics.values()):
+        raise ValueError("derived performance metric is not finite")
+    return metrics
 
 
 def bootstrap_robustness(
@@ -268,6 +284,7 @@ def bootstrap_robustness(
         return {
             "samples": 0,
             "seed": seed,
+            "ruin_fraction": ruin_fraction,
             "positive_fraction": 0.0,
             "probability_of_ruin": 1.0,
             "median_terminal_return_pct": 0.0,
@@ -287,6 +304,8 @@ def bootstrap_robustness(
         hit_ruin = False
         for _ in range(len(rows)):
             equity *= 1.0 + rows[rng.randrange(len(rows))]
+            if not math.isfinite(equity):
+                raise ValueError("bootstrap path overflows finite equity")
             if equity <= ruin_fraction:
                 hit_ruin = True
         terminal_return = equity - 1.0
@@ -301,6 +320,7 @@ def bootstrap_robustness(
     return {
         "samples": samples,
         "seed": seed,
+        "ruin_fraction": ruin_fraction,
         "positive_fraction": round(positive / samples, 10),
         "probability_of_ruin": round(ruined / samples, 10),
         "median_terminal_return_pct": round(statistics.median(terminals) * 100.0, 10),
@@ -336,41 +356,19 @@ def _stress_at_or_above(stress_rows: Sequence[dict[str, Any]], required_bps: flo
     return min(eligible, key=lambda row: float(row["extra_cost_bps"]))
 
 
-def build_alpha_validation_evidence(
+def _derive_validation(
+    normalized_folds: Sequence[Sequence[float]],
     *,
-    candidate_id: str,
-    candidate_source_sha: str,
-    candidate_config: dict[str, Any],
-    dataset_id: str,
-    dataset_hash: str,
-    fold_returns: Sequence[Sequence[float]],
-    net_pnl_after_cost_usd: float,
-    cost_coverage_ratio: float,
-    regimes_tested: Sequence[str],
+    limits: ValidationPolicy,
+    parameter_stability_score: float,
     accounting_invariants_ok: bool,
     lineage_verified: bool,
-    parameter_stability_score: float,
-    policy: ValidationPolicy | None = None,
-    stress_bps: Sequence[float] = (0.0, 10.0, 25.0, 50.0),
-    bootstrap_samples: int = 2000,
-    bootstrap_seed: int = 0,
-    periods_per_year: int = 252,
-    created_at: str | None = None,
+    stress_bps: Sequence[float],
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+    ruin_fraction: float,
+    periods_per_year: int,
 ) -> dict[str, Any]:
-    """Build a self-hashing, fail-closed validation evidence artifact."""
-
-    limits = policy or ValidationPolicy()
-    if not candidate_id or not candidate_source_sha or not dataset_id or not dataset_hash:
-        raise ValueError("candidate and dataset provenance fields are required")
-    pnl = float(net_pnl_after_cost_usd)
-    coverage = float(cost_coverage_ratio)
-    stability = float(parameter_stability_score)
-    if not all(math.isfinite(value) for value in (pnl, coverage, stability)):
-        raise ValueError("economic and stability metrics must be finite")
-    if not 0.0 <= stability <= 1.0:
-        raise ValueError("parameter_stability_score must be in [0, 1]")
-
-    normalized_folds = [_clean_returns(values) for values in fold_returns]
     fold_metrics = [
         {"fold": index, **performance_metrics(values, periods_per_year=periods_per_year)}
         for index, values in enumerate(normalized_folds)
@@ -381,13 +379,13 @@ def build_alpha_validation_evidence(
         all_returns,
         samples=bootstrap_samples,
         seed=bootstrap_seed,
+        ruin_fraction=ruin_fraction,
     )
     stressed = cost_stress_results(
         all_returns,
         stress_bps=stress_bps,
         periods_per_year=periods_per_year,
     )
-
     positive_fold_fraction = (
         sum(1 for row in fold_metrics if row["total_return_pct"] > 0) / len(fold_metrics)
         if fold_metrics else 0.0
@@ -413,30 +411,17 @@ def build_alpha_validation_evidence(
         fail_reasons.append("required_cost_stress_missing")
     elif required_stress["total_return_pct"] <= 0:
         fail_reasons.append("required_cost_stress_unprofitable")
-    if stability < limits.min_parameter_stability_score:
+    if parameter_stability_score < limits.min_parameter_stability_score:
         fail_reasons.append("parameter_instability")
     if accounting_invariants_ok is not True:
         fail_reasons.append("accounting_invariants_failed")
     if lineage_verified is not True:
         fail_reasons.append("lineage_verification_failed")
 
-    unique_regimes = sorted({str(value) for value in regimes_tested if str(value)})
-    payload: dict[str, Any] = {
-        "schema_version": SCHEMA_VERSION,
-        "candidate_id": candidate_id,
-        "candidate_source_sha": candidate_source_sha,
-        "candidate_config_hash": stable_hash(candidate_config),
-        "dataset_id": dataset_id,
-        "dataset_hash": dataset_hash,
-        "created_at": created_at or _utc_now(),
-        "validation_method": "walk_forward_oos_trade_returns_v1",
-        "policy": asdict(limits),
+    return {
         "folds": fold_metrics,
         "trade_count": aggregate["trade_count"],
         "out_of_sample_trades": aggregate["trade_count"],
-        "regimes_tested": len(unique_regimes),
-        "regime_labels": unique_regimes,
-        "net_pnl_after_cost_usd": round(pnl, 10),
         "annualized_return_pct": aggregate["annualized_return_pct"],
         "sharpe": aggregate["sharpe"],
         "sortino": aggregate["sortino"],
@@ -445,8 +430,7 @@ def build_alpha_validation_evidence(
         "calmar": aggregate["calmar"],
         "worst_trade_pct": aggregate["worst_trade_pct"],
         "expected_shortfall_pct": aggregate["expected_shortfall_pct"],
-        "cost_coverage_ratio": round(coverage, 10),
-        "parameter_stability_score": round(stability, 10),
+        "parameter_stability_score": round(parameter_stability_score, 10),
         "positive_folds_fraction": round(positive_fold_fraction, 10),
         "bootstrap_positive_fraction": bootstrap["positive_fraction"],
         "probability_of_ruin": bootstrap["probability_of_ruin"],
@@ -457,6 +441,88 @@ def build_alpha_validation_evidence(
         "lineage_verified": lineage_verified is True,
         "fail_reasons": fail_reasons,
     }
+
+
+def build_alpha_validation_evidence(
+    *,
+    candidate_id: str,
+    candidate_source_sha: str,
+    candidate_config: dict[str, Any],
+    dataset_id: str,
+    dataset_hash: str,
+    fold_returns: Sequence[Sequence[float]],
+    net_pnl_after_cost_usd: float,
+    cost_coverage_ratio: float,
+    regimes_tested: Sequence[str],
+    accounting_invariants_ok: bool,
+    lineage_verified: bool,
+    parameter_stability_score: float,
+    policy: ValidationPolicy | None = None,
+    stress_bps: Sequence[float] = (0.0, 10.0, 25.0, 50.0),
+    bootstrap_samples: int = 2000,
+    bootstrap_seed: int = 0,
+    ruin_fraction: float = 0.50,
+    periods_per_year: int = 252,
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build a self-hashing validation artifact with recomputable statistics."""
+
+    limits = policy or ValidationPolicy()
+    if not candidate_id or not candidate_source_sha or not dataset_id or not dataset_hash:
+        raise ValueError("candidate and dataset provenance fields are required")
+    if not isinstance(candidate_config, dict):
+        raise TypeError("candidate_config must be an object")
+    pnl = float(net_pnl_after_cost_usd)
+    coverage = float(cost_coverage_ratio)
+    stability = float(parameter_stability_score)
+    if not all(math.isfinite(value) for value in (pnl, coverage, stability)):
+        raise ValueError("economic and stability metrics must be finite")
+    if not 0.0 <= stability <= 1.0:
+        raise ValueError("parameter_stability_score must be in [0, 1]")
+    if periods_per_year <= 0 or bootstrap_samples <= 0:
+        raise ValueError("periods_per_year and bootstrap_samples must be positive")
+    if not 0.0 < ruin_fraction < 1.0:
+        raise ValueError("ruin_fraction must be between 0 and 1")
+
+    normalized_folds = [_clean_returns(values) for values in fold_returns]
+    normalized_stress = [float(value) for value in stress_bps]
+    derived = _derive_validation(
+        normalized_folds,
+        limits=limits,
+        parameter_stability_score=stability,
+        accounting_invariants_ok=accounting_invariants_ok,
+        lineage_verified=lineage_verified,
+        stress_bps=normalized_stress,
+        bootstrap_samples=bootstrap_samples,
+        bootstrap_seed=bootstrap_seed,
+        ruin_fraction=ruin_fraction,
+        periods_per_year=periods_per_year,
+    )
+
+    unique_regimes = sorted({str(value) for value in regimes_tested if str(value)})
+    payload: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "candidate_id": candidate_id,
+        "candidate_source_sha": candidate_source_sha,
+        "candidate_config": candidate_config,
+        "candidate_config_hash": stable_hash(candidate_config),
+        "dataset_id": dataset_id,
+        "dataset_hash": dataset_hash,
+        "created_at": created_at or _utc_now(),
+        "validation_method": "walk_forward_oos_trade_returns_v2",
+        "policy": asdict(limits),
+        "fold_returns": normalized_folds,
+        "periods_per_year": periods_per_year,
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": bootstrap_seed,
+        "ruin_fraction": ruin_fraction,
+        "stress_bps": normalized_stress,
+        "regimes_tested": len(unique_regimes),
+        "regime_labels": unique_regimes,
+        "net_pnl_after_cost_usd": round(pnl, 10),
+        "cost_coverage_ratio": round(coverage, 10),
+        **derived,
+    }
     payload["evidence_hash"] = stable_hash(payload)
     return payload
 
@@ -465,19 +531,40 @@ _REQUIRED_EVIDENCE_FIELDS = {
     "schema_version",
     "candidate_id",
     "candidate_source_sha",
+    "candidate_config",
     "candidate_config_hash",
     "dataset_id",
     "dataset_hash",
     "created_at",
     "validation_method",
+    "policy",
+    "fold_returns",
+    "periods_per_year",
+    "bootstrap_samples",
+    "bootstrap_seed",
+    "ruin_fraction",
+    "stress_bps",
     "folds",
     "trade_count",
     "out_of_sample_trades",
     "regimes_tested",
+    "regime_labels",
     "net_pnl_after_cost_usd",
+    "annualized_return_pct",
+    "sharpe",
+    "sortino",
     "profit_factor",
     "max_drawdown_pct",
+    "calmar",
+    "worst_trade_pct",
+    "expected_shortfall_pct",
     "cost_coverage_ratio",
+    "parameter_stability_score",
+    "positive_folds_fraction",
+    "bootstrap_positive_fraction",
+    "probability_of_ruin",
+    "bootstrap",
+    "stress_results",
     "walk_forward_passed",
     "accounting_invariants_ok",
     "lineage_verified",
@@ -485,9 +572,49 @@ _REQUIRED_EVIDENCE_FIELDS = {
     "evidence_hash",
 }
 
+_DERIVED_FIELDS = {
+    "folds",
+    "trade_count",
+    "out_of_sample_trades",
+    "annualized_return_pct",
+    "sharpe",
+    "sortino",
+    "profit_factor",
+    "max_drawdown_pct",
+    "calmar",
+    "worst_trade_pct",
+    "expected_shortfall_pct",
+    "parameter_stability_score",
+    "positive_folds_fraction",
+    "bootstrap_positive_fraction",
+    "probability_of_ruin",
+    "bootstrap",
+    "stress_results",
+    "walk_forward_passed",
+    "accounting_invariants_ok",
+    "lineage_verified",
+    "fail_reasons",
+}
+
+
+def _is_hex(value: Any, length: int) -> bool:
+    if not isinstance(value, str) or len(value) != length:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
+
 
 def verify_alpha_validation_evidence(evidence: Any) -> tuple[bool, list[str]]:
-    """Verify schema/provenance integrity. Performance failure is not tampering."""
+    """Verify artifact integrity and recompute all derivable statistics.
+
+    This detects a caller changing a reported metric and simply re-hashing the
+    artifact. It intentionally does not authenticate that embedded OOS returns
+    came from the claimed dataset; a trusted replay/attestation layer must prove
+    that separate fact.
+    """
 
     if not isinstance(evidence, dict):
         return False, ["evidence_not_object"]
@@ -497,6 +624,15 @@ def verify_alpha_validation_evidence(evidence: Any) -> tuple[bool, list[str]]:
         reasons.extend(f"missing_field:{name}" for name in missing)
     if evidence.get("schema_version") != SCHEMA_VERSION:
         reasons.append("unsupported_schema_version")
+    if evidence.get("validation_method") != "walk_forward_oos_trade_returns_v2":
+        reasons.append("unsupported_validation_method")
+    if not _is_hex(evidence.get("candidate_source_sha"), 40):
+        reasons.append("invalid_candidate_source_sha")
+    if not _is_hex(evidence.get("dataset_hash"), 64):
+        reasons.append("invalid_dataset_hash")
+    if not evidence.get("candidate_id") or not evidence.get("dataset_id"):
+        reasons.append("missing_provenance_identity")
+
     supplied_hash = evidence.get("evidence_hash")
     if not isinstance(supplied_hash, str) or len(supplied_hash) != 64:
         reasons.append("invalid_evidence_hash")
@@ -510,7 +646,55 @@ def verify_alpha_validation_evidence(evidence: Any) -> tuple[bool, list[str]]:
         else:
             if expected != supplied_hash:
                 reasons.append("evidence_hash_mismatch")
-    return not reasons, reasons
+
+    if missing:
+        return False, list(dict.fromkeys(reasons))
+
+    try:
+        candidate_config = evidence["candidate_config"]
+        if not isinstance(candidate_config, dict):
+            raise TypeError("candidate config")
+        if stable_hash(candidate_config) != evidence["candidate_config_hash"]:
+            reasons.append("candidate_config_hash_mismatch")
+
+        limits = ValidationPolicy(**evidence["policy"])
+        normalized_folds = [_clean_returns(values) for values in evidence["fold_returns"]]
+        stress_bps = [float(value) for value in evidence["stress_bps"]]
+        periods_per_year = int(evidence["periods_per_year"])
+        bootstrap_samples = int(evidence["bootstrap_samples"])
+        bootstrap_seed = int(evidence["bootstrap_seed"])
+        ruin_fraction = float(evidence["ruin_fraction"])
+        stability = float(evidence["parameter_stability_score"])
+        coverage = float(evidence["cost_coverage_ratio"])
+        pnl = float(evidence["net_pnl_after_cost_usd"])
+        if not all(math.isfinite(value) for value in (stability, coverage, pnl, ruin_fraction)):
+            raise ValueError("non-finite evidence inputs")
+        if not 0.0 <= stability <= 1.0:
+            raise ValueError("invalid stability")
+
+        regime_labels = sorted({str(value) for value in evidence["regime_labels"] if str(value)})
+        if evidence["regime_labels"] != regime_labels or evidence["regimes_tested"] != len(regime_labels):
+            reasons.append("regime_summary_mismatch")
+
+        recomputed = _derive_validation(
+            normalized_folds,
+            limits=limits,
+            parameter_stability_score=stability,
+            accounting_invariants_ok=evidence["accounting_invariants_ok"] is True,
+            lineage_verified=evidence["lineage_verified"] is True,
+            stress_bps=stress_bps,
+            bootstrap_samples=bootstrap_samples,
+            bootstrap_seed=bootstrap_seed,
+            ruin_fraction=ruin_fraction,
+            periods_per_year=periods_per_year,
+        )
+        for field in sorted(_DERIVED_FIELDS):
+            if evidence.get(field) != recomputed.get(field):
+                reasons.append(f"derived_metric_mismatch:{field}")
+    except (TypeError, ValueError, KeyError, OverflowError) as exc:
+        reasons.append(f"evidence_recompute_failed:{type(exc).__name__}")
+
+    return not reasons, list(dict.fromkeys(reasons))
 
 
 def evidence_to_challenger_metrics(evidence: dict[str, Any]) -> dict[str, Any]:
