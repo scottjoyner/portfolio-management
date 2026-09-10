@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 
 let ExecutionEngine;
@@ -31,15 +31,18 @@ const sampleRequest = (overrides = {}) => ({
   accountId: 'acct-paper-primary',
   mode: 'paper',
   orders: [sampleOrder()],
+  riskDecision: { approved: true, reasons: [] },
   ...overrides,
 });
 
 describe('ExecutionEngine', () => {
-  it('creates engine with default config', () => {
+  it('creates engine with fail-closed defaults', () => {
     const engine = new ExecutionEngine();
     assert.ok(engine);
     assert.equal(engine.minConfidence, 0.6);
     assert.equal(engine.requireApproval, true);
+    assert.equal(engine.requireRiskCheck, true);
+    assert.ok(engine.overseerTtlMs > 0);
   });
 
   it('rejects low confidence orders', async () => {
@@ -49,31 +52,69 @@ describe('ExecutionEngine', () => {
     });
     const result = await engine.execute(req);
     assert.equal(result.ok, false);
-    assert.ok(result.errors.some(e => e.includes('confidence')));
+    assert.ok(result.errors.includes('confidence_below_threshold'));
   });
 
-  it('accepts high confidence orders (auto-submit)', async () => {
+  it('fails closed when risk authorization is missing', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
-    const req = sampleRequest();
-    const result = await engine.execute(req);
+    const result = await engine.execute(sampleRequest({ riskDecision: undefined }));
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.includes('risk_decision_required'));
+    assert.equal(result.execution.overseerDecision.approved, false);
+  });
+
+  it('fails closed when risk authorization is malformed', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false });
+    const result = await engine.execute(sampleRequest({
+      riskDecision: { approved: 'yes', reasons: [] },
+    }));
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.includes('risk_decision_invalid'));
+  });
+
+  it('respects an explicit upstream risk rejection', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false });
+    const result = await engine.execute(sampleRequest({
+      riskDecision: { approved: false, reasons: ['portfolio_drawdown_limit'] },
+    }));
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.includes('portfolio_drawdown_limit'));
+  });
+
+  it('accepts explicitly risk-approved high confidence paper orders', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false });
+    const result = await engine.execute(sampleRequest());
     assert.equal(result.ok, true);
     assert.equal(result.execution.status, 'filled');
     assert.equal(result.execution.fills.length, 1);
+    assert.equal(result.execution.overseerDecision.decision, 'PAPER');
   });
 
-  it('creates draft execution when approval required', async () => {
+  it('keeps requireRiskCheck=false as an explicit compatibility escape hatch', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false, requireRiskCheck: false });
+    const result = await engine.execute(sampleRequest({ riskDecision: undefined }));
+    assert.equal(result.ok, true);
+    assert.equal(result.execution.status, 'filled');
+    assert.deepEqual(result.execution.riskDecision.reasons, ['risk_check_disabled_by_config']);
+  });
+
+  it('creates a hash-bound overseer-authorized draft when approval is required', async () => {
     const engine = new ExecutionEngine({ requireApproval: true });
-    const req = sampleRequest();
-    const result = await engine.execute(req);
+    const result = await engine.execute(sampleRequest());
     assert.equal(result.ok, true);
     assert.equal(result.execution.status, 'draft');
     assert.ok(result.warnings.includes('awaiting_approval'));
+    assert.equal(result.execution.tradeIntentHash.length, 64);
+    assert.equal(result.execution.overseerDecision.intentHash, result.execution.tradeIntentHash);
+    assert.equal(result.execution.overseerDecision.decision, 'PAPER');
+    assert.equal(result.execution.overseerDecision.approved, true);
+    assert.equal(result.execution.overseerDecision.requiresHumanApproval, true);
+    assert.equal(result.execution.overseerDecision.decisionHash.length, 64);
   });
 
-  it('approves a draft execution', async () => {
+  it('approves and submits the same authorized draft', async () => {
     const engine = new ExecutionEngine({ requireApproval: true });
-    const req = sampleRequest();
-    const createResult = await engine.execute(req);
+    const createResult = await engine.execute(sampleRequest());
     const execId = createResult.execution.id;
 
     const approveResult = await engine.approve(execId);
@@ -82,10 +123,66 @@ describe('ExecutionEngine', () => {
     assert.equal(approveResult.execution.fills.length, 1);
   });
 
+  it('rejects approval after a material order mutation', async () => {
+    const engine = new ExecutionEngine({ requireApproval: true });
+    const createResult = await engine.execute(sampleRequest());
+    createResult.execution.orders[0].quantity = 0.2;
+
+    const approveResult = await engine.approve(createResult.execution.id);
+    assert.equal(approveResult.ok, false);
+    assert.equal(approveResult.execution.status, 'draft');
+    assert.ok(approveResult.errors.includes('trade_intent_mutated'));
+    assert.equal(approveResult.execution.fills.length, 0);
+  });
+
+  it('rejects approval when the overseer decision is corrupted', async () => {
+    const engine = new ExecutionEngine({ requireApproval: true });
+    const createResult = await engine.execute(sampleRequest());
+    createResult.execution.overseerDecision.decisionHash = '0'.repeat(64);
+
+    const approveResult = await engine.approve(createResult.execution.id);
+    assert.equal(approveResult.ok, false);
+    assert.ok(approveResult.errors.includes('overseer_decision_hash_mismatch'));
+    assert.equal(approveResult.execution.status, 'draft');
+  });
+
+  it('rejects approval when the overseer authorization has expired', async () => {
+    const engine = new ExecutionEngine({ requireApproval: true, overseerTtlMs: 1 });
+    const createResult = await engine.execute(sampleRequest());
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    const approveResult = await engine.approve(createResult.execution.id);
+    assert.equal(approveResult.ok, false);
+    assert.ok(approveResult.errors.includes('overseer_decision_expired'));
+    assert.equal(approveResult.execution.status, 'draft');
+  });
+
+  it('blocks live execution even with confidence and upstream risk approval', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false });
+    const result = await engine.execute(sampleRequest({
+      mode: 'live',
+      orders: [sampleOrder({ venue: 'coinbase', executionMode: 'live' })],
+    }));
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.includes('live_execution_not_certified'));
+    assert.equal(result.execution.overseerDecision.decision, 'LIVE_REQUIRES_HUMAN');
+    assert.equal(result.execution.fills.length, 0);
+  });
+
+  it('defends submit directly against missing overseer authorization', async () => {
+    const engine = new ExecutionEngine({ requireApproval: true });
+    const createResult = await engine.execute(sampleRequest());
+    delete createResult.execution.overseerDecision;
+
+    const submitResult = await engine.submit(createResult.execution);
+    assert.equal(submitResult.ok, false);
+    assert.ok(submitResult.errors.includes('overseer_decision_required'));
+    assert.equal(submitResult.execution.status, 'draft');
+  });
+
   it('rejects a draft execution', async () => {
     const engine = new ExecutionEngine();
-    const req = sampleRequest();
-    const createResult = await engine.execute(req);
+    const createResult = await engine.execute(sampleRequest());
     const execId = createResult.execution.id;
 
     const rejectResult = await engine.reject(execId, 'test_reason');
@@ -96,8 +193,7 @@ describe('ExecutionEngine', () => {
 
   it('cancels a draft execution', async () => {
     const engine = new ExecutionEngine();
-    const req = sampleRequest();
-    const createResult = await engine.execute(req);
+    const createResult = await engine.execute(sampleRequest());
     const execId = createResult.execution.id;
 
     const cancelResult = await engine.cancel(execId);
@@ -105,13 +201,14 @@ describe('ExecutionEngine', () => {
     assert.equal(cancelResult.execution.status, 'cancelled');
   });
 
-  it('returns plan without executing', async () => {
+  it('returns an overseer-authorized plan without executing', async () => {
     const engine = new ExecutionEngine();
-    const req = sampleRequest();
-    const plan = await engine.plan(req);
+    const plan = await engine.plan(sampleRequest());
     assert.ok(plan.id);
     assert.equal(plan.confidenceScore, 0.75);
     assert.equal(plan.approved, true);
+    assert.equal(plan.overseerDecision.decision, 'PAPER');
+    assert.equal(plan.overseerDecision.intentHash, plan.tradeIntentHash);
   });
 
   it('computes conviction weight from confidence', async () => {
@@ -142,7 +239,7 @@ describe('ExecutionEngine', () => {
     assert.equal(filled.length, 0);
   });
 
-  it('records and retrieves events', async () => {
+  it('records overseer lineage in execution events', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest());
     const events = engine.getEvents(result.execution.id);
@@ -150,6 +247,8 @@ describe('ExecutionEngine', () => {
     assert.ok(events.length >= 2); // created, submitted, filled
     assert.equal(events[0].executionId, result.execution.id);
     assert.equal(events[0].type, 'created');
+    assert.equal(events[0].overseerDecision, 'PAPER');
+    assert.equal(events[0].tradeIntentHash, result.execution.tradeIntentHash);
   });
 
   it('getAllEvents returns all events', async () => {
@@ -178,11 +277,9 @@ describe('ExecutionEngine', () => {
 
   it('rejects invalid state transitions', async () => {
     const engine = new ExecutionEngine();
-    const req = sampleRequest();
-    const createResult = await engine.execute(req);
+    const createResult = await engine.execute(sampleRequest());
     const execId = createResult.execution.id;
 
-    // Can't cancel after approve
     await engine.approve(execId);
     const cancelResult = await engine.cancel(execId);
     assert.equal(cancelResult.ok, false);
