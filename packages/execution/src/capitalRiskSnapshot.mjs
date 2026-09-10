@@ -438,13 +438,18 @@ export function buildCapitalRiskSnapshot({
   if (quantity == null || quantity <= 0) missingRequiredState.push('order_quantity');
   if (orderNotionalUsd == null || orderNotionalUsd <= 0) missingRequiredState.push('order_notional');
 
-  const pendingAccountExecutions = (state?.executions || []).filter(execution => (
+  const allPendingExecutions = (state?.executions || []).filter(execution => (
     PENDING_EXECUTION_STATUSES.has(String(execution?.status || '').toLowerCase())
     && execution?.id !== excludeExecutionId
-    && executionSameAccount(execution, accountId)
   ));
+  const unscopedPendingExecutions = allPendingExecutions.filter(execution => !execution?.accountId);
+  for (const execution of unscopedPendingExecutions) {
+    missingRequiredState.push(`pending_execution_account_lineage:${execution?.id || 'unknown'}`);
+  }
+  const pendingAccountExecutions = allPendingExecutions.filter(execution => executionSameAccount(execution, accountId));
   const pendingSymbolExecutions = pendingAccountExecutions.filter(execution => executionSameSymbol(execution, symbol));
-  let pendingExposureUsd = 0;
+  let pendingIncreaseExposureUsd = 0;
+  let pendingSellExposureUsd = 0;
   let pendingBuyExposureUsd = 0;
   let pendingSellQuantity = 0;
   for (const execution of pendingAccountExecutions) {
@@ -455,12 +460,15 @@ export function buildCapitalRiskSnapshot({
     }
     const executionSide = String(execution.side || execution.orders?.[0]?.side || '').toLowerCase();
     if (CASH_SIDES.has(executionSide)) pendingBuyExposureUsd += amount;
+    if (executionSameSymbol(execution, symbol)) {
+      if (CASH_SIDES.has(executionSide)) pendingIncreaseExposureUsd += amount;
+      else if (executionSide === 'sell') pendingSellExposureUsd += amount;
+    }
     if (executionSide === 'sell' && executionSameSymbol(execution, symbol)) {
       const pendingQuantity = finite(execution.quantity, null)
         ?? (execution.orders || []).reduce((sum, order) => sum + Math.max(0, finite(order?.quantity, 0)), 0);
       pendingSellQuantity += Math.max(0, pendingQuantity || 0);
     }
-    if (executionSameSymbol(execution, symbol)) pendingExposureUsd += amount;
   }
 
   const positions = (state?.positions || []).filter(position => {
@@ -490,7 +498,11 @@ export function buildCapitalRiskSnapshot({
 
   const maxPositionSizeUsd = finite(state?.config?.maxPositionSizeUsd, null);
   if (maxPositionSizeUsd == null || maxPositionSizeUsd <= 0) missingRequiredState.push('max_position_size');
-  const projectedExposureUsd = orderNotionalUsd == null ? null : positionExposureUsd + pendingExposureUsd + orderNotionalUsd;
+  const projectedExposureUsd = orderNotionalUsd == null
+    ? null
+    : side === 'sell'
+      ? Math.max(0, positionExposureUsd - pendingSellExposureUsd - orderNotionalUsd)
+      : positionExposureUsd + pendingIncreaseExposureUsd + orderNotionalUsd;
   const availableCashAfterPendingUsd = accountCash == null ? null : accountCash - pendingBuyExposureUsd;
   let balanceSufficient = false;
   if (CASH_SIDES.has(side)) {
@@ -579,7 +591,10 @@ export function buildCapitalRiskSnapshot({
     pendingExecutionState: {
       accountExecutionIds: pendingAccountExecutions.map(row => row.id).filter(Boolean).sort(),
       symbolExecutionIds: pendingSymbolExecutions.map(row => row.id).filter(Boolean).sort(),
-      pendingExposureUsd,
+      unscopedExecutionIds: unscopedPendingExecutions.map(row => row.id).filter(Boolean).sort(),
+      pendingExposureUsd: pendingIncreaseExposureUsd,
+      pendingIncreaseExposureUsd,
+      pendingSellExposureUsd,
       pendingBuyExposureUsd,
       pendingSellQuantity,
     },
