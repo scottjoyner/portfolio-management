@@ -5,6 +5,7 @@
 import {
   buildCapitalRiskSnapshot,
   evaluateCapitalRiskSnapshot,
+  verifyCapitalRiskSnapshot,
 } from './capitalRiskSnapshot.mjs';
 import {
   DEFAULT_OVERSEER_TTL_MS,
@@ -82,6 +83,12 @@ function providerResultState(result) {
     };
   }
   return { state: result, source: {} };
+}
+
+function currentEvaluationTime(context = {}) {
+  return context.now !== undefined && context.now !== null
+    ? evaluationTime(context)
+    : new Date().toISOString();
 }
 
 export default class ExecutionEngine {
@@ -162,6 +169,7 @@ export default class ExecutionEngine {
 
   async canonicalRiskFor(input, tradeIntentEnvelope, tradeIntentHash, context = {}, excludeExecutionId = null) {
     if (!this.requireRiskCheck) {
+      const evaluatedAt = currentEvaluationTime(context);
       const riskDecision = { approved: true, reasons: ['risk_check_disabled_by_config'] };
       return {
         capitalRiskSnapshot: null,
@@ -169,10 +177,11 @@ export default class ExecutionEngine {
         riskDecision,
         riskDecisionHash: stableHash(riskDecision),
         capitalRiskPolicyVersion: null,
+        evaluatedAt,
       };
     }
 
-    const now = evaluationTime(context);
+    const providerRequestedAt = currentEvaluationTime(context);
     const provider = context.riskStateProvider || this.riskStateProvider;
     let resolved = null;
     if (typeof provider === 'function') {
@@ -181,7 +190,7 @@ export default class ExecutionEngine {
           tradeIntentEnvelope: clone(tradeIntentEnvelope),
           tradeIntentHash,
           excludeExecutionId,
-          now,
+          now: providerRequestedAt,
         });
       } catch (error) {
         resolved = {
@@ -194,22 +203,24 @@ export default class ExecutionEngine {
       }
     }
     const { state, source } = providerResultState(resolved);
+    const evaluatedAt = currentEvaluationTime(context);
     const snapshot = buildCapitalRiskSnapshot({
       state,
       source,
       tradeIntentEnvelope,
       tradeIntentHash,
-      now,
+      now: evaluatedAt,
       excludeExecutionId,
       policy: { ...this.riskPolicy, ...(context.riskPolicy || {}) },
     });
-    const riskDecision = evaluateCapitalRiskSnapshot(snapshot, { tradeIntentHash, now });
+    const riskDecision = evaluateCapitalRiskSnapshot(snapshot, { tradeIntentHash, now: evaluatedAt });
     return {
       capitalRiskSnapshot: snapshot,
       capitalRiskSnapshotHash: snapshot.snapshotHash,
       riskDecision,
       riskDecisionHash: stableHash(riskDecision),
       capitalRiskPolicyVersion: snapshot.policyVersion,
+      evaluatedAt,
     };
   }
 
@@ -228,7 +239,7 @@ export default class ExecutionEngine {
     );
     const evaluation = evaluateTradeIntent(
       { ...normalized, riskDecision: canonicalRisk.riskDecision },
-      this.overseerOptions(evaluationTime(context), {
+      this.overseerOptions(canonicalRisk.evaluatedAt, {
         capitalRiskSnapshotHash: canonicalRisk.capitalRiskSnapshotHash,
         capitalRiskPolicyVersion: canonicalRisk.capitalRiskPolicyVersion,
         riskDecisionHash: canonicalRisk.riskDecisionHash,
@@ -241,6 +252,7 @@ export default class ExecutionEngine {
       capitalRiskSnapshot: canonicalRisk.capitalRiskSnapshot,
       capitalRiskSnapshotHash: canonicalRisk.capitalRiskSnapshotHash,
       riskDecisionHash: canonicalRisk.riskDecisionHash,
+      evaluatedAt: canonicalRisk.evaluatedAt,
     };
   }
 
@@ -307,7 +319,7 @@ export default class ExecutionEngine {
     if (!state) return { ok: false, errors: ['execution_not_found'] };
     if (state.status !== 'draft') return { ok: false, execution: state, errors: [`invalid_status: ${state.status}`] };
 
-    const storedAuthorization = verifyStoredExecutionAuthorization(state, { now: evaluationTime(context) });
+    const storedAuthorization = verifyStoredExecutionAuthorization(state, { now: currentEvaluationTime(context) });
     if (!storedAuthorization.ok) {
       return { ok: false, execution: state, errors: storedAuthorization.reasons };
     }
@@ -370,8 +382,20 @@ export default class ExecutionEngine {
     return { ok: true, execution: state };
   }
 
+  verifyCapitalRiskFreshness(state, context = {}) {
+    if (!state?.capitalRiskSnapshot) return { ok: true, reasons: [] };
+    return verifyCapitalRiskSnapshot(state.capitalRiskSnapshot, {
+      tradeIntentHash: state.tradeIntentHash,
+      now: currentEvaluationTime(context),
+    });
+  }
+
   async submit(state, context = {}) {
-    const authorization = verifyStoredExecutionAuthorization(state, { now: evaluationTime(context) });
+    const freshness = this.verifyCapitalRiskFreshness(state, context);
+    if (!freshness.ok) {
+      return { ok: false, execution: state, errors: freshness.reasons };
+    }
+    const authorization = verifyStoredExecutionAuthorization(state, { now: currentEvaluationTime(context) });
     if (!authorization.ok) {
       return { ok: false, execution: state, errors: authorization.reasons };
     }
@@ -390,6 +414,8 @@ export default class ExecutionEngine {
       });
 
       for (const order of state.orders) {
+        const loopFreshness = this.verifyCapitalRiskFreshness(state, context);
+        if (!loopFreshness.ok) throw new Error(loopFreshness.reasons[0]);
         await this.delay(100);
         const fillPrice = Number(order.price ?? state.entryPrice ?? state.capitalRiskSnapshot?.marketDataState?.referencePrice);
         if (!Number.isFinite(fillPrice) || fillPrice <= 0) throw new Error('execution_fill_price_unavailable');
