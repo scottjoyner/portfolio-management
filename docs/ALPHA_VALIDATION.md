@@ -151,9 +151,11 @@ The purpose is not to claim that 25 bps is the final correct execution model. It
 
 ## Parameter stability
 
-This slice records a bounded `parameter_stability_score` and enforces a minimum threshold. The score remains an input hook for now.
+The canonical configured `rsi_revert` path now derives parameter stability from actual neighboring-parameter replay rather than trusting orchestration. It evaluates deterministic one-at-a-time neighbors (`period ±2`, `oversold ±5`, `overbought ±5` where valid) over the exact same OOS fold boundaries, fee assumptions, warmup, and holding controls as the candidate.
 
-It must **not** be treated as strong validation until strategies expose typed executable tunables to canonical replay. The next strategy-capability slice should first parameterize a small pilot strategy (for example `rsi_revert` with period/oversold/overbought), attest the exact executed parameter map, and only then derive stability from explicit neighboring-parameter replays.
+For every neighbor the replay attestation stores the exact typed config, config hash, raw fold returns, return hash, trade count, log growth, profitability flag, and retained growth ratio. The bounded stability score is the minimum of (a) the fraction of neighboring configurations with positive compounded growth and (b) their mean retained log-growth relative to the candidate. A narrow parameter spike therefore cannot receive a high stability score merely because the center point performs well.
+
+The alpha-validation module still accepts `parameter_stability_score` as a low-level compatibility input for synthetic/unit evidence, but the canonical configured replay builder derives the value itself and rejects a caller-supplied override that disagrees. Promotion source reverification regenerates the full neighborhood from the feed cache and compiled Rust strategy path.
 
 ## Promotion contract
 
@@ -209,7 +211,7 @@ Passing alpha evidence therefore does not automatically mean a challenger beats 
 Still required before this becomes a complete scientific-validation system:
 
 1. Add typed executable strategy configuration and bind the exact executed parameter map plus implementation identity to replay evidence.
-2. Generate parameter stability from actual neighboring-parameter replay sweeps rather than accepting a score from orchestration.
+2. Expand replay-derived parameter stability beyond the RSI pilot and calibrate neighborhood widths per typed strategy family.
 3. Add trusted runner/build/binary attestation and move complete evidence artifacts to an append-only or externally immutable evidence store.
 4. Add multiple-testing / selection-bias correction across candidate searches.
 5. Add block/bootstrap methods for serially correlated returns.
