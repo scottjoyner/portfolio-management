@@ -375,14 +375,23 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
   const job = body.researchJobId ? state.researchJobs.find(row => row.id === body.researchJobId) : null;
   const winProbability = clampPercent(body.winProbability, 0.5);
   const lossProbability = clampPercent(body.lossProbability ?? (1 - winProbability), 1 - winProbability);
-  const averageWin = nonNegative(body.potentialUpside || 0) / Math.max(1, nonNegative(body.totalMoneyRisked || 1));
-  const averageLoss = 1;
-  const kellyFraction = winProbability > lossProbability
-    ? Math.max(0, (winProbability * averageWin - lossProbability * averageLoss) / averageWin)
+  const requestedNotional = nonNegative(body.totalMoneyRisked || 0);
+  const maxLossUsd = nonNegative(body.maxLoss || body.totalMoneyRisked || 0);
+  const potentialUpsideUsd = nonNegative(body.potentialUpside || 0);
+  const notionalBase = Math.max(1, requestedNotional);
+  const averageWin = potentialUpsideUsd / notionalBase;
+  const averageLoss = maxLossUsd / notionalBase;
+  const kellyNumerator = (winProbability * averageWin) - (lossProbability * averageLoss);
+  const kellyDenominator = averageWin * averageLoss;
+  const kellyFraction = averageWin > 0 && averageLoss > 0 && kellyDenominator > 0
+    ? Math.max(0, kellyNumerator / kellyDenominator)
     : 0;
   const kellyCapped = Math.min(kellyFraction, 0.25);
   const maxPositionSize = nonNegative(state.config?.maxPositionSizeUsd || 50000);
-  const recommendedSize = Math.min(maxPositionSize, Math.round(nonNegative(body.totalMoneyRisked || 1000) * (1 + kellyCapped)));
+  // Opportunity construction does not know portfolio equity or allocator budget.
+  // Preserve the requested notional (subject to the hard per-position cap) and
+  // expose Kelly only as a diagnostic; the portfolio allocator owns sizing.
+  const recommendedSize = Math.min(maxPositionSize, Math.round(requestedNotional));
   const volatilityScore = nonNegative(body.volatilityScore ?? 50);
   const holdingPeriodDays = Math.max(1, Math.ceil((100 - volatilityScore) / 15));
 
@@ -436,12 +445,14 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
       kellyCapped: Number(kellyCapped.toFixed(4)),
       recommendedSize,
       maxPositionSize,
-      capitalAtRisk: nonNegative(body.totalMoneyRisked || 0),
-      riskPerUnit: nonNegative(body.maxLoss || 0) / Math.max(1, recommendedSize),
+      requestedNotional,
+      sizingAuthority: 'requested_notional_capped',
+      capitalAtRisk: maxLossUsd,
+      riskPerUnit: maxLossUsd / Math.max(1, recommendedSize),
     },
     holdingPeriodDays,
-    expectedReturn: Number(((winProbability * nonNegative(body.potentialUpside || 0)) - (lossProbability * nonNegative(body.maxLoss || 0))).toFixed(2)),
-    expectedRisk: Number((nonNegative(body.totalMoneyRisked || 0) * (1 - winProbability)).toFixed(2)),
+    expectedReturn: Number(((winProbability * potentialUpsideUsd) - (lossProbability * maxLossUsd)).toFixed(2)),
+    expectedRisk: Number((lossProbability * maxLossUsd).toFixed(2)),
     sharpeEstimate: Number(((winProbability * averageWin - lossProbability * averageLoss) / Math.max(0.01, (averageWin + averageLoss) * 0.5)).toFixed(2)),
     volatilityScore,
   };
