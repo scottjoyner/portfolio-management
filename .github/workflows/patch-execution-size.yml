@@ -1,0 +1,33 @@
+name: One-shot execution size patch
+
+on:
+  push:
+    branches:
+      - agent/economic-edge-coherence
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/economic-edge-coherence
+          fetch-depth: 0
+
+      - name: Apply and validate patch
+        run: |
+          python scripts/_one_shot_execution_size_patch.py
+          node --check apps/api/src/opportunityFlowsLegacy.mjs
+          git diff --check
+
+      - name: Commit production change and remove one-shot files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm scripts/_one_shot_execution_size_patch.py .github/workflows/patch-execution-size.yml
+          git add apps/api/src/opportunityFlowsLegacy.mjs
+          git commit -m "fail closed when approved execution size is missing"
+          git push origin HEAD:agent/economic-edge-coherence
