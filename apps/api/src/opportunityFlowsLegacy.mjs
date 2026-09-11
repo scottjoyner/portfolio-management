@@ -1,4 +1,5 @@
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
+import { strategyScannerResearchRequired, verifyResearchCertification } from '../../../packages/execution/src/researchCertification.mjs';
 
 const JOB_STATUSES = new Set(['queued', 'running', 'completed', 'failed', 'cancelled']);
 const OPPORTUNITY_STATUSES = new Set(['needs_review', 'approved', 'rejected', 'deferred', 'research_requested', 'blocked']);
@@ -375,14 +376,23 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
   const job = body.researchJobId ? state.researchJobs.find(row => row.id === body.researchJobId) : null;
   const winProbability = clampPercent(body.winProbability, 0.5);
   const lossProbability = clampPercent(body.lossProbability ?? (1 - winProbability), 1 - winProbability);
-  const averageWin = nonNegative(body.potentialUpside || 0) / Math.max(1, nonNegative(body.totalMoneyRisked || 1));
-  const averageLoss = 1;
-  const kellyFraction = winProbability > lossProbability
-    ? Math.max(0, (winProbability * averageWin - lossProbability * averageLoss) / averageWin)
+  const requestedNotional = nonNegative(body.totalMoneyRisked || 0);
+  const maxLossUsd = nonNegative(body.maxLoss || body.totalMoneyRisked || 0);
+  const potentialUpsideUsd = nonNegative(body.potentialUpside || 0);
+  const notionalBase = Math.max(1, requestedNotional);
+  const averageWin = potentialUpsideUsd / notionalBase;
+  const averageLoss = maxLossUsd / notionalBase;
+  const kellyNumerator = (winProbability * averageWin) - (lossProbability * averageLoss);
+  const kellyDenominator = averageWin * averageLoss;
+  const kellyFraction = averageWin > 0 && averageLoss > 0 && kellyDenominator > 0
+    ? Math.max(0, kellyNumerator / kellyDenominator)
     : 0;
   const kellyCapped = Math.min(kellyFraction, 0.25);
-  const maxPositionSize = nonNegative(state.config?.maxPositionSizeUsd || 50000);
-  const recommendedSize = Math.min(maxPositionSize, Math.round(nonNegative(body.totalMoneyRisked || 1000) * (1 + kellyCapped)));
+  const maxPositionSize = nonNegative(state.config?.maxPositionSizeUsd ?? 50000);
+  // Opportunity construction does not know portfolio equity or allocator budget.
+  // Preserve the requested notional (subject to the hard per-position cap) and
+  // expose Kelly only as a diagnostic; the portfolio allocator owns sizing.
+  const recommendedSize = Math.min(maxPositionSize, Math.round(requestedNotional));
   const volatilityScore = nonNegative(body.volatilityScore ?? 50);
   const holdingPeriodDays = Math.max(1, Math.ceil((100 - volatilityScore) / 15));
 
@@ -390,7 +400,7 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     id: nextId('opp', state.opportunities),
     sourceAgentId: body.sourceAgentId || job?.agentId || 'market-research-agent',
     researchJobId: body.researchJobId || job?.id || null,
-    strategyId: body.strategyId || null,
+    strategyId: body.strategyId || body.researchCertification?.strategy_name || null,
     marketType: body.marketType,
     venue: body.venue,
     symbol: body.symbol || null,
@@ -418,6 +428,8 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     takeProfitPrice: Number(body.takeProfitPrice || 0) || null,
     stopLossPrice: Number(body.stopLossPrice || 0) || null,
     tradePlan: body.tradePlan || null,
+    researchCertification: body.researchCertification || null,
+    requiresResearchCertification: body.requiresResearchCertification === true,
     status: body.status || 'needs_review',
     approvalStatus: body.approvalStatus || body.status || 'needs_review',
     estimatedFees: nonNegative(body.estimatedFees || 0),
@@ -436,12 +448,14 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
       kellyCapped: Number(kellyCapped.toFixed(4)),
       recommendedSize,
       maxPositionSize,
-      capitalAtRisk: nonNegative(body.totalMoneyRisked || 0),
-      riskPerUnit: nonNegative(body.maxLoss || 0) / Math.max(1, recommendedSize),
+      requestedNotional,
+      sizingAuthority: 'requested_notional_capped',
+      capitalAtRisk: maxLossUsd,
+      riskPerUnit: maxLossUsd / Math.max(1, recommendedSize),
     },
     holdingPeriodDays,
-    expectedReturn: Number(((winProbability * nonNegative(body.potentialUpside || 0)) - (lossProbability * nonNegative(body.maxLoss || 0))).toFixed(2)),
-    expectedRisk: Number((nonNegative(body.totalMoneyRisked || 0) * (1 - winProbability)).toFixed(2)),
+    expectedReturn: Number(((winProbability * potentialUpsideUsd) - (lossProbability * maxLossUsd)).toFixed(2)),
+    expectedRisk: Number((lossProbability * maxLossUsd).toFixed(2)),
     sharpeEstimate: Number(((winProbability * averageWin - lossProbability * averageLoss) / Math.max(0.01, (averageWin + averageLoss) * 0.5)).toFixed(2)),
     volatilityScore,
   };
@@ -471,6 +485,29 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
   if (!opportunity) return { errors: ['opportunity_not_found'] };
   if (!['approved', 'rejected', 'deferred'].includes(body.status)) return { errors: ['invalid_opportunity_decision'] };
 
+  let approvedExecutionSize = null;
+  if (body.status === 'approved') {
+    const rawExecutionSize = opportunity.positionSizing?.recommendedSize ?? opportunity.totalMoneyRisked;
+    approvedExecutionSize = finiteNumber(rawExecutionSize, NaN);
+    if (!Number.isFinite(approvedExecutionSize) || approvedExecutionSize <= 0) {
+      return { errors: ['execution_size_required'] };
+    }
+    if (strategyScannerResearchRequired(opportunity)) {
+      const certification = verifyResearchCertification(opportunity.researchCertification, {
+        strategyId: opportunity.strategyId || opportunity.researchCertification?.strategy_name,
+        symbol: opportunity.symbol,
+      });
+      if (!certification.ok) return { errors: certification.reasons };
+      if (!opportunity.economicDecisionId || opportunity.economicExecutionAllowed !== true) {
+        return { errors: ['strategy_entry_economic_approval_required'] };
+      }
+      const authoritativeEdge = finiteNumber(opportunity.netExecutableEdgeUsd, NaN);
+      if (!Number.isFinite(authoritativeEdge) || authoritativeEdge <= 0) {
+        return { errors: ['strategy_entry_positive_executable_edge_required'] };
+      }
+    }
+  }
+
   opportunity.status = body.status;
   opportunity.approvalStatus = body.status;
   opportunity.decisionReason = body.reason || null;
@@ -493,7 +530,7 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
       || opportunity.executionPurpose === 'take_profit_exit'
       ? 'sell'
       : 'buy';
-    const size = opportunity.positionSizing?.recommendedSize || opportunity.totalMoneyRisked || 1000;
+    const size = approvedExecutionSize;
     const estimatedPrice = (() => {
       if (opportunity.symbol && state.marketDataSnapshots) {
         const snapshot = state.marketDataSnapshots.find(row => row.symbol === opportunity.symbol);
@@ -528,6 +565,8 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
       tradeIntent: opportunity.tradeIntent || null,
       executionPurpose: opportunity.executionPurpose || null,
       positionSide: opportunity.positionSide || null,
+      researchCertification: opportunity.researchCertification || null,
+      requiresResearchCertification: opportunity.requiresResearchCertification === true,
       orders: [{
         id: `ord-${Date.now()}`,
         side: direction,
