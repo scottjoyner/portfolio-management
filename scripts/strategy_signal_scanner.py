@@ -23,6 +23,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any
+from types import SimpleNamespace
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -33,6 +34,11 @@ if str(ROOT) not in sys.path:
 
 from strategy_engine import run_strategies, backtest_strategy  # noqa: E402
 from trading_system.signal_confidence import ConfidenceEngine  # noqa: E402
+from scripts.runtime_research_certification import (  # noqa: E402
+    bind_certification_to_runtime,
+    load_active_research_certification,
+    run_certified_current_signal,
+)
 
 
 DEFAULT_PRODUCTS = ["BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "DOT-USD", "MATIC-USD", "AVAX-USD", "LINK-USD"]
@@ -428,7 +434,7 @@ def _regime(closes: list[float]) -> str:
     return "neutral"
 
 
-def scan_product(product_id: str, granularity: str, days_back: int, min_win_rate: float, min_weighted_confidence: float, cache_ttl_seconds: int = 900, refresh: bool = False) -> list[dict[str, Any]]:
+def scan_product(product_id: str, granularity: str, days_back: int, min_win_rate: float, min_weighted_confidence: float, cache_ttl_seconds: int = 900, refresh: bool = False, active_certification: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     series = _fetch_live_candles(product_id, granularity, days_back, cache_ttl_seconds=cache_ttl_seconds, refresh=refresh)
     closes = [row["close"] for row in series.candles if row.get("close", 0) > 0]
     volumes = [row.get("volume", 0.0) for row in series.candles]
@@ -440,6 +446,28 @@ def scan_product(product_id: str, granularity: str, days_back: int, min_win_rate
     current_price = closes[-1]
     asset_class = _asset_class(product_id)
     all_signals = run_strategies(product_id, asset_class, closes, volumes, current_price, highs=highs, lows=lows)
+    runtime_certification = bind_certification_to_runtime(
+        active_certification, product_id=product_id, granularity=granularity
+    )
+    if runtime_certification is not None:
+        certified_strategy = runtime_certification["strategy_name"]
+        # Never allow the default-parameter instance of the certified strategy
+        # to masquerade as the promoted configuration.
+        all_signals = [
+            signal for signal in all_signals
+            if str(getattr(signal, "strategy", "")) != certified_strategy
+        ]
+        certified = run_certified_current_signal(
+            runtime_certification, closes=closes, volumes=volumes, highs=highs, lows=lows
+        )
+        if certified is not None and certified.get("action") != "HOLD":
+            all_signals.append(SimpleNamespace(
+                action=certified["action"],
+                confidence=certified["confidence"],
+                reason=certified["reason"],
+                strategy=certified["strategy"],
+                research_certification=certified["research_certification"],
+            ))
     consensus = _global_consensus(all_signals)
     sentiment_score = _market_sentiment(closes)
     regime = _regime(closes)
@@ -448,9 +476,27 @@ def scan_product(product_id: str, granularity: str, days_back: int, min_win_rate
     results: list[dict[str, Any]] = []
 
     def evaluate(signal: Any) -> dict[str, Any] | None:
-        verdict = backtest_strategy(signal.strategy, product_id, closes, volumes, highs=highs, lows=lows)
-        if verdict.total_trades < 3 or verdict.win_rate < min_win_rate:
-            return None
+        certification = getattr(signal, "research_certification", None)
+        if isinstance(certification, dict):
+            terminal_metrics = certification.get("terminal_metrics") or {}
+            try:
+                verdict = SimpleNamespace(
+                    total_trades=int(terminal_metrics.get("trade_count", 0)),
+                    win_rate=float(terminal_metrics.get("win_rate", 0.0)),
+                    total_return_pct=float(terminal_metrics.get("total_return_pct", 0.0)),
+                    sharpe_ratio=float(terminal_metrics.get("sharpe", 0.0)),
+                    profit_factor=float(terminal_metrics.get("profit_factor", 0.0)),
+                    max_drawdown_pct=float(terminal_metrics.get("max_drawdown_pct", 0.0)),
+                    reason="Certified one-shot terminal holdout",
+                )
+            except (TypeError, ValueError):
+                return None
+            if verdict.total_trades <= 0:
+                return None
+        else:
+            verdict = backtest_strategy(signal.strategy, product_id, closes, volumes, highs=highs, lows=lows)
+            if verdict.total_trades < 3 or verdict.win_rate < min_win_rate:
+                return None
 
         strength = max(0.05, min(1.0, float(getattr(signal, "confidence", 0.5))))
         trade_intent = "exit" if str(getattr(signal, "action", "BUY")).upper() == "SELL" else "entry"
@@ -504,6 +550,13 @@ def scan_product(product_id: str, granularity: str, days_back: int, min_win_rate
             "backtest_max_drawdown_pct": round(verdict.max_drawdown_pct, 4),
             "candles": len(closes),
             "market_direction": "bullish" if sentiment_score >= 0 else "bearish",
+            "tournament_certified": isinstance(certification, dict),
+            "validation_scope": (
+                "tournament_terminal_promoted_exact_runtime"
+                if isinstance(certification, dict)
+                else "same_window_in_sample_screen"
+            ),
+            "research_certification": certification,
         }
 
     if all_signals:
@@ -535,6 +588,7 @@ def main() -> None:
 
     started = time.time()
     candidates: list[dict[str, Any]] = []
+    active_certification = load_active_research_certification()
     product_ids = [p.strip().upper() for p in args.products.split(",") if p.strip()]
     if args.discover or not product_ids:
         discovered = _load_coinbase_products(cache_ttl_seconds=args.products_cache_ttl, refresh=args.refresh)
@@ -548,7 +602,7 @@ def main() -> None:
         cpu_workers = max(8, (os.cpu_count() or 4) * 4)
         with ThreadPoolExecutor(max_workers=min(cpu_workers, len(product_ids))) as pool:
             futures = {
-                pool.submit(scan_product, product_id, args.granularity, args.days_back, args.min_win_rate, args.min_weighted_confidence, args.cache_ttl, args.refresh): product_id
+                pool.submit(scan_product, product_id, args.granularity, args.days_back, args.min_win_rate, args.min_weighted_confidence, args.cache_ttl, args.refresh, active_certification): product_id
                 for product_id in product_ids
             }
             for fut in as_completed(futures):
@@ -573,6 +627,10 @@ def main() -> None:
         "granularity": args.granularity,
         "min_win_rate": args.min_win_rate,
         "min_weighted_confidence": args.min_weighted_confidence,
+        "active_research_certification_hash": (
+            active_certification.get("certification_hash")
+            if isinstance(active_certification, dict) else None
+        ),
         "entry_count": len(entry_signals),
         "exit_count": len(exit_signals),
         "count": len(eligible[: args.limit]),
