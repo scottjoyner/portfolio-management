@@ -170,3 +170,31 @@ def test_noncanonical_candidate_consumes_budget_and_persists_rejection(tmp_path:
             _valid_alpha(experiment["plan"], "candidate-third"),
             reverify_source=False,
         )
+
+
+def test_canonical_malformed_attestation_is_rejected_and_consumes_budget(tmp_path: Path):
+    tournament, lineage, experiment = _tournament(tmp_path, max_candidate_trials=1)
+    malformed = _valid_alpha(experiment["plan"], "candidate-bad-attestation")
+    malformed["replay_attestation"] = "not-an-object"
+    malformed.pop("evidence_hash")
+    malformed["evidence_hash"] = stable_hash(malformed)
+
+    trial = tournament.register_candidate(
+        "experiment-hardening", malformed, reverify_source=False
+    )
+
+    assert trial["trial_index"] == 1
+    assert trial["eligible"] is False
+    assert "candidate_replay_attestation_invalid" in trial["reasons"]
+    assert trial["validation_evidence"]["replay_attestation"] == "not-an-object"
+    assert len([
+        row for row in lineage.events() if row["type"] == "candidate_trial"
+    ]) == 1
+    assert lineage.verify()["ok"] is True
+
+    with pytest.raises(ValueError, match="candidate search budget exhausted"):
+        tournament.register_candidate(
+            "experiment-hardening",
+            _valid_alpha(experiment["plan"], "candidate-second"),
+            reverify_source=False,
+        )
