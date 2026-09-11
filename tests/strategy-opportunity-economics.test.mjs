@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { strategySignalToOpportunityInput } from '../apps/api/src/opportunityGenerator.mjs';
-import { createOpportunity } from '../apps/api/src/opportunityFlows.mjs';
+import { createOpportunity, decideOpportunity } from '../apps/api/src/opportunityFlows.mjs';
 
 function entrySignal() {
   return {
@@ -24,6 +24,14 @@ function entrySignal() {
       take_profit_price: 110,
       stop_loss_price: 95,
     },
+  };
+}
+
+function baseState() {
+  return {
+    config: { maxPositionSizeUsd: 50000 },
+    strategies: [{ id: 'rsi_revert' }],
+    backtests: [],
   };
 }
 
@@ -63,11 +71,7 @@ test('risk-reduction exits are not assigned invented entry edge', () => {
 });
 
 test('opportunity sizing does not inflate requested notional with a context-free Kelly fraction', () => {
-  const state = {
-    config: { maxPositionSizeUsd: 50000 },
-    strategies: [{ id: 'rsi_revert' }],
-    backtests: [],
-  };
+  const state = baseState();
   const input = strategySignalToOpportunityInput(entrySignal());
   const result = createOpportunity(state, input, '2026-09-11T20:00:00.000Z');
 
@@ -82,4 +86,32 @@ test('opportunity sizing does not inflate requested notional with a context-free
   assert.equal(opportunity.positionSizing.requestedNotional, 1000);
   assert.equal(opportunity.positionSizing.sizingAuthority, 'requested_notional_capped');
   assert.equal(opportunity.positionSizing.kellyCapped, 0.25);
+});
+
+test('approval fails closed instead of inventing a 1000 dollar execution size', () => {
+  const state = baseState();
+  const created = createOpportunity(state, {
+    sourceAgentId: 'test',
+    marketType: 'crypto_spot',
+    venue: 'coinbase-paper',
+    symbol: 'BTC-USD',
+    title: 'zero-size test',
+    confidenceScore: 0.8,
+    winProbability: 0.6,
+    lossProbability: 0.4,
+    totalMoneyRisked: 0,
+    maxLoss: 0,
+    potentialUpside: 0,
+    grossExpectedValue: 0,
+  }, '2026-09-11T20:00:00.000Z');
+
+  assert.equal(created.errors, undefined);
+  const decision = decideOpportunity(state, created.opportunity.id, {
+    status: 'approved',
+    reviewer: 'test',
+  }, '2026-09-11T20:01:00.000Z');
+
+  assert.deepEqual(decision.errors, ['execution_size_required']);
+  assert.equal(created.opportunity.status, 'needs_review');
+  assert.equal(state.executions.length, 0);
 });
