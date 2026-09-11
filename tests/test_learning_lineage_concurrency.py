@@ -61,3 +61,17 @@ def test_nonfinite_payload_is_rejected_before_lineage_mutation(tmp_path: Path):
     assert len(rows) == 1
     assert rows[0]["id"] == first["id"]
     assert store.verify()["ok"] is True
+
+
+def test_duplicate_explicit_event_id_is_rejected_before_mutation(tmp_path: Path):
+    lineage_path = tmp_path / "lineage.jsonl"
+    store = LineageStore(lineage_path)
+    first = store.append("error", {"first": True}, event_id="fixed-id")
+
+    with pytest.raises(ValueError, match="duplicate lineage event id"):
+        store.append("error", {"second": True}, event_id="fixed-id")
+
+    rows = store.events()
+    assert len(rows) == 1
+    assert rows[0]["id"] == first["id"] == "fixed-id"
+    assert store.verify()["ok"] is True
