@@ -77,8 +77,8 @@ jobs:
               "seal_selection",
               "run_terminal_holdout",
           ):
-              needle = f"    def {name}(\n"
-              replacement = f"    @_registry_mutation\n    def {name}(\n"
+              needle = f"    def {name}"
+              replacement = f"    @_registry_mutation\n    def {name}"
               if needle not in text:
                   raise SystemExit(f"missing expected method: {name}")
               text = text.replace(needle, replacement, 1)
