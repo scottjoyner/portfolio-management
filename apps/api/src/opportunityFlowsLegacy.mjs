@@ -482,6 +482,15 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
   if (!opportunity) return { errors: ['opportunity_not_found'] };
   if (!['approved', 'rejected', 'deferred'].includes(body.status)) return { errors: ['invalid_opportunity_decision'] };
 
+  let approvedExecutionSize = null;
+  if (body.status === 'approved') {
+    const rawExecutionSize = opportunity.positionSizing?.recommendedSize ?? opportunity.totalMoneyRisked;
+    approvedExecutionSize = finiteNumber(rawExecutionSize, NaN);
+    if (!Number.isFinite(approvedExecutionSize) || approvedExecutionSize <= 0) {
+      return { errors: ['execution_size_required'] };
+    }
+  }
+
   opportunity.status = body.status;
   opportunity.approvalStatus = body.status;
   opportunity.decisionReason = body.reason || null;
@@ -504,7 +513,7 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
       || opportunity.executionPurpose === 'take_profit_exit'
       ? 'sell'
       : 'buy';
-    const size = opportunity.positionSizing?.recommendedSize || opportunity.totalMoneyRisked || 1000;
+    const size = approvedExecutionSize;
     const estimatedPrice = (() => {
       if (opportunity.symbol && state.marketDataSnapshots) {
         const snapshot = state.marketDataSnapshots.find(row => row.symbol === opportunity.symbol);
