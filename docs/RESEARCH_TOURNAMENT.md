@@ -68,11 +68,13 @@ The experiment plan contains the terminal manifest and content hash but not term
 
 ## Candidate-trial lineage and budget
 
-Every candidate submitted through the tournament is recorded, including rejected candidates. Every successfully registered candidate consumes one slot from the precommitted family size whether it ultimately fails alpha validation, replay provenance, dataset binding, walk-forward policy, or multiplicity control.
+Every candidate submitted through the tournament is recorded, including rejected candidates. Every successfully registered candidate consumes one slot from the precommitted family size whether it ultimately fails alpha validation, replay provenance, dataset binding, walk-forward policy, multiplicity control, or evidence canonicalization.
+
+A submission with a usable `candidate_id` but noncanonical evidence is not allowed to disappear from search history. The tournament stores a minimal fail-closed rejection envelope, conservative finite selection metrics, `validation_evidence_hash = null`, and an explicit `candidate_evidence_not_canonical` reason. That rejected trial still receives an index and lineage event and consumes search budget. This prevents malformed/NaN/unserializable evidence from becoming a way to perform uncounted candidate searches.
 
 `register_candidate()` hard-stops when the committed budget is exhausted. A 20-trial experiment cannot register a 21st candidate and cannot enlarge the budget in place because the budget is part of the experiment hash.
 
-A trial carries canonical alpha evidence that is checked for:
+A canonical trial carries alpha evidence that is checked for:
 
 - internal alpha-evidence validity;
 - canonical replay provenance;
@@ -84,6 +86,23 @@ A trial carries canonical alpha evidence that is checked for:
 Each trial records candidate/source/config/evidence identity, deterministic selection metrics, the complete multiplicity assessment, eligibility/failure reasons, trial index, and append-only lineage ID/hash.
 
 Recording failed trials matters: winner-only logging understates the amount of search performed and invalidates the family-size claim.
+
+## Concurrent mutation integrity
+
+Atomic file replacement alone is not enough to protect a hash chain or tournament budget from concurrent writers: two processes can read the same old head, independently construct the same next sequence/trial index, and then overwrite one another.
+
+The research stack therefore serializes mutations with POSIX advisory file locks:
+
+- `LineageStore.append()` holds an exclusive sibling lock across the complete read -> parent validation -> sequence/hash construction -> atomic replacement transaction;
+- `ResearchTournament` holds a separate registry lock across each complete `create_from_snapshot`, `register_candidate`, `seal_selection`, and `run_terminal_holdout` state transition;
+- tournament mutation lock order is registry -> lineage, so concurrent tournament workers cannot lose a trial, oversubscribe the candidate budget, seal two selections from the same state, or open the terminal window twice through a load/modify/save race;
+- `create()` delegates to the locked `create_from_snapshot()` path rather than taking the same registry lock twice.
+
+Lineage JSON is strict (`NaN`/`Infinity` rejected), explicit duplicate lineage IDs are rejected before mutation, and a lineage event is canonicalized/hashable before its file is changed. The lineage file is fsynced before atomic replacement and the parent directory is fsynced on supported filesystems for stronger crash durability.
+
+Candidate registration also proves that the complete persisted trial is strict-JSON encodable **before** appending its candidate-trial lineage event. This specifically prevents malformed candidate evidence from leaving lineage ahead of registry state due to a predictable serialization failure.
+
+These locks protect cooperating local processes. They are not a substitute for a trusted/isolated runner against a privileged process that can ignore advisory locks or rewrite the filesystem.
 
 ## Multiple-testing control
 
@@ -97,6 +116,8 @@ H1: P(trade return > 0) > 0.5
 ```
 
 Zero-return trades are omitted from the effective sample. At the boundary null, the number of positive returns is exactly `Binomial(n, 0.5)`, so the raw upper-tail p-value is deterministic and does not depend on a normal-return assumption or on return magnitudes.
+
+The exact binomial tail keeps the power-of-two denominator and combinatorial sum in arbitrary-precision integer arithmetic until the final bounded probability conversion. Large OOS samples therefore do not fail merely because `2**n` exceeds floating-point exponent range; regression coverage exercises 2,000 nonzero trades.
 
 Family-wise correction is deliberately conservative:
 
@@ -194,7 +215,7 @@ Because the terminal evidence itself binds the committed search policy, trial li
 
 ## Trust boundary and remaining limitations
 
-This slice controls candidate multiplicity **inside the canonical tournament**. It cannot prove that a privileged researcher did not run additional unregistered experiments elsewhere or read the underlying terminal feed cache out-of-band. Local SHA-256 lineage is deterministic integrity evidence, not a cryptographic signature against privileged process/filesystem mutation.
+This stack controls candidate multiplicity and concurrent state mutation **inside the canonical tournament**. It cannot prove that a privileged researcher did not run additional unregistered experiments elsewhere or read the underlying terminal feed cache out-of-band. Local SHA-256 lineage and advisory locks are deterministic integrity/coordination mechanisms, not cryptographic protection against privileged process/filesystem mutation.
 
 Remaining scientific/trust work includes:
 
