@@ -37,6 +37,7 @@ from scripts.backtest_framework.canonical_replay import (
 )
 from scripts.learning_lineage import LineageStore
 from scripts.selection_bias import (
+    BLOCK_METHOD,
     METHOD as MULTIPLE_TESTING_METHOD,
     SearchMultiplicityPolicy,
     assess_candidate_significance,
@@ -108,6 +109,18 @@ def _invalid_multiple_testing_assessment(policy_artifact: dict[str, Any]) -> dic
         "zero_trades": 0,
         "nonzero_trades": 0,
         "raw_p_value": 1.0,
+        "marginal_adjusted_p_value": 1.0,
+        "dependence": {
+            "method": BLOCK_METHOD,
+            "block_size": int(policy_artifact.get("dependence_block_size", 5)),
+            "total_blocks": 0,
+            "positive_blocks": 0,
+            "negative_blocks": 0,
+            "zero_blocks": 0,
+            "nonzero_blocks": 0,
+            "raw_p_value": 1.0,
+            "adjusted_p_value": 1.0,
+        },
         "adjusted_p_value": 1.0,
         "passed": False,
         "reasons": ["multiple_testing_assessment_invalid"],
@@ -125,6 +138,8 @@ def build_experiment_plan_from_snapshot(
     max_candidate_trials: int = 20,
     familywise_alpha: float = 0.05,
     min_sign_test_trades: int = 10,
+    dependence_block_size: int = 5,
+    min_nonzero_blocks: int = 5,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     if not experiment_id or not strategy_name:
@@ -138,6 +153,8 @@ def build_experiment_plan_from_snapshot(
         max_candidate_trials=max_candidate_trials,
         familywise_alpha=familywise_alpha,
         min_nonzero_trades=min_sign_test_trades,
+        dependence_block_size=dependence_block_size,
+        min_nonzero_blocks=min_nonzero_blocks,
     ).artifact()
     full_manifest = _manifest(snapshot)
     rows = normalize_candle_rows(snapshot.get("rows", []))
@@ -443,7 +460,8 @@ class ResearchTournament:
         self, snapshot: dict[str, Any], *, strategy_name: str, holdout_bars: int,
         embargo_bars: int = 0, min_search_bars: int = 200,
         max_candidate_trials: int = 20, familywise_alpha: float = 0.05,
-        min_sign_test_trades: int = 10, experiment_id: str | None = None,
+        min_sign_test_trades: int = 10, dependence_block_size: int = 5,
+        min_nonzero_blocks: int = 5, experiment_id: str | None = None,
         actor: str = "research-controller",
     ) -> dict[str, Any]:
         registry = self.load()
@@ -455,6 +473,7 @@ class ResearchTournament:
             holdout_bars=holdout_bars, embargo_bars=embargo_bars,
             min_search_bars=min_search_bars, max_candidate_trials=max_candidate_trials,
             familywise_alpha=familywise_alpha, min_sign_test_trades=min_sign_test_trades,
+            dependence_block_size=dependence_block_size, min_nonzero_blocks=min_nonzero_blocks,
         )
         event = self.lineage.append(
             "research_experiment",
@@ -483,7 +502,8 @@ class ResearchTournament:
         self, *, strategy_name: str, symbol: str, granularity: int, holdout_bars: int,
         embargo_bars: int = 0, min_search_bars: int = 200,
         max_candidate_trials: int = 20, familywise_alpha: float = 0.05,
-        min_sign_test_trades: int = 10, start_ts: float | None = None,
+        min_sign_test_trades: int = 10, dependence_block_size: int = 5,
+        min_nonzero_blocks: int = 5, start_ts: float | None = None,
         end_ts: float | None = None, window_bars: int | None = None,
         experiment_id: str | None = None,
     ) -> dict[str, Any]:
@@ -495,7 +515,8 @@ class ResearchTournament:
             snapshot, strategy_name=strategy_name, holdout_bars=holdout_bars,
             embargo_bars=embargo_bars, min_search_bars=min_search_bars,
             max_candidate_trials=max_candidate_trials, familywise_alpha=familywise_alpha,
-            min_sign_test_trades=min_sign_test_trades, experiment_id=experiment_id,
+            min_sign_test_trades=min_sign_test_trades, dependence_block_size=dependence_block_size,
+            min_nonzero_blocks=min_nonzero_blocks, experiment_id=experiment_id,
         )
 
     @_registry_mutation
