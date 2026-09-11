@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-export const OVERSEER_SCHEMA_VERSION = 2;
-export const OVERSEER_POLICY_VERSION = 'execution-admission-v2';
+export const OVERSEER_SCHEMA_VERSION = 3;
+export const OVERSEER_POLICY_VERSION = 'execution-admission-v3';
 export const DEFAULT_OVERSEER_TTL_MS = 15 * 60 * 1000;
 
 function canonicalJson(value) {
@@ -58,7 +58,16 @@ function normalizeOrder(order = {}) {
 
 function normalizedRiskProvenance(value = {}) {
   const output = {};
-  for (const key of ['source', 'snapshotHash', 'riskInputsHash', 'policyVersion', 'decisionHash']) {
+  for (const key of [
+    'source',
+    'snapshotHash',
+    'riskInputsHash',
+    'policyVersion',
+    'decisionHash',
+    'portfolioAllocationHash',
+    'portfolioAllocationPolicyVersion',
+    'portfolioAllocationDecisionHash',
+  ]) {
     if (value[key] !== undefined && value[key] !== null) output[key] = value[key];
   }
   return output;
@@ -183,6 +192,9 @@ export function evaluateTradeIntent(input = {}, options = {}) {
 
   if (!normalizedRisk.valid) reasons.push(...normalizedRisk.decision.reasons);
   else if (!normalizedRisk.decision.approved) reasons.push(...normalizedRisk.decision.reasons);
+  if (requireRiskCheck && !normalizedRisk.decision.portfolioAllocationHash) reasons.push('portfolio_allocation_required');
+  if (requireRiskCheck && !normalizedRisk.decision.portfolioAllocationPolicyVersion) reasons.push('portfolio_allocation_policy_version_required');
+  if (requireRiskCheck && !normalizedRisk.decision.portfolioAllocationDecisionHash) reasons.push('portfolio_allocation_decision_hash_required');
   if (requireRiskCheck && !capitalRiskSnapshotHash) reasons.push('capital_risk_snapshot_required');
   if (requireRiskCheck && !capitalRiskPolicyVersion) reasons.push('capital_risk_policy_version_required');
   if (!riskDecisionHash) reasons.push('risk_decision_hash_required');
@@ -277,11 +289,69 @@ export function verifyOverseerDecision(decision, {
   return { ok: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
+function riskCheckBypassed(state) {
+  return state?.riskDecision?.reasons?.includes('risk_check_disabled_by_config');
+}
+
+function verifyStoredPortfolioAllocation(state, currentIntentHash, now) {
+  const reasons = [];
+  const allocationHash = state?.portfolioAllocationHash ?? null;
+  const allocation = state?.portfolioAllocation;
+  if (!allocationHash && !allocation && riskCheckBypassed(state)) {
+    return { reasons, allocationHash: null, policyVersion: null, decisionHash: null };
+  }
+  if (!allocationHash) reasons.push('portfolio_allocation_hash_required');
+  if (!allocation || typeof allocation !== 'object') {
+    reasons.push('portfolio_allocation_required');
+    return { reasons, allocationHash, policyVersion: null, decisionHash: null };
+  }
+  if (allocation.approvedIntentHash !== currentIntentHash) reasons.push('portfolio_allocation_intent_hash_mismatch');
+  const core = { ...allocation };
+  const suppliedHash = core.allocationHash;
+  delete core.allocationHash;
+  try {
+    if (!suppliedHash || stableHash(core) !== suppliedHash) reasons.push('portfolio_allocation_hash_mismatch');
+  } catch {
+    reasons.push('portfolio_allocation_not_canonicalizable');
+  }
+  if (allocationHash && suppliedHash !== allocationHash) reasons.push('portfolio_allocation_reference_mismatch');
+  const decisionCore = {
+    decision: allocation.decision,
+    approved: allocation.approved,
+    reasons: Array.isArray(allocation.reasons) ? allocation.reasons : [],
+    requestedNotionalUsd: allocation.requestedNotionalUsd ?? null,
+    approvedNotionalUsd: allocation.approvedNotionalUsd ?? null,
+    suggestedNotionalUsd: allocation.suggestedNotionalUsd ?? null,
+    scale: allocation.scale ?? null,
+    exitOnly: Boolean(allocation.exitOnly),
+  };
+  try {
+    if (!allocation.allocationDecisionHash || stableHash(decisionCore) !== allocation.allocationDecisionHash) {
+      reasons.push('portfolio_allocation_decision_hash_mismatch');
+    }
+  } catch {
+    reasons.push('portfolio_allocation_decision_not_canonicalizable');
+  }
+  if (allocation.approved !== true) {
+    reasons.push(...(Array.isArray(allocation.reasons) && allocation.reasons.length ? allocation.reasons : ['portfolio_allocation_rejected']));
+  }
+  const expiresAt = new Date(allocation.validUntil).getTime();
+  const current = isoNow(now).getTime();
+  if (!Number.isFinite(expiresAt)) reasons.push('portfolio_allocation_expiry_invalid');
+  else if (current > expiresAt) reasons.push('portfolio_allocation_expired');
+  return {
+    reasons,
+    allocationHash,
+    policyVersion: allocation.policyVersion ?? null,
+    decisionHash: allocation.allocationDecisionHash ?? null,
+  };
+}
+
 function verifyStoredCapitalRiskSnapshot(state, currentIntentHash) {
   const reasons = [];
   const snapshotHash = state?.capitalRiskSnapshotHash ?? null;
   const snapshot = state?.capitalRiskSnapshot;
-  const bypass = snapshotHash == null && state?.riskDecision?.reasons?.includes('risk_check_disabled_by_config');
+  const bypass = snapshotHash == null && riskCheckBypassed(state);
   if (bypass) return { reasons, snapshotHash: null, policyVersion: null };
   if (!snapshotHash) reasons.push('capital_risk_snapshot_hash_required');
   if (!snapshot || typeof snapshot !== 'object') {
@@ -322,8 +392,23 @@ export function verifyStoredExecutionAuthorization(state, { now } = {}) {
     }
   }
 
+  const allocation = verifyStoredPortfolioAllocation(state, currentHash, now);
+  reasons.push(...allocation.reasons);
   const capitalRisk = verifyStoredCapitalRiskSnapshot(state, currentHash);
   reasons.push(...capitalRisk.reasons);
+
+  if (!riskCheckBypassed(state)) {
+    if (state?.riskDecision?.portfolioAllocationHash !== allocation.allocationHash) {
+      reasons.push('risk_decision_portfolio_allocation_hash_mismatch');
+    }
+    if (state?.riskDecision?.portfolioAllocationPolicyVersion !== allocation.policyVersion) {
+      reasons.push('risk_decision_portfolio_allocation_policy_mismatch');
+    }
+    if (state?.riskDecision?.portfolioAllocationDecisionHash !== allocation.decisionHash) {
+      reasons.push('risk_decision_portfolio_allocation_decision_hash_mismatch');
+    }
+  }
+
   let riskDecisionHash = null;
   try {
     riskDecisionHash = stableHash(state?.riskDecision);
@@ -343,6 +428,7 @@ export function verifyStoredExecutionAuthorization(state, { now } = {}) {
     reasons: [...new Set(reasons)],
     tradeIntentEnvelope: envelope,
     tradeIntentHash: currentHash,
+    portfolioAllocationHash: allocation.allocationHash,
     capitalRiskSnapshotHash: capitalRisk.snapshotHash,
     riskDecisionHash,
   };
