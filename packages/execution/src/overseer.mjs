@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+import { strategyScannerResearchRequired, verifyResearchCertification } from './researchCertification.mjs';
 
 export const OVERSEER_SCHEMA_VERSION = 3;
-export const OVERSEER_POLICY_VERSION = 'execution-admission-v3';
+export const OVERSEER_POLICY_VERSION = 'execution-admission-v4';
 export const DEFAULT_OVERSEER_TTL_MS = 15 * 60 * 1000;
 
 function canonicalJson(value) {
@@ -115,7 +116,7 @@ export function buildTradeIntentEnvelope(input = {}) {
   const orders = Array.isArray(input.orders) ? input.orders.map(normalizeOrder) : [];
   const firstOrder = orders[0] || {};
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     strategyId: input.strategyId ?? firstOrder.strategyId ?? null,
     opportunityId: input.opportunityId ?? firstOrder.opportunityId ?? null,
     sourceAgentId: input.sourceAgentId ?? null,
@@ -140,6 +141,8 @@ export function buildTradeIntentEnvelope(input = {}) {
     executionCostSnapshotId: input.executionCostSnapshotId ?? null,
     netExecutableEdgeUsd: finiteOrNull(input.netExecutableEdgeUsd),
     tradePlan: input.tradePlan && typeof input.tradePlan === 'object' ? input.tradePlan : null,
+    requiresResearchCertification: strategyScannerResearchRequired(input),
+    researchCertification: input.researchCertification && typeof input.researchCertification === 'object' ? input.researchCertification : null,
     orders,
   };
 }
@@ -199,6 +202,13 @@ export function evaluateTradeIntent(input = {}, options = {}) {
   if (requireRiskCheck && !capitalRiskPolicyVersion) reasons.push('capital_risk_policy_version_required');
   if (!riskDecisionHash) reasons.push('risk_decision_hash_required');
   if (Number.isFinite(confidenceScore) && confidenceScore < minConfidence) reasons.push('confidence_below_threshold');
+  if (envelope.requiresResearchCertification || envelope.researchCertification) {
+    const research = verifyResearchCertification(envelope.researchCertification, {
+      strategyId: envelope.strategyId,
+      symbol: envelope.symbol,
+    });
+    if (!research.ok) reasons.push(...research.reasons);
+  }
   if (mode === 'live') reasons.push('live_execution_not_certified');
   else if (mode === 'readonly') reasons.push('readonly_execution_blocked');
   else if (!['paper', 'demo'].includes(mode)) reasons.push('execution_mode_invalid');

@@ -1,4 +1,5 @@
 import { nextId } from '../../../packages/storage/src/operatorStore.mjs';
+import { strategyScannerResearchRequired, verifyResearchCertification } from '../../../packages/execution/src/researchCertification.mjs';
 
 const JOB_STATUSES = new Set(['queued', 'running', 'completed', 'failed', 'cancelled']);
 const OPPORTUNITY_STATUSES = new Set(['needs_review', 'approved', 'rejected', 'deferred', 'research_requested', 'blocked']);
@@ -399,7 +400,7 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     id: nextId('opp', state.opportunities),
     sourceAgentId: body.sourceAgentId || job?.agentId || 'market-research-agent',
     researchJobId: body.researchJobId || job?.id || null,
-    strategyId: body.strategyId || null,
+    strategyId: body.strategyId || body.researchCertification?.strategy_name || null,
     marketType: body.marketType,
     venue: body.venue,
     symbol: body.symbol || null,
@@ -427,6 +428,8 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     takeProfitPrice: Number(body.takeProfitPrice || 0) || null,
     stopLossPrice: Number(body.stopLossPrice || 0) || null,
     tradePlan: body.tradePlan || null,
+    researchCertification: body.researchCertification || null,
+    requiresResearchCertification: body.requiresResearchCertification === true,
     status: body.status || 'needs_review',
     approvalStatus: body.approvalStatus || body.status || 'needs_review',
     estimatedFees: nonNegative(body.estimatedFees || 0),
@@ -489,6 +492,20 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
     if (!Number.isFinite(approvedExecutionSize) || approvedExecutionSize <= 0) {
       return { errors: ['execution_size_required'] };
     }
+    if (strategyScannerResearchRequired(opportunity)) {
+      const certification = verifyResearchCertification(opportunity.researchCertification, {
+        strategyId: opportunity.strategyId || opportunity.researchCertification?.strategy_name,
+        symbol: opportunity.symbol,
+      });
+      if (!certification.ok) return { errors: certification.reasons };
+      if (!opportunity.economicDecisionId || opportunity.economicExecutionAllowed !== true) {
+        return { errors: ['strategy_entry_economic_approval_required'] };
+      }
+      const authoritativeEdge = finiteNumber(opportunity.netExecutableEdgeUsd, NaN);
+      if (!Number.isFinite(authoritativeEdge) || authoritativeEdge <= 0) {
+        return { errors: ['strategy_entry_positive_executable_edge_required'] };
+      }
+    }
   }
 
   opportunity.status = body.status;
@@ -548,6 +565,8 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
       tradeIntent: opportunity.tradeIntent || null,
       executionPurpose: opportunity.executionPurpose || null,
       positionSide: opportunity.positionSide || null,
+      researchCertification: opportunity.researchCertification || null,
+      requiresResearchCertification: opportunity.requiresResearchCertification === true,
       orders: [{
         id: `ord-${Date.now()}`,
         side: direction,

@@ -95,6 +95,8 @@ export function strategySignalToOpportunityInput(signal) {
   const executionPurpose = signal.execution_purpose || tradePlan.execution_purpose || (isSell ? 'take_profit_exit' : 'open_long');
   const tradeIntent = signal.trade_intent || tradePlan.plan_type || (isSell ? 'exit' : 'entry');
   const recommendation = executionPurpose === 'take_profit_exit' ? 'take_profit' : (isSell ? 'review_short' : 'paper_review');
+  const researchCertification = signal.research_certification || signal.researchCertification || null;
+  const tournamentCertified = signal.tournament_certified === true && Boolean(researchCertification?.certification_hash);
 
   const validTradeSize = Number.isFinite(tradeSize) && tradeSize > 0 ? tradeSize : 0;
   const validEntryPrice = Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : 0;
@@ -127,6 +129,8 @@ export function strategySignalToOpportunityInput(signal) {
     stopLossPrice,
     entryPrice,
     tradePlan,
+    researchCertification,
+    requiresResearchCertification: tradeIntent === 'entry',
     marketSlug: String(signal.symbol || signal.product_id || '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
     title: `${signal.symbol || signal.product_id} ${direction} — ${signal.strategy}`,
     recommendation,
@@ -141,13 +145,13 @@ export function strategySignalToOpportunityInput(signal) {
     rewardRiskRatio: maxLoss > 0 ? Number((potentialUpside / maxLoss).toFixed(4)) : 0,
     liquidityScore: Number(signal.liquidity_score || signal.liquidityScore || 50),
     dataFreshnessScore: 95,
-    backtestStatus: 'same_window_30d_screen_uncertified',
+    backtestStatus: tournamentCertified ? 'tournament_terminal_certified_runtime' : 'same_window_30d_screen_uncertified',
     estimatedFees: Number(signal.estimated_fees || 5),
     estimatedSlippage: Number(signal.estimated_slippage || 3),
     estimatedGas: 0,
     agentResearchCost: 0,
     modelInferenceCost: 0,
-    notes: `${signal.reason || signal.backtest_reason || 'strategy scan'} | same-window screen only; not tournament-certified | win_rate=${(winProbability * 100).toFixed(1)}% | sentiment=${Number(signal.sentiment_score || 0).toFixed(2)} | weighted_conf=${weightedConfidence.toFixed(2)} | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`,
+    notes: `${signal.reason || signal.backtest_reason || 'strategy scan'} | ${tournamentCertified ? 'tournament-certified exact runtime config' : 'same-window screen only; not tournament-certified'} | win_rate=${(winProbability * 100).toFixed(1)}% | sentiment=${Number(signal.sentiment_score || 0).toFixed(2)} | weighted_conf=${weightedConfidence.toFixed(2)} | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`,
     evidence: [{
       type: 'strategy_live_30d_test',
       strategy: signal.strategy,
@@ -165,8 +169,9 @@ export function strategySignalToOpportunityInput(signal) {
       candles: Number(signal.candles || 0),
       marketDirection: signal.market_direction || (Number(signal.sentiment_score || 0) >= 0 ? 'bullish' : 'bearish'),
       tradePlan,
-      validationScope: 'same_window_in_sample_screen',
-      tournamentCertified: false,
+      validationScope: tournamentCertified ? 'tournament_terminal_promoted_exact_runtime' : 'same_window_in_sample_screen',
+      tournamentCertified,
+      researchCertificationHash: researchCertification?.certification_hash || null,
       expectedValueUnit: 'USD',
       expectedValueMethod,
       grossExpectedValueUsd: Number(grossExpectedValueUsd.toFixed(2)),
@@ -491,10 +496,18 @@ export async function generateOpportunitiesFromStrategySignals(state, options = 
     }
 
     const { opportunity } = opportunityResult;
+    if (opportunity.tradeIntent === 'entry') {
+      // Research credibility and current trade economics are separate gates.
+      // Fresh scanner entries are surfaced for review/economic evaluation but
+      // cannot manufacture an execution draft from the scan alone.
+      created.push(opportunity);
+      continue;
+    }
+
     const approvalResult = decideOpportunity(state, opportunity.id, {
       status: 'approved',
-      reviewer: 'system:auto-draft',
-      reason: `Auto-approved from live 30d strategy scan: ${signal.strategy} win_rate=${(Number(signal.win_rate || 0) * 100).toFixed(1)}% sentiment=${Number(signal.sentiment_score || 0).toFixed(2)}`,
+      reviewer: 'system:risk-reduction-auto-draft',
+      reason: `Risk-reduction signal from strategy scan: ${signal.strategy}`,
     });
 
     if (approvalResult.errors) {

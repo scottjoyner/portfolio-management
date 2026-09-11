@@ -15,6 +15,7 @@ from scripts.alpha_validation import evidence_to_challenger_metrics, verify_alph
 from scripts.backtest_framework.canonical_replay import verify_evidence_replay_binding
 from scripts.learning_lineage import LineageStore
 from scripts.research_tournament import verify_terminal_holdout_evidence
+from scripts.runtime_research_certification import build_runtime_research_certification
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_PATH = ROOT / "data" / "learning" / "challengers.json"
@@ -458,6 +459,10 @@ class ChallengerRegistry:
         if challenger.get("evaluation", {}).get("terminal_holdout_verified") is not True:
             raise ValueError("challenger evaluation did not verify terminal holdout")
 
+        research_certification = build_runtime_research_certification(
+            challenger, evidence, terminal_evidence
+        )
+
         previous = None
         if self.active_config_path.exists():
             previous = json.loads(self.active_config_path.read_text(encoding="utf-8"))
@@ -469,6 +474,7 @@ class ChallengerRegistry:
             "canary_fraction": max(0.01, min(1.0, _num(canary_fraction, 0.10))),
             "alpha_validation_evidence_hash": evidence_hash,
             "terminal_holdout_evidence_hash": terminal_hash,
+            "research_certification": research_certification,
             "promoted_at": _utc_now(),
             "rollback_config": previous,
             "promotion_lineage_id": None,
@@ -480,6 +486,7 @@ class ChallengerRegistry:
                 "canary_fraction": config["canary_fraction"],
                 "alpha_validation_evidence_hash": evidence_hash,
                 "terminal_holdout_evidence_hash": terminal_hash,
+                "research_certification_hash": research_certification.get("certification_hash") if research_certification else None,
             },
             actor="promotion-gate",
             parents=[challenger["evaluation_lineage_id"]],
@@ -496,6 +503,7 @@ class ChallengerRegistry:
                 "lineage_id": event["id"],
                 "alpha_validation_evidence_hash": evidence_hash,
                 "terminal_holdout_evidence_hash": terminal_hash,
+                "research_certification_hash": research_certification.get("certification_hash") if research_certification else None,
             }
         )
         self.save(registry)

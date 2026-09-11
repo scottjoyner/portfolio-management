@@ -57,8 +57,11 @@ function stateTimestamp(value) {
 }
 
 function normalizeDurableExecution(execution = {}) {
+  const metadata = execution?.metadata || {};
   return {
     ...clone(execution),
+    researchCertification: clone(execution.researchCertification ?? metadata.researchCertification ?? null),
+    requiresResearchCertification: execution.requiresResearchCertification ?? metadata.requiresResearchCertification ?? false,
     orders: Array.isArray(execution.orders) ? clone(execution.orders) : [],
     fills: Array.isArray(execution.fills) ? clone(execution.fills) : [],
     tags: execution.tags && typeof execution.tags === 'object' ? clone(execution.tags) : {},
@@ -630,6 +633,8 @@ export default class ExecutionEngine {
       tradeIntent: request.tradeIntent || plan.tradeIntent || null,
       executionPurpose: request.executionPurpose || plan.executionPurpose || null,
       positionSide: request.positionSide || plan.positionSide || null,
+      researchCertification: clone(request.researchCertification || null),
+      requiresResearchCertification: request.requiresResearchCertification === true,
       entryPrice: request.entryPrice ?? plan.entryPrice ?? firstOrder.price ?? null,
       takeProfitPrice: request.takeProfitPrice ?? plan.takeProfitPrice ?? firstOrder.takeProfitPrice ?? null,
       stopLossPrice: request.stopLossPrice ?? plan.stopLossPrice ?? firstOrder.stopLossPrice ?? null,

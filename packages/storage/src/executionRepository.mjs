@@ -95,6 +95,8 @@ export function normalizeExecutionRecord(input = {}, now = new Date().toISOStrin
       confidenceScore: finite(input.confidenceScore, null),
       convictionWeight: finite(input.convictionWeight, null),
       riskDecision: input.riskDecision || null,
+      researchCertification: input.researchCertification || input.metadata?.researchCertification || null,
+      requiresResearchCertification: input.requiresResearchCertification === true || input.metadata?.requiresResearchCertification === true,
       tags: input.tags || {},
       ...(input.metadata || {}),
     },
