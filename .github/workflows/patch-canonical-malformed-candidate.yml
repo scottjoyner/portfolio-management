@@ -1,0 +1,62 @@
+name: One-shot canonical malformed candidate patch
+
+on:
+  push:
+    branches:
+      - agent/research-integrity-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/research-integrity-hardening
+          fetch-depth: 0
+
+      - name: Harden canonical malformed candidate shapes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/research_tournament.py")
+          text = path.read_text()
+          if 'candidate_replay_attestation_invalid' in text:
+              print("shape hardening already present")
+              raise SystemExit(0)
+
+          text = text.replace(
+              'except (TypeError, ValueError, KeyError, OverflowError):\n                alpha_valid, alpha_reasons = False, ["verification_error"]',
+              'except (TypeError, ValueError, KeyError, AttributeError, OverflowError):\n                alpha_valid, alpha_reasons = False, ["verification_error"]',
+              1,
+          )
+          text = text.replace(
+              'except (TypeError, ValueError, KeyError, OverflowError, RuntimeError, ImportError):\n                    replay_valid, replay_reasons = False, ["verification_error"]',
+              'except (TypeError, ValueError, KeyError, AttributeError, OverflowError, RuntimeError, ImportError):\n                    replay_valid, replay_reasons = False, ["verification_error"]',
+              1,
+          )
+          old = '            attestation = validation_evidence.get("replay_attestation") or {}\n            if validation_evidence.get("dataset_hash")'
+          new = '            attestation = validation_evidence.get("replay_attestation") or {}\n            if not isinstance(attestation, dict):\n                reasons.append("candidate_replay_attestation_invalid")\n                attestation = {}\n            if validation_evidence.get("dataset_hash")'
+          if old not in text:
+              raise SystemExit("expected replay attestation block not found")
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+          python -m py_compile scripts/research_tournament.py
+          git diff --check
+
+      - name: Commit production patch
+        run: |
+          if git diff --quiet; then
+            echo "No patch required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/research_tournament.py
+          git commit -m "harden canonical malformed candidate shapes"
+          git push origin HEAD:agent/research-integrity-hardening
