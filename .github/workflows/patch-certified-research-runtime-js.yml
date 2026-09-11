@@ -19,7 +19,7 @@ jobs:
 
       - name: Apply and validate certified execution admission
         run: |
-          python .github/scripts/patch_certified_runtime_js_v2.py
+          python .github/scripts/patch_certified_runtime_js_v3.py
           node --check apps/api/src/opportunityGenerator.mjs
           node --check apps/api/src/opportunityFlowsLegacy.mjs
           node --check packages/execution/src/researchCertification.mjs
