@@ -102,12 +102,45 @@ def flatten_fold_returns(fold_returns: Any) -> list[float]:
     return flattened
 
 
+def _exact_binomial_upper_tail_half(n: int, k: int) -> float:
+    """Return P[Binomial(n, 0.5) >= k] without float(2**n) overflow.
+
+    The combinatorial numerator and denominator stay as arbitrary-precision
+    integers until the final bounded division.  A recurrence builds the smaller
+    side of the tail, avoiding repeated ``math.comb`` calls while retaining the
+    exact discrete probability before conversion to the JSON-safe float result.
+    """
+
+    if n < 0 or k < 0 or k > n:
+        raise ValueError("invalid binomial tail bounds")
+    if k == 0:
+        return 1.0
+    denominator = 1 << n
+
+    if k <= n // 2:
+        # P[X >= k] = 1 - P[X <= k - 1].
+        coefficient = 1  # C(n, 0)
+        lower_sum = coefficient
+        for j in range(0, k - 1):
+            coefficient = coefficient * (n - j) // (j + 1)
+            lower_sum += coefficient
+        return 1.0 - (lower_sum / denominator)
+
+    coefficient = math.comb(n, k)
+    upper_sum = coefficient
+    for j in range(k, n):
+        coefficient = coefficient * (n - j) // (j + 1)
+        upper_sum += coefficient
+    return upper_sum / denominator
+
+
 def exact_one_sided_sign_test(returns: Sequence[float]) -> dict[str, Any]:
     """Exact H0: P(return > 0) <= 0.5 versus positive-median alternative.
 
     Zero returns are omitted from the effective sample.  Under the boundary
     null, the positive count is Binomial(n, 0.5), so the upper-tail p-value is
-    exact and deterministic.
+    exact and deterministic.  Integer tail arithmetic avoids the previous
+    large-sample overflow caused by converting ``2**n`` to float.
     """
 
     positives = 0
@@ -124,11 +157,7 @@ def exact_one_sided_sign_test(returns: Sequence[float]) -> dict[str, Any]:
         else:
             zeros += 1
     effective = positives + negatives
-    if effective == 0:
-        p_value = 1.0
-    else:
-        numerator = sum(math.comb(effective, k) for k in range(positives, effective + 1))
-        p_value = numerator / float(2**effective)
+    p_value = 1.0 if effective == 0 else _exact_binomial_upper_tail_half(effective, positives)
     return {
         "positive_trades": positives,
         "negative_trades": negatives,
