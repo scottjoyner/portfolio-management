@@ -65,6 +65,32 @@ def _fixture_replay_bound(evidence: dict) -> dict:
     return bound
 
 
+def _fixture_terminal(evidence: dict) -> dict:
+    terminal = {
+        "schema_version": 1,
+        "candidate_id": evidence["candidate_id"],
+        "candidate_source_sha": evidence["candidate_source_sha"],
+        "candidate_config": copy.deepcopy(evidence["candidate_config"]),
+        "alpha_validation_evidence_hash": evidence["evidence_hash"],
+        "passed": True,
+        "reasons": [],
+        "terminal_lineage_id": "fixture-terminal-lineage",
+    }
+    terminal["evidence_hash"] = stable_hash(terminal)
+    return terminal
+
+
+def _patch_registry_verifiers(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.challenger_manager.verify_evidence_replay_binding",
+        lambda evidence, reverify_source=True: (True, []),
+    )
+    monkeypatch.setattr(
+        "scripts.challenger_manager.verify_terminal_holdout_evidence",
+        lambda evidence, lineage=None, reverify_source=True: (True, []),
+    )
+
+
 def test_stable_hash_is_order_independent():
     assert stable_hash({"b": 2, "a": 1}) == stable_hash({"a": 1, "b": 2})
 
@@ -319,7 +345,7 @@ def test_registry_rejects_attested_execution_config_mismatch(tmp_path, monkeypat
     assert result["reasons"] == ["alpha_validation_execution_config_mismatch"]
 
 
-def test_registry_canary_carries_verified_evidence_hash(tmp_path, monkeypatch):
+def test_registry_requires_terminal_holdout_after_alpha_gate(tmp_path, monkeypatch):
     registry, challenger = _registry(tmp_path)
     evidence = _fixture_replay_bound(_evidence(challenger["id"]))
     monkeypatch.setattr(
@@ -331,30 +357,70 @@ def test_registry_canary_carries_verified_evidence_hash(tmp_path, monkeypatch):
         {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
         validation_evidence=evidence,
     )
+    assert result["approved"] is False
+    assert result["reasons"] == ["terminal_holdout_evidence_required"]
+    assert result["terminal_holdout_verified"] is False
+
+
+def test_registry_rejects_terminal_binding_mismatch(tmp_path, monkeypatch):
+    registry, challenger = _registry(tmp_path)
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    terminal = _fixture_terminal(evidence)
+    terminal["alpha_validation_evidence_hash"] = "0" * 64
+    terminal["evidence_hash"] = stable_hash({k: v for k, v in terminal.items() if k != "evidence_hash"})
+    _patch_registry_verifiers(monkeypatch)
+
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+        terminal_holdout_evidence=terminal,
+    )
+    assert result["approved"] is False
+    assert "terminal_holdout_alpha_evidence_mismatch" in result["reasons"]
+
+
+def test_registry_canary_carries_verified_evidence_hashes(tmp_path, monkeypatch):
+    registry, challenger = _registry(tmp_path)
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    terminal = _fixture_terminal(evidence)
+    _patch_registry_verifiers(monkeypatch)
+
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+        terminal_holdout_evidence=terminal,
+    )
     assert result["approved"] is True, result["reasons"]
+    assert result["terminal_holdout_verified"] is True
     stored = registry.load()["challengers"][0]
     assert stored["alpha_validation_evidence"] == evidence
     assert stored["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
+    assert stored["terminal_holdout_evidence"] == terminal
+    assert stored["terminal_holdout_evidence_hash"] == terminal["evidence_hash"]
 
     config = registry.promote(challenger["id"], canary_fraction=0.05)
     assert config["deployment"] == "canary"
     assert config["canary_fraction"] == 0.05
     assert config["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
+    assert config["terminal_holdout_evidence_hash"] == terminal["evidence_hash"]
     persisted = json.loads((tmp_path / "active.json").read_text())
     assert persisted["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
+    assert persisted["terminal_holdout_evidence_hash"] == terminal["evidence_hash"]
 
 
-def test_registry_reverifies_persisted_evidence_at_promotion(tmp_path, monkeypatch):
+def test_registry_reverifies_persisted_alpha_evidence_at_promotion(tmp_path, monkeypatch):
     registry, challenger = _registry(tmp_path)
     evidence = _fixture_replay_bound(_evidence(challenger["id"]))
-    monkeypatch.setattr(
-        "scripts.challenger_manager.verify_evidence_replay_binding",
-        lambda evidence, reverify_source=True: (True, []),
-    )
+    terminal = _fixture_terminal(evidence)
+    _patch_registry_verifiers(monkeypatch)
+
     result = registry.evaluate(
         challenger["id"],
         {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
         validation_evidence=evidence,
+        terminal_holdout_evidence=terminal,
     )
     assert result["approved"] is True
 
@@ -363,4 +429,26 @@ def test_registry_reverifies_persisted_evidence_at_promotion(tmp_path, monkeypat
     registry.save(state)
 
     with pytest.raises(ValueError, match="evidence is invalid"):
+        registry.promote(challenger["id"])
+
+
+def test_registry_rejects_terminal_evidence_tampering_at_promotion(tmp_path, monkeypatch):
+    registry, challenger = _registry(tmp_path)
+    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
+    terminal = _fixture_terminal(evidence)
+    _patch_registry_verifiers(monkeypatch)
+
+    result = registry.evaluate(
+        challenger["id"],
+        {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
+        validation_evidence=evidence,
+        terminal_holdout_evidence=terminal,
+    )
+    assert result["approved"] is True
+
+    state = registry.load()
+    state["challengers"][0]["terminal_holdout_evidence"]["evidence_hash"] = "f" * 64
+    registry.save(state)
+
+    with pytest.raises(ValueError, match="terminal-holdout evidence hash mismatch"):
         registry.promote(challenger["id"])
