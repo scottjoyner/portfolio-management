@@ -387,7 +387,7 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     ? Math.max(0, kellyNumerator / kellyDenominator)
     : 0;
   const kellyCapped = Math.min(kellyFraction, 0.25);
-  const maxPositionSize = nonNegative(state.config?.maxPositionSizeUsd || 50000);
+  const maxPositionSize = nonNegative(state.config?.maxPositionSizeUsd ?? 50000);
   // Opportunity construction does not know portfolio equity or allocator budget.
   // Preserve the requested notional (subject to the hard per-position cap) and
   // expose Kelly only as a diagnostic; the portfolio allocator owns sizing.
