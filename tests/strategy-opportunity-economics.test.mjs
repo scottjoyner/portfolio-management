@@ -115,3 +115,26 @@ test('approval fails closed instead of inventing a 1000 dollar execution size', 
   assert.equal(created.opportunity.status, 'needs_review');
   assert.equal(state.executions.length, 0);
 });
+
+test('explicit zero max position cap remains zero and blocks execution', () => {
+  const state = baseState();
+  state.config.maxPositionSizeUsd = 0;
+  const created = createOpportunity(
+    state,
+    strategySignalToOpportunityInput(entrySignal()),
+    '2026-09-11T20:00:00.000Z',
+  );
+
+  assert.equal(created.errors, undefined);
+  assert.equal(created.opportunity.positionSizing.maxPositionSize, 0);
+  assert.equal(created.opportunity.positionSizing.recommendedSize, 0);
+
+  const decision = decideOpportunity(state, created.opportunity.id, {
+    status: 'approved',
+    reviewer: 'test',
+  }, '2026-09-11T20:01:00.000Z');
+
+  assert.deepEqual(decision.errors, ['execution_size_required']);
+  assert.equal(created.opportunity.status, 'needs_review');
+  assert.equal(state.executions.length, 0);
+});
