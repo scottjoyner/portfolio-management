@@ -245,6 +245,7 @@ test('symbol, strategy and correlation-cluster budgets are portfolio-wide', () =
 
 test('pending orders reserve account-wide cash before a new allocation', () => {
   const state = stateFixture();
+  state.accounts[0].cash = 30000;
   state.executions = [{
     id: 'pending-eth',
     accountId: ACCOUNT_ID,
@@ -252,13 +253,13 @@ test('pending orders reserve account-wide cash before a new allocation', () => {
     symbol: 'ETH-USD',
     side: 'buy',
     status: 'draft',
-    orders: [{ symbol: 'ETH-USD', venue: 'coinbase-paper', side: 'buy', quantity: 85 / 3, price: 3000 }],
+    orders: [{ symbol: 'ETH-USD', venue: 'coinbase-paper', side: 'buy', quantity: 5, price: 3000 }],
     fills: [],
   }];
   const input = request({ orders: [{ ...request().orders[0], quantity: 0.08 }] });
   const { allocation } = allocate(state, input);
 
-  assert.equal(allocation.accountState.pendingBuyCashUsd, 85000);
+  assert.equal(allocation.accountState.pendingBuyCashUsd, 15000);
   assert.equal(allocation.budgets.cashReserveUsd, 5000);
   assert.equal(allocation.approvedNotionalUsd, 5000);
   assert.ok(allocation.scalingConstraints.includes('cashReserveUsd'));
