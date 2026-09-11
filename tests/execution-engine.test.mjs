@@ -15,6 +15,7 @@ function healthyRiskState() {
     venue: 'paper',
     bid: 68240,
     ask: 68260,
+    volume24h: 1_000_000,
     status: 'connected',
     source: 'test-fixture',
     timestamp: now,
@@ -218,7 +219,7 @@ describe('ExecutionEngine', () => {
     assert.equal(approveResult.execution.status, 'draft');
   });
 
-  it('rejects direct submit when the capital risk snapshot has expired', async () => {
+  it('rejects direct submit when the capital risk snapshot has expired while allocation is still fresh', async () => {
     const fixedNow = '2026-09-10T20:30:00.000Z';
     const riskStateProvider = async () => {
       const state = createInitialOperatorState(fixedNow);
@@ -229,17 +230,23 @@ describe('ExecutionEngine', () => {
         venue: 'paper',
         bid: 68240,
         ask: 68260,
+        volume24h: 1_000_000,
         status: 'connected',
         source: 'test-fixture',
         timestamp: fixedNow,
       }];
       return { state, observedAt: fixedNow, source: 'test_operator_state', revision: 'expiry-test' };
     };
-    const engine = new ExecutionEngine({ requireApproval: true, riskStateProvider });
+    const engine = new ExecutionEngine({
+      requireApproval: true,
+      riskStateProvider,
+      riskPolicy: { maxAuthoritativeStateAgeMs: 1000 },
+    });
     const createResult = await engine.execute(sampleRequest(), { now: fixedNow });
-    const submitResult = await engine.submit(createResult.execution, { now: '2026-09-10T20:31:00.000Z' });
+    const submitResult = await engine.submit(createResult.execution, { now: '2026-09-10T20:30:02.000Z' });
     assert.equal(submitResult.ok, false);
     assert.ok(submitResult.errors.includes('capital_risk_snapshot_expired'));
+    assert.equal(submitResult.errors.includes('portfolio_allocation_expired'), false);
     assert.equal(submitResult.execution.status, 'draft');
   });
 
@@ -374,15 +381,18 @@ describe('ExecutionEngine', () => {
     assert.ok(cancelResult.errors[0].includes('cannot_cancel'));
   });
 
-  it('includes fee calculations in fills', async () => {
+  it('calculates fees from the allocator-approved fill quantity', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const req = sampleRequest({
       orders: [sampleOrder({ feeBps: 10, price: 50000, quantity: 0.5 })],
     });
     const result = await engine.execute(req);
     assert.equal(result.ok, true);
+    assert.equal(result.execution.portfolioAllocation.decision, 'REDUCE');
+    assert.ok(result.execution.orders[0].quantity < 0.5);
     const fill = result.execution.fills[0];
-    assert.equal(fill.fee, 25); // 0.5 * 50000 * 10 / 10000
+    assert.equal(fill.quantity, result.execution.orders[0].quantity);
+    assert.equal(fill.fee, fill.quantity * fill.price * 10 / 10000);
   });
 });
 

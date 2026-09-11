@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 
+import {
+  applyPortfolioHighWaterUpdates,
+  hydratePortfolioRiskState,
+  planPortfolioHighWaterUpdates,
+} from '../../../packages/execution/src/portfolioRiskState.mjs';
+
 function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
   const patternParts = pattern.split('/').filter(Boolean);
@@ -130,20 +136,41 @@ function riskStateRevision(current = {}) {
     (current.positions || []).length,
     (current.executions || []).length,
     (current.marketDataSnapshots || []).length,
+    current.portfolioRiskState?.updatedAt || 'no-portfolio-risk-state',
     last?.id || last?.at || 'no-audit',
   ].join(':');
 }
 
+async function authoritativeStateWithPortfolioHighWater(store, fallbackState, observedAt) {
+  let current = typeof store?.load === 'function' ? await store.load() : fallbackState;
+  if (!current || typeof current !== 'object') throw new Error('operator_state_unavailable');
+  hydratePortfolioRiskState(current);
+  const planned = planPortfolioHighWaterUpdates(current, observedAt);
+  if (!planned.actions.length) return current;
+
+  if (typeof store?.mutate === 'function') {
+    current = await store.mutate(async mutable => {
+      hydratePortfolioRiskState(mutable);
+      applyPortfolioHighWaterUpdates(mutable, { now: observedAt });
+      return mutable;
+    });
+  } else {
+    applyPortfolioHighWaterUpdates(current, { now: observedAt });
+  }
+  hydratePortfolioRiskState(current);
+  return current;
+}
+
 function createRiskStateProvider(store, fallbackState) {
   return async () => {
-    const current = typeof store?.load === 'function' ? await store.load() : fallbackState;
-    if (!current || typeof current !== 'object') throw new Error('operator_state_unavailable');
+    const observedAt = new Date().toISOString();
+    const current = await authoritativeStateWithPortfolioHighWater(store, fallbackState, observedAt);
     const status = typeof store?.getStatus === 'function' ? store.getStatus() : {};
     return {
       state: current,
       source: status.kind || 'operator_state',
       revision: riskStateRevision(current),
-      observedAt: new Date().toISOString(),
+      observedAt,
     };
   };
 }
@@ -260,6 +287,8 @@ export async function handleTargetedExecutionRoute({
         confidenceScore: result.execution?.confidenceScore ?? null,
         overseerDecision: result.execution?.overseerDecision?.decision || null,
         tradeIntentHash: result.execution?.tradeIntentHash || null,
+        portfolioAllocationHash: result.execution?.portfolioAllocationHash || null,
+        portfolioAllocationDecisionHash: result.execution?.portfolioAllocationDecisionHash || null,
         capitalRiskSnapshotHash: result.execution?.capitalRiskSnapshotHash || null,
         riskDecisionHash: result.execution?.riskDecisionHash || null,
       },
@@ -277,6 +306,8 @@ export async function handleTargetedExecutionRoute({
       payload: {
         overseerDecision: result.execution?.overseerDecision?.decision || null,
         tradeIntentHash: result.execution?.tradeIntentHash || null,
+        portfolioAllocationHash: result.execution?.portfolioAllocationHash || null,
+        portfolioAllocationDecisionHash: result.execution?.portfolioAllocationDecisionHash || null,
         capitalRiskSnapshotHash: result.execution?.capitalRiskSnapshotHash || null,
         riskDecisionHash: result.execution?.riskDecisionHash || null,
       },
