@@ -528,7 +528,7 @@ class ResearchTournament:
             evidence_for_storage = validation_evidence
             try:
                 alpha_valid, alpha_reasons = verify_alpha_validation_evidence(validation_evidence)
-            except (TypeError, ValueError, KeyError, OverflowError):
+            except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
                 alpha_valid, alpha_reasons = False, ["verification_error"]
             if not alpha_valid:
                 reasons.extend(f"alpha:{reason}" for reason in alpha_reasons)
@@ -539,11 +539,14 @@ class ResearchTournament:
                     replay_valid, replay_reasons = verify_evidence_replay_binding(
                         validation_evidence, reverify_source=reverify_source
                     )
-                except (TypeError, ValueError, KeyError, OverflowError, RuntimeError, ImportError):
+                except (TypeError, ValueError, KeyError, AttributeError, OverflowError, RuntimeError, ImportError):
                     replay_valid, replay_reasons = False, ["verification_error"]
                 if not replay_valid:
                     reasons.extend(f"replay:{reason}" for reason in replay_reasons)
             attestation = validation_evidence.get("replay_attestation") or {}
+            if not isinstance(attestation, dict):
+                reasons.append("candidate_replay_attestation_invalid")
+                attestation = {}
             if validation_evidence.get("dataset_hash") != plan["search_dataset"]["dataset_hash"]:
                 reasons.append("candidate_search_dataset_hash_mismatch")
             if validation_evidence.get("dataset_id") != plan["search_dataset"]["dataset_id"]:
