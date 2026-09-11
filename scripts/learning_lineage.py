@@ -59,6 +59,25 @@ def _hash(event: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(event)).hexdigest()
 
 
+def _fsync_parent_directory(path: Path) -> None:
+    """Best-effort durability for the atomic directory-entry replacement."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path.parent, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        # Some filesystems do not support directory fsync. The file itself was
+        # already fsynced, so retain atomicity and treat directory fsync as the
+        # additional durability layer rather than a runtime availability gate.
+        pass
+    finally:
+        os.close(fd)
+
+
 class LineageStore:
     def __init__(self, path: Path | str = DEFAULT_PATH):
         self.path = Path(path)
@@ -70,7 +89,7 @@ class LineageStore:
 
         Atomic replacement protects readers from partial files but, by itself,
         does not protect the read -> sequence/hash -> replace transaction from
-        lost updates.  A sibling lock file keeps the entire chain mutation under
+        lost updates. A sibling lock file keeps the entire chain mutation under
         one exclusive POSIX advisory lock.
         """
 
@@ -118,10 +137,13 @@ class LineageStore:
             missing = [parent for parent in parent_ids if parent not in known]
             if missing:
                 raise ValueError(f"unknown lineage parents: {missing}")
+            resolved_event_id = event_id or f"lin-{uuid.uuid4().hex}"
+            if resolved_event_id in known:
+                raise ValueError(f"duplicate lineage event id: {resolved_event_id}")
             event = {
                 "schema_version": 1,
                 "sequence": len(rows) + 1,
-                "id": event_id or f"lin-{uuid.uuid4().hex}",
+                "id": resolved_event_id,
                 "type": event_type,
                 "actor": actor,
                 "occurred_at": occurred_at or _utc_now(),
@@ -160,6 +182,7 @@ class LineageStore:
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(temp_name, self.path)
+                _fsync_parent_directory(self.path)
             finally:
                 try:
                     os.unlink(temp_name)
