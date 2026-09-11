@@ -21,6 +21,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           path = Path("scripts/research_tournament.py")
           text = path.read_text()
@@ -38,7 +39,7 @@ jobs:
               "from typing import Any, Iterator, Sequence\n\ntry:\n    import fcntl\nexcept ImportError:  # pragma: no cover - supported deployment targets are POSIX\n    fcntl = None\n",
           )
 
-          helper = '''
+          helper = dedent('''
 
           @contextmanager
           def _exclusive_file_lock(path: Path) -> Iterator[None]:
@@ -62,8 +63,7 @@ jobs:
                       return method(self, *args, **kwargs)
 
               return wrapped
-          '''
-          helper = "\n".join(line[10:] if line.startswith("          ") else line for line in helper.splitlines())
+          ''')
           text = text.replace("\n\nclass ResearchTournament:\n", helper + "\n\nclass ResearchTournament:\n")
 
           text = text.replace(
