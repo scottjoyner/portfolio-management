@@ -4,10 +4,11 @@
 
 `Portfolio OS` previously had a strong challenger gate but accepted caller-supplied metrics such as `walk_forward_passed`, `profit_factor`, and `out_of_sample_trades`. That made promotion structurally vulnerable to fabricated, stale, accidentally miscomputed, or repeatedly optimized evidence.
 
-The canonical research boundary now has two stages:
+The canonical research boundary now has three stages:
 
 1. replay-bound alpha validation over a committed search dataset;
-2. a one-shot untouched terminal holdout for the deterministically selected candidate.
+2. precommitted family-wise multiple-testing control across candidate search;
+3. a one-shot untouched terminal holdout for the deterministically selected candidate.
 
 Metric booleans alone cannot authorize challenger promotion.
 
@@ -25,8 +26,10 @@ candidate strategy/config
   -> compiled Rust historical replay
   -> leakage-safe walk-forward folds
   -> replay-bound AlphaValidationEvidence
+  -> precommitted candidate-search budget + family-wise alpha
+  -> exact sign test + full-budget Bonferroni correction
   -> research tournament records every trial
-  -> deterministic pre-terminal selection
+  -> deterministic corrected pre-terminal selection
   -> one-shot committed terminal holdout
   -> TerminalHoldoutEvidence
   -> ChallengerRegistry promotion gate
@@ -156,9 +159,46 @@ Each neighbor records exact typed config/hash, raw fold returns/hash, trade coun
 
 The low-level alpha builder still accepts `parameter_stability_score` for synthetic/unit compatibility, but the canonical configured builder derives it and rejects a conflicting override.
 
+## Multiple-testing / selection-bias control
+
+`scripts/selection_bias.py` and `scripts/research_tournament.py` now close the declared-family candidate-search bias gap in the canonical tournament.
+
+Before any candidate trial, the experiment hash commits:
+
+- maximum candidate-trial family size;
+- family-wise alpha;
+- minimum nonzero OOS trade count;
+- exact test/correction method;
+- derived per-trial alpha.
+
+Default search policy:
+
+```text
+method                         precommitted_bonferroni_exact_sign_v1
+maximum candidate trials       20
+family-wise alpha               0.05
+minimum nonzero OOS trades      10
+per-trial alpha                 0.0025
+```
+
+Every registered trial consumes a slot, including rejected candidates. Candidate registration hard-stops when the committed family is exhausted.
+
+For each candidate, the gate applies an exact one-sided sign test to verified OOS trade returns under `H0: P(return > 0) <= 0.5`. Zero returns do not count toward the effective sample. Bonferroni correction always uses the full committed family size:
+
+```text
+per_trial_alpha = familywise_alpha / max_candidate_trials
+adjusted_p      = min(1, raw_p * max_candidate_trials)
+```
+
+Thus stopping early after a favorable result does not loosen the threshold. A candidate can pass the alpha evidence policy yet remain ineligible for selection because it is not family-wise significant.
+
+Selection independently recomputes this assessment and binds the complete policy, selected assessment, actual trial count and full candidate-trial lineage into the selection artifact. Before opening terminal data, the tournament verifies the selected multiplicity result again. Terminal evidence carries the committed policy, selected assessment, exact search OOS return sequence/hash, trial count and maximum family size, and its verifier recomputes those claims.
+
+This is deliberately conservative but does not solve serial correlation among trade outcomes. Dependence-aware block/bootstrap inference remains a separate requirement.
+
 ## Untouched terminal holdout
 
-`scripts/research_tournament.py` closes the repeated-final-test gap for the canonical tournament path.
+`scripts/research_tournament.py` also closes the repeated-final-test gap for the canonical tournament path.
 
 Before search begins, trusted infrastructure commits one chronological partition:
 
@@ -166,9 +206,9 @@ Before search begins, trusted infrastructure commits one chronological partition
 [ search ][ embargo ][ terminal holdout ]
 ```
 
-The experiment plan exposes the terminal manifest/hash but not terminal OHLCV rows. Every submitted candidate trial—eligible or rejected—is recorded in append-only lineage. Candidate intake closes permanently when deterministic selection is sealed.
+The experiment plan exposes the terminal manifest/hash but not terminal OHLCV rows. Every submitted candidate trial—eligible or rejected—is recorded in append-only lineage. Candidate intake closes permanently when deterministic corrected selection is sealed.
 
-Only the selected candidate can open the terminal window. The terminal runner reloads the exact committed feed-cache range and uses the exact selected strategy/config, warmup, fees and holding controls from alpha replay evidence. It records raw terminal returns, recomputed metrics, terminal policy, exact dataset manifest/hash, selection/experiment bindings and lineage event hashes.
+Only the selected candidate can open the terminal window. The terminal runner reloads the exact committed feed-cache range and uses the exact selected strategy/config, warmup, fees and holding controls from alpha replay evidence. It records raw terminal returns, recomputed metrics, terminal policy, exact dataset manifest/hash, selection/experiment bindings, multiple-testing evidence and lineage event hashes.
 
 A terminal pass is required for promotion. A terminal failure is final for that experiment; choosing another candidate or changing terminal thresholds requires a new experiment and newly committed holdout.
 
@@ -176,7 +216,7 @@ See `docs/RESEARCH_TOURNAMENT.md` for the complete state-machine and verificatio
 
 ## Promotion contract
 
-`ChallengerRegistry.evaluate()` first preserves the historical alpha/replay diagnostics. Missing/invalid alpha evidence, candidate mismatch, executable-config mismatch or replay-provenance failure are rejected before terminal evidence is considered.
+`ChallengerRegistry.evaluate()` first preserves historical alpha/replay diagnostics. Missing/invalid alpha evidence, candidate mismatch, executable-config mismatch or replay-provenance failure are rejected before terminal evidence is considered.
 
 If alpha/replay would otherwise approve, terminal evidence becomes mandatory.
 
@@ -185,25 +225,16 @@ Before a challenger can enter approved state:
 1. alpha schema/hash and recomputed metrics must verify;
 2. candidate ID/config must match the proposal;
 3. canonical replay must revalidate against source and compiled replay;
-4. terminal evidence must verify against exact source and append-only lineage;
-5. terminal evidence must have passed its policy;
-6. terminal candidate ID/config/source SHA must match alpha/challenger identity;
-7. terminal evidence must bind the exact alpha-evidence hash;
-8. both complete artifacts and hashes are persisted.
+4. tournament lineage must show a precommitted search budget and corrected selected candidate;
+5. terminal evidence must verify the selected multiple-testing assessment, exact search-return hash, trial count/budget, terminal source and append-only lineage;
+6. terminal evidence must have passed its policy;
+7. terminal candidate ID/config/source SHA must match alpha/challenger identity;
+8. terminal evidence must bind the exact alpha-evidence hash;
+9. both complete artifacts and hashes are persisted.
 
 Missing terminal evidence fails closed with `terminal_holdout_evidence_required`.
 
-Before canary promotion:
-
-1. challenger and recorded evaluation must still be approved;
-2. complete persisted alpha evidence is reverified;
-3. canonical alpha replay is rerun from source;
-4. complete persisted terminal evidence is reverified;
-5. terminal source replay and lineage chain are independently revalidated;
-6. candidate/config/source/alpha-hash bindings must still match;
-7. persisted alpha and terminal hashes must match the evaluation;
-8. evaluation must record successful terminal verification;
-9. only then is canary configuration written.
+Before canary promotion, complete persisted alpha and terminal evidence are independently reverified from source and lineage, identity/hash bindings must still match, the evaluation must record successful terminal verification, and only then is canary metadata written.
 
 Canary config and promotion lineage carry both `alpha_validation_evidence_hash` and `terminal_holdout_evidence_hash`.
 
@@ -227,7 +258,7 @@ minimum parameter stability      0.60
 
 `challenger_manager.DEFAULT_THRESHOLDS` remains a second independent relative gate and is stricter in some dimensions, including 30 total trades, regime diversity, after-cost P&L improvement, cost coverage and allowed drawdown regression versus incumbent.
 
-Passing alpha evidence therefore does not imply passing terminal holdout or beating the incumbent.
+Passing alpha evidence therefore does not imply passing family-wise candidate selection, terminal holdout, or beating the incumbent.
 
 ## Default terminal policy
 
@@ -246,14 +277,13 @@ These are final-test admission floors, not optimization targets.
 
 Still required before this is a complete scientific-validation system:
 
-1. Add formal multiple-testing / selection-bias correction across the now-recorded candidate search history.
-2. Add block/bootstrap methods appropriate for serially correlated returns.
-3. Add explicit asset/session/regime concentration metrics and regime-labelled fold construction where appropriate.
-4. Expand typed executable configuration/replay and replay-derived stability beyond currently configured strategy families.
-5. Bind candidate source commit/tree identity more strongly to the executable implementation used by replay.
-6. Add trusted runner/build/binary attestation and externally immutable evidence storage.
-7. Add access-control/trusted-runner separation so autonomous research agents cannot inspect committed terminal rows out-of-band.
-8. Add empirical slippage/latency distributions from shadow/live executions.
-9. Quarantine or harden legacy research config-generation helpers before treating any of them as runtime promotion paths.
+1. Add dependence-aware block/bootstrap methods appropriate for serially correlated returns.
+2. Add explicit asset/session/regime concentration metrics and regime-labelled fold construction where appropriate.
+3. Expand typed executable configuration/replay and replay-derived stability beyond currently configured strategy families.
+4. Bind candidate source commit/tree identity more strongly to the executable implementation used by replay.
+5. Add trusted runner/build/binary attestation and externally immutable evidence storage.
+6. Add access-control/trusted-runner separation so autonomous research agents cannot run unregistered candidate searches or inspect committed terminal rows out-of-band.
+7. Add empirical slippage/latency distributions from shadow/live executions.
+8. Quarantine or harden legacy research config-generation helpers before treating any of them as runtime promotion paths.
 
-Until those are implemented, this stack should be treated as a major improvement in leakage discipline, replay provenance, experiment lineage and final-test integrity—not a claim that any strategy is certified for meaningful real capital.
+Until those are implemented, this stack should be treated as a major improvement in leakage discipline, declared-family selection-bias control, replay provenance, experiment lineage and final-test integrity—not a claim that any strategy is certified for meaningful real capital.
