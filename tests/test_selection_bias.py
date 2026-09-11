@@ -46,15 +46,25 @@ def test_sign_test_ignores_zero_returns_in_effective_n():
 
 def test_bonferroni_uses_committed_budget_not_realized_trial_count():
     returns = [[0.01] * 12]
-    small_family = SearchMultiplicityPolicy(max_candidate_trials=5, familywise_alpha=0.05, min_nonzero_trades=10)
-    large_family = SearchMultiplicityPolicy(max_candidate_trials=100, familywise_alpha=0.05, min_nonzero_trades=10)
+    small_family = SearchMultiplicityPolicy(
+        max_candidate_trials=5,
+        familywise_alpha=0.05,
+        min_nonzero_trades=10,
+    )
+    large_family = SearchMultiplicityPolicy(
+        max_candidate_trials=500,
+        familywise_alpha=0.05,
+        min_nonzero_trades=10,
+    )
 
     small = assess_candidate_significance(returns, small_family)
     large = assess_candidate_significance(returns, large_family)
 
     assert small["raw_p_value"] == large["raw_p_value"]
+    assert small["policy"]["per_trial_alpha"] == pytest.approx(0.01)
+    assert large["policy"]["per_trial_alpha"] == pytest.approx(0.0001)
     assert small["adjusted_p_value"] == pytest.approx(small["raw_p_value"] * 5)
-    assert large["adjusted_p_value"] == pytest.approx(large["raw_p_value"] * 100)
+    assert large["adjusted_p_value"] == pytest.approx(large["raw_p_value"] * 500)
     assert small["passed"] is True
     assert large["passed"] is False
     assert "multiple_testing_not_familywise_significant" in large["reasons"]
