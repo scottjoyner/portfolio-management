@@ -13,10 +13,17 @@ import math
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - supported deployment targets are POSIX
+    fcntl = None
 
 from scripts.alpha_validation import performance_metrics, stable_hash, verify_alpha_validation_evidence
 from scripts.backtest_framework.canonical_replay import (
@@ -380,9 +387,34 @@ def verify_terminal_holdout_evidence(
     return not reasons, list(dict.fromkeys(reasons))
 
 
+@contextmanager
+def _exclusive_file_lock(path: Path) -> Iterator[None]:
+    if fcntl is None:
+        raise RuntimeError("interprocess tournament locking is unavailable on this platform")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _registry_mutation(method):
+    """Serialize one complete tournament state transition."""
+
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with _exclusive_file_lock(self.registry_lock_path):
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class ResearchTournament:
     def __init__(self, registry_path: Path | str = DEFAULT_REGISTRY_PATH, *, lineage: LineageStore | None = None):
         self.registry_path = Path(registry_path)
+        self.registry_lock_path = self.registry_path.with_name(f".{self.registry_path.name}.lock")
         self.lineage = lineage or LineageStore()
 
     def load(self) -> dict[str, Any]:
@@ -406,6 +438,7 @@ class ResearchTournament:
             raise KeyError(experiment_id)
         return row
 
+    @_registry_mutation
     def create_from_snapshot(
         self, snapshot: dict[str, Any], *, strategy_name: str, holdout_bars: int,
         embargo_bars: int = 0, min_search_bars: int = 200,
@@ -465,6 +498,7 @@ class ResearchTournament:
             min_sign_test_trades=min_sign_test_trades, experiment_id=experiment_id,
         )
 
+    @_registry_mutation
     def register_candidate(
         self, experiment_id: str, validation_evidence: Any, *,
         actor: str = "research-gate", reverify_source: bool = True,
@@ -544,6 +578,7 @@ class ResearchTournament:
         self.save(registry)
         return trial
 
+    @_registry_mutation
     def seal_selection(self, experiment_id: str, *, actor: str = "research-selector") -> dict[str, Any]:
         registry = self.load()
         experiment = self._experiment(registry, experiment_id)
@@ -608,6 +643,7 @@ class ResearchTournament:
         self.save(registry)
         return selection
 
+    @_registry_mutation
     def run_terminal_holdout(
         self, experiment_id: str, *, policy: TerminalHoldoutPolicy | None = None,
         actor: str = "terminal-holdout-runner",
