@@ -7,15 +7,22 @@ import json
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - supported deployment targets are POSIX
+    fcntl = None
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PATH = ROOT / "data" / "learning_lineage.jsonl"
 EVENT_TYPES = {
     "model_request", "signal", "trade", "outcome", "proposal",
     "evaluation", "promotion", "rollback", "budget_block", "error",
+    "research_experiment", "candidate_trial", "candidate_selection", "terminal_holdout",
 }
 SENSITIVE_KEYS = {"api_key", "authorization", "password", "private_key", "secret"}
 
@@ -39,16 +46,62 @@ def _sanitize(value: Any) -> Any:
 
 def _canonical(event: dict[str, Any]) -> bytes:
     body = {key: value for key, value in event.items() if key != "event_hash"}
-    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        body,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def _hash(event: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical(event)).hexdigest()
 
 
+def _fsync_parent_directory(path: Path) -> None:
+    """Best-effort durability for the atomic directory-entry replacement."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path.parent, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        # Some filesystems do not support directory fsync. The file itself was
+        # already fsynced, so retain atomicity and treat directory fsync as the
+        # additional durability layer rather than a runtime availability gate.
+        pass
+    finally:
+        os.close(fd)
+
+
 class LineageStore:
     def __init__(self, path: Path | str = DEFAULT_PATH):
         self.path = Path(path)
+        self.lock_path = self.path.with_name(f".{self.path.name}.lock")
+
+    @contextmanager
+    def transaction_lock(self) -> Iterator[None]:
+        """Serialize lineage mutations across processes.
+
+        Atomic replacement protects readers from partial files but, by itself,
+        does not protect the read -> sequence/hash -> replace transaction from
+        lost updates. A sibling lock file keeps the entire chain mutation under
+        one exclusive POSIX advisory lock.
+        """
+
+        if fcntl is None:
+            raise RuntimeError("interprocess lineage locking is unavailable on this platform")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     def events(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -75,39 +128,66 @@ class LineageStore:
     ) -> dict[str, Any]:
         if event_type not in EVENT_TYPES:
             raise ValueError(f"unsupported lineage event type: {event_type}")
-        rows = self.events()
-        known = {row.get("id") for row in rows}
+        sanitized_payload = _sanitize(payload)
         parent_ids = list(dict.fromkeys(str(parent) for parent in parents if parent))
-        missing = [parent for parent in parent_ids if parent not in known]
-        if missing:
-            raise ValueError(f"unknown lineage parents: {missing}")
-        event = {
-            "schema_version": 1,
-            "sequence": len(rows) + 1,
-            "id": event_id or f"lin-{uuid.uuid4().hex}",
-            "type": event_type,
-            "actor": actor,
-            "occurred_at": occurred_at or _utc_now(),
-            "parents": parent_ids,
-            "previous_hash": rows[-1].get("event_hash") if rows else None,
-            "payload": _sanitize(payload),
-        }
-        event["event_hash"] = _hash(event)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                for row in rows:
-                    handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
-                handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_name, self.path)
-        finally:
+
+        with self.transaction_lock():
+            rows = self.events()
+            known = {row.get("id") for row in rows}
+            missing = [parent for parent in parent_ids if parent not in known]
+            if missing:
+                raise ValueError(f"unknown lineage parents: {missing}")
+            resolved_event_id = event_id or f"lin-{uuid.uuid4().hex}"
+            if resolved_event_id in known:
+                raise ValueError(f"duplicate lineage event id: {resolved_event_id}")
+            event = {
+                "schema_version": 1,
+                "sequence": len(rows) + 1,
+                "id": resolved_event_id,
+                "type": event_type,
+                "actor": actor,
+                "occurred_at": occurred_at or _utc_now(),
+                "parents": parent_ids,
+                "previous_hash": rows[-1].get("event_hash") if rows else None,
+                "payload": sanitized_payload,
+            }
+            # Hashing canonical JSON before any filesystem mutation also proves
+            # the event is serializable and rejects NaN/Infinity fail-closed.
+            event["event_hash"] = _hash(event)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
+            )
             try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    for row in rows:
+                        handle.write(
+                            json.dumps(
+                                row,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                allow_nan=False,
+                            )
+                            + "\n"
+                        )
+                    handle.write(
+                        json.dumps(
+                            event,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                        + "\n"
+                    )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_name, self.path)
+                _fsync_parent_directory(self.path)
+            finally:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
         return event
 
     def verify(self) -> dict[str, Any]:
@@ -121,8 +201,11 @@ class LineageStore:
                 errors.append(f"sequence:{event_id}")
             if row.get("previous_hash") != previous:
                 errors.append(f"previous_hash:{event_id}")
-            if row.get("event_hash") != _hash(row):
-                errors.append(f"event_hash:{event_id}")
+            try:
+                if row.get("event_hash") != _hash(row):
+                    errors.append(f"event_hash:{event_id}")
+            except (TypeError, ValueError):
+                errors.append(f"canonical_json:{event_id}")
             for parent in row.get("parents", []):
                 if parent not in known:
                     errors.append(f"parent_order:{event_id}:{parent}")
