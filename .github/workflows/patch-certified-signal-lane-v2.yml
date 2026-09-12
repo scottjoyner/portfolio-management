@@ -1,0 +1,54 @@
+name: One-shot certified signal lane patch v2
+
+on:
+  push:
+    branches:
+      - agent/runtime-research-binding
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/runtime-research-binding
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependency
+        run: python -m pip install pytest
+      - name: Apply certified signal lane
+        run: |
+          python .github/patches/apply_certified_signal_lane.py
+          python -m py_compile scripts/certified_strategy_signal.py scripts/runtime_research_certification.py
+          node --check packages/execution/src/researchCertification.mjs
+          node --check apps/api/src/opportunityGenerator.mjs
+          node --check apps/api/src/opportunityFlowsLegacy.mjs
+          git diff --check
+      - name: Run focused regressions
+        run: |
+          python -m pytest -q \
+            tests/test_certified_strategy_signal.py \
+            tests/test_runtime_research_certification.py \
+            tests/test_alpha_validation.py
+          node --test \
+            tests/research-certification-opportunity.test.mjs \
+            tests/strategy-opportunity-economics.test.mjs
+      - name: Commit production changes and remove patch machinery
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/patch-certified-signal-lane-v2.yml .github/patches/apply_certified_signal_lane.py
+          git add \
+            scripts/certified_strategy_signal.py \
+            packages/execution/src/researchCertification.mjs \
+            apps/api/src/opportunityGenerator.mjs \
+            apps/api/src/opportunityFlowsLegacy.mjs \
+            tests/test_certified_strategy_signal.py \
+            tests/research-certification-opportunity.test.mjs
+          git commit -m 'separate certified runtime signal lane from discovery'
+          git push origin HEAD:agent/runtime-research-binding
