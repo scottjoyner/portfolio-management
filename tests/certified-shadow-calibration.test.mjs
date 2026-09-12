@@ -22,7 +22,11 @@ function stateWithOutcomes({ samples = 20, actualPerTrial = 5, predictedPerTrial
   };
   for (let index = 0; index < samples; index += 1) {
     const day = 1 + Math.floor(index / 4);
-    const observedAt = `2026-09-${String(day).padStart(2, '0')}T12:00:00.000Z`;
+    const hour = 8 + (index % 4) * 2;
+    const dayText = String(day).padStart(2, '0');
+    const hourText = String(hour).padStart(2, '0');
+    const exitHourText = String(hour + 1).padStart(2, '0');
+    const observedAt = `2026-09-${dayText}T${hourText}:00:00.000Z`;
     const trialId = `trial-${index}`;
     state.economicMaintenance.certifiedShadowAttribution.trials.push({
       id: trialId,
@@ -41,8 +45,8 @@ function stateWithOutcomes({ samples = 20, actualPerTrial = 5, predictedPerTrial
       canonicalShadowNetPnlUsd: actualPerTrial,
       executionCostForecastErrorUsd: 0.5,
       latencyForecastErrorUsd: 0.25,
-      exitObservedAt: `${observedAt.slice(0, 11)}13:00:00.000Z`,
-      createdAt: `${observedAt.slice(0, 11)}13:01:00.000Z`,
+      exitObservedAt: `2026-09-${dayText}T${exitHourText}:00:00.000Z`,
+      createdAt: `2026-09-${dayText}T${exitHourText}:01:00.000Z`,
     });
   }
   if (duplicateFirst) {
@@ -51,7 +55,7 @@ function stateWithOutcomes({ samples = 20, actualPerTrial = 5, predictedPerTrial
       runtimeIdentityHash: IDENTITY,
       symbol: SYMBOL,
       side: 'BUY',
-      signalObservedAt: '2026-09-01T12:00:00.000Z',
+      signalObservedAt: '2026-09-01T08:00:00.000Z',
     });
     state.economicMaintenance.certifiedShadowAttribution.outcomes.push({
       id: 'outcome-duplicate',
@@ -63,8 +67,8 @@ function stateWithOutcomes({ samples = 20, actualPerTrial = 5, predictedPerTrial
       canonicalShadowNetPnlUsd: 1000,
       executionCostForecastErrorUsd: 0,
       latencyForecastErrorUsd: 0,
-      exitObservedAt: '2026-09-01T14:00:00.000Z',
-      createdAt: '2026-09-01T14:01:00.000Z',
+      exitObservedAt: '2026-09-01T10:00:00.000Z',
+      createdAt: '2026-09-01T10:01:00.000Z',
     });
   }
   return state;
