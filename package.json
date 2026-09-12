@@ -18,6 +18,7 @@
     "economics:once": "node scripts/run-economic-maintenance.mjs --once",
     "economics:worker": "node scripts/run-economic-maintenance.mjs",
     "economics:health": "node scripts/check-economic-worker-health.mjs",
+    "certified-runtime:bundle": "python3 scripts/build_certified_runtime_bundle.py",
     "migrations:validate": "node scripts/validate-migrations.mjs",
     "migrations:dry-run": "node scripts/migrate-postgres.mjs --dry-run",
     "migrations:up": "node scripts/migrate-postgres.mjs",
