@@ -16,6 +16,17 @@ from scripts.certified_strategy_runtime import (
 CANDIDATE_ID = "challenger-certified-runtime"
 SOURCE_SHA = "a" * 40
 STRATEGY_CONFIG = {"period": 14, "oversold": 30.0, "overbought": 70.0}
+REPLAY_LIFECYCLE = {
+    "method": "canonical_replay_lifecycle_v1",
+    "dataset_kind": "spot",
+    "dataset_symbol": "BTC-USD",
+    "granularity_seconds": 3600,
+    "warmup_bars": 30,
+    "fee_bps": 7.5,
+    "max_hold_bars": 12,
+    "exit_on_opposite_signal": True,
+    "close_open_trade_at_observation_end": True,
+}
 
 
 def _fixture() -> tuple[dict, dict]:
@@ -25,6 +36,14 @@ def _fixture() -> tuple[dict, dict]:
         "strategy_config": copy.deepcopy(STRATEGY_CONFIG),
         "strategy_config_hash": stable_hash(STRATEGY_CONFIG),
         "attestation_hash": "replay-attestation-1",
+        "dataset": {
+            "kind": "spot",
+            "symbol": "BTC-USD",
+            "granularity": 3600,
+        },
+        "warmup": 30,
+        "fee_bps": 7.5,
+        "max_hold_bars": 12,
     }
     alpha = {
         "candidate_id": CANDIDATE_ID,
@@ -105,6 +124,8 @@ def test_runtime_identity_is_derived_from_promoted_evidence():
     assert identity["strategy_config_hash"] == stable_hash(STRATEGY_CONFIG)
     assert identity["runtime_evaluator"] == "rust_core.run_rsi_revert_opens_configured_py"
     assert identity["runtime_binary_sha256"] == "b" * 64
+    assert identity["replay_execution_config"] == REPLAY_LIFECYCLE
+    assert identity["replay_execution_config_hash"] == stable_hash(REPLAY_LIFECYCLE)
     assert source_calls and source_calls[0][0] == SOURCE_SHA
 
     carried = runtime_certification(identity)
@@ -112,6 +133,8 @@ def test_runtime_identity_is_derived_from_promoted_evidence():
     assert carried["runtime_identity_hash"] == stable_hash(identity)
     assert carried["alpha_validation_evidence_hash"] == "alpha-evidence-1"
     assert carried["terminal_holdout_evidence_hash"] == "terminal-evidence-1"
+    assert carried["replay_execution_config"] == REPLAY_LIFECYCLE
+    assert carried["replay_execution_config_hash"] == stable_hash(REPLAY_LIFECYCLE)
 
 
 def test_runtime_identity_rejects_active_config_evidence_drift():
@@ -142,6 +165,13 @@ def test_runtime_identity_rejects_failed_replay_reverification():
             lineage=None,
             verify_source=True,
         )
+
+
+def test_runtime_identity_rejects_missing_replay_lifecycle():
+    config, registry = _fixture()
+    del registry["challengers"][0]["alpha_validation_evidence"]["replay_attestation"]["max_hold_bars"]
+    with pytest.raises(CertifiedRuntimeError, match="replay_lifecycle_config_invalid"):
+        _derive(config, registry)
 
 
 def test_canary_selection_is_deterministic_and_bounded():
