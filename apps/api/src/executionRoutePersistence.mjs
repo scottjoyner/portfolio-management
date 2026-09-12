@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 
+import {
+  applyPortfolioHighWaterUpdates,
+  hydratePortfolioRiskState,
+  planPortfolioHighWaterUpdates,
+} from '../../../packages/execution/src/portfolioRiskState.mjs';
+
 function routeMatch(pathname, pattern) {
   const pathParts = pathname.split('/').filter(Boolean);
   const patternParts = pattern.split('/').filter(Boolean);
@@ -120,6 +126,55 @@ function auditEvent(action, execution, payload = {}, now = new Date().toISOStrin
   };
 }
 
+function riskStateRevision(current = {}) {
+  const audit = Array.isArray(current.audit) ? current.audit : [];
+  const last = audit.at(-1);
+  if (last?.eventHash) return last.eventHash;
+  return [
+    current.schemaVersion ?? 'unknown',
+    (current.accounts || []).length,
+    (current.positions || []).length,
+    (current.executions || []).length,
+    (current.marketDataSnapshots || []).length,
+    current.portfolioRiskState?.updatedAt || 'no-portfolio-risk-state',
+    last?.id || last?.at || 'no-audit',
+  ].join(':');
+}
+
+async function authoritativeStateWithPortfolioHighWater(store, fallbackState, observedAt) {
+  let current = typeof store?.load === 'function' ? await store.load() : fallbackState;
+  if (!current || typeof current !== 'object') throw new Error('operator_state_unavailable');
+  hydratePortfolioRiskState(current);
+  const planned = planPortfolioHighWaterUpdates(current, observedAt);
+  if (!planned.actions.length) return current;
+
+  if (typeof store?.mutate === 'function') {
+    current = await store.mutate(async mutable => {
+      hydratePortfolioRiskState(mutable);
+      applyPortfolioHighWaterUpdates(mutable, { now: observedAt });
+      return mutable;
+    });
+  } else {
+    applyPortfolioHighWaterUpdates(current, { now: observedAt });
+  }
+  hydratePortfolioRiskState(current);
+  return current;
+}
+
+function createRiskStateProvider(store, fallbackState) {
+  return async () => {
+    const observedAt = new Date().toISOString();
+    const current = await authoritativeStateWithPortfolioHighWater(store, fallbackState, observedAt);
+    const status = typeof store?.getStatus === 'function' ? store.getStatus() : {};
+    return {
+      state: current,
+      source: status.kind || 'operator_state',
+      revision: riskStateRevision(current),
+      observedAt,
+    };
+  };
+}
+
 async function previewExecution(result) {
   if (!result.execution?.orders?.length) return;
   const order = result.execution.orders[0];
@@ -196,18 +251,30 @@ export async function handleTargetedExecutionRoute({
   const executionApprove = routeMatch(pathname, '/api/execution/:id/approve');
   const executionReject = routeMatch(pathname, '/api/execution/:id/reject');
   const executionCancel = routeMatch(pathname, '/api/execution/:id/cancel');
+  const isPlan = method === 'POST' && pathname === '/api/execution/plan';
   const isExecute = method === 'POST' && pathname === '/api/execution/execute';
   const isLifecycleMutation = method === 'POST' && (executionApprove || executionReject || executionCancel);
-  if (!isExecute && !isLifecycleMutation) return null;
+  if (!isPlan && !isExecute && !isLifecycleMutation) return null;
 
   const engine = await getExecutionEngine();
   const now = new Date().toISOString();
+  const riskContext = {
+    riskStateProvider: createRiskStateProvider(store, state),
+  };
+
+  if (isPlan) {
+    const body = await readJsonBody();
+    const normalized = normalizeTradePlan(body);
+    if (normalized.errors) return { status: 400, body: { ok: false, errors: normalized.errors } };
+    const plan = await engine.plan(normalized, riskContext);
+    return { status: 200, body: { ok: true, ...plan } };
+  }
 
   if (isExecute) {
     const body = await readJsonBody();
     const normalized = normalizeTradePlan(body);
     if (normalized.errors) return { status: 400, body: { ok: false, errors: normalized.errors } };
-    const result = await engine.execute(normalized);
+    const result = await engine.execute(normalized, riskContext);
     await previewExecution(result);
     return persistResult({
       store,
@@ -220,13 +287,17 @@ export async function handleTargetedExecutionRoute({
         confidenceScore: result.execution?.confidenceScore ?? null,
         overseerDecision: result.execution?.overseerDecision?.decision || null,
         tradeIntentHash: result.execution?.tradeIntentHash || null,
+        portfolioAllocationHash: result.execution?.portfolioAllocationHash || null,
+        portfolioAllocationDecisionHash: result.execution?.portfolioAllocationDecisionHash || null,
+        capitalRiskSnapshotHash: result.execution?.capitalRiskSnapshotHash || null,
+        riskDecisionHash: result.execution?.riskDecisionHash || null,
       },
       now,
     });
   }
 
   if (executionApprove) {
-    const result = await engine.approve(executionApprove.id);
+    const result = await engine.approve(executionApprove.id, riskContext);
     return persistResult({
       store,
       state,
@@ -235,6 +306,10 @@ export async function handleTargetedExecutionRoute({
       payload: {
         overseerDecision: result.execution?.overseerDecision?.decision || null,
         tradeIntentHash: result.execution?.tradeIntentHash || null,
+        portfolioAllocationHash: result.execution?.portfolioAllocationHash || null,
+        portfolioAllocationDecisionHash: result.execution?.portfolioAllocationDecisionHash || null,
+        capitalRiskSnapshotHash: result.execution?.capitalRiskSnapshotHash || null,
+        riskDecisionHash: result.execution?.riskDecisionHash || null,
       },
       now,
     });
