@@ -1,4 +1,8 @@
 import * as legacy from './economicDecisionEngineLegacy.mjs';
+import {
+  certifiedShadowSnapshot,
+  createCertifiedShadowTrial,
+} from './certifiedShadowAttribution.mjs';
 
 export * from './economicDecisionEngineLegacy.mjs';
 
@@ -159,4 +163,47 @@ export function buildPriceForecast(state, body = {}, now = new Date().toISOStrin
   };
   forecast.calculationRevision = 'per_interval_mean_reversion_v2';
   return result;
+}
+
+export function evaluateEconomicDecision(state, body = {}, now = new Date().toISOString()) {
+  const result = legacy.evaluateEconomicDecision(state, body, now);
+  const decision = result?.economicDecision;
+  if (!decision) return result;
+
+  const shadow = createCertifiedShadowTrial(state, {
+    opportunityId: decision.opportunityId || body.opportunityId || null,
+    economicDecision: decision,
+    runtimeCertification: body.runtimeCertification || null,
+    symbol: decision.symbol || body.symbol || null,
+    side: body.side || null,
+    notionalUsd: body.notionalUsd,
+    quantity: body.quantity,
+  }, now);
+
+  if (shadow?.shadowTrial) {
+    const opportunity = state.opportunities?.find(row => row.id === decision.opportunityId);
+    if (opportunity) {
+      opportunity.certifiedShadowTrialId = shadow.shadowTrial.id;
+      opportunity.shadowMeasurementStatus = 'trial_open';
+      opportunity.updatedAt = now;
+    }
+    return { ...result, certifiedShadowTrial: shadow.shadowTrial };
+  }
+  if (shadow?.reason && !['certified_runtime_identity_required', 'shadow_opportunity_required'].includes(shadow.reason)) {
+    return {
+      ...result,
+      certifiedShadowTrialSkipped: {
+        reason: shadow.reason,
+        validationReasons: shadow.validationReasons || [],
+      },
+    };
+  }
+  return result;
+}
+
+export function economicDashboard(state) {
+  return {
+    ...legacy.economicDashboard(state),
+    certifiedShadow: certifiedShadowSnapshot(state),
+  };
 }
