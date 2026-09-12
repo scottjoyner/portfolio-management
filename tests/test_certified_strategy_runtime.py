@@ -174,11 +174,12 @@ def test_runtime_identity_rejects_missing_replay_lifecycle():
         _derive(config, registry)
 
 
-def test_canary_selection_is_deterministic_and_bounded():
+def test_canary_selection_is_deterministic_bounded_and_evidence_scoped():
     config, registry = _fixture()
     identity, _ = _derive(config, registry)
     first = canary_selected(identity, "BTC-USD", fraction=0.25)
     assert canary_selected(identity, "BTC-USD", fraction=0.25) is first
     assert canary_selected(identity, "BTC-USD", fraction=1.0) is True
+    assert canary_selected(identity, "ETH-USD", fraction=1.0) is False
     with pytest.raises(CertifiedRuntimeError, match="canary_fraction_invalid"):
         canary_selected(identity, "BTC-USD", fraction=0.0)
