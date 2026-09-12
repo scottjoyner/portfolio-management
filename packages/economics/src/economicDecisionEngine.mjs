@@ -87,7 +87,7 @@ function correctedForecastSignals(body, forecast) {
     : 0;
   const orderBookImbalance = clamp(finite(body.orderBookImbalance, 0), -1, 1);
   const spreadBps = nonNegative(body.spreadBps, 0);
-  const microstructureReturn = orderBookImbalance * Math.max(0.0001, spreadBps / 10000) * 0.5;
+  const microstructureReturn = orderBookImalanceSafe(orderBookImbalance, spreadBps);
   const weights = { ...DEFAULT_WEIGHTS, ...(body.weights || {}) };
   const weightTotal = Object.values(weights).reduce((sum, value) => sum + Math.max(0, finite(value, 0)), 0) || 1;
   const normalizedWeights = Object.fromEntries(Object.entries(weights).map(([key, value]) => [key, Math.max(0, finite(value, 0)) / weightTotal]));
@@ -137,6 +137,10 @@ function correctedForecastSignals(body, forecast) {
   };
 }
 
+function orderBookImalanceSafe(orderBookImbalance, spreadBps) {
+  return orderBookImbalance * Math.max(0.0001, spreadBps / 10000) * 0.5;
+}
+
 export function buildPriceForecast(state, body = {}, now = new Date().toISOString()) {
   const result = legacy.buildPriceForecast(state, body, now);
   const forecast = result?.priceForecast;
@@ -165,19 +169,72 @@ export function buildPriceForecast(state, body = {}, now = new Date().toISOStrin
   return result;
 }
 
+function resolveShadowObservation(state, opportunity) {
+  const id = opportunity?.certifiedShadowSignalObservationId;
+  if (!id) return null;
+  const rows = state.economicMaintenance?.certifiedShadowAttribution?.signalObservations;
+  return Array.isArray(rows) ? rows.find(row => row.id === id) || null : null;
+}
+
+function resolveForecast(state, body) {
+  if (body.forecast && typeof body.forecast === 'object') return body.forecast;
+  return body.forecastId ? state.priceForecasts?.find(row => row.id === body.forecastId) || null : null;
+}
+
+function resolveExecutionCost(state, body) {
+  if (body.executionCostSnapshot && typeof body.executionCostSnapshot === 'object') return body.executionCostSnapshot;
+  return body.executionCostSnapshotId
+    ? state.executionCostSnapshots?.find(row => row.id === body.executionCostSnapshotId) || null
+    : null;
+}
+
+function bindCertifiedDirectionalEdge(state, body) {
+  const opportunity = state.opportunities?.find(row => row.id === body.opportunityId) || null;
+  const observation = resolveShadowObservation(state, opportunity);
+  if (!observation) return { body, opportunity, observation: null };
+
+  const enriched = {
+    ...body,
+    side: observation.action,
+    certifiedShadowSignalObservationId: observation.id,
+  };
+  if (body.predictedEdgeUsd !== undefined && body.predictedEdgeUsd !== null) {
+    return { body: enriched, opportunity, observation };
+  }
+
+  const forecast = resolveForecast(state, body);
+  const executionCost = resolveExecutionCost(state, body);
+  const expectedReturnBps = finite(forecast?.expectedReturnBps, null);
+  const notionalUsd = nonNegative(body.notionalUsd ?? executionCost?.notionalUsd ?? opportunity?.totalMoneyRisked, 0);
+  if (expectedReturnBps == null || !(notionalUsd > 0)) {
+    return { body: enriched, opportunity, observation };
+  }
+  const direction = observation.action === 'SELL' ? -1 : 1;
+  return {
+    body: {
+      ...enriched,
+      predictedEdgeUsd: notionalUsd * expectedReturnBps / 10000 * direction,
+    },
+    opportunity,
+    observation,
+  };
+}
+
 export function evaluateEconomicDecision(state, body = {}, now = new Date().toISOString()) {
-  const result = legacy.evaluateEconomicDecision(state, body, now);
+  const bound = bindCertifiedDirectionalEdge(state, body);
+  const result = legacy.evaluateEconomicDecision(state, bound.body, now);
   const decision = result?.economicDecision;
   if (!decision) return result;
 
   const shadow = createCertifiedShadowTrial(state, {
-    opportunityId: decision.opportunityId || body.opportunityId || null,
+    opportunityId: decision.opportunityId || bound.body.opportunityId || null,
     economicDecision: decision,
-    runtimeCertification: body.runtimeCertification || null,
-    symbol: decision.symbol || body.symbol || null,
-    side: body.side || null,
-    notionalUsd: body.notionalUsd,
-    quantity: body.quantity,
+    runtimeCertification: bound.body.runtimeCertification || null,
+    certifiedShadowSignalObservationId: bound.body.certifiedShadowSignalObservationId || null,
+    symbol: decision.symbol || bound.body.symbol || null,
+    side: bound.body.side || null,
+    notionalUsd: bound.body.notionalUsd,
+    quantity: bound.body.quantity,
   }, now);
 
   if (shadow?.shadowTrial) {
