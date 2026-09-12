@@ -11,16 +11,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts.alpha_validation import evidence_to_challenger_metrics, stable_hash, verify_alpha_validation_evidence
+from scripts.alpha_validation import evidence_to_challenger_metrics, verify_alpha_validation_evidence
 from scripts.backtest_framework.canonical_replay import verify_evidence_replay_binding
 from scripts.learning_lineage import LineageStore
 from scripts.research_tournament import verify_terminal_holdout_evidence
+from scripts.runtime_research_certification import (
+    build_runtime_research_certification,
+    verify_static_certification,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_PATH = ROOT / "data" / "learning" / "challengers.json"
 ACTIVE_CONFIG_PATH = ROOT / "data" / "agent_runtime_config.json"
-RUNTIME_CERTIFICATION_SCHEMA_VERSION = 1
-RUNTIME_CERTIFICATION_METHOD = "challenger_promotion_runtime_certification_v1"
 
 DEFAULT_THRESHOLDS = {
     "min_total_trades": 30,
@@ -195,46 +197,6 @@ def evaluate_challenger_evidence(
     result["challenger_metrics"] = challenger_metrics
     return result
 
-
-def _runtime_certification_core(
-    challenger: dict[str, Any],
-    evidence: dict[str, Any],
-    terminal_evidence: dict[str, Any],
-) -> dict[str, Any]:
-    attestation = evidence.get("replay_attestation")
-    if not isinstance(attestation, dict):
-        raise ValueError("runtime certification requires replay attestation")
-    strategy_name = attestation.get("strategy_name")
-    if not isinstance(strategy_name, str) or not strategy_name:
-        raise ValueError("runtime certification requires strategy name")
-    return {
-        "schema_version": RUNTIME_CERTIFICATION_SCHEMA_VERSION,
-        "method": RUNTIME_CERTIFICATION_METHOD,
-        "candidate_id": challenger.get("id"),
-        "strategy_name": strategy_name,
-        "strategy_config": challenger.get("parameters"),
-        "strategy_config_hash": evidence.get("candidate_config_hash"),
-        "candidate_source_sha": evidence.get("candidate_source_sha"),
-        "dataset_id": evidence.get("dataset_id"),
-        "dataset_hash": evidence.get("dataset_hash"),
-        "alpha_validation_evidence_hash": evidence.get("evidence_hash"),
-        "terminal_holdout_evidence_hash": terminal_evidence.get("evidence_hash"),
-        "experiment_id": terminal_evidence.get("experiment_id"),
-        "experiment_hash": terminal_evidence.get("experiment_hash"),
-        "selection_hash": terminal_evidence.get("selection_hash"),
-        "terminal_result_hash": terminal_evidence.get("terminal_result_hash"),
-        "replay_attestation_hash": stable_hash(attestation),
-        "evaluation_lineage_id": challenger.get("evaluation_lineage_id"),
-    }
-
-
-def _runtime_certification(
-    challenger: dict[str, Any],
-    evidence: dict[str, Any],
-    terminal_evidence: dict[str, Any],
-) -> dict[str, Any]:
-    core = _runtime_certification_core(challenger, evidence, terminal_evidence)
-    return {**core, "certification_hash": stable_hash(core)}
 
 
 class ChallengerRegistry:
@@ -501,7 +463,12 @@ class ChallengerRegistry:
         if challenger.get("evaluation", {}).get("terminal_holdout_verified") is not True:
             raise ValueError("challenger evaluation did not verify terminal holdout")
 
-        certification = _runtime_certification(challenger, evidence, terminal_evidence)
+        certification = build_runtime_research_certification(
+            challenger, evidence, terminal_evidence
+        )
+        certification_hash = (
+            certification.get("certification_hash") if isinstance(certification, dict) else None
+        )
         previous = None
         if self.active_config_path.exists():
             previous = json.loads(self.active_config_path.read_text(encoding="utf-8"))
@@ -514,7 +481,7 @@ class ChallengerRegistry:
             "alpha_validation_evidence_hash": evidence_hash,
             "terminal_holdout_evidence_hash": terminal_hash,
             "research_certification": certification,
-            "runtime_certification_hash": certification["certification_hash"],
+            "runtime_certification_hash": certification_hash,
             "promoted_at": _utc_now(),
             "rollback_config": previous,
             "promotion_lineage_id": None,
@@ -526,7 +493,7 @@ class ChallengerRegistry:
                 "canary_fraction": config["canary_fraction"],
                 "alpha_validation_evidence_hash": evidence_hash,
                 "terminal_holdout_evidence_hash": terminal_hash,
-                "runtime_certification_hash": certification["certification_hash"],
+                "runtime_certification_hash": certification_hash,
             },
             actor="promotion-gate",
             parents=[challenger["evaluation_lineage_id"]],
@@ -543,7 +510,7 @@ class ChallengerRegistry:
                 "lineage_id": event["id"],
                 "alpha_validation_evidence_hash": evidence_hash,
                 "terminal_holdout_evidence_hash": terminal_hash,
-                "runtime_certification_hash": certification["certification_hash"],
+                "runtime_certification_hash": certification_hash,
             }
         )
         self.save(registry)
@@ -637,22 +604,26 @@ class ChallengerRegistry:
         if config.get("terminal_holdout_evidence_hash") != terminal_evidence.get("evidence_hash"):
             reasons.append("active_runtime_config_terminal_hash_mismatch")
 
+        expected_certification = build_runtime_research_certification(
+            challenger, evidence, terminal_evidence
+        )
         supplied = config.get("research_certification")
+        if expected_certification is None:
+            if supplied is not None or config.get("runtime_certification_hash") is not None:
+                reasons.append("active_runtime_unexpected_executable_certification")
+            reasons.append("active_runtime_executable_certification_unavailable")
+            return False, list(dict.fromkeys(reasons)), None
         if not isinstance(supplied, dict):
             reasons.append("active_runtime_certification_missing")
             return False, list(dict.fromkeys(reasons)), None
-        try:
-            expected_core = _runtime_certification_core(challenger, evidence, terminal_evidence)
-            supplied_core = dict(supplied)
-            supplied_hash = supplied_core.pop("certification_hash", None)
-            if supplied_core != expected_core:
-                reasons.append("active_runtime_certification_identity_mismatch")
-            if stable_hash(supplied_core) != supplied_hash:
-                reasons.append("active_runtime_certification_hash_mismatch")
-            if config.get("runtime_certification_hash") != supplied_hash:
-                reasons.append("active_runtime_config_certification_hash_mismatch")
-        except (TypeError, ValueError, KeyError, OverflowError):
-            reasons.append("active_runtime_certification_invalid")
+        static_valid, static_reasons = verify_static_certification(supplied)
+        if not static_valid:
+            reasons.extend(f"active_runtime_certification_invalid:{reason}" for reason in static_reasons)
+        if supplied != expected_certification:
+            reasons.append("active_runtime_certification_identity_mismatch")
+        expected_hash = expected_certification["certification_hash"]
+        if config.get("runtime_certification_hash") != expected_hash:
+            reasons.append("active_runtime_config_certification_hash_mismatch")
 
         return not reasons, list(dict.fromkeys(reasons)), supplied if not reasons else None
 

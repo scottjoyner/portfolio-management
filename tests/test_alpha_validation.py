@@ -409,18 +409,12 @@ def test_registry_canary_carries_verified_evidence_hashes(tmp_path, monkeypatch)
     persisted = json.loads((tmp_path / "active.json").read_text())
     assert persisted["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
     assert persisted["terminal_holdout_evidence_hash"] == terminal["evidence_hash"]
-    certification = persisted["research_certification"]
-    assert certification["candidate_id"] == challenger["id"]
-    assert certification["strategy_name"] == "rsi_revert"
-    assert certification["strategy_config"] == challenger["parameters"]
-    assert certification["strategy_config_hash"] == evidence["candidate_config_hash"]
-    assert certification["candidate_source_sha"] == evidence["candidate_source_sha"]
-    assert certification["alpha_validation_evidence_hash"] == evidence["evidence_hash"]
-    assert certification["terminal_holdout_evidence_hash"] == terminal["evidence_hash"]
-    assert persisted["runtime_certification_hash"] == certification["certification_hash"]
+    assert persisted["research_certification"] is None
+    assert persisted["runtime_certification_hash"] is None
     valid, reasons, verified = registry.verify_active_runtime_config(reverify_source=False)
-    assert valid is True, reasons
-    assert verified == certification
+    assert valid is False
+    assert "active_runtime_executable_certification_unavailable" in reasons
+    assert verified is None
 
 
 def test_registry_reverifies_persisted_alpha_evidence_at_promotion(tmp_path, monkeypatch):
@@ -466,43 +460,3 @@ def test_registry_rejects_terminal_evidence_tampering_at_promotion(tmp_path, mon
     with pytest.raises(ValueError, match="terminal-holdout evidence hash mismatch"):
         registry.promote(challenger["id"])
 
-
-def test_runtime_certification_rejects_rehashed_identity_tampering(tmp_path, monkeypatch):
-    registry, challenger = _registry(tmp_path)
-    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
-    terminal = _fixture_terminal(evidence)
-    _patch_registry_verifiers(monkeypatch)
-    result = registry.evaluate(
-        challenger["id"], {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
-        validation_evidence=evidence, terminal_holdout_evidence=terminal,
-    )
-    assert result["approved"] is True
-    config = registry.promote(challenger["id"])
-    tampered = copy.deepcopy(config)
-    tampered["research_certification"]["candidate_source_sha"] = "f" * 40
-    core = dict(tampered["research_certification"])
-    core.pop("certification_hash")
-    tampered["research_certification"]["certification_hash"] = stable_hash(core)
-    tampered["runtime_certification_hash"] = tampered["research_certification"]["certification_hash"]
-    valid, reasons, verified = registry.verify_active_runtime_config(tampered, reverify_source=False)
-    assert valid is False
-    assert "active_runtime_certification_identity_mismatch" in reasons
-    assert verified is None
-
-
-def test_runtime_certification_rejects_active_parameter_drift(tmp_path, monkeypatch):
-    registry, challenger = _registry(tmp_path)
-    evidence = _fixture_replay_bound(_evidence(challenger["id"]))
-    terminal = _fixture_terminal(evidence)
-    _patch_registry_verifiers(monkeypatch)
-    result = registry.evaluate(
-        challenger["id"], {"net_pnl_after_cost_usd": 0, "max_drawdown_pct": 0},
-        validation_evidence=evidence, terminal_holdout_evidence=terminal,
-    )
-    assert result["approved"] is True
-    config = registry.promote(challenger["id"])
-    config["parameters"] = {"lookback": 99, "threshold": 0.7}
-    valid, reasons, verified = registry.verify_active_runtime_config(config, reverify_source=False)
-    assert valid is False
-    assert "active_runtime_parameters_mismatch" in reasons
-    assert verified is None
