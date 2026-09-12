@@ -186,6 +186,9 @@ data/trader-v4.lock
 scripts/coverage/
 scripts/experiments/
 
+# deployment-prepared certification artifacts are build inputs, never source.
+deploy/generated/
+
 # runtime rehab state (hard-killed strategy cooldown clocks)
 data/bot_killed_strategies.json
 
