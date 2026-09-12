@@ -11,7 +11,7 @@ function finite(value, fallback = null) {
 }
 
 function round(value, digits = 6) {
-  if (!Number.isFinite(Number(value))) return null;
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return null;
   const scale = 10 ** digits;
   return Math.round(Number(value) * scale) / scale;
 }
