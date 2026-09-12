@@ -1,0 +1,299 @@
+name: One-shot certified signal lane patch
+
+on:
+  push:
+    branches:
+      - agent/runtime-research-binding
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/runtime-research-binding
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest
+      - name: Wire isolated certified strategy lane
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          certified = Path('scripts/certified_strategy_signal.py')
+          text = certified.read_text()
+          if 'ROOT = Path(__file__).resolve().parents[1]' not in text:
+              text = text.replace('import math\nfrom types import SimpleNamespace\n', 'import math\nimport sys\nfrom pathlib import Path\nfrom types import SimpleNamespace\n', 1)
+              anchor = 'from typing import Any\n\nfrom scripts.challenger_manager import ChallengerRegistry\n'
+              replacement = '''from typing import Any\n\nROOT = Path(__file__).resolve().parents[1]\nif str(ROOT) not in sys.path:\n    sys.path.insert(0, str(ROOT))\n\nfrom scripts.challenger_manager import ChallengerRegistry\n'''
+              if anchor not in text:
+                  raise SystemExit('certified scanner import anchor missing')
+              text = text.replace(anchor, replacement, 1)
+              certified.write_text(text)
+
+          path = Path('apps/api/src/opportunityGenerator.mjs')
+          text = path.read_text()
+          verifier_import = "import { verifyResearchCertification } from '../../../packages/execution/src/researchCertification.mjs';\n"
+          if verifier_import not in text:
+              anchor = "import { GraphAlphaBotAdapter } from '../../../packages/adapters/src/graphAlphaBotAdapter.mjs';\n"
+              if anchor not in text:
+                  raise SystemExit('generator import anchor missing')
+              text = text.replace(anchor, anchor + verifier_import, 1)
+          scanner_const = "const CERTIFIED_STRATEGY_SIGNAL_SCANNER = fileURLToPath(new URL('../../../scripts/certified_strategy_signal.py', import.meta.url));\n"
+          if scanner_const not in text:
+              anchor = "const STRATEGY_SIGNAL_SCANNER = fileURLToPath(new URL('../../../scripts/strategy_signal_scanner.py', import.meta.url));\n"
+              if anchor not in text:
+                  raise SystemExit('scanner const anchor missing')
+              text = text.replace(anchor, anchor + scanner_const, 1)
+
+          old = '''  const expectedValueMethod = isEntry\n    ? 'tp_sl_payoff_expected_pnl_v1'\n    : 'risk_reduction_not_edge_scored_v1';\n\n  return {\n    sourceAgentId: 'strategy-comparison-scanner','''
+          new = '''  const expectedValueMethod = isEntry\n    ? 'tp_sl_payoff_expected_pnl_v1'\n    : 'risk_reduction_not_edge_scored_v1';\n  const certificationCheck = verifyResearchCertification(signal.research_certification, {\n    strategyId: signal.strategy || null,\n    symbol: signal.symbol || signal.product_id || null,\n  });\n  const certified = signal.tournament_certified === true && certificationCheck.ok;\n  const certificationHash = certified ? signal.research_certification.certification_hash : null;\n\n  return {\n    sourceAgentId: certified ? 'certified-strategy-runtime' : 'strategy-comparison-scanner','''
+          if old not in text:
+              raise SystemExit('certified detection anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    dataFreshnessScore: 95,\n    backtestStatus: 'same_window_30d_screen_uncertified',\n    executionAdmission: {\n      policy: 'same_window_screen_requires_certification',\n      status: 'screen_only',\n      autoDraftEligible: false,\n      researchCertification: 'uncertified',\n      reason: 'same_window_30d_screen_uncertified',\n    },'''
+          new = '''    dataFreshnessScore: 95,\n    backtestStatus: certified\n      ? 'tournament_terminal_promoted_exact_runtime'\n      : 'same_window_30d_screen_uncertified',\n    researchCertification: certified ? signal.research_certification : null,\n    executionAdmission: certified ? {\n      policy: 'certified_research_requires_executable_edge_v1',\n      status: 'research_certified_pending_executable_edge',\n      autoDraftEligible: false,\n      researchCertification: 'verified_runtime_binding',\n      certificationHash,\n      reason: 'net_executable_edge_not_yet_verified',\n    } : {\n      policy: 'same_window_screen_requires_certification',\n      status: 'screen_only',\n      autoDraftEligible: false,\n      researchCertification: 'uncertified',\n      reason: 'same_window_30d_screen_uncertified',\n    },'''
+          if old not in text:
+              raise SystemExit('admission status anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    notes: `${signal.reason || signal.backtest_reason || 'strategy scan'} | same-window screen only; not tournament-certified | win_rate=${(winProbability * 100).toFixed(1)}% | sentiment=${Number(signal.sentiment_score || 0).toFixed(2)} | weighted_conf=${weightedConfidence.toFixed(2)} | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`,\n    evidence: [{\n      type: 'strategy_live_30d_test','''
+          new = '''    notes: certified\n      ? `${signal.reason || 'certified strategy signal'} | exact promoted runtime binding | certification=${certificationHash} | terminal_win_rate=${(winProbability * 100).toFixed(1)}% | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`\n      : `${signal.reason || signal.backtest_reason || 'strategy scan'} | same-window screen only; not tournament-certified | win_rate=${(winProbability * 100).toFixed(1)}% | sentiment=${Number(signal.sentiment_score || 0).toFixed(2)} | weighted_conf=${weightedConfidence.toFixed(2)} | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`,\n    evidence: [{\n      type: certified ? 'strategy_certified_runtime_signal' : 'strategy_live_30d_test','''
+          if old not in text:
+              raise SystemExit('notes/evidence anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''      validationScope: 'same_window_in_sample_screen',\n      tournamentCertified: false,\n      expectedValueUnit: 'USD','''
+          new = '''      validationScope: certified\n        ? 'tournament_terminal_promoted_exact_runtime'\n        : 'same_window_in_sample_screen',\n      tournamentCertified: certified,\n      researchCertificationHash: certificationHash,\n      certificationVerificationReasons: certificationCheck.reasons,\n      expectedValueUnit: 'USD','''
+          if old not in text:
+              raise SystemExit('validation evidence anchor missing')
+          text = text.replace(old, new, 1)
+
+          runner_anchor = '''export async function ingestConnectorSnapshots(state, options = {}) {'''
+          runner = '''export function runCertifiedStrategySignalScanner(options = {}) {\n  const scannerPath = options.certifiedScannerPath || CERTIFIED_STRATEGY_SIGNAL_SCANNER;\n  const args = [scannerPath, '--cache-ttl', String(options.cacheTtl || options.cache_ttl || 900)];\n  if (options.refresh) args.push('--refresh');\n  const stdout = execFileSync('python3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });\n  return JSON.parse(stdout);\n}\n\n'''
+          if 'export function runCertifiedStrategySignalScanner' not in text:
+              if runner_anchor not in text:
+                  raise SystemExit('certified runner insertion anchor missing')
+              text = text.replace(runner_anchor, runner + runner_anchor, 1)
+
+          generate = '''\n\nexport async function generateOpportunityFromCertifiedStrategySignal(state, options = {}) {\n  ensureOpportunityState(state);\n  const scan = runCertifiedStrategySignalScanner(options);\n  const signal = scan?.signal;\n  if (!signal) return { scan, opportunity: null, executions: [], errors: [] };\n  const symbol = signal.symbol || signal.product_id;\n  const certificationHash = signal.research_certification?.certification_hash || null;\n  const duplicate = state.opportunities.some(opp =>\n    opp.symbol === symbol\n    && opp.evidence?.some(e => e.type === 'strategy_certified_runtime_signal' && e.researchCertificationHash === certificationHash)\n    && ['needs_review', 'approved', 'research_requested', 'deferred'].includes(opp.status)\n  );\n  if (duplicate) return { scan, opportunity: null, executions: [], errors: [] };\n  const strategyId = state.strategies.some(strategy => strategy.id === signal.strategy) ? signal.strategy : null;\n  const result = createOpportunity(state, {\n    ...strategySignalToOpportunityInput(signal),\n    strategyId,\n    status: 'needs_review',\n    approvalStatus: 'needs_review',\n  });\n  if (result.errors) return { scan, opportunity: null, executions: [], errors: result.errors };\n  return { scan, opportunity: result.opportunity, executions: [], errors: [] };\n}\n'''
+          if 'export async function generateOpportunityFromCertifiedStrategySignal' not in text:
+              text = text.rstrip() + generate + '\n'
+          path.write_text(text)
+
+          flows = Path('apps/api/src/opportunityFlowsLegacy.mjs')
+          text = flows.read_text()
+          old = '''    tradePlan: body.tradePlan || null,\n    executionAdmission: body.executionAdmission && typeof body.executionAdmission === 'object'\n      ? { ...body.executionAdmission }\n      : null,'''
+          new = '''    tradePlan: body.tradePlan || null,\n    researchCertification: body.researchCertification && typeof body.researchCertification === 'object'\n      ? { ...body.researchCertification }\n      : null,\n    executionAdmission: body.executionAdmission && typeof body.executionAdmission === 'object'\n      ? { ...body.executionAdmission }\n      : null,'''
+          if old not in text:
+              raise SystemExit('opportunity certification persistence anchor missing')
+          text = text.replace(old, new, 1)
+          old = '''      tradePlan: opportunity.tradePlan || null,\n      tradeIntent: opportunity.tradeIntent || null,'''
+          new = '''      tradePlan: opportunity.tradePlan || null,\n      researchCertification: opportunity.researchCertification || null,\n      tradeIntent: opportunity.tradeIntent || null,'''
+          if old not in text:
+              raise SystemExit('execution certification carry anchor missing')
+          text = text.replace(old, new, 1)
+          flows.write_text(text)
+          PY
+          python -m py_compile scripts/certified_strategy_signal.py
+          node --check packages/execution/src/researchCertification.mjs
+          node --check apps/api/src/opportunityGenerator.mjs
+          node --check apps/api/src/opportunityFlowsLegacy.mjs
+          git diff --check
+      - name: Add certified lane regressions
+        run: |
+          cat > tests/test_certified_strategy_signal.py <<'PY'
+          from __future__ import annotations
+
+          import copy
+
+          import scripts.certified_strategy_signal as certified
+          from scripts.strategy_signal_scanner import CandleSeries
+
+
+          CERT = {
+              "certification_hash": "c" * 64,
+              "symbol": "BTC-USD",
+              "granularity": "3600",
+              "strategy_name": "rsi_revert",
+              "candidate_config": {"period": 14, "oversold": 30.0, "overbought": 70.0},
+              "terminal_metrics": {
+                  "win_rate": 0.66,
+                  "trade_count": 20,
+                  "total_return_pct": 8.0,
+                  "sharpe": 1.3,
+                  "profit_factor": 1.5,
+                  "max_drawdown_pct": 5.0,
+              },
+          }
+
+
+          class Registry:
+              def __init__(self, valid=True):
+                  self.valid = valid
+              def verify_active_runtime_config(self, *, reverify_source=True):
+                  if self.valid:
+                      return True, [], copy.deepcopy(CERT)
+                  return False, ["active_runtime_certification_missing"], None
+
+
+          def _candles(source="live_cli"):
+              rows = []
+              for i in range(60):
+                  price = 100.0 + i
+                  rows.append({"open": price - 0.5, "high": price + 1, "low": price - 1, "close": price, "volume": 10.0})
+              return CandleSeries(product_id="BTC-USD", source=source, candles=rows)
+
+
+          def test_invalid_active_certification_fails_before_market_fetch(monkeypatch):
+              monkeypatch.setattr(certified, "_fetch_live_candles", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not fetch")))
+              result = certified.scan_active_certified_strategy(registry=Registry(valid=False))
+              assert result["certified"] is False
+              assert result["signal"] is None
+              assert "active_runtime_certification_missing" in result["reasons"]
+
+
+          def test_certified_lane_runs_only_exact_scope_without_discovery_consensus(monkeypatch):
+              observed = {}
+              def bind(certification, *, product_id, granularity):
+                  observed["bind"] = (product_id, granularity)
+                  return {**copy.deepcopy(certification), "runtime_binding": {"method": "configured_rust_signal_v1"}}
+              def fetch(product_id, granularity, days_back, **kwargs):
+                  observed["fetch"] = (product_id, granularity, days_back)
+                  return _candles()
+              def run(binding, *, closes, volumes, highs, lows):
+                  observed["run"] = binding["candidate_config"]
+                  return {"action": "BUY", "confidence": 0.73, "reason": "configured RSI", "strategy": "rsi_revert", "research_certification": binding}
+              monkeypatch.setattr(certified, "bind_certification_to_runtime", bind)
+              monkeypatch.setattr(certified, "_fetch_live_candles", fetch)
+              monkeypatch.setattr(certified, "run_certified_current_signal", run)
+              result = certified.scan_active_certified_strategy(registry=Registry())
+              assert result["certified"] is True
+              assert result["signal"]["strategy"] == "rsi_revert"
+              assert result["signal"]["validation_scope"] == "tournament_terminal_promoted_exact_runtime"
+              assert result["signal"]["weighted_confidence"] == 0.73
+              assert result["signal"]["win_rate"] == 0.66
+              assert observed["bind"] == ("BTC-USD", "ONE_HOUR")
+              assert observed["fetch"][0:2] == ("BTC-USD", "ONE_HOUR")
+              assert observed["run"] == CERT["candidate_config"]
+
+
+          def test_certified_lane_rejects_non_coinbase_fallback_source(monkeypatch):
+              monkeypatch.setattr(certified, "bind_certification_to_runtime", lambda certification, **kwargs: copy.deepcopy(certification))
+              monkeypatch.setattr(certified, "_fetch_live_candles", lambda *args, **kwargs: _candles(source="coingecko"))
+              monkeypatch.setattr(certified, "run_certified_current_signal", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
+              result = certified.scan_active_certified_strategy(registry=Registry())
+              assert result["certified"] is False
+              assert "certified_runtime_market_source_unavailable" in result["reasons"]
+          PY
+
+          cat > tests/research-certification-opportunity.test.mjs <<'JS'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { researchCertificationIdentity, researchStableHash, runtimeBindingIdentity, verifyResearchCertification } from '../packages/execution/src/researchCertification.mjs';
+          import { strategySignalToOpportunityInput } from '../apps/api/src/opportunityGenerator.mjs';
+
+          function certification() {
+            const config = { period: 14, oversold: 30, overbought: 70 };
+            const metrics = { win_rate: 0.66, trade_count: 20, total_return_pct: 8, sharpe: 1.3, profit_factor: 1.5, max_drawdown_pct: 5 };
+            const cert = {
+              schema_version: 1,
+              certification_type: 'research_tournament_terminal_runtime_v1',
+              candidate_id: 'challenger-rsi',
+              strategy_name: 'rsi_revert',
+              symbol: 'BTC-USD',
+              granularity: '3600',
+              candidate_source_sha: 'a'.repeat(40),
+              candidate_config_hash: researchStableHash(config),
+              alpha_validation_evidence_hash: 'b'.repeat(64),
+              terminal_holdout_evidence_hash: 'c'.repeat(64),
+              experiment_id: 'experiment-runtime',
+              experiment_hash: 'd'.repeat(64),
+              selection_hash: 'e'.repeat(64),
+              terminal_result_hash: 'f'.repeat(64),
+              terminal_metrics_hash: researchStableHash(metrics),
+              replay_attestation_hash: '1'.repeat(64),
+              evaluation_lineage_id: 'lineage-eval',
+              candidate_config: config,
+              terminal_metrics: metrics,
+            };
+            cert.certification_hash = researchStableHash(researchCertificationIdentity(cert));
+            const binding = {
+              method: 'configured_rust_signal_v1',
+              certification_hash: cert.certification_hash,
+              strategy_name: cert.strategy_name,
+              strategy_config_hash: cert.candidate_config_hash,
+              symbol: cert.symbol,
+              granularity: cert.granularity,
+            };
+            binding.runtime_binding_hash = researchStableHash(runtimeBindingIdentity(binding));
+            cert.runtime_binding = binding;
+            return cert;
+          }
+
+          function signal(cert = certification()) {
+            return {
+              tournament_certified: true,
+              research_certification: cert,
+              strategy: 'rsi_revert',
+              symbol: 'BTC-USD',
+              product_id: 'BTC-USD',
+              action: 'BUY',
+              trade_intent: 'entry',
+              execution_purpose: 'open_long',
+              weighted_confidence: 0.73,
+              win_rate: 0.66,
+              price: 100,
+              entry_price: 100,
+              stop_loss_price: 95,
+              take_profit_price: 110,
+              trade_plan: { plan_type: 'entry', execution_purpose: 'open_long', position_side: 'long', entry_price: 100, stop_loss_price: 95, take_profit_price: 110 },
+              source: 'live_cli',
+              reason: 'configured RSI',
+            };
+          }
+
+          test('valid exact runtime certification is preserved but not auto-admitted yet', () => {
+            const cert = certification();
+            assert.deepEqual(verifyResearchCertification(cert, { strategyId: 'rsi_revert', symbol: 'BTC-USD' }).reasons, []);
+            const input = strategySignalToOpportunityInput(signal(cert));
+            assert.equal(input.sourceAgentId, 'certified-strategy-runtime');
+            assert.equal(input.backtestStatus, 'tournament_terminal_promoted_exact_runtime');
+            assert.equal(input.executionAdmission.status, 'research_certified_pending_executable_edge');
+            assert.equal(input.executionAdmission.autoDraftEligible, false);
+            assert.equal(input.executionAdmission.certificationHash, cert.certification_hash);
+            assert.equal(input.researchCertification.certification_hash, cert.certification_hash);
+            assert.equal(input.evidence[0].tournamentCertified, true);
+            assert.equal(input.evidence[0].researchCertificationHash, cert.certification_hash);
+          });
+
+          test('tampered runtime certification is demoted to screen-only', () => {
+            const cert = certification();
+            cert.symbol = 'ETH-USD';
+            const check = verifyResearchCertification(cert, { strategyId: 'rsi_revert', symbol: 'BTC-USD' });
+            assert.equal(check.ok, false);
+            const input = strategySignalToOpportunityInput(signal(cert));
+            assert.equal(input.sourceAgentId, 'strategy-comparison-scanner');
+            assert.equal(input.executionAdmission.status, 'screen_only');
+            assert.equal(input.executionAdmission.autoDraftEligible, false);
+            assert.equal(input.researchCertification, null);
+            assert.equal(input.evidence[0].tournamentCertified, false);
+          });
+          JS
+
+          python -m pytest -q tests/test_certified_strategy_signal.py tests/test_runtime_research_certification.py tests/test_alpha_validation.py
+          node --test tests/research-certification-opportunity.test.mjs tests/strategy-opportunity-economics.test.mjs
+      - name: Commit production changes and remove one-shot workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/patch-certified-signal-lane.yml
+          git add scripts/certified_strategy_signal.py packages/execution/src/researchCertification.mjs apps/api/src/opportunityGenerator.mjs apps/api/src/opportunityFlowsLegacy.mjs tests/test_certified_strategy_signal.py tests/research-certification-opportunity.test.mjs
+          git commit -m 'separate certified runtime signal lane from discovery'
+          git push origin HEAD:agent/runtime-research-binding
