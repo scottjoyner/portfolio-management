@@ -2,14 +2,16 @@
 """Public certified-runtime API with native binary and replay-lifecycle binding.
 
 The implementation lives in ``certified_strategy_runtime_impl`` so this module
-can add two deployment-time bindings without disturbing the already-certified
+can add deployment-time bindings without disturbing the already-certified
 research implementation:
 
 * hash the actual PyO3 extension loaded by the process, not the Python package
   that merely re-exports it;
 * carry the canonical replay execution semantics (bar granularity, warmup,
   round-trip fee assumption and maximum hold) into the immutable runtime
-  identity used by shadow attribution.
+  identity used by shadow attribution;
+* constrain certified canary routing to the exact market symbol represented by
+  the replay evidence instead of treating certification as cross-market proof.
 
 The replay lifecycle remains *shadow evidence*, not automated execution
 authority.  The overseer still requires explicit execution-lifecycle
@@ -26,6 +28,7 @@ from scripts import certified_strategy_runtime_impl as _impl
 
 _original_derive_runtime_identity = _impl.derive_runtime_identity
 _original_runtime_certification = _impl.runtime_certification
+_original_canary_selected = _impl.canary_selected
 
 
 def _native_runtime_binary_path() -> Path:
@@ -85,6 +88,8 @@ def _canonical_replay_execution_config(
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         raise _impl.CertifiedRuntimeError("replay_lifecycle_config_invalid") from exc
 
+    if not lifecycle["dataset_symbol"]:
+        raise _impl.CertifiedRuntimeError("replay_dataset_symbol_invalid")
     if lifecycle["granularity_seconds"] <= 0:
         raise _impl.CertifiedRuntimeError("replay_granularity_invalid")
     if lifecycle["warmup_bars"] < 0 or lifecycle["max_hold_bars"] < 0:
@@ -125,13 +130,28 @@ def runtime_certification(identity: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def canary_selected(identity: dict[str, Any], key: str, *, fraction: float) -> bool:
+    """Route certified canary traffic only inside the replayed evidence domain."""
+
+    lifecycle = identity.get("replay_execution_config")
+    if not isinstance(lifecycle, dict):
+        raise _impl.CertifiedRuntimeError("replay_lifecycle_identity_required")
+    certified_symbol = str(lifecycle.get("dataset_symbol") or "")
+    if not certified_symbol:
+        raise _impl.CertifiedRuntimeError("replay_dataset_symbol_invalid")
+    if str(key) != certified_symbol:
+        return False
+    return _original_canary_selected(identity, key, fraction=fraction)
+
+
 # Functions defined in the implementation resolve globals from that module.
 # Patch those seams before re-exporting the public surface so all callers,
-# including load_certified_runtime_context() and run_certified_strategy(), use
-# the strengthened identity automatically.
+# including load_certified_runtime_context(), scanner dispatch and
+# run_certified_strategy(), use the strengthened identity automatically.
 _impl.runtime_binary_sha256 = runtime_binary_sha256
 _impl.derive_runtime_identity = derive_runtime_identity
 _impl.runtime_certification = runtime_certification
+_impl.canary_selected = canary_selected
 
 for _name in dir(_impl):
     if not _name.startswith("__"):
@@ -141,3 +161,4 @@ for _name in dir(_impl):
 globals()["runtime_binary_sha256"] = runtime_binary_sha256
 globals()["derive_runtime_identity"] = derive_runtime_identity
 globals()["runtime_certification"] = runtime_certification
+globals()["canary_selected"] = canary_selected
