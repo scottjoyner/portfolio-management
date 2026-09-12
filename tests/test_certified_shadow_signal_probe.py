@@ -31,30 +31,32 @@ CONTEXT = {
     "identity": IDENTITY,
     "runtime_identity_hash": "e" * 64,
     "deployment": "canary",
-    # Deliberately tiny: the raw shadow probe must ignore execution routing.
+    # Deliberately tiny: raw shadow measurement must ignore execution routing.
     "canary_fraction": 0.01,
 }
 
 
-def _series():
-    candles = []
-    for index in range(40):
+def _candles(count: int = 40):
+    start = 1_700_000_000
+    rows = []
+    for index in range(count):
         price = 100.0 + index
-        candles.append({
+        rows.append({
+            "start": float(start + index * 3600),
             "open": price - 0.5,
             "high": price + 1.0,
             "low": price - 1.0,
             "close": price,
             "volume": 10.0,
         })
-    return SimpleNamespace(product_id="BTC-USD", source="test-feed", candles=candles)
+    return rows
 
 
-def _signal(action="SELL"):
+def _signal(action="SELL", confidence=0.37):
     return SimpleNamespace(
         action=action,
         price=139.0,
-        confidence=0.37,
+        confidence=confidence,
         reason="raw certified probe signal",
         strategy="rsi_revert",
         runtime_certification={
@@ -77,17 +79,18 @@ def _signal(action="SELL"):
 
 
 def test_probe_observes_certified_signal_without_same_window_screen_or_canary(monkeypatch):
-    monkeypatch.setattr(probe.scanner, "_fetch_live_candles", lambda *args, **kwargs: _series())
     calls = []
 
     def run(identity, **kwargs):
         calls.append((identity, kwargs))
-        return [_signal("SELL")]
+        # Confidence would be below the legacy scanner's normal threshold; it
+        # must still be measured because research certification already exists.
+        return [_signal("SELL", confidence=0.01)]
 
     monkeypatch.setattr(probe, "run_certified_strategy", run)
     result = probe.probe_certified_shadow_signals(
         runtime_context=CONTEXT,
-        observed_at="2026-09-12T20:30:00+00:00",
+        candle_rows=_candles(),
     )
 
     assert result["ok"] is True
@@ -100,7 +103,7 @@ def test_probe_observes_certified_signal_without_same_window_screen_or_canary(mo
     assert signal["shadow_only"] is True
     assert signal["execution_canary_applied"] is False
     assert signal["measurement_scope"] == probe.MEASUREMENT_SCOPE
-    assert signal["weighted_confidence"] == 0.37
+    assert signal["weighted_confidence"] == 0.01
     assert "win_rate" not in signal
     certification = signal["trade_plan"]["runtime_certification"]
     assert certification["execution_lifecycle_certified"] is False
@@ -108,58 +111,76 @@ def test_probe_observes_certified_signal_without_same_window_screen_or_canary(mo
     assert calls and calls[0][0] is IDENTITY
 
 
-def test_probe_uses_only_replayed_market_and_granularity(monkeypatch):
+def test_probe_fetches_only_replayed_market_at_replay_granularity(monkeypatch):
     captured = []
 
-    def fetch(product, granularity, days_back, **kwargs):
-        captured.append((product, granularity, days_back))
-        return _series()
+    def fetch(symbol, *, granularity_seconds, now_epoch=None, max_bars=300):
+        captured.append((symbol, granularity_seconds, max_bars))
+        return _candles()
 
-    monkeypatch.setattr(probe.scanner, "_fetch_live_candles", fetch)
+    monkeypatch.setattr(probe, "_fetch_completed_coinbase_candles", fetch)
     monkeypatch.setattr(probe, "run_certified_strategy", lambda identity, **kwargs: [])
-    result = probe.probe_certified_shadow_signals(runtime_context=CONTEXT, days_back=7)
+    result = probe.probe_certified_shadow_signals(runtime_context=CONTEXT)
 
     assert result["signals"] == []
-    assert captured == [("BTC-USD", "ONE_HOUR", 7)]
+    assert captured == [("BTC-USD", 3600, 100)]
 
 
-def test_probe_never_uses_legacy_backtest_filter(monkeypatch):
-    monkeypatch.setattr(probe.scanner, "_fetch_live_candles", lambda *args, **kwargs: _series())
-    monkeypatch.setattr(
-        probe.scanner,
-        "backtest_strategy",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy backtest filter called")),
-    )
+def test_probe_observation_id_source_is_canonical_bar_close_not_poll_time(monkeypatch):
     monkeypatch.setattr(probe, "run_certified_strategy", lambda identity, **kwargs: [_signal("BUY")])
+    rows = _candles()
+    result = probe.probe_certified_shadow_signals(
+        runtime_context=CONTEXT,
+        candle_rows=rows,
+        now_epoch=9_999_999_999,
+    )
+    expected = probe._iso_timestamp(rows[-1]["start"] + 3600)
+    assert result["observed_at"] == expected
+    assert result["signals"][0]["observed_at"] == expected
+    assert result["signals"][0]["canonical_bar_closed_at"] == expected
 
-    result = probe.probe_certified_shadow_signals(runtime_context=CONTEXT)
-    assert len(result["signals"]) == 1
-    assert result["signals"][0]["action"] == "BUY"
+
+def test_completed_candle_normalizer_sorts_deduplicates_and_drops_forming_bar():
+    now = 10_000.0
+    rows = [
+        [7200, 99, 103, 100, 102, 5],      # still forming at t=10,000
+        [3600, 98, 102, 99, 101, 4],       # completed
+        [0, 97, 101, 98, 100, 3],          # completed
+        [3600, 98, 102, 99, 101, 4],       # duplicate
+    ]
+    normalized = probe._normalize_completed_rows(
+        rows,
+        granularity_seconds=3600,
+        now_epoch=now,
+    )
+    assert [row["start"] for row in normalized] == [0.0, 3600.0]
 
 
 def test_probe_rejects_missing_runtime_certification(monkeypatch):
-    monkeypatch.setattr(probe.scanner, "_fetch_live_candles", lambda *args, **kwargs: _series())
     bad = _signal()
     bad.runtime_certification = None
     monkeypatch.setattr(probe, "run_certified_strategy", lambda identity, **kwargs: [bad])
 
     with pytest.raises(probe.CertifiedRuntimeError, match="shadow_probe_certification_missing"):
-        probe.probe_certified_shadow_signals(runtime_context=CONTEXT)
+        probe.probe_certified_shadow_signals(runtime_context=CONTEXT, candle_rows=_candles())
+
+
+def test_probe_rejects_untimestamped_injected_rows():
+    rows = [{"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}] * 40
+    with pytest.raises(probe.CertifiedRuntimeError, match="shadow_probe_candle_timestamp_required"):
+        probe.probe_certified_shadow_signals(runtime_context=CONTEXT, candle_rows=rows)
 
 
 def test_probe_reports_insufficient_data_without_fabricating_signal(monkeypatch):
-    short = SimpleNamespace(
-        product_id="BTC-USD",
-        source="short-feed",
-        candles=_series().candles[:10],
-    )
-    monkeypatch.setattr(probe.scanner, "_fetch_live_candles", lambda *args, **kwargs: short)
     monkeypatch.setattr(
         probe,
         "run_certified_strategy",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
     )
 
-    result = probe.probe_certified_shadow_signals(runtime_context=CONTEXT)
+    result = probe.probe_certified_shadow_signals(
+        runtime_context=CONTEXT,
+        candle_rows=_candles(10),
+    )
     assert result["signals"] == []
-    assert result["errors"] == ["insufficient_certified_shadow_candles:10<16"]
+    assert result["errors"] == ["insufficient_certified_shadow_candles:10<32"]
