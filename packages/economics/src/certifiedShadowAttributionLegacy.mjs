@@ -301,6 +301,7 @@ export function createCertifiedShadowTrial(state, body = {}, now = new Date().to
     opportunityId: opportunity.id,
     economicDecisionId: decision.id,
     executionCostSnapshotId: decision.executionCostSnapshotId || null,
+    certifiedShadowSignalObservationId: body.certifiedShadowSignalObservationId || signal?.id || null,
     signalObservedAt,
     signalPrice: round(signalPrice, 10),
     decisionAt,
