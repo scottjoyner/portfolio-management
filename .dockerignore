@@ -6,6 +6,7 @@ coverage
 dist
 build
 backups
+state/
 data/*
 !data/*.py
 !data/**/*.py
