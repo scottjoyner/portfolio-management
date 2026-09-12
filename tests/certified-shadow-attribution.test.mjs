@@ -294,3 +294,127 @@ test('max-hold canonical exit waits for the first post-horizon market snapshot',
   assert.equal(matured.shadowOutcomes[0].exitReason, 'max_hold');
   assert.equal(matured.shadowOutcomes[0].sourceSnapshotId, 'snapshot-max-hold');
 });
+
+
+test('repeated same-side certified decisions cannot pyramid the canonical shadow position', () => {
+  const cert = certification();
+  const { state } = stateWithSignal({ action: 'BUY', cert });
+  addEconomics(state, { expectedReturnBps: 100 });
+  const first = evaluateEconomicDecision(state, {
+    opportunityId: 'opp-shadow-1',
+    forecastId: 'forecast-shadow-1',
+    executionCostSnapshotId: 'cost-shadow-1',
+    minimumNetEdgeUsd: 0,
+    uncertaintyReserveFraction: 0,
+  }, T0);
+  assert.ok(first.certifiedShadowTrial);
+
+  const repeated = recordCertifiedShadowSignalObservation(state, signal({
+    action: 'BUY',
+    price: 101,
+    at: T1,
+    cert,
+  }), T1);
+  state.opportunities.push({
+    id: 'opp-shadow-2',
+    symbol: 'BTC-USD',
+    strategyId: 'rsi_revert',
+    totalMoneyRisked: 1000,
+    entryPrice: 101,
+    tradePlan: { runtime_certification: cert },
+    certifiedShadowSignalObservationId: repeated.signalObservation.id,
+    createdAt: T1,
+    updatedAt: T1,
+  });
+  const decision = {
+    id: 'decision-shadow-2',
+    opportunityId: 'opp-shadow-2',
+    symbol: 'BTC-USD',
+    executionCostSnapshotId: 'cost-shadow-1',
+    predictedEdgeUsd: 5,
+    netExecutableEdgeUsd: 3,
+    executionCostsUsd: 2,
+    modelCostUsd: 0,
+    latencyDecayUsd: 0,
+    uncertaintyReserveUsd: 0,
+    executionAllowed: true,
+    createdAt: T1,
+  };
+  state.economicDecisions.push(decision);
+
+  const second = createCertifiedShadowTrial(state, {
+    opportunityId: 'opp-shadow-2',
+    economicDecision: decision,
+  }, T1);
+  assert.equal(second.reason, 'canonical_position_already_open');
+  assert.equal(certifiedShadowSnapshot(state).trials.length, 1);
+  assert.equal(certifiedShadowSnapshot(state).summary.openTrials, 1);
+});
+
+
+test('opposite certified decision closes the open canonical position without reversing', () => {
+  const cert = certification();
+  const { state } = stateWithSignal({ action: 'BUY', cert });
+  addEconomics(state, { expectedReturnBps: 100 });
+  const first = evaluateEconomicDecision(state, {
+    opportunityId: 'opp-shadow-1',
+    forecastId: 'forecast-shadow-1',
+    executionCostSnapshotId: 'cost-shadow-1',
+    minimumNetEdgeUsd: 0,
+    uncertaintyReserveFraction: 0,
+  }, T0);
+  assert.ok(first.certifiedShadowTrial);
+
+  state.marketDataSnapshots.push({
+    id: 'snapshot-opposite',
+    symbol: 'BTC-USD',
+    bid: 104.9,
+    ask: 105.1,
+    mid: 105,
+    timestamp: T1,
+  });
+  const opposite = recordCertifiedShadowSignalObservation(state, signal({
+    action: 'SELL',
+    price: 105,
+    at: T1,
+    cert,
+  }), T1);
+  state.opportunities.push({
+    id: 'opp-shadow-2',
+    symbol: 'BTC-USD',
+    strategyId: 'rsi_revert',
+    totalMoneyRisked: 1000,
+    entryPrice: 105,
+    tradePlan: { runtime_certification: cert },
+    certifiedShadowSignalObservationId: opposite.signalObservation.id,
+    createdAt: T1,
+    updatedAt: T1,
+  });
+  const exitDecision = {
+    id: 'decision-shadow-2',
+    opportunityId: 'opp-shadow-2',
+    symbol: 'BTC-USD',
+    executionCostSnapshotId: 'cost-shadow-1',
+    predictedEdgeUsd: -5,
+    netExecutableEdgeUsd: -7,
+    executionCostsUsd: 2,
+    modelCostUsd: 0,
+    latencyDecayUsd: 0,
+    uncertaintyReserveUsd: 0,
+    executionAllowed: false,
+    createdAt: T1,
+  };
+  state.economicDecisions.push(exitDecision);
+
+  const result = createCertifiedShadowTrial(state, {
+    opportunityId: 'opp-shadow-2',
+    economicDecision: exitDecision,
+  }, T1);
+  assert.equal(result.reason, 'canonical_exit_signal_not_entry');
+  assert.ok(result.closedShadowOutcome);
+  assert.equal(result.closedShadowOutcome.exitReason, 'opposite_signal');
+  const snapshot = certifiedShadowSnapshot(state);
+  assert.equal(snapshot.trials.length, 1, 'opposite signal must not open a reverse trade on the same bar');
+  assert.equal(snapshot.summary.openTrials, 0);
+  assert.equal(snapshot.summary.closedTrials, 1);
+});
