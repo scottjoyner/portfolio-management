@@ -3,8 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { createOpportunity, createResearchJob, ensureOpportunityState } from './opportunityFlows.mjs';
 import { collectMarketSnapshots, PaperCryptoMarketAdapter, PolymarketWatchAdapter } from '../../../packages/connectors/src/marketDataAdapters.mjs';
 import { GraphAlphaBotAdapter } from '../../../packages/adapters/src/graphAlphaBotAdapter.mjs';
+import { verifyResearchCertification } from '../../../packages/execution/src/researchCertification.mjs';
 
 const STRATEGY_SIGNAL_SCANNER = fileURLToPath(new URL('../../../scripts/strategy_signal_scanner.py', import.meta.url));
+const CERTIFIED_STRATEGY_SIGNAL_SCANNER = fileURLToPath(new URL('../../../scripts/certified_strategy_signal.py', import.meta.url));
 
 function upsertSnapshot(state, snapshot) {
   state.marketDataSnapshots ||= [];
@@ -112,9 +114,15 @@ export function strategySignalToOpportunityInput(signal) {
   const expectedValueMethod = isEntry
     ? 'tp_sl_payoff_expected_pnl_v1'
     : 'risk_reduction_not_edge_scored_v1';
+  const certificationCheck = verifyResearchCertification(signal.research_certification, {
+    strategyId: signal.strategy || null,
+    symbol: signal.symbol || signal.product_id || null,
+  });
+  const certified = signal.tournament_certified === true && certificationCheck.ok;
+  const certificationHash = certified ? signal.research_certification.certification_hash : null;
 
   return {
-    sourceAgentId: 'strategy-comparison-scanner',
+    sourceAgentId: certified ? 'certified-strategy-runtime' : 'strategy-comparison-scanner',
     strategyId: signal.strategy,
     marketType: 'crypto_spot',
     venue: 'coinbase-paper',
@@ -141,8 +149,18 @@ export function strategySignalToOpportunityInput(signal) {
     rewardRiskRatio: maxLoss > 0 ? Number((potentialUpside / maxLoss).toFixed(4)) : 0,
     liquidityScore: Number(signal.liquidity_score || signal.liquidityScore || 50),
     dataFreshnessScore: 95,
-    backtestStatus: 'same_window_30d_screen_uncertified',
-    executionAdmission: {
+    backtestStatus: certified
+      ? 'tournament_terminal_promoted_exact_runtime'
+      : 'same_window_30d_screen_uncertified',
+    researchCertification: certified ? signal.research_certification : null,
+    executionAdmission: certified ? {
+      policy: 'certified_research_requires_executable_edge_v1',
+      status: 'research_certified_pending_executable_edge',
+      autoDraftEligible: false,
+      researchCertification: 'verified_runtime_binding',
+      certificationHash,
+      reason: 'net_executable_edge_not_yet_verified',
+    } : {
       policy: 'same_window_screen_requires_certification',
       status: 'screen_only',
       autoDraftEligible: false,
@@ -154,9 +172,11 @@ export function strategySignalToOpportunityInput(signal) {
     estimatedGas: 0,
     agentResearchCost: 0,
     modelInferenceCost: 0,
-    notes: `${signal.reason || signal.backtest_reason || 'strategy scan'} | same-window screen only; not tournament-certified | win_rate=${(winProbability * 100).toFixed(1)}% | sentiment=${Number(signal.sentiment_score || 0).toFixed(2)} | weighted_conf=${weightedConfidence.toFixed(2)} | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`,
+    notes: certified
+      ? `${signal.reason || 'certified strategy signal'} | exact promoted runtime binding | certification=${certificationHash} | terminal_win_rate=${(winProbability * 100).toFixed(1)}% | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`
+      : `${signal.reason || signal.backtest_reason || 'strategy scan'} | same-window screen only; not tournament-certified | win_rate=${(winProbability * 100).toFixed(1)}% | sentiment=${Number(signal.sentiment_score || 0).toFixed(2)} | weighted_conf=${weightedConfidence.toFixed(2)} | tp=${takeProfitPrice || 'n/a'} | sl=${stopLossPrice || 'n/a'} | source=${signal.source || 'live_cli'}`,
     evidence: [{
-      type: 'strategy_live_30d_test',
+      type: certified ? 'strategy_certified_runtime_signal' : 'strategy_live_30d_test',
       strategy: signal.strategy,
       source: signal.source || 'live_cli',
       productId: signal.product_id || signal.symbol,
@@ -172,8 +192,12 @@ export function strategySignalToOpportunityInput(signal) {
       candles: Number(signal.candles || 0),
       marketDirection: signal.market_direction || (Number(signal.sentiment_score || 0) >= 0 ? 'bullish' : 'bearish'),
       tradePlan,
-      validationScope: 'same_window_in_sample_screen',
-      tournamentCertified: false,
+      validationScope: certified
+        ? 'tournament_terminal_promoted_exact_runtime'
+        : 'same_window_in_sample_screen',
+      tournamentCertified: certified,
+      researchCertificationHash: certificationHash,
+      certificationVerificationReasons: certificationCheck.reasons,
       expectedValueUnit: 'USD',
       expectedValueMethod,
       grossExpectedValueUsd: Number(grossExpectedValueUsd.toFixed(2)),
@@ -214,6 +238,14 @@ export function runStrategySignalScanner(options = {}) {
     args.push('--products-cache-ttl', String(options.productsCacheTtl || options.products_cache_ttl));
   }
 
+  const stdout = execFileSync('python3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return JSON.parse(stdout);
+}
+
+export function runCertifiedStrategySignalScanner(options = {}) {
+  const scannerPath = options.certifiedScannerPath || CERTIFIED_STRATEGY_SIGNAL_SCANNER;
+  const args = [scannerPath, '--cache-ttl', String(options.cacheTtl || options.cache_ttl || 900)];
+  if (options.refresh) args.push('--refresh');
   const stdout = execFileSync('python3', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   return JSON.parse(stdout);
 }
@@ -506,4 +538,28 @@ export async function generateOpportunitiesFromStrategySignals(state, options = 
   }
 
   return { scan, signals: created, executions, errors };
+}
+
+export async function generateOpportunityFromCertifiedStrategySignal(state, options = {}) {
+  ensureOpportunityState(state);
+  const scan = runCertifiedStrategySignalScanner(options);
+  const signal = scan?.signal;
+  if (!signal) return { scan, opportunity: null, executions: [], errors: [] };
+  const symbol = signal.symbol || signal.product_id;
+  const certificationHash = signal.research_certification?.certification_hash || null;
+  const duplicate = state.opportunities.some(opp =>
+    opp.symbol === symbol
+    && opp.evidence?.some(e => e.type === 'strategy_certified_runtime_signal' && e.researchCertificationHash === certificationHash)
+    && ['needs_review', 'approved', 'research_requested', 'deferred'].includes(opp.status)
+  );
+  if (duplicate) return { scan, opportunity: null, executions: [], errors: [] };
+  const strategyId = state.strategies.some(strategy => strategy.id === signal.strategy) ? signal.strategy : null;
+  const result = createOpportunity(state, {
+    ...strategySignalToOpportunityInput(signal),
+    strategyId,
+    status: 'needs_review',
+    approvalStatus: 'needs_review',
+  });
+  if (result.errors) return { scan, opportunity: null, executions: [], errors: result.errors };
+  return { scan, opportunity: result.opportunity, executions: [], errors: [] };
 }

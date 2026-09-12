@@ -427,6 +427,9 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     takeProfitPrice: Number(body.takeProfitPrice || 0) || null,
     stopLossPrice: Number(body.stopLossPrice || 0) || null,
     tradePlan: body.tradePlan || null,
+    researchCertification: body.researchCertification && typeof body.researchCertification === 'object'
+      ? { ...body.researchCertification }
+      : null,
     executionAdmission: body.executionAdmission && typeof body.executionAdmission === 'object'
       ? { ...body.executionAdmission }
       : null,
@@ -561,6 +564,7 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
       price: estimatedPrice,
       notional: size,
       tradePlan: opportunity.tradePlan || null,
+      researchCertification: opportunity.researchCertification || null,
       tradeIntent: opportunity.tradeIntent || null,
       executionPurpose: opportunity.executionPurpose || null,
       positionSide: opportunity.positionSide || null,
