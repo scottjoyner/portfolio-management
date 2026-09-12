@@ -170,7 +170,7 @@ test('SELL trial direction comes from certified observation, never heuristic opp
 });
 
 
-test('certified SELL forecast edge is signed in trade direction and opens shadow trial', () => {
+test('certified SELL edge is signed but admission waits for forward shadow calibration', () => {
   const { state } = stateWithSignal({ action: 'SELL' });
   addEconomics(state, { expectedReturnBps: -100 });
 
@@ -184,8 +184,11 @@ test('certified SELL forecast edge is signed in trade direction and opens shadow
 
   assert.ok(result.economicDecision);
   assert.equal(result.economicDecision.predictedEdgeUsd, 10);
+  assert.equal(result.economicDecision.rawNetExecutableEdgeUsd, 8);
   assert.equal(result.economicDecision.netExecutableEdgeUsd, 8);
-  assert.equal(result.economicDecision.executionAllowed, true);
+  assert.equal(result.economicDecision.executionAllowed, false);
+  assert.equal(result.economicDecision.shadowCalibration.ready, false);
+  assert.ok(result.economicDecision.blockers.includes('certified_shadow_calibration_insufficient_samples'));
   assert.ok(result.certifiedShadowTrial);
   assert.equal(result.certifiedShadowTrial.side, 'SELL');
   assert.equal(result.certifiedShadowTrial.predictedNetExecutableEdgeUsd, 8);
