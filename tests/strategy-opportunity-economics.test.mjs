@@ -138,3 +138,52 @@ test('explicit zero max position cap remains zero and blocks execution', () => {
   assert.equal(created.opportunity.status, 'needs_review');
   assert.equal(state.executions.length, 0);
 });
+
+test('same-window strategy screen is explicitly ineligible for automatic execution draft', () => {
+  const state = baseState();
+  const input = strategySignalToOpportunityInput(entrySignal());
+  assert.equal(input.executionAdmission.status, 'screen_only');
+  assert.equal(input.executionAdmission.autoDraftEligible, false);
+  assert.equal(input.executionAdmission.researchCertification, 'uncertified');
+
+  const created = createOpportunity(state, input, '2026-09-11T20:00:00.000Z');
+  assert.equal(created.errors, undefined);
+  assert.equal(created.opportunity.executionAdmission.autoDraftEligible, false);
+
+  const decision = decideOpportunity(state, created.opportunity.id, {
+    status: 'approved',
+    reviewer: 'system:auto-draft',
+  }, '2026-09-11T20:01:00.000Z');
+
+  assert.deepEqual(decision.errors, ['auto_execution_research_certification_required']);
+  assert.equal(created.opportunity.status, 'needs_review');
+  assert.equal(state.executions.length, 0);
+});
+
+test('automated certified entry still requires positive net USD edge', () => {
+  const state = baseState();
+  const input = strategySignalToOpportunityInput(entrySignal());
+  input.executionAdmission = {
+    policy: 'canonical_research_admission_v1',
+    status: 'certified',
+    autoDraftEligible: true,
+    researchCertification: 'canonical_tournament',
+  };
+  input.grossExpectedValue = 5;
+  input.expectedValue = 5;
+  input.estimatedFees = 5;
+  input.estimatedSlippage = 3;
+
+  const created = createOpportunity(state, input, '2026-09-11T20:00:00.000Z');
+  assert.equal(created.errors, undefined);
+  assert.equal(created.opportunity.netExpectedValue, -3);
+
+  const decision = decideOpportunity(state, created.opportunity.id, {
+    status: 'approved',
+    reviewer: 'system:auto-certified',
+  }, '2026-09-11T20:01:00.000Z');
+
+  assert.deepEqual(decision.errors, ['auto_execution_positive_net_edge_required']);
+  assert.equal(created.opportunity.status, 'needs_review');
+  assert.equal(state.executions.length, 0);
+});

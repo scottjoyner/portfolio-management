@@ -427,6 +427,9 @@ export function createOpportunity(state, body = {}, now = new Date().toISOString
     takeProfitPrice: Number(body.takeProfitPrice || 0) || null,
     stopLossPrice: Number(body.stopLossPrice || 0) || null,
     tradePlan: body.tradePlan || null,
+    executionAdmission: body.executionAdmission && typeof body.executionAdmission === 'object'
+      ? { ...body.executionAdmission }
+      : null,
     status: body.status || 'needs_review',
     approvalStatus: body.approvalStatus || body.status || 'needs_review',
     estimatedFees: nonNegative(body.estimatedFees || 0),
@@ -484,6 +487,19 @@ export function decideOpportunity(state, opportunityId, body = {}, now = new Dat
 
   let approvedExecutionSize = null;
   if (body.status === 'approved') {
+    const reviewer = String(body.reviewer || 'operator');
+    const isAutomatedApproval = reviewer.startsWith('system:auto');
+    if (isAutomatedApproval) {
+      if (opportunity.executionAdmission?.autoDraftEligible !== true) {
+        return { errors: ['auto_execution_research_certification_required'] };
+      }
+      const isEntry = opportunity.tradeIntent === 'entry'
+        || ['open_long', 'open_short'].includes(String(opportunity.executionPurpose || ''));
+      const netEdgeUsd = Number(opportunity.netExpectedValue);
+      if (isEntry && (!Number.isFinite(netEdgeUsd) || netEdgeUsd <= 0)) {
+        return { errors: ['auto_execution_positive_net_edge_required'] };
+      }
+    }
     const rawExecutionSize = opportunity.positionSizing?.recommendedSize ?? opportunity.totalMoneyRisked;
     approvedExecutionSize = finiteNumber(rawExecutionSize, NaN);
     if (!Number.isFinite(approvedExecutionSize) || approvedExecutionSize <= 0) {

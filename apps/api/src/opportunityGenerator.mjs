@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createOpportunity, createResearchJob, decideOpportunity, ensureOpportunityState } from './opportunityFlows.mjs';
+import { createOpportunity, createResearchJob, ensureOpportunityState } from './opportunityFlows.mjs';
 import { collectMarketSnapshots, PaperCryptoMarketAdapter, PolymarketWatchAdapter } from '../../../packages/connectors/src/marketDataAdapters.mjs';
 import { GraphAlphaBotAdapter } from '../../../packages/adapters/src/graphAlphaBotAdapter.mjs';
 
@@ -142,6 +142,13 @@ export function strategySignalToOpportunityInput(signal) {
     liquidityScore: Number(signal.liquidity_score || signal.liquidityScore || 50),
     dataFreshnessScore: 95,
     backtestStatus: 'same_window_30d_screen_uncertified',
+    executionAdmission: {
+      policy: 'same_window_screen_requires_certification',
+      status: 'screen_only',
+      autoDraftEligible: false,
+      researchCertification: 'uncertified',
+      reason: 'same_window_30d_screen_uncertified',
+    },
     estimatedFees: Number(signal.estimated_fees || 5),
     estimatedSlippage: Number(signal.estimated_slippage || 3),
     estimatedGas: 0,
@@ -491,19 +498,11 @@ export async function generateOpportunitiesFromStrategySignals(state, options = 
     }
 
     const { opportunity } = opportunityResult;
-    const approvalResult = decideOpportunity(state, opportunity.id, {
-      status: 'approved',
-      reviewer: 'system:auto-draft',
-      reason: `Auto-approved from live 30d strategy scan: ${signal.strategy} win_rate=${(Number(signal.win_rate || 0) * 100).toFixed(1)}% sentiment=${Number(signal.sentiment_score || 0).toFixed(2)}`,
-    });
-
-    if (approvalResult.errors) {
-      errors.push({ symbol, strategy: signal.strategy, code: 'approval_failed', errors: approvalResult.errors });
-      continue;
-    }
-
-    created.push(approvalResult.opportunity || opportunity);
-    if (approvalResult.execution) executions.push(approvalResult.execution);
+    // This scanner is a same-window discovery screen, not certified research.
+    // Keep the candidate reviewable but never convert it into an execution
+    // draft here. A later certified-admission path must explicitly authorize
+    // automated drafting.
+    created.push(opportunity);
   }
 
   return { scan, signals: created, executions, errors };
