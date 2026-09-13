@@ -1,0 +1,88 @@
+name: One-shot spot research gate hardening
+
+on:
+  push:
+    branches:
+      - agent/spot-lifecycle-research-commitment
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/spot-lifecycle-research-commitment
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pytest
+      - name: Harden evidence bindings
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/spot_research_gate.py')
+          text = path.read_text()
+
+          old = '''    if reverify_source and not reasons:\n        valid, attestation_reasons = verify_spot_replay_attestation(\n            evidence["spot_replay_attestation"],\n            evidence["fold_returns"],\n            reverify_source=True,\n        )\n        if not valid:\n            reasons.extend(f"spot_search_replay:{reason}" for reason in attestation_reasons)'''
+          new = '''    if not reasons:\n        valid, attestation_reasons = verify_spot_replay_attestation(\n            evidence["spot_replay_attestation"],\n            evidence["fold_returns"],\n            reverify_source=reverify_source,\n        )\n        if not valid:\n            reasons.extend(f"spot_search_replay:{reason}" for reason in attestation_reasons)'''
+          if old not in text:
+              raise SystemExit('search attestation verification anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''        "commitment": commitment,\n        "candidate_id": search_evidence["candidate_id"],'''
+          new = '''        "commitment": commitment,\n        "strategy_name": search_evidence["strategy_name"],\n        "candidate_id": search_evidence["candidate_id"],'''
+          if old not in text:
+              raise SystemExit('terminal strategy-name core anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''        "schema_version", "evidence_type", "commitment", "candidate_id",\n        "candidate_source_sha", "candidate_config", "candidate_config_hash",'''
+          new = '''        "schema_version", "evidence_type", "commitment", "strategy_name", "candidate_id",\n        "candidate_source_sha", "candidate_config", "candidate_config_hash",'''
+          # Replace only the terminal occurrence (the second matching block).
+          first = text.find(old)
+          second = text.find(old, first + 1)
+          if second < 0:
+              raise SystemExit('terminal required-fields anchor missing')
+          text = text[:second] + text[second:].replace(old, new, 1)
+
+          old = '''        normalized = normalize_strategy_config(\n            evidence.get("spot_execution_lifecycle", {}).get("strategy_name") or "rsi_revert",\n            evidence["candidate_config"],\n        )'''
+          new = '''        normalized = normalize_strategy_config(\n            evidence["strategy_name"],\n            evidence["candidate_config"],\n        )'''
+          if old not in text:
+              raise SystemExit('terminal normalize anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    if search_evidence is not None:\n        search_ok, search_reasons = verify_spot_search_evidence('''
+          new = '''    if search_evidence is None:\n        reasons.append("spot_terminal_search_evidence_required")\n    else:\n        search_ok, search_reasons = verify_spot_search_evidence('''
+          if old not in text:
+              raise SystemExit('terminal search requirement anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''        if evidence.get("candidate_id") != search_evidence.get("candidate_id"):\n            reasons.append("spot_terminal_candidate_mismatch")\n        if evidence.get("candidate_config") != search_evidence.get("candidate_config"):\n            reasons.append("spot_terminal_candidate_config_mismatch")'''
+          new = '''        if evidence.get("strategy_name") != search_evidence.get("strategy_name"):\n            reasons.append("spot_terminal_strategy_mismatch")\n        if evidence.get("candidate_id") != search_evidence.get("candidate_id"):\n            reasons.append("spot_terminal_candidate_mismatch")\n        if evidence.get("candidate_source_sha") != search_evidence.get("candidate_source_sha"):\n            reasons.append("spot_terminal_candidate_source_mismatch")\n        if evidence.get("candidate_config") != search_evidence.get("candidate_config"):\n            reasons.append("spot_terminal_candidate_config_mismatch")\n        if evidence.get("alpha_validation_evidence_hash") != search_evidence.get("alpha_validation_evidence_hash"):\n            reasons.append("spot_terminal_alpha_evidence_mismatch")\n        search_attestation = search_evidence.get("spot_replay_attestation") or {}\n        if evidence.get("spot_replay_attestation_hash") != search_attestation.get("attestation_hash"):\n            reasons.append("spot_terminal_replay_attestation_mismatch")\n        if evidence.get("spot_execution_lifecycle") != search_attestation.get("lifecycle"):\n            reasons.append("spot_terminal_lifecycle_mismatch")\n        if evidence.get("spot_execution_lifecycle_hash") != search_attestation.get("lifecycle_hash"):\n            reasons.append("spot_terminal_lifecycle_binding_mismatch")'''
+          if old not in text:
+              raise SystemExit('terminal search binding anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''                    search_evidence["strategy_name"] if search_evidence else "rsi_revert",'''
+          new = '''                    evidence["strategy_name"],'''
+          if old not in text:
+              raise SystemExit('terminal source strategy anchor missing')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+          python -m py_compile scripts/spot_research_gate.py
+          python -m pytest -q tests/test_spot_research_gate.py tests/test_spot_execution_replay.py
+          git diff --check
+      - name: Commit production hardening and remove one-shot workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/spot_research_gate.py
+          git rm .github/workflows/patch-spot-research-gate-hardening.yml
+          git commit -m 'harden spot research evidence bindings'
+          git push origin HEAD:agent/spot-lifecycle-research-commitment
