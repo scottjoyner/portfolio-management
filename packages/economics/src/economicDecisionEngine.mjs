@@ -3,6 +3,10 @@ import {
   certifiedShadowSnapshot,
   createCertifiedShadowTrial,
 } from './certifiedShadowAttribution.mjs';
+import {
+  applyCertifiedShadowCalibration,
+  buildCertifiedShadowCalibration,
+} from './certifiedShadowCalibration.mjs';
 
 export * from './economicDecisionEngineLegacy.mjs';
 
@@ -226,9 +230,27 @@ export function evaluateEconomicDecision(state, body = {}, now = new Date().toIS
   const decision = result?.economicDecision;
   if (!decision) return result;
 
+  const rawNetExecutableEdgeUsd = decision.netExecutableEdgeUsd;
+  let shadowCalibration = null;
+  if (bound.observation) {
+    shadowCalibration = buildCertifiedShadowCalibration(state, {
+      runtimeIdentityHash: bound.observation.runtimeIdentityHash,
+      symbol: bound.observation.symbol,
+    }, now);
+    applyCertifiedShadowCalibration(decision, shadowCalibration, {
+      minimumNetEdgeUsd: bound.body.minimumNetEdgeUsd ?? 0,
+    });
+  }
+
+  // Shadow measurement must continue to score the raw economic forecast, not
+  // the already-calibrated edge, otherwise the feedback loop would train on
+  // its own discounted prediction and hide model overstatement.
+  const shadowDecision = shadowCalibration
+    ? { ...decision, netExecutableEdgeUsd: rawNetExecutableEdgeUsd }
+    : decision;
   const shadow = createCertifiedShadowTrial(state, {
     opportunityId: decision.opportunityId || bound.body.opportunityId || null,
-    economicDecision: decision,
+    economicDecision: shadowDecision,
     runtimeCertification: bound.body.runtimeCertification || null,
     certifiedShadowSignalObservationId: bound.body.certifiedShadowSignalObservationId || null,
     symbol: decision.symbol || bound.body.symbol || null,
