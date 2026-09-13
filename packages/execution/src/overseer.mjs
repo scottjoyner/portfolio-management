@@ -1,7 +1,8 @@
 import * as legacy from './overseerLegacy.mjs';
+import { verifyCertifiedSpotLifecycleAuthorization } from './certifiedSpotLifecycle.mjs';
 
 // Keep the already-proven risk/allocation authorization machinery intact while
-// adding an independent certified-runtime/economic-edge gate for automated
+// adding independent certified-runtime/economic/lifecycle gates for automated
 // strategy entries.
 export const OVERSEER_SCHEMA_VERSION = 4;
 export const OVERSEER_POLICY_VERSION = 'execution-admission-v4-certified-runtime';
@@ -46,8 +47,11 @@ function automatedStrategyEntry(envelope, options = {}) {
 function certifiedEntryReasons(envelope, options = {}) {
   if (!automatedStrategyEntry(envelope, options)) return [];
   const reasons = [];
-  const certification = envelope?.tradePlan?.runtime_certification
-    ?? envelope?.tradePlan?.runtimeCertification
+  const tradePlan = envelope?.tradePlan && typeof envelope.tradePlan === 'object'
+    ? envelope.tradePlan
+    : {};
+  const certification = tradePlan.runtime_certification
+    ?? tradePlan.runtimeCertification
     ?? null;
 
   if (!certification || certification.certified !== true) {
@@ -63,6 +67,16 @@ function certifiedEntryReasons(envelope, options = {}) {
     }
     if (certification.execution_lifecycle_certified !== true) {
       reasons.push('certified_execution_lifecycle_required');
+    } else {
+      const lifecycleAuthorization = tradePlan.lifecycle_authorization
+        ?? tradePlan.lifecycleAuthorization
+        ?? null;
+      const lifecycle = verifyCertifiedSpotLifecycleAuthorization(lifecycleAuthorization, {
+        certification,
+        symbol: envelope.symbol,
+        requiredDecision: 'OPEN_LONG',
+      });
+      reasons.push(...lifecycle.reasons);
     }
   }
 
@@ -73,7 +87,7 @@ function certifiedEntryReasons(envelope, options = {}) {
   } else if (envelope.netExecutableEdgeUsd <= 0) {
     reasons.push('net_executable_edge_usd_not_positive');
   }
-  return reasons;
+  return unique(reasons);
 }
 
 function v4Decision(baseDecision, extraReasons) {
@@ -178,10 +192,6 @@ function toLegacyDecision(decision) {
 }
 
 export function verifyStoredExecutionAuthorization(state, { now } = {}) {
-  // Reuse the established v3 verification for intent immutability, portfolio
-  // allocation, capital-risk and risk-decision bindings.  Only the overseer
-  // schema marker is translated for compatibility, after which the real v4
-  // decision/hash is independently verified below.
   const compatibilityState = {
     ...state,
     overseerDecision: toLegacyDecision(state?.overseerDecision),
