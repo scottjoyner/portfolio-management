@@ -1,43 +1,82 @@
 # Execution Overseer Authorization Boundary
 
-Status: paper/demo admission control; live entry remains uncertified and blocked.
+Status: canonical paper/demo admission control; live entry remains uncertified and blocked.
 
-## Why this exists
+## Purpose
 
-The execution engine historically accepted a missing `riskDecision` as approved even though `requireRiskCheck` defaulted to true. A draft could then be operator-approved and submitted without proving that its material order intent still matched the object originally evaluated.
+The execution boundary guarantees that an agent, strategy, API caller, or stale draft cannot self-authorize capital use or choose its own final position size.
 
-The overseer boundary makes execution admission explicit, fail-closed, content-addressed and revalidated.
+The active path separates four independently hash-bound objects:
+
+1. the requested material `TradeIntent`;
+2. a deterministic `PortfolioAllocation` derived from authoritative portfolio state;
+3. a fresh `CapitalRiskSnapshot` derived from the same authoritative state for the allocator-approved intent;
+4. the `OverseerDecision` that binds the approved intent to that exact allocation and capital-risk verdict.
+
+Caller-supplied `riskDecision` data is not an authority input to the final decision.
 
 ## Trust boundary
 
 ```text
 agent / strategy / caller
         |
-        | proposed request + upstream risk evidence
+        | requested material trade intent
         v
 ExecutionEngine
         |
-        +--> canonical TradeIntent envelope
-        |      + SHA-256 intent hash
+        +--> requested TradeIntent envelope + hash
         |
-        +--> engine-owned OverseerDecision
-        |      + policy/schema version
+        +--> ONE fresh riskStateProvider load
+        |      + NAV / cash / high-water evidence
+        |      + positions / pending executions
+        |      + kill switch / reconciliation
+        |      + instruments / market + liquidity state
+        |      + optional covariance inputs
+        |      + economic-decision lineage when required
+        |
+        +--> PortfolioAllocation v1
+        |      + APPROVE / REDUCE / EXIT_ONLY / REJECT
+        |      + approved material intent hash
+        |      + allocation hash + decision hash + expiry
+        |
+        +--> approved TradeIntent
+        |
+        +--> CapitalRiskSnapshot v1
+        |      + source hashes
+        |      + deterministic derived risk inputs
         |      + expiry
-        |      + decision hash
+        |      + snapshot hash
         |
+        +--> canonical risk engine
+        |      + deterministic risk verdict
+        |      + allocation provenance
+        |      + riskDecisionHash
+        |
+        +--> engine-owned OverseerDecision v3
+        |      + approved intent hash
+        |      + capital-risk snapshot hash + policy
+        |      + risk-decision hash
+        |      + decision hash + expiry
         v
  human approval when required
         |
-        +--> intent + decision revalidation
+        +--> stored authorization integrity check
+        +--> fresh authoritative state reload
+        +--> fresh PortfolioAllocation
+        +--> fresh CapitalRiskSnapshot + risk verdict
+        +--> new OverseerDecision for exact unchanged intent
         v
  submit()
         |
-        +--> authorization checked again
+        +--> portfolio-allocation freshness check
+        +--> capital-risk freshness check
+        +--> authorization integrity check
+        +--> freshness checks before each simulated fill
         v
  paper/demo execution
 ```
 
-The caller may supply upstream risk evidence. The caller cannot supply the final `overseerDecision`; the engine creates it.
+Allocation and capital-risk evaluation share the same authoritative load during one evaluation, avoiding a sizing/risk double-read race.
 
 ## Default behavior
 
@@ -46,44 +85,65 @@ The caller may supply upstream risk evidence. The caller cannot supply the final
 - `minConfidence = 0.6`
 - `requireApproval = true`
 - `requireRiskCheck = true`
-- a time-bounded overseer authorization
+- time-bounded allocation, capital-risk and overseer authorization
 
-With `requireRiskCheck=true`:
+With `requireRiskCheck=true`, absence of an authoritative state provider fails closed. Missing, stale, invalid or internally inconsistent required state rejects increasing-risk admission.
 
-- missing risk decision -> reject;
-- malformed risk decision -> reject;
-- explicit risk rejection -> reject;
-- confidence below the configured floor -> reject.
-
-`requireRiskCheck=false` exists only as an explicit compatibility/testing escape hatch. Missing risk is never silently approved under the production default.
+`requireRiskCheck=false` remains an explicit compatibility/testing escape hatch only. It must not be treated as a production live-enablement mechanism.
 
 ## Material intent binding
 
-The canonical intent envelope binds material execution fields including:
+`TradeIntent` schema v2 binds material execution fields including:
 
-- strategy/opportunity/source-agent identity;
+- strategy, opportunity and source-agent identity;
 - account and execution mode;
-- venue, symbol, side, quantity and notional;
-- material order fields;
+- venue, symbol, side, quantity and notional declarations;
+- normalized order fields;
 - entry, take-profit and stop-loss prices;
 - trade plan / intent / purpose / position side;
 - economic-decision, model-quote, forecast and cost-snapshot lineage IDs;
-- net executable edge when supplied;
-- normalized risk decision.
+- caller-declared net executable edge, when present.
 
-Volatile lifecycle timestamps and status are not part of the material intent hash.
+Derived allocation/risk decisions are deliberately not part of the material intent itself. Instead, each downstream artifact explicitly binds the exact material intent hash it evaluated.
 
-A draft stores:
+Volatile lifecycle timestamps and execution status are excluded from the material trade hash.
 
+A draft now persists:
+
+- `requestedTradeIntentEnvelope`
+- `requestedTradeIntentHash`
 - `tradeIntentEnvelope`
 - `tradeIntentHash`
+- `portfolioAllocation`
+- `portfolioAllocationHash`
+- `portfolioAllocationDecisionHash`
+- `capitalRiskSnapshot`
+- `capitalRiskSnapshotHash`
+- `riskDecision`
+- `riskDecisionHash`
 - `overseerDecision`
 
-Changing a material field after draft creation causes approval/submission to fail with an intent-integrity error.
+For manual paper/demo requests, the approved intent may be a deterministic reduction of the requested intent. For agent/economic requests, any required reduction fails closed and requires fresh economics at the suggested smaller notional.
 
-## Overseer decision
+## Portfolio allocation binding
 
-The v1 decision contains:
+The normalized canonical risk decision carries:
+
+```text
+portfolioAllocationHash
+portfolioAllocationPolicyVersion
+portfolioAllocationDecisionHash
+```
+
+Stored authorization independently verifies the allocation artifact hash, decision hash, approval state, exact approved-intent binding and expiry before verifying the capital-risk snapshot.
+
+This makes allocation a real authorization layer rather than advisory sizing metadata.
+
+See `docs/PORTFOLIO_ALLOCATOR.md` for policy and sizing details.
+
+## Overseer decision v3
+
+The v3 decision contains:
 
 ```text
 schemaVersion
@@ -92,6 +152,9 @@ decision
 approved
 reasons[]
 intentHash
+capitalRiskSnapshotHash
+capitalRiskPolicyVersion
+riskDecisionHash
 evaluatedAt
 validUntil
 requiresHumanApproval
@@ -99,57 +162,78 @@ mode
 decisionHash
 ```
 
-Current decisions are:
+The allocator provenance is transitively bound through `riskDecisionHash`; the canonical risk decision itself carries the allocator hash, policy version and decision hash.
+
+Current decision labels are:
 
 - `PAPER`
 - `DEMO`
 - `LIVE_REQUIRES_HUMAN`
 - `REJECT`
 
-`LIVE_REQUIRES_HUMAN` is descriptive only in this slice: `live` remains rejected and cannot reach submission.
+`LIVE_REQUIRES_HUMAN` is descriptive only. `live` remains rejected before submission and does not constitute live certification.
 
 ## Approval-time behavior
 
-`approve(executionId)` does not blindly submit the draft. It:
+`approve(executionId)` never blindly submits a draft. It:
 
-1. recomputes the material intent hash from the current stored execution;
-2. checks the stored envelope hash;
-3. validates the engine-owned decision hash;
-4. checks expiry;
-5. confirms the decision authorized the same intent hash;
-6. reruns deterministic admission policy;
-7. only then transitions to approved/submission.
+1. recomputes the current material intent hash;
+2. verifies the persisted intent envelope;
+3. verifies the persisted portfolio-allocation hash, decision hash, expiry and intent binding;
+4. verifies the persisted capital-risk snapshot hash and intent binding;
+5. verifies the persisted risk-decision hash;
+6. verifies the overseer decision hash, bindings and expiry;
+7. reloads fresh authoritative operator state;
+8. excludes the current draft from its own pending-reservation accounting;
+9. reruns portfolio allocation;
+10. rebuilds the capital-risk snapshot on the freshly allocated intent;
+11. reruns deterministic risk policy;
+12. issues a new overseer decision only for the exact unchanged approved intent;
+13. only then enters submission.
 
-`submit()` repeats stored authorization verification so direct callers cannot bypass the lifecycle gate.
+If current portfolio state would require a different size, approval fails with `portfolio_allocation_changed` / `portfolio_allocation_replan_required`. It does not silently mutate the reviewed draft.
+
+`submit()` repeats authorization validation and independently verifies both allocation and capital-snapshot freshness. Simulated fills repeat freshness checks before proceeding.
+
+## Risk-reducing posture
+
+The allocator can place the portfolio into `EXIT_ONLY` when existing drawdown, leverage, concentration, covariance, concurrency or liquidity conditions make increasing risk unsafe.
+
+A covered sell may still proceed through the downstream capital-risk gate so the system does not trap itself in a risky position merely because new entries are forbidden. Inventory checks remain authoritative; `EXIT_ONLY` does not permit uncovered shorts.
 
 ## Audit lineage
 
 Targeted execution submit/approval audit events include:
 
-- overseer decision;
-- trade-intent hash.
+- overseer decision label;
+- trade-intent hash;
+- portfolio-allocation hash;
+- portfolio-allocation decision hash;
+- capital-risk snapshot hash;
+- risk-decision hash.
 
-This allows operator/system-truth surfaces to connect a persisted execution to the exact material intent authorized by the engine.
+This gives operator/system-truth surfaces a content-addressed path from an execution back through portfolio sizing, exact material intent and admitted capital state.
 
-## What this does not prove
+## Migration behavior
 
-This first boundary does **not** independently reconstruct portfolio/account state. The existing runtime risk engine can evaluate conditions such as kill switch, unresolved reconciliation, pair/compliance approval, market-data staleness, minimum edge, balance sufficiency and notional limits, but those inputs are not yet authoritatively assembled by the active execution route.
+Draft executions created before Overseer v3 do not have required PortfolioAllocation v1 evidence. After deployment they fail closed at approval/submission. Do not grandfather them; recreate any still-valid intent through the normal request path.
 
-Therefore upstream `riskDecision` is explicit and integrity-bound, but not yet independently authenticated by this overseer.
+The content hashes prove deterministic integrity inside the supported lifecycle. They are not signatures against an actor with arbitrary in-process code/state mutation. A later trusted-runner/signing boundary can strengthen this.
 
-The next capital-control slice should source authoritative:
+## Deliberate remaining boundary
 
-- equity and high-water mark / drawdown;
-- balances and open positions;
-- pending orders;
-- gross/net and correlation exposure;
-- liquidity/spread/slippage state;
-- market-data freshness;
-- strategy certification/evidence state;
-- kill switch and reconciliation state;
+The execution boundary now includes canonical portfolio-wide allocation plus canonical per-intent capital admission, but it is still not an autonomous live-capital envelope.
 
-and calculate the final risk verdict downstream of the agent.
+Remaining work includes:
+
+- production empirical correlation/volatility ingestion with strong freshness/provenance;
+- multi-account/multi-currency and FX aggregation;
+- richer liquidation/funding/borrow/tax/settlement risk where applicable;
+- joint optimization across multiple simultaneous candidate trades;
+- shadow/live execution calibration and canary controls;
+- signed or externally attested state evidence for hostile-storage assumptions;
+- explicit live execution certification and operator release authority.
 
 ## Safety invariant
 
-This module must not be used as justification for enabling live trading. Real-capital entry remains blocked until the independent portfolio allocator/overseer, live execution certification and supervised canary gates are separately proven.
+This module must not be used as justification for enabling live trading. Real-capital entry remains blocked until live execution certification, supervised canary controls and independent operational acceptance are separately proven.

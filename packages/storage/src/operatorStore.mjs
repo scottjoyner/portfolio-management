@@ -21,6 +21,41 @@ function seedRows(rows, now) {
   }));
 }
 
+function freshPortfolioRiskState(now) {
+  return {
+    accounts: DEFAULT_ACCOUNTS
+      .filter(account => Number.isFinite(Number(account.nav)) && Number(account.nav) > 0)
+      .map(account => ({
+        accountId: account.id,
+        highWaterNavUsd: Number(account.nav),
+        highWaterAt: now,
+        initializedAt: now,
+        updatedAt: now,
+        source: 'initial_operator_state',
+      })),
+    correlationMatrix: {},
+    volatilityBySymbol: {},
+    updatedAt: now,
+  };
+}
+
+function normalizePortfolioRiskState(value) {
+  if (!value || typeof value !== 'object') {
+    return { accounts: [], correlationMatrix: {}, volatilityBySymbol: {}, updatedAt: null };
+  }
+  const accounts = Array.isArray(value.accounts)
+    ? value.accounts.filter(row => row && typeof row === 'object')
+    : value.accounts && typeof value.accounts === 'object'
+      ? Object.entries(value.accounts).map(([accountId, row]) => ({ accountId, ...(row || {}) }))
+      : [];
+  return {
+    accounts,
+    correlationMatrix: value.correlationMatrix && typeof value.correlationMatrix === 'object' ? value.correlationMatrix : {},
+    volatilityBySymbol: value.volatilityBySymbol && typeof value.volatilityBySymbol === 'object' ? value.volatilityBySymbol : {},
+    updatedAt: value.updatedAt || null,
+  };
+}
+
 export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -57,6 +92,7 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
     paperExecutions: [],
     executions: [],
     audit: [],
+    portfolioRiskState: freshPortfolioRiskState(now),
     killSwitch: { enabled: false, reason: null, updatedAt: null },
     config: {
       confidenceThreshold: 0.60,
@@ -93,6 +129,28 @@ export function createInitialOperatorState(now = '2026-05-29T00:00:00.000Z') {
         coreMinAllocationPct: 10,
         coreBatchFraction: 0.05,
         opportunityBatchFraction: 0.03,
+        maxPortfolioDrawdownPct: 15,
+        drawdownThrottleStartPct: 10,
+        maxGrossLeverage: 1.5,
+        maxNetExposurePct: 1.0,
+        maxSymbolExposurePct: 0.20,
+        maxStrategyExposurePct: 0.30,
+        maxCorrelationClusterExposurePct: 0.40,
+        maxSingleTradePct: 0.10,
+        minCashBufferPct: 0.10,
+        maxSpreadBps: 100,
+        maxLiquidityParticipationPct: 0.01,
+        unknownLiquidityMaxTradePct: 0.05,
+        maxCovarianceRiskPct: 0.45,
+        minApprovedNotionalUsd: 100,
+        sameClusterFallbackCorrelation: 0.75,
+        crossClusterFallbackCorrelation: 0.25,
+        defaultCryptoVolatility: 0.80,
+        defaultEquityVolatility: 0.30,
+        defaultOtherVolatility: 1.0,
+        correlationClusters: {
+          'crypto-beta': ['BTC-USD', 'ETH-USD', 'SOL-USD'],
+        },
       },
       coinbaseApiKey: '',
       coinbaseApiSecret: '',
@@ -139,6 +197,7 @@ export function normalizeOperatorState(input = {}) {
     paperExecutions: Array.isArray(input.paperExecutions) ? input.paperExecutions : [],
     executions: Array.isArray(input.executions) ? input.executions : [],
     audit: Array.isArray(input.audit) ? input.audit : [],
+    portfolioRiskState: normalizePortfolioRiskState(input.portfolioRiskState),
     killSwitch: input.killSwitch && typeof input.killSwitch === 'object' ? input.killSwitch : seeded.killSwitch,
     config: input.config && typeof input.config === 'object'
       ? {

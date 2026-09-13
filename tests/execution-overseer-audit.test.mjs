@@ -5,6 +5,8 @@ import { handleOperatorRoute } from '../apps/api/src/operatorRouter.mjs';
 import { createInitialOperatorState } from '../packages/storage/src/operatorStore.mjs';
 
 const INTENT_HASH = 'a'.repeat(64);
+const ALLOCATION_HASH = 'b'.repeat(64);
+const ALLOCATION_DECISION_HASH = 'c'.repeat(64);
 
 function authorizedExecution(id, status) {
   return {
@@ -31,6 +33,8 @@ function authorizedExecution(id, status) {
     }],
     fills: [],
     tradeIntentHash: INTENT_HASH,
+    portfolioAllocationHash: ALLOCATION_HASH,
+    portfolioAllocationDecisionHash: ALLOCATION_DECISION_HASH,
     overseerDecision: { decision: 'PAPER', approved: true },
   };
 }
@@ -49,7 +53,7 @@ function targetedStore() {
   };
 }
 
-test('targeted execution submit persists overseer decision and intent hash in audit payload', async () => {
+test('targeted execution submit persists overseer, intent, and portfolio allocation lineage in audit payload', async () => {
   const state = createInitialOperatorState('2026-09-10T19:00:00.000Z');
   const store = targetedStore();
   handleOperatorRoute._execEngine = {
@@ -79,9 +83,11 @@ test('targeted execution submit persists overseer decision and intent hash in au
   const payload = store.calls[0].auditEvent.payload;
   assert.equal(payload.overseerDecision, 'PAPER');
   assert.equal(payload.tradeIntentHash, INTENT_HASH);
+  assert.equal(payload.portfolioAllocationHash, ALLOCATION_HASH);
+  assert.equal(payload.portfolioAllocationDecisionHash, ALLOCATION_DECISION_HASH);
 });
 
-test('targeted operator approval persists the refreshed overseer lineage', async () => {
+test('targeted operator approval persists the refreshed overseer and portfolio allocation lineage', async () => {
   const state = createInitialOperatorState('2026-09-10T19:00:00.000Z');
   const store = targetedStore();
   handleOperatorRoute._execEngine = {
@@ -103,4 +109,6 @@ test('targeted operator approval persists the refreshed overseer lineage', async
   const payload = store.calls[0].auditEvent.payload;
   assert.equal(payload.overseerDecision, 'PAPER');
   assert.equal(payload.tradeIntentHash, INTENT_HASH);
+  assert.equal(payload.portfolioAllocationHash, ALLOCATION_HASH);
+  assert.equal(payload.portfolioAllocationDecisionHash, ALLOCATION_DECISION_HASH);
 });
