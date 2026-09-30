@@ -232,6 +232,60 @@ Before enabling remote inference:
 
 Disable remote inference immediately when provider billing cannot be reconciled, the key may be exposed, rate limits cause repeated retries, or actual cost exceeds the configured cap.
 
+## Off-host backup and audit anchoring procedure
+
+The destination is chosen by the deployment owner and supplied through the
+environment. There is deliberately no default: a backup that quietly stayed on
+the PostgreSQL volume is indistinguishable from one that worked, so a missing or
+unknown destination fails.
+
+Required for a filesystem destination:
+
+```bash
+export BACKUP_SIGNING_PRIVATE_KEY="$(cat /secure/keys/backup-signing.pem)"
+export BACKUP_VERIFICATION_PUBLIC_KEY="$(cat /secure/keys/backup-signing.pub.pem)"
+export BACKUP_FILESYSTEM_ROOT=/mnt/offsite-backups
+export BACKUP_RELEASE_SHA="$(git rev-parse HEAD)"
+export BACKUP_OPERATOR="<release operator>"
+export BACKUP_ENCRYPTION_KEY="$(cat /secure/keys/backup-aes.key)"
+```
+
+Or for an S3-compatible destination, replace `BACKUP_FILESYSTEM_ROOT` with
+`BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`,
+`BACKUP_S3_ACCESS_KEY_ID`, and `BACKUP_S3_SECRET_ACCESS_KEY`.
+
+Export a dump, and anchor the audit chain:
+
+```bash
+export ANCHOR_DESTINATION=/mnt/immutable-audit-anchors
+export ANCHOR_SIGNING_PRIVATE_KEY="$(cat /secure/keys/anchor-signing.pem)"
+export ANCHOR_VERIFICATION_PUBLIC_KEY="$(cat /secure/keys/anchor-signing.pub.pem)"
+
+npm run backup:export
+npm run audit:anchor -- --chain data/audit-events.json --previous /secure/anchors/anchors.json
+```
+
+`ANCHOR_DESTINATION` must point at append-only or object-locked storage. The
+exporter writes each anchor with an exclusive create and refuses to overwrite an
+existing sequence number, so a directory it does not own cannot be silently
+rewritten.
+
+Verify before certifying. Both exit non-zero on any problem:
+
+```bash
+npm run backup:verify -- --manifest <offsite manifest> --dump <restored dump>
+npm run audit:anchor:verify -- --chain data/audit-events.json --anchors "$ANCHOR_DESTINATION"
+```
+
+When restoring from an encrypted backup, pass `--stored-ciphertext` together
+with `--encryption-key` to verify the stored bytes directly; otherwise pass the
+already-decrypted dump.
+
+Set `CERTIFY_VERIFY_BACKUP=true` and `CERTIFY_VERIFY_ANCHORS=true` to make
+`certify-production-paper` run both. Without them the certification report lists
+the controls under `unverifiedControls`, which is a visible gap rather than a
+pass.
+
 ## Incident response
 
 ### API unhealthy or readiness failing

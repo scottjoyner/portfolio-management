@@ -212,7 +212,42 @@ Browser operator and CSRF tokens remain only in same-tab `sessionStorage`; closi
 - A pre-deploy backup exists outside the PostgreSQL data volume.
 - The prior image digest and tested restore target are recorded before deployment.
 - `docker compose down -v` is prohibited as rollback.
-- Remaining after this release until separately closed: export audit roots and backups to an external immutable or WORM-capable destination.
+
+### Off-host backup and external audit anchoring
+
+These two controls are destination-neutral: the repository owns the mechanism and
+the deployment owner supplies the destination and its credentials. The gates
+below are therefore run against a host-configured destination, and an
+unconfigured destination is an unresolved gap rather than a pass.
+
+```bash
+# Static contract for both controls.
+npm run backup-and-anchoring:validate
+
+# Export a dump off the volume with a signed manifest, then prove a restore.
+npm run backup:verify -- --manifest "$MANIFEST" --dump "$RESTORED_DUMP" \
+  [--stored-ciphertext --encryption-key "$BACKUP_ENCRYPTION_KEY"]
+
+# Publish the audit-chain root, then prove the local chain still matches it.
+npm run audit:anchor -- --chain "$AUDIT_EVENTS_JSON" --previous "$ANCHORS_JSON"
+npm run audit:anchor:verify -- --chain "$AUDIT_EVENTS_JSON" --anchors "$ANCHOR_DIR"
+```
+
+- The backup manifest is signed with an Ed25519 key; an unsigned manifest is rejected.
+- The dump may be encrypted with AES-256-GCM; the manifest records the iv and auth tag.
+- The manifest records the release SHA, operator, source database, checksum, and size.
+- The upload destination is read back and compared; a destination that drops or
+  alters bytes fails rather than reporting success.
+- An absent or unknown destination is an error, never a silent fallback to the
+  local volume.
+- Restore verification compares the restored bytes to the manifest and blocks
+  certification on mismatch.
+- Audit anchors are signed, published append-only, and chained to their predecessor.
+- A removed anchor is reported as a sequence gap; a rewritten anchor fails its own hash.
+- A locally rebuilt audit chain is caught by comparison against the published root,
+  which a purely local hash chain cannot detect on its own.
+- Certification reports `unverifiedControls` when either destination is unset, so an
+  unconfigured control can never read as a pass.
 
 ## Required manual host certification
 

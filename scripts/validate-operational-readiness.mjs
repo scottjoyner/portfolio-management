@@ -168,6 +168,8 @@ process.stdout.write(`${JSON.stringify({
   remoteProviderAtMostOnce: true,
   delayedUsageReconciliation: true,
   backupRestoreEvidence: true,
+  offsiteBackupContract: true,
+  externalAuditAnchoring: true,
   rollbackRunbook: true,
   liveTradingCertified: false,
 }, null, 2)}\n`);

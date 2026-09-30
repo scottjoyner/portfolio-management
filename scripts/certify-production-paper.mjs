@@ -8,9 +8,21 @@ const commands = [
   ['deployment', ['scripts/validate-deployment.mjs']],
   ['firstProductionRelease', ['scripts/validate-first-prod-release.mjs']],
   ['runtime', ['scripts/validate-runtime-env.mjs']],
+  ['backupAndAnchoring', ['scripts/validate-backup-and-anchoring.mjs']],
   ['migrationPlan', ['scripts/migrate-postgres.mjs', '--dry-run', '--json']],
 ];
 if (process.env.CERTIFY_RUN_SMOKE === 'true') commands.push(['smoke', ['scripts/smoke-production-paper.mjs']]);
+
+// G-005 and G-006 are destination-neutral, so the destination is chosen by the
+// deployment owner. When they have configured one, the real verification runs
+// and a mismatch is blocking. When they have not, certification reports the gap
+// as unresolved rather than treating an unconfigured control as a pass.
+if (process.env.CERTIFY_VERIFY_BACKUP === 'true') {
+  commands.push(['backupRestoreVerification', ['scripts/backup-verify.mjs']]);
+}
+if (process.env.CERTIFY_VERIFY_ANCHORS === 'true') {
+  commands.push(['auditAnchorVerification', ['scripts/audit-anchor-verify.mjs']]);
+}
 
 const checks = [];
 for (const [name, args] of commands) {
@@ -36,7 +48,14 @@ const remoteDisabled = process.env.REMOTE_LLM_EXECUTION_ENABLED !== 'true';
 const failures = checks.filter(row => !row.ok).map(row => row.name);
 if (!liveBlocked) failures.push('live_flags');
 if (!localRequired) failures.push('local_inference_required');
-if (!remoteDisabled) failures.push('remote_inference_disabled');
+if (!remoteDisabled) failures.push('remote_llm_execution_disabled');
+
+// An unconfigured off-host destination is an unresolved gap, not a pass. The
+// destination and its credentials are the deployment owner's to supply, so this
+// reports the state instead of guessing at it.
+const unverified = [];
+if (process.env.CERTIFY_VERIFY_BACKUP !== 'true') unverified.push('offsite_backup_destination_unverified');
+if (process.env.CERTIFY_VERIFY_ANCHORS !== 'true') unverified.push('external_audit_anchor_unverified');
 
 const report = {
   ok: failures.length === 0,
@@ -47,6 +66,7 @@ const report = {
   liveFlags,
   checks,
   failures,
+  unverifiedControls: unverified,
 };
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 if (!report.ok) process.exitCode = 1;
