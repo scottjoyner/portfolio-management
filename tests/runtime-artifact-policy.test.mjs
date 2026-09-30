@@ -18,3 +18,15 @@ test('runtime artifact policy permits sanitized fixtures', () => {
   assert.equal(isForbiddenTrackedPath('data/fixtures/competition_state.json'), false);
   assert.equal(isForbiddenTrackedPath('docs/example.env'), false);
 });
+
+test('runtime artifact policy blocks committed virtualenvs', () => {
+  const paths = [
+    '.cb_sdk_env/pyvenv.cfg',
+    '.cb_sdk_env/lib64',
+    'venv/pyvenv.cfg',
+    '.venv_test/pyvenv.cfg',
+    'sub/dir/env/pyvenv.cfg',
+    'package.json',
+  ];
+  assert.deepEqual(findForbiddenTrackedPaths(paths), paths.slice(0, 5).sort());
+});
