@@ -1,11 +1,39 @@
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { createInitialOperatorState } from '../packages/storage/src/operatorStore.mjs';
+
 let ExecutionEngine;
+
+function healthyRiskState() {
+  const now = new Date().toISOString();
+  const state = createInitialOperatorState(now);
+  state.killSwitch = { enabled: false, reason: 'test_ready', updatedAt: now };
+  state.marketDataSnapshots = [{
+    id: 'md-test-btc',
+    symbol: 'BTC-USD',
+    venue: 'paper',
+    bid: 68240,
+    ask: 68260,
+    status: 'connected',
+    source: 'test-fixture',
+    timestamp: now,
+  }];
+  return { state, observedAt: now, source: 'test_operator_state', revision: `test:${now}` };
+}
+
+async function healthyRiskStateProvider() {
+  return healthyRiskState();
+}
 
 before(async () => {
   const mod = await import('../packages/execution/src/executionEngine.mjs');
-  ExecutionEngine = mod.default;
+  const BaseExecutionEngine = mod.default;
+  ExecutionEngine = class TestExecutionEngine extends BaseExecutionEngine {
+    constructor(config = {}) {
+      super({ riskStateProvider: healthyRiskStateProvider, ...config });
+    }
+  };
 });
 
 const sampleOrder = (overrides = {}) => ({
@@ -55,47 +83,61 @@ describe('ExecutionEngine', () => {
     assert.ok(result.errors.includes('confidence_below_threshold'));
   });
 
-  it('fails closed when risk authorization is missing', async () => {
-    const engine = new ExecutionEngine({ requireApproval: false });
-    const result = await engine.execute(sampleRequest({ riskDecision: undefined }));
+  it('fails closed without an authoritative risk state provider', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false, riskStateProvider: null });
+    const result = await engine.execute(sampleRequest());
     assert.equal(result.ok, false);
-    assert.ok(result.errors.includes('risk_decision_required'));
+    assert.ok(result.errors.includes('capital_risk_missing:authoritative_state'));
+    assert.ok(result.errors.includes('capital_risk_missing:authoritative_state_observed_at'));
     assert.equal(result.execution.overseerDecision.approved, false);
   });
 
-  it('fails closed when risk authorization is malformed', async () => {
+  it('does not require caller-supplied risk approval when canonical state is healthy', async () => {
+    const engine = new ExecutionEngine({ requireApproval: false });
+    const result = await engine.execute(sampleRequest({ riskDecision: undefined }));
+    assert.equal(result.ok, true);
+    assert.equal(result.execution.status, 'filled');
+    assert.equal(result.execution.riskDecision.source, 'canonical_capital_risk_snapshot');
+  });
+
+  it('does not let malformed caller risk data replace canonical evaluation', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest({
       riskDecision: { approved: 'yes', reasons: [] },
     }));
-    assert.equal(result.ok, false);
-    assert.ok(result.errors.includes('risk_decision_invalid'));
+    assert.equal(result.ok, true);
+    assert.equal(result.execution.riskDecision.approved, true);
+    assert.equal(result.execution.riskDecision.source, 'canonical_capital_risk_snapshot');
   });
 
-  it('respects an explicit upstream risk rejection', async () => {
+  it('does not let a caller-supplied risk rejection replace canonical evaluation', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest({
-      riskDecision: { approved: false, reasons: ['portfolio_drawdown_limit'] },
+      riskDecision: { approved: false, reasons: ['caller_claim'] },
     }));
-    assert.equal(result.ok, false);
-    assert.ok(result.errors.includes('portfolio_drawdown_limit'));
+    assert.equal(result.ok, true);
+    assert.equal(result.execution.riskDecision.approved, true);
+    assert.equal(result.execution.riskDecision.reasons.includes('caller_claim'), false);
   });
 
-  it('accepts explicitly risk-approved high confidence paper orders', async () => {
+  it('accepts canonically risk-approved high confidence paper orders', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest());
     assert.equal(result.ok, true);
     assert.equal(result.execution.status, 'filled');
     assert.equal(result.execution.fills.length, 1);
     assert.equal(result.execution.overseerDecision.decision, 'PAPER');
+    assert.equal(result.execution.capitalRiskSnapshotHash.length, 64);
+    assert.equal(result.execution.overseerDecision.capitalRiskSnapshotHash, result.execution.capitalRiskSnapshotHash);
   });
 
   it('keeps requireRiskCheck=false as an explicit compatibility escape hatch', async () => {
-    const engine = new ExecutionEngine({ requireApproval: false, requireRiskCheck: false });
+    const engine = new ExecutionEngine({ requireApproval: false, requireRiskCheck: false, riskStateProvider: null });
     const result = await engine.execute(sampleRequest({ riskDecision: undefined }));
     assert.equal(result.ok, true);
     assert.equal(result.execution.status, 'filled');
     assert.deepEqual(result.execution.riskDecision.reasons, ['risk_check_disabled_by_config']);
+    assert.equal(result.execution.capitalRiskSnapshot, null);
   });
 
   it('creates a hash-bound overseer-authorized draft when approval is required', async () => {
@@ -105,22 +147,30 @@ describe('ExecutionEngine', () => {
     assert.equal(result.execution.status, 'draft');
     assert.ok(result.warnings.includes('awaiting_approval'));
     assert.equal(result.execution.tradeIntentHash.length, 64);
+    assert.equal(result.execution.capitalRiskSnapshotHash.length, 64);
+    assert.equal(result.execution.riskDecisionHash.length, 64);
     assert.equal(result.execution.overseerDecision.intentHash, result.execution.tradeIntentHash);
+    assert.equal(result.execution.overseerDecision.capitalRiskSnapshotHash, result.execution.capitalRiskSnapshotHash);
+    assert.equal(result.execution.overseerDecision.riskDecisionHash, result.execution.riskDecisionHash);
     assert.equal(result.execution.overseerDecision.decision, 'PAPER');
     assert.equal(result.execution.overseerDecision.approved, true);
     assert.equal(result.execution.overseerDecision.requiresHumanApproval, true);
     assert.equal(result.execution.overseerDecision.decisionHash.length, 64);
   });
 
-  it('approves and submits the same authorized draft', async () => {
+  it('approves and submits the same authorized draft after refreshing canonical state', async () => {
     const engine = new ExecutionEngine({ requireApproval: true });
     const createResult = await engine.execute(sampleRequest());
     const execId = createResult.execution.id;
+    const firstSnapshotHash = createResult.execution.capitalRiskSnapshotHash;
 
     const approveResult = await engine.approve(execId);
     assert.equal(approveResult.ok, true);
     assert.equal(approveResult.execution.status, 'filled');
     assert.equal(approveResult.execution.fills.length, 1);
+    assert.equal(approveResult.execution.tradeIntentHash, createResult.execution.tradeIntentHash);
+    assert.equal(approveResult.execution.capitalRiskSnapshotHash.length, 64);
+    assert.ok(firstSnapshotHash);
   });
 
   it('rejects approval after a material order mutation', async () => {
@@ -146,6 +196,17 @@ describe('ExecutionEngine', () => {
     assert.equal(approveResult.execution.status, 'draft');
   });
 
+  it('rejects approval when the capital risk snapshot is corrupted', async () => {
+    const engine = new ExecutionEngine({ requireApproval: true });
+    const createResult = await engine.execute(sampleRequest());
+    createResult.execution.capitalRiskSnapshot.accountState.cashUsd = 1;
+
+    const approveResult = await engine.approve(createResult.execution.id);
+    assert.equal(approveResult.ok, false);
+    assert.ok(approveResult.errors.includes('capital_risk_snapshot_hash_mismatch'));
+    assert.equal(approveResult.execution.status, 'draft');
+  });
+
   it('rejects approval when the overseer authorization has expired', async () => {
     const engine = new ExecutionEngine({ requireApproval: true, overseerTtlMs: 1 });
     const createResult = await engine.execute(sampleRequest());
@@ -157,7 +218,32 @@ describe('ExecutionEngine', () => {
     assert.equal(approveResult.execution.status, 'draft');
   });
 
-  it('blocks live execution even with confidence and upstream risk approval', async () => {
+  it('rejects direct submit when the capital risk snapshot has expired', async () => {
+    const fixedNow = '2026-09-10T20:30:00.000Z';
+    const riskStateProvider = async () => {
+      const state = createInitialOperatorState(fixedNow);
+      state.killSwitch = { enabled: false, reason: 'test_ready', updatedAt: fixedNow };
+      state.marketDataSnapshots = [{
+        id: 'md-expiry-test',
+        symbol: 'BTC-USD',
+        venue: 'paper',
+        bid: 68240,
+        ask: 68260,
+        status: 'connected',
+        source: 'test-fixture',
+        timestamp: fixedNow,
+      }];
+      return { state, observedAt: fixedNow, source: 'test_operator_state', revision: 'expiry-test' };
+    };
+    const engine = new ExecutionEngine({ requireApproval: true, riskStateProvider });
+    const createResult = await engine.execute(sampleRequest(), { now: fixedNow });
+    const submitResult = await engine.submit(createResult.execution, { now: '2026-09-10T20:31:00.000Z' });
+    assert.equal(submitResult.ok, false);
+    assert.ok(submitResult.errors.includes('capital_risk_snapshot_expired'));
+    assert.equal(submitResult.execution.status, 'draft');
+  });
+
+  it('blocks live execution even with healthy canonical risk state', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest({
       mode: 'live',
@@ -209,6 +295,7 @@ describe('ExecutionEngine', () => {
     assert.equal(plan.approved, true);
     assert.equal(plan.overseerDecision.decision, 'PAPER');
     assert.equal(plan.overseerDecision.intentHash, plan.tradeIntentHash);
+    assert.equal(plan.overseerDecision.capitalRiskSnapshotHash, plan.capitalRiskSnapshotHash);
   });
 
   it('computes conviction weight from confidence', async () => {
@@ -239,7 +326,7 @@ describe('ExecutionEngine', () => {
     assert.equal(filled.length, 0);
   });
 
-  it('records overseer lineage in execution events', async () => {
+  it('records overseer and capital-risk lineage in execution events', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const result = await engine.execute(sampleRequest());
     const events = engine.getEvents(result.execution.id);
@@ -249,6 +336,7 @@ describe('ExecutionEngine', () => {
     assert.equal(events[0].type, 'created');
     assert.equal(events[0].overseerDecision, 'PAPER');
     assert.equal(events[0].tradeIntentHash, result.execution.tradeIntentHash);
+    assert.equal(events[0].capitalRiskSnapshotHash, result.execution.capitalRiskSnapshotHash);
   });
 
   it('getAllEvents returns all events', async () => {
@@ -289,11 +377,12 @@ describe('ExecutionEngine', () => {
   it('includes fee calculations in fills', async () => {
     const engine = new ExecutionEngine({ requireApproval: false });
     const req = sampleRequest({
-      orders: [sampleOrder({ feeBps: 10, price: 50000, quantity: 1 })],
+      orders: [sampleOrder({ feeBps: 10, price: 50000, quantity: 0.5 })],
     });
     const result = await engine.execute(req);
+    assert.equal(result.ok, true);
     const fill = result.execution.fills[0];
-    assert.equal(fill.fee, 50); // 1 * 50000 * 10 / 10000
+    assert.equal(fill.fee, 25); // 0.5 * 50000 * 10 / 10000
   });
 });
 
