@@ -14,6 +14,7 @@ from typing import Any
 from scripts.alpha_validation import evidence_to_challenger_metrics, verify_alpha_validation_evidence
 from scripts.backtest_framework.canonical_replay import verify_evidence_replay_binding
 from scripts.learning_lineage import LineageStore
+from scripts.research_tournament import verify_terminal_holdout_evidence
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY_PATH = ROOT / "data" / "learning" / "challengers.json"
@@ -257,11 +258,15 @@ class ChallengerRegistry:
         thresholds: dict[str, Any] | None = None,
         *,
         validation_evidence: Any = None,
+        terminal_holdout_evidence: Any = None,
     ) -> dict[str, Any]:
-        """Evaluate a proposed challenger, requiring canonical evidence.
+        """Evaluate a challenger using canonical search and untouched-terminal evidence.
 
         `challenger_metrics` is retained only for call compatibility and audit
-        visibility. It can no longer authorize promotion by itself.
+        visibility. It cannot authorize promotion. Canonical alpha/replay
+        evidence is evaluated first so its historical failure reasons remain
+        stable; terminal-holdout evidence is required only when that gate would
+        otherwise approve.
         """
 
         registry = self.load()
@@ -306,10 +311,58 @@ class ChallengerRegistry:
             }
         else:
             result = evaluate_challenger_evidence(
-                incumbent_metrics, validation_evidence, thresholds,
+                incumbent_metrics,
+                validation_evidence,
+                thresholds,
                 require_replay_provenance=True,
             )
 
+        terminal_verified = False
+        terminal_hash = terminal_holdout_evidence.get("evidence_hash") if isinstance(terminal_holdout_evidence, dict) else None
+        terminal_schema = terminal_holdout_evidence.get("schema_version") if isinstance(terminal_holdout_evidence, dict) else None
+        if result.get("approved") is True:
+            terminal_reasons: list[str] = []
+            if terminal_holdout_evidence is None:
+                terminal_reasons.append("terminal_holdout_evidence_required")
+            else:
+                terminal_valid, verification_reasons = verify_terminal_holdout_evidence(
+                    terminal_holdout_evidence,
+                    lineage=self.lineage,
+                    reverify_source=True,
+                )
+                if not terminal_valid:
+                    terminal_reasons.extend(
+                        f"terminal_holdout_invalid:{reason}" for reason in verification_reasons
+                    )
+                if isinstance(terminal_holdout_evidence, dict):
+                    if terminal_holdout_evidence.get("candidate_id") != challenger_id:
+                        terminal_reasons.append("terminal_holdout_candidate_mismatch")
+                    if terminal_holdout_evidence.get("candidate_config") != challenger.get("parameters"):
+                        terminal_reasons.append("terminal_holdout_candidate_config_mismatch")
+                    if terminal_holdout_evidence.get("candidate_source_sha") != validation_evidence.get("candidate_source_sha"):
+                        terminal_reasons.append("terminal_holdout_candidate_source_mismatch")
+                    if terminal_holdout_evidence.get("alpha_validation_evidence_hash") != validation_evidence.get("evidence_hash"):
+                        terminal_reasons.append("terminal_holdout_alpha_evidence_mismatch")
+                    if terminal_holdout_evidence.get("passed") is not True:
+                        failure_reasons = terminal_holdout_evidence.get("reasons") or ["policy_failed"]
+                        terminal_reasons.extend(
+                            f"terminal_holdout_policy_failed:{reason}" for reason in failure_reasons
+                        )
+            if terminal_reasons:
+                result["approved"] = False
+                result["reasons"] = list(dict.fromkeys([*result.get("reasons", []), *terminal_reasons]))
+            else:
+                terminal_verified = True
+
+        result["terminal_holdout_evidence_hash"] = terminal_hash
+        result["terminal_holdout_schema_version"] = terminal_schema
+        result["terminal_holdout_verified"] = terminal_verified
+
+        event_parents = [challenger["proposal_lineage_id"]]
+        if terminal_verified and isinstance(terminal_holdout_evidence, dict):
+            terminal_lineage_id = terminal_holdout_evidence.get("terminal_lineage_id")
+            if terminal_lineage_id:
+                event_parents.append(terminal_lineage_id)
         event = self.lineage.append(
             "evaluation",
             {
@@ -317,20 +370,25 @@ class ChallengerRegistry:
                 "incumbent_metrics": incumbent_metrics,
                 "legacy_challenger_metrics": challenger_metrics or {},
                 "alpha_validation_evidence_hash": result.get("evidence_hash"),
+                "terminal_holdout_evidence_hash": terminal_hash,
                 "result": result,
             },
             actor="promotion-gate",
-            parents=[challenger["proposal_lineage_id"]],
+            parents=event_parents,
         )
         challenger["status"] = "approved" if result["approved"] else "rejected"
         challenger["evaluation"] = result
         challenger["evaluation_lineage_id"] = event["id"]
-        if result["approved"] and isinstance(validation_evidence, dict):
+        if result["approved"] and isinstance(validation_evidence, dict) and isinstance(terminal_holdout_evidence, dict):
             challenger["alpha_validation_evidence_hash"] = result["evidence_hash"]
             challenger["alpha_validation_evidence"] = validation_evidence
+            challenger["terminal_holdout_evidence_hash"] = terminal_hash
+            challenger["terminal_holdout_evidence"] = terminal_holdout_evidence
         else:
             challenger.pop("alpha_validation_evidence_hash", None)
             challenger.pop("alpha_validation_evidence", None)
+            challenger.pop("terminal_holdout_evidence_hash", None)
+            challenger.pop("terminal_holdout_evidence", None)
         self.save(registry)
         return result
 
@@ -371,6 +429,35 @@ class ChallengerRegistry:
         if challenger.get("evaluation", {}).get("evidence_hash") != evidence_hash:
             raise ValueError("challenger evaluation/evidence hash mismatch")
 
+        terminal_evidence = challenger.get("terminal_holdout_evidence")
+        terminal_hash = challenger.get("terminal_holdout_evidence_hash")
+        terminal_valid, terminal_reasons = verify_terminal_holdout_evidence(
+            terminal_evidence,
+            lineage=self.lineage,
+            reverify_source=True,
+        )
+        if not terminal_valid:
+            raise ValueError(
+                "challenger terminal-holdout evidence is invalid: "
+                + ",".join(terminal_reasons)
+            )
+        if terminal_evidence.get("passed") is not True:
+            raise ValueError("challenger terminal-holdout policy did not pass")
+        if terminal_evidence.get("candidate_id") != challenger_id:
+            raise ValueError("challenger terminal-holdout candidate mismatch")
+        if terminal_evidence.get("candidate_config") != challenger.get("parameters"):
+            raise ValueError("challenger terminal-holdout candidate config mismatch")
+        if terminal_evidence.get("candidate_source_sha") != evidence.get("candidate_source_sha"):
+            raise ValueError("challenger terminal-holdout candidate source mismatch")
+        if terminal_evidence.get("alpha_validation_evidence_hash") != evidence_hash:
+            raise ValueError("challenger terminal-holdout alpha evidence mismatch")
+        if terminal_evidence.get("evidence_hash") != terminal_hash:
+            raise ValueError("challenger terminal-holdout evidence hash mismatch")
+        if challenger.get("evaluation", {}).get("terminal_holdout_evidence_hash") != terminal_hash:
+            raise ValueError("challenger evaluation/terminal evidence hash mismatch")
+        if challenger.get("evaluation", {}).get("terminal_holdout_verified") is not True:
+            raise ValueError("challenger evaluation did not verify terminal holdout")
+
         previous = None
         if self.active_config_path.exists():
             previous = json.loads(self.active_config_path.read_text(encoding="utf-8"))
@@ -381,6 +468,7 @@ class ChallengerRegistry:
             "deployment": "canary",
             "canary_fraction": max(0.01, min(1.0, _num(canary_fraction, 0.10))),
             "alpha_validation_evidence_hash": evidence_hash,
+            "terminal_holdout_evidence_hash": terminal_hash,
             "promoted_at": _utc_now(),
             "rollback_config": previous,
             "promotion_lineage_id": None,
@@ -391,6 +479,7 @@ class ChallengerRegistry:
                 "challenger_id": challenger_id,
                 "canary_fraction": config["canary_fraction"],
                 "alpha_validation_evidence_hash": evidence_hash,
+                "terminal_holdout_evidence_hash": terminal_hash,
             },
             actor="promotion-gate",
             parents=[challenger["evaluation_lineage_id"]],
@@ -406,6 +495,7 @@ class ChallengerRegistry:
                 "at": _utc_now(),
                 "lineage_id": event["id"],
                 "alpha_validation_evidence_hash": evidence_hash,
+                "terminal_holdout_evidence_hash": terminal_hash,
             }
         )
         self.save(registry)
