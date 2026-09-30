@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 VIOLATIONS=$(git ls-files | grep -E \
-  '(^|/)(data/.*)\.(json|jsonl)$|(^|/)state_backups/|\.log$|\.pid$|\.sqlite$|\.db$' || true)
+  '(^|/)(data/.*)\.(json|jsonl)$|(^|/)state_backups/|\.log$|\.pid$|\.sqlite$|\.db$|(^|/)pyvenv\.cfg$|(^|/)(\.cb_sdk_env|\.venv|\.venv_test|venv|env)/' || true)
 
 # Allowlist: intentional, versioned fixtures/artifacts (issue #32 step 4).
 ALLOWED_RE='graph-alpha-bot/app/data/knowledge_graph.json'

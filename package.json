@@ -7,7 +7,7 @@
   "scripts": {
     "lint": "node scripts/lint.mjs",
     "typecheck": "node scripts/typecheck.mjs",
-    "test": "node --test tests/**/*.test.mjs tests/integration/*.test.mjs",
+    "test": "node scripts/run-node-test-shard.mjs",
     "test:integration:postgres": "RUN_POSTGRES_INTEGRATION=true node tests/integration/postgres-smoke.test.mjs",
     "runtime-artifacts:validate": "node scripts/validate-runtime-artifacts.mjs",
     "operational:validate": "node scripts/validate-operational-readiness.mjs",

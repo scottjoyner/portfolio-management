@@ -191,6 +191,9 @@ data/bot_killed_strategies.json
 
 # --- Local test venv / tooling debris ---
 .venv_test/
+# Coinbase SDK virtualenv; it was committed with absolute-path symlinks that
+# dangle on any other host, which breaks tree walkers such as npm run lint.
+.cb_sdk_env/
 pnpm-lock.yaml
 analytics
 data/hermes_agent_ledger.lock

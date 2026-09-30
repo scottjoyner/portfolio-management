@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, statSync } from 'node:fs';
 
 const ignoredDirs = new Set([
   '.git', 'node_modules', '.venv', '.venv_test', 'venv', '.cb_sdk_env', 'dist', 'build', 'archive',
@@ -20,31 +20,42 @@ const suspiciousPatterns = [
 ];
 const skipped = [];
 
-function walk(directory, out = []) {
-  let entries;
-  try {
-    entries = readdirSync(directory);
-  } catch (error) {
-    skipped.push({ path: directory, reason: error.code || error.message });
-    return out;
-  }
-  for (const entry of entries) {
-    if (ignoredDirs.has(entry)) continue;
-    const path = join(directory, entry).replace(/^\.\//, '');
+// Scan the files git would actually treat as part of the project: tracked files
+// plus untracked-but-not-ignored files. Gitignored files are excluded because
+// git cannot commit them, so their contents are not a source-tree risk. This
+// keeps a host that legitimately holds a credential .env (gitignored) from
+// failing the pre-deploy build, while still catching any secret that is staged
+// or force-added with `git add -f`.
+function gitPaths(args) {
+  const output = execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return output.split('\0').filter(Boolean);
+}
+
+function inIgnoredDir(path) {
+  return path.split('/').some(segment => ignoredDirs.has(segment));
+}
+
+function collectProjectFiles() {
+  const tracked = gitPaths(['ls-files', '-z']);
+  const untrackedNotIgnored = gitPaths(['ls-files', '-z', '--others', '--exclude-standard']);
+  const ignored = gitPaths(['ls-files', '-z', '--others', '--ignored', '--exclude-standard']);
+  const seen = new Set();
+  const files = [];
+  for (const path of [...tracked, ...untrackedNotIgnored]) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    if (inIgnoredDir(path)) continue;
+    const entry = path.split('/').pop();
+    if (ignoredFiles.has(entry) || ignoredPaths.has(path)) continue;
     try {
-      const link = lstatSync(path);
-      if (link.isSymbolicLink()) {
-        skipped.push({ path, reason: 'symbolic_link' });
-        continue;
-      }
-      const stat = statSync(path);
-      if (stat.isDirectory()) walk(path, out);
-      else if (!ignoredFiles.has(entry) && !ignoredPaths.has(path) && stat.size < 1_000_000) out.push(path);
-    } catch (error) {
-      skipped.push({ path, reason: error.code || error.message });
+      if (!statSync(path).isFile()) continue;
+      if (statSync(path).size >= 1_000_000) continue;
+    } catch {
+      continue;
     }
+    files.push(path);
   }
-  return out;
+  return { files, ignoredCount: ignored.length };
 }
 
 function genericAssignmentEligible(path) {
@@ -94,10 +105,11 @@ for (const [path, token] of requiredSecurityTokens) {
   }
 }
 
-const scannedFiles = walk('.');
+const { files: scannedFiles, ignoredCount } = collectProjectFiles();
+if (ignoredCount) skipped.push({ reason: 'gitignored_not_scanned', count: ignoredCount });
 const findings = [];
 for (const path of scannedFiles) {
-  if (!/\.(mjs|js|json|yml|yaml|md|env|txt|toml|ini|py|sh)$/i.test(path)) continue;
+  if (!/\.(mjs|js|json|yml|yaml|md|env|txt|toml|ini|py|sh|pem|key)$/i.test(path)) continue;
   const content = readFileSync(path, 'utf8');
   for (const rule of suspiciousPatterns) if (rule.pattern.test(content)) findings.push({ path, rule: rule.name });
   if (genericAssignmentEligible(path)) {

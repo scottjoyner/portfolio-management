@@ -21,6 +21,9 @@ export const FORBIDDEN_PATTERNS = [
   /^data\/(?:operator-state|operator-actions|pending_approvals|ranking_state|paper-trades|capital_buckets|equity_summary|experiment_proposals|hot_scores_v4|live_performance|strategy_analytics|hermes_agent_ledger|agent_cost_ledger|competition_epoch|competition_state|system-health|bot_killed_strategies)\.json$/,
   /^data\/.*\.(?:log|pid|sock|sqlite|sqlite3|db|db-shm|db-wal)$/,
   /(?:^|\/)(?:\.env|[^/]+\.pem|[^/]+\.key|[^/]+\.key\.json)$/,
+  // Committed virtualenvs carry absolute-path symlinks that dangle elsewhere.
+  /(?:^|\/)pyvenv\.cfg$/,
+  /(?:^|\/)(?:\.cb_sdk_env|\.venv|\.venv_test|venv|env)\//,
 ];
 
 export function isForbiddenTrackedPath(path) {

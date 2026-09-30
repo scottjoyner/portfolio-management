@@ -1,12 +1,12 @@
 # Release Readiness Matrix
 
-This matrix defines what “ready for review” means for PR #30. It covers the first supervised **production-paper** deployment only. Live trading remains excluded.
+This matrix defines what “ready for review” means for the first supervised **production-paper** deployment. It covers the production-paper path only. Live trading remains excluded. PR #30 merged to `main` on 2026-08-03; this matrix is maintained against the current `main` head.
 
 ## Status vocabulary
 
 - **Blocking — automated:** must pass in the GitHub Actions `release-readiness` dependency graph.
 - **Blocking — manual:** must be performed on the intended deployment host and recorded in the release record.
-- **Open engineering blocker:** implementation is incomplete; the PR remains draft.
+- **Open engineering blocker:** implementation is incomplete; the release remains uncertified.
 - **Diagnostic:** useful evidence, but not a release gate unless it exposes a regression in the release path.
 
 ## Readiness gates
@@ -73,12 +73,12 @@ Threshold changes require:
 13. Rehearse the rollback target using the prior image and restored backup.
 14. Record go/no-go with named operator, reviewer, and incident owner.
 
-## Conditions for moving the PR out of draft
+## Conditions for leaving the release in draft
 
-The PR should remain draft until:
+The release must remain uncertified until:
 
 - the exact-head `release-readiness` job is green, including `broad-python-suite` and `performance-gate`;
 - every open engineering blocker above is closed or explicitly removed from this release scope with a safe fail-closed implementation;
 - the host certification sequence has been completed or a clearly identified deployment owner has accepted the remaining manual gates;
-- the PR body reflects current evidence rather than an older green run;
+- the release record reflects current evidence rather than an older green run;
 - no live-trading certification claim is made.
