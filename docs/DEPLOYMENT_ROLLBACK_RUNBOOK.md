@@ -146,6 +146,30 @@ docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile backup up -d 
 
 ## Post-deployment verification
 
+### Overseer policy version and stored authorizations
+
+The execution overseer policy is versioned. The current policy is
+`execution-admission-v4-certified-runtime` (schema version 4).
+
+A decision or stored authorization minted under an older policy does **not**
+verify under the current one, and there is no migration path. Verification
+fails closed and the affected authorization must be re-minted. This is the
+safe direction and is expected, but it is not silent: an operator who sees
+`overseer_decision_missing_field:*`, `portfolio_allocation_required`, or
+`capital_risk_snapshot_required` after a deploy is looking at state that
+predates the current policy, not at a bug.
+
+Before the first deploy onto a host that already holds operator or execution
+state, either drain that state or plan to re-authorize it. For a fresh
+production-paper host there is nothing to migrate.
+
+Confirm the deployed policy version matches the source tree:
+
+```bash
+node -e "import('./packages/execution/src/overseer.mjs').then(m => \
+  console.log(m.OVERSEER_SCHEMA_VERSION, m.OVERSEER_POLICY_VERSION))"
+```
+
 Wait for container health, then record status:
 
 ```bash
