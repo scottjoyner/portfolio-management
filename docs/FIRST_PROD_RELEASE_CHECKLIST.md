@@ -40,7 +40,7 @@ Excluded:
 
 ## Exact-head CI gate
 
-Do not proceed unless the PR's exact head commit has a successful blocking `release-readiness` job. That aggregate requires:
+Do not proceed unless the exact head commit under review has a successful blocking `release-readiness` job. That aggregate requires:
 
 - `validation`;
 - all four deterministic Node shards;
@@ -67,7 +67,7 @@ Download and retain the exact-head artifacts:
 - `performance-smoke-<sha>`;
 - maintained and generated full-inventory artifacts when the exhaustive workflow is run.
 
-Artifact names may use the temporary PR merge SHA, but each workflow artifact record must identify the reviewed branch head SHA.
+Artifact names may use a temporary merge SHA, but each workflow artifact record must identify the reviewed branch head SHA.
 
 ## Must pass before host deployment
 
@@ -88,6 +88,18 @@ PERFORMANCE_STRICT_RUNNER=true \
   PERFORMANCE_THRESHOLD_CONFIG=config/release-performance-thresholds.json \
   node scripts/benchmark-release-critical-paths.mjs
 ```
+
+`npm test` must be read as a real result, not just an exit code. A zero exit is
+not sufficient evidence on its own: confirm the run reports a non-trivial test
+count and that the number of discovered `.test.mjs` files matches the tree.
+`npm test` routes through `scripts/run-node-test-shard.mjs`, the same recursive
+discovery used by the CI shards, so the local and CI selections cannot diverge.
+A local run that reports only the PostgreSQL smoke test as skipped is a
+false green — stop and investigate before deploying. `tests/node-test-script-coverage.test.mjs`
+enforces this and fails if `npm test` regresses to a shell glob.
+
+`npm run migrations:dry-run` requires a reachable `DATABASE_URL`; run it against
+the intended host database rather than skipping it.
 
 Validate the intended host-managed environment separately:
 
@@ -205,7 +217,7 @@ Browser operator and CSRF tokens remain only in same-tab `sessionStorage`; closi
 ## Required manual host certification
 
 1. Name the release operator, reviewer, rollback owner, and incident owner.
-2. Confirm the exact source SHA matches the reviewed PR head.
+2. Confirm the exact source SHA matches the reviewed head.
 3. Record current and candidate image digests.
 4. Validate the host-managed environment and rendered Compose model.
 5. Confirm each local inference endpoint and loaded model ID.
@@ -227,7 +239,7 @@ Browser operator and CSRF tokens remain only in same-tab `sessionStorage`; closi
 
 ## Open engineering blockers
 
-The PR remains draft until these are closed or safely removed from release scope:
+The release remains uncertified until these are closed or safely removed from release scope:
 
 - remaining broad whole-state compatibility rewrites replaced by targeted optimistic PostgreSQL mutations;
 - deterministic bot replay for automatic paid-agent counterfactual attribution;
