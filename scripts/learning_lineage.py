@@ -16,6 +16,7 @@ DEFAULT_PATH = ROOT / "data" / "learning_lineage.jsonl"
 EVENT_TYPES = {
     "model_request", "signal", "trade", "outcome", "proposal",
     "evaluation", "promotion", "rollback", "budget_block", "error",
+    "research_experiment", "candidate_trial", "candidate_selection", "terminal_holdout",
 }
 SENSITIVE_KEYS = {"api_key", "authorization", "password", "private_key", "secret"}
 

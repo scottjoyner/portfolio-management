@@ -2,30 +2,38 @@
 
 ## Purpose
 
-`Portfolio OS` previously had a strong challenger gate but accepted caller-supplied metrics such as `walk_forward_passed`, `profit_factor`, and `out_of_sample_trades`. That made the promotion gate structurally vulnerable to fabricated, stale, or accidentally miscomputed evidence.
+`Portfolio OS` previously had a strong challenger gate but accepted caller-supplied metrics such as `walk_forward_passed`, `profit_factor`, and `out_of_sample_trades`. That made promotion structurally vulnerable to fabricated, stale, accidentally miscomputed, or repeatedly optimized evidence.
 
-This slice introduces a canonical evidence boundary. A challenger can no longer become promotion-eligible through metric booleans alone.
+The canonical research boundary now has two stages:
 
-It also repairs an existing walk-forward correctness defect: `scripts/backtest_framework/walk_forward.py` previously returned `n_folds` copies of the same final holdout. That meant a report such as `oos_passed=4` could represent the same OOS interval evaluated four times. The framework now uses distinct chronological expanding OOS intervals.
+1. replay-bound alpha validation over a committed search dataset;
+2. a one-shot untouched terminal holdout for the deterministically selected candidate.
+
+Metric booleans alone cannot authorize challenger promotion.
+
+This work also repaired an earlier walk-forward correctness defect: the old framework could return `n_folds` copies of the same final holdout. Distinct chronological OOS intervals are now mandatory.
 
 ## Safety boundary
 
-This work does **not** enable live trading or add broker authority.
+This research stack does **not** enable live trading or add broker authority.
 
-It only changes research/challenger certification. The intended flow is:
+The intended flow is:
 
 ```text
 candidate strategy/config
-  -> canonical feed-cache snapshot
+  -> canonical feed-cache search snapshot
   -> compiled Rust historical replay
   -> leakage-safe walk-forward folds
-  -> realized OOS return observations
-  -> alpha_validation.py
   -> replay-bound AlphaValidationEvidence
-  -> challenger_manager.py
-  -> approved/rejected challenger
-  -> canary metadata only
+  -> research tournament records every trial
+  -> deterministic pre-terminal selection
+  -> one-shot committed terminal holdout
+  -> TerminalHoldoutEvidence
+  -> ChallengerRegistry promotion gate
+  -> supervised canary metadata only
 ```
+
+Live trading remains blocked by the execution boundary.
 
 ## Walk-forward split contract
 
@@ -35,14 +43,14 @@ candidate strategy/config
 [ train ][ purge ][ embargo ][ test ]
 ```
 
-- `train`: data available to fit/tune the candidate.
-- `purge`: observations removed because overlapping labels/holding horizons could leak future information back into training.
-- `embargo`: additional no-train/no-test spacing before the OOS test period.
+- `train`: data available to fit/tune the candidate;
+- `purge`: observations removed because overlapping labels/holding horizons could leak future information into training;
+- `embargo`: additional no-train/no-test spacing before OOS test;
 - `test`: out-of-sample observations only.
 
 `expanding=True` creates anchored expanding windows. `expanding=False` keeps a fixed rolling training window.
 
-The existing backtest framework now delegates its fold boundaries to this canonical splitter. With 1,000 observations, four folds, and no gap, the framework creates:
+With 1,000 observations, four folds, and no gap, the repaired framework creates:
 
 ```text
 train 0:200 -> test 200:400
@@ -51,144 +59,159 @@ train 0:600 -> test 600:800
 train 0:800 -> test 800:1000
 ```
 
-Earlier OOS intervals can legitimately become training history for a later fold because they are in the past at that later evaluation time. A fold may never train on its own test interval or future observations.
+Earlier OOS intervals can become training history for a later fold because they are then historical. A fold may never train on its own test interval or future observations.
 
-## Evidence integrity — schema v2
+## Alpha evidence integrity — schema v2
 
-Evidence is canonicalized with sorted, compact JSON and SHA-256. NaN and Infinity are rejected.
+Evidence is canonicalized with sorted compact JSON and SHA-256. NaN and Infinity are rejected.
 
-Schema v2 embeds the data required to recompute the statistical claims, including:
+Schema v2 embeds enough data to recompute statistical claims, including:
 
 - candidate ID and source SHA;
-- complete candidate config plus its hash;
-- dataset ID and dataset hash;
+- complete candidate config and config hash;
+- dataset ID/hash;
 - raw OOS return observations grouped by fold;
 - annualization convention;
-- bootstrap sample count, seed, and ruin threshold;
+- bootstrap sample count, seed and ruin threshold;
 - cost-stress scenarios;
 - validation policy;
 - regime labels;
 - fold metrics and aggregate metrics;
 - final evidence hash.
 
-`verify_alpha_validation_evidence()` does more than recompute the artifact hash. It rebuilds the candidate-config hash, fold metrics, aggregate metrics, cost-stress results, bootstrap results, pass/fail decision, and failure reasons from the embedded OOS observations. Therefore, changing a reported `profit_factor`, `max_drawdown_pct`, or `walk_forward_passed` value and simply re-hashing the JSON still fails verification.
-
-For an approved challenger, the registry persists both the complete validation evidence artifact and its hash. Promotion re-verifies the complete artifact, candidate binding, evidence hash, and evaluation-to-evidence hash binding before writing canary configuration. A registry edit that alters previously approved evidence therefore fails closed at promotion time.
+`verify_alpha_validation_evidence()` rebuilds candidate-config hash, fold metrics, aggregate metrics, cost stress, bootstrap results, pass/fail decision and failure reasons from embedded OOS observations. Editing a derived `profit_factor`, `max_drawdown_pct`, or `walk_forward_passed` and simply rehashing does not pass verification.
 
 ## Canonical replay provenance
 
-`scripts/backtest_framework/canonical_replay.py` closes the local data-origin boundary that existed in the first version of this work.
+`scripts/backtest_framework/canonical_replay.py` binds alpha evidence to the exact local data/replay path.
 
-The canonical replay path now:
+The canonical replay path:
 
 1. loads OHLCV rows from `data.feed_cache`;
-2. normalizes and validates timestamp, price, and volume invariants;
-3. hashes the exact logical OHLCV rows that will be replayed;
-4. derives `dataset_id` and `dataset_hash` from those rows and replay metadata rather than accepting caller labels;
+2. validates and normalizes timestamp/price/volume invariants;
+3. hashes exact logical OHLCV rows;
+4. derives dataset identity from those rows and replay metadata rather than trusting caller labels;
 5. creates leakage-safe walk-forward boundaries;
-6. regenerates each OOS fold through the compiled Rust strategy evaluator;
-7. records test-row hashes, realized-return hashes, replay controls, and the canonical replay runner source hash;
-8. binds that attestation into the alpha-evidence hash;
-9. on challenger evaluation and again on promotion, reloads the same feed-cache time range and reruns the Rust replay fail-closed.
+6. regenerates OOS folds through compiled Rust strategy evaluation;
+7. records test-row hashes, return hashes, replay controls and runner-source hash;
+8. binds that attestation into alpha evidence;
+9. reloads source and reruns replay during challenger evaluation and again at promotion.
 
-Missing feed data, missing required compiled Rust symbols, changed in-range candles, changed replay controls, changed return observations, or changed canonical replay source invalidate provenance.
+Missing feed data, required native symbols, changed in-range candles, changed replay controls, changed return observations, or changed canonical replay source invalidate provenance.
 
-The dedicated `canonical-replay-rust` CI job builds the checked-out mixed Python/Rust package, proves the required native exports exist, and runs replay/fee parity tests against that compiled extension. Portable Python tests do not pretend that the source compatibility wrapper is a native backend.
+The dedicated native CI lane builds the checked-out mixed Python/Rust package, proves native exports, and exercises canonical replay/fee parity against that compiled extension.
 
-### Remaining provenance boundary
+### Executable configuration identity
 
-Canonical replay now proves local dataset/replay consistency relative to the checked-out replay implementation. It is **not** yet a remote hardware signature, compiled-binary signature, or append-only evidence-store signature.
+Configured `rsi_revert` is no longer merely metadata-bound. The canonical configured path binds a typed RSI parameter map to the compiled replay call and independently regenerates its parameter neighborhood.
 
-More importantly, `candidate_config` is currently integrity-bound metadata but is not a universally executable strategy parameter contract. Many Rust strategies still contain hard-coded lookbacks and thresholds, and the canonical Rust evaluator currently receives a strategy name plus market arrays rather than a typed parameter map. Therefore evidence can prove that `rsi_revert` ran, for example, but it cannot yet prove that arbitrary claimed challenger parameters were the parameters the Rust implementation executed.
+Not every strategy family has an equally complete typed configuration contract yet. Expansion must be strategy-specific and typed rather than introducing an unvalidated generic parameter bag.
 
-The next implementation slice must close that execution-identity boundary before parameter-neighborhood optimization is treated as scientific evidence. A strategy's typed executable configuration, implementation identity, and replay attestation must all describe the same thing.
+Canonical replay proves local data/execution consistency relative to checked-out source. It is not yet a remote hardware signature, compiled-binary signature, or externally immutable evidence-store signature.
 
 ## Backtest semantic parity
 
-This slice also repairs Python/Rust metric drift uncovered by native replay certification.
-
-The historical engines now share these semantics:
+Historical Python/Rust semantics were hardened during replay certification:
 
 - round-trip fees use basis points correctly (`10 bps` per side is `0.20` percentage points per completed trade);
-- portfolio return is compounded from the equity curve rather than summing percentage returns;
-- zero-variance samples report zero Sharpe instead of using an artificial volatility floor;
+- portfolio return compounds from the equity curve instead of summing percentage returns;
+- zero-variance samples report zero Sharpe rather than using an artificial volatility floor;
 - drawdown is chronological peak-to-trough drawdown;
 - no-loss profit-factor handling is aligned;
 - insufficient trade count blocks approval without erasing otherwise observable one-trade metrics;
-- `min_trades` is propagated through both Python and Rust backtest interfaces;
-- the Python historical loop clears indicator cache state between growing bar windows so temporary list identity cannot leak stale cached indicator values.
+- `min_trades` is propagated through Python and Rust backtest interfaces;
+- Python historical loops clear indicator cache state between growing bar windows.
 
-The native parity lane is deliberately separate from the portable Python lane: native-only assertions are skipped when a compiled extension is absent and are exercised after CI builds the exact checked-out Rust package.
+Native-only assertions are skipped in portable Python environments and exercised in CI after building the exact checked-out Rust package.
 
-## Initial generated metrics
+## Generated metrics and robustness
 
-The engine derives finite JSON-safe metrics from OOS return observations:
+The alpha engine derives finite JSON-safe OOS metrics including:
 
 - trade count;
 - total and annualized return;
 - mean return;
-- Sharpe and Sortino ratios;
+- Sharpe and Sortino;
 - profit factor;
 - maximum drawdown;
 - Calmar ratio;
 - worst trade;
 - 5% expected shortfall;
 - win rate;
-- positive walk-forward fold fraction.
+- positive-fold fraction.
 
-It also runs deterministic trade-sequence bootstrap resampling and reports:
-
-- fraction of resamples ending profitable;
-- probability of crossing the configured ruin threshold;
-- median terminal return;
-- 5th-percentile terminal return.
+It also runs deterministic trade-sequence bootstrap resampling and reports profitable-resample fraction, estimated ruin probability, median terminal return and 5th-percentile terminal return.
 
 ## Cost stress
 
-`cost_stress_results()` subtracts incremental round-trip cost from every observed OOS return. The default evidence policy requires the candidate to remain profitable at the first configured scenario at or above 25 bps additional cost.
+`cost_stress_results()` subtracts incremental round-trip cost from each observed OOS return. Default alpha policy requires profitability at the first configured scenario at or above 25 bps additional cost.
 
-The purpose is not to claim that 25 bps is the final correct execution model. It is a conservative first gate until shadow/live execution calibration provides venue- and strategy-specific empirical slippage distributions.
+This is a conservative research stress, not a substitute for empirical shadow/live slippage distributions.
 
 ## Parameter stability
 
-The canonical configured `rsi_revert` path now derives parameter stability from actual neighboring-parameter replay rather than trusting orchestration. It evaluates deterministic one-at-a-time neighbors (`period ±2`, `oversold ±5`, `overbought ±5` where valid) over the exact same OOS fold boundaries, fee assumptions, warmup, and holding controls as the candidate.
+The configured `rsi_revert` path derives parameter stability from neighboring compiled replays rather than orchestration claims. Deterministic one-at-a-time neighbors vary `period ±2`, `oversold ±5`, and `overbought ±5` where valid, using the same OOS boundaries, fees, warmup and holding controls.
 
-For every neighbor the replay attestation stores the exact typed config, config hash, raw fold returns, return hash, trade count, log growth, profitability flag, and retained growth ratio. The bounded stability score is the minimum of (a) the fraction of neighboring configurations with positive compounded growth and (b) their mean retained log-growth relative to the candidate. A narrow parameter spike therefore cannot receive a high stability score merely because the center point performs well.
+Each neighbor records exact typed config/hash, raw fold returns/hash, trade count, log growth, profitability and retained-growth ratio. The bounded score is the minimum of profitable-neighbor fraction and mean retained log-growth versus the candidate, preventing a narrow center-point spike from receiving an artificially high score.
 
-The alpha-validation module still accepts `parameter_stability_score` as a low-level compatibility input for synthetic/unit evidence, but the canonical configured replay builder derives the value itself and rejects a caller-supplied override that disagrees. Promotion source reverification regenerates the full neighborhood from the feed cache and compiled Rust strategy path.
+The low-level alpha builder still accepts `parameter_stability_score` for synthetic/unit compatibility, but the canonical configured builder derives it and rejects a conflicting override.
+
+## Untouched terminal holdout
+
+`scripts/research_tournament.py` closes the repeated-final-test gap for the canonical tournament path.
+
+Before search begins, trusted infrastructure commits one chronological partition:
+
+```text
+[ search ][ embargo ][ terminal holdout ]
+```
+
+The experiment plan exposes the terminal manifest/hash but not terminal OHLCV rows. Every submitted candidate trial—eligible or rejected—is recorded in append-only lineage. Candidate intake closes permanently when deterministic selection is sealed.
+
+Only the selected candidate can open the terminal window. The terminal runner reloads the exact committed feed-cache range and uses the exact selected strategy/config, warmup, fees and holding controls from alpha replay evidence. It records raw terminal returns, recomputed metrics, terminal policy, exact dataset manifest/hash, selection/experiment bindings and lineage event hashes.
+
+A terminal pass is required for promotion. A terminal failure is final for that experiment; choosing another candidate or changing terminal thresholds requires a new experiment and newly committed holdout.
+
+See `docs/RESEARCH_TOURNAMENT.md` for the complete state-machine and verification contract.
 
 ## Promotion contract
 
-`scripts.challenger_manager.ChallengerRegistry.evaluate()` fails closed when `validation_evidence` is missing or is not bound to canonical replay provenance.
+`ChallengerRegistry.evaluate()` first preserves the historical alpha/replay diagnostics. Missing/invalid alpha evidence, candidate mismatch, executable-config mismatch or replay-provenance failure are rejected before terminal evidence is considered.
 
-Legacy `challenger_metrics` remain accepted as an argument for compatibility/audit visibility, but they cannot authorize promotion.
+If alpha/replay would otherwise approve, terminal evidence becomes mandatory.
 
-Before metric evaluation:
+Before a challenger can enter approved state:
 
-1. evidence schema and canonical hash are checked;
-2. candidate config hash is recomputed;
-3. raw OOS returns are re-evaluated into fold/aggregate/bootstrap/stress metrics;
-4. reported derived metrics and pass/fail state must match recomputation;
-5. evidence `candidate_id` must match the proposed challenger ID;
-6. evidence `candidate_config` must match the challenger's proposed parameters;
-7. replay provenance must revalidate against the canonical feed cache and compiled Rust replay;
-8. approved evidence and its hash are persisted with the challenger.
+1. alpha schema/hash and recomputed metrics must verify;
+2. candidate ID/config must match the proposal;
+3. canonical replay must revalidate against source and compiled replay;
+4. terminal evidence must verify against exact source and append-only lineage;
+5. terminal evidence must have passed its policy;
+6. terminal candidate ID/config/source SHA must match alpha/challenger identity;
+7. terminal evidence must bind the exact alpha-evidence hash;
+8. both complete artifacts and hashes are persisted.
+
+Missing terminal evidence fails closed with `terminal_holdout_evidence_required`.
 
 Before canary promotion:
 
 1. challenger and recorded evaluation must still be approved;
-2. persisted evidence is re-verified from its full contents;
-3. candidate ID and candidate config must still match the challenger;
-4. persisted evidence hash must equal the artifact hash;
-5. recorded evaluation hash must equal the same evidence hash;
-6. canonical replay provenance is independently rerun and revalidated;
-7. only then is canary configuration written.
+2. complete persisted alpha evidence is reverified;
+3. canonical alpha replay is rerun from source;
+4. complete persisted terminal evidence is reverified;
+5. terminal source replay and lineage chain are independently revalidated;
+6. candidate/config/source/alpha-hash bindings must still match;
+7. persisted alpha and terminal hashes must match the evaluation;
+8. evaluation must record successful terminal verification;
+9. only then is canary configuration written.
 
-The canary configuration and promotion lineage carry the verified evidence hash.
+Canary config and promotion lineage carry both `alpha_validation_evidence_hash` and `terminal_holdout_evidence_hash`.
 
-## Default evidence policy
+Legacy `challenger_metrics` remain accepted only for compatibility/audit visibility and cannot authorize promotion.
 
-Current defaults in `ValidationPolicy`:
+## Default alpha evidence policy
+
+Current `ValidationPolicy` defaults:
 
 ```text
 minimum folds                     3
@@ -202,23 +225,35 @@ required extra-cost stress       25 bps
 minimum parameter stability      0.60
 ```
 
-The existing `challenger_manager.DEFAULT_THRESHOLDS` remains a second independent gate and is stricter in some dimensions, including 30 total trades, minimum regime diversity, after-cost P&L improvement, cost coverage, and allowed drawdown regression versus the incumbent.
+`challenger_manager.DEFAULT_THRESHOLDS` remains a second independent relative gate and is stricter in some dimensions, including 30 total trades, regime diversity, after-cost P&L improvement, cost coverage and allowed drawdown regression versus incumbent.
 
-Passing alpha evidence therefore does not automatically mean a challenger beats the incumbent.
+Passing alpha evidence therefore does not imply passing terminal holdout or beating the incumbent.
+
+## Default terminal policy
+
+Current `TerminalHoldoutPolicy` defaults:
+
+```text
+minimum completed trades   5
+positive total return      required
+minimum profit factor      1.00
+maximum drawdown           25%
+```
+
+These are final-test admission floors, not optimization targets.
 
 ## Deliberate remaining limitations
 
-Still required before this becomes a complete scientific-validation system:
+Still required before this is a complete scientific-validation system:
 
-1. Add typed executable strategy configuration and bind the exact executed parameter map plus implementation identity to replay evidence.
-2. Expand replay-derived parameter stability beyond the RSI pilot and calibrate neighborhood widths per typed strategy family.
-3. Add trusted runner/build/binary attestation and move complete evidence artifacts to an append-only or externally immutable evidence store.
-4. Add multiple-testing / selection-bias correction across candidate searches.
-5. Add block/bootstrap methods for serially correlated returns.
-6. Add explicit asset/session/regime concentration metrics and regime-labelled fold construction where appropriate.
-7. Add empirical slippage/latency distributions from shadow/live executions.
-8. Add an untouched terminal holdout policy so agents cannot repeatedly optimize against the final test set.
-9. Bind candidate source commit/tree identity to the executable implementation used by replay, not only to evidence metadata.
-10. Expand configured replay beyond the pilot strategy without creating a generic untyped parameter bag.
+1. Add formal multiple-testing / selection-bias correction across the now-recorded candidate search history.
+2. Add block/bootstrap methods appropriate for serially correlated returns.
+3. Add explicit asset/session/regime concentration metrics and regime-labelled fold construction where appropriate.
+4. Expand typed executable configuration/replay and replay-derived stability beyond currently configured strategy families.
+5. Bind candidate source commit/tree identity more strongly to the executable implementation used by replay.
+6. Add trusted runner/build/binary attestation and externally immutable evidence storage.
+7. Add access-control/trusted-runner separation so autonomous research agents cannot inspect committed terminal rows out-of-band.
+8. Add empirical slippage/latency distributions from shadow/live executions.
+9. Quarantine or harden legacy research config-generation helpers before treating any of them as runtime promotion paths.
 
-Until those are implemented, this engine should be treated as a major improvement in evidence integrity, replay provenance, and leakage discipline—not a claim that any strategy is certified for meaningful real capital.
+Until those are implemented, this stack should be treated as a major improvement in leakage discipline, replay provenance, experiment lineage and final-test integrity—not a claim that any strategy is certified for meaningful real capital.
