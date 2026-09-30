@@ -48,10 +48,8 @@ def _alpha(plan, candidate_id: str, *, pnl: float, config=None):
         dataset_id=plan["search_dataset"]["dataset_id"],
         dataset_hash=plan["search_dataset"]["dataset_hash"],
         fold_returns=[
-            [0.02, 0.01, 0.015],
-            [0.01, 0.02, 0.012],
-            [0.015, 0.011, 0.018],
-            [0.014, 0.013, 0.016],
+            [0.02, 0.01, 0.015, 0.012, 0.011]
+            for _ in range(10)
         ],
         net_pnl_after_cost_usd=pnl,
         cost_coverage_ratio=2.0,
@@ -104,6 +102,8 @@ def test_experiment_plan_commits_non_overlapping_terminal_without_exposing_rows(
     assert plan["search_dataset"]["row_count"] == 510
     assert plan["terminal_holdout_commitment"]["row_count"] == 80
     assert plan["embargo_bars"] == 10
+    assert plan["multiple_testing_policy"]["dependence_block_size"] == 5
+    assert plan["multiple_testing_policy"]["min_nonzero_blocks"] == 5
     assert plan["search_dataset"]["end_ts"] < plan["terminal_holdout_commitment"]["start_ts"]
     assert "rows" not in plan
     assert "rows" not in plan["terminal_holdout_commitment"]

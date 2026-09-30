@@ -81,6 +81,8 @@ def _tournament(tmp_path, *, max_trials: int = 20):
         max_candidate_trials=max_trials,
         familywise_alpha=0.05,
         min_sign_test_trades=10,
+        dependence_block_size=5,
+        min_nonzero_blocks=5,
         experiment_id="experiment-multiple-testing",
     )
     return tournament, lineage, experiment
@@ -95,6 +97,8 @@ def test_experiment_hash_commits_multiple_testing_policy_before_search():
         embargo_bars=10,
         max_candidate_trials=20,
         familywise_alpha=0.05,
+        dependence_block_size=5,
+        min_nonzero_blocks=5,
         created_at="2026-09-11T12:00:00+00:00",
     )
     changed = build_experiment_plan_from_snapshot(
@@ -105,12 +109,28 @@ def test_experiment_hash_commits_multiple_testing_policy_before_search():
         embargo_bars=10,
         max_candidate_trials=100,
         familywise_alpha=0.05,
+        dependence_block_size=5,
+        min_nonzero_blocks=5,
+        created_at="2026-09-11T12:00:00+00:00",
+    )
+    changed_block = build_experiment_plan_from_snapshot(
+        _snapshot(),
+        experiment_id="exp",
+        strategy_name="rsi_revert",
+        holdout_bars=80,
+        embargo_bars=10,
+        max_candidate_trials=20,
+        familywise_alpha=0.05,
+        dependence_block_size=10,
+        min_nonzero_blocks=5,
         created_at="2026-09-11T12:00:00+00:00",
     )
     assert base["multiple_testing_policy"]["max_candidate_trials"] == 20
     assert base["multiple_testing_policy"]["per_trial_alpha"] == 0.0025
+    assert base["multiple_testing_policy"]["dependence_block_size"] == 5
     assert changed["multiple_testing_policy"]["per_trial_alpha"] == 0.0005
     assert base["experiment_hash"] != changed["experiment_hash"]
+    assert base["experiment_hash"] != changed_block["experiment_hash"]
 
 
 def test_every_registered_candidate_consumes_precommitted_budget(monkeypatch, tmp_path):
@@ -119,7 +139,7 @@ def test_every_registered_candidate_consumes_precommitted_budget(monkeypatch, tm
         "scripts.research_tournament.verify_evidence_replay_binding",
         lambda evidence, reverify_source=True: (True, []),
     )
-    strong = [[0.02, 0.015, 0.01, 0.012, 0.011] for _ in range(3)]
+    strong = [[0.02, 0.015, 0.01, 0.012, 0.011] for _ in range(10)]
     first = tournament.register_candidate(
         experiment["id"], _evidence(experiment["plan"], "candidate-1", strong), reverify_source=False
     )
@@ -140,8 +160,6 @@ def test_alpha_pass_can_still_fail_familywise_selection_gate(monkeypatch, tmp_pa
         "scripts.research_tournament.verify_evidence_replay_binding",
         lambda evidence, reverify_source=True: (True, []),
     )
-    # 17 positive vs 13 negative trades is strongly profitable by magnitude,
-    # but the exact sign test is nowhere near 0.05 / 20 family-wise alpha.
     mixed = [
         [0.02] * 6 + [-0.005] * 4,
         [0.02] * 6 + [-0.005] * 4,
@@ -166,7 +184,7 @@ def test_terminal_evidence_recomputes_selected_search_significance(monkeypatch, 
         "scripts.research_tournament.verify_evidence_replay_binding",
         lambda evidence, reverify_source=True: (True, []),
     )
-    strong = [[0.02, 0.015, 0.01, 0.012, 0.011] for _ in range(3)]
+    strong = [[0.02, 0.015, 0.01, 0.012, 0.011] for _ in range(10)]
     tournament.register_candidate(
         experiment["id"], _evidence(experiment["plan"], "candidate-strong", strong), reverify_source=False
     )
@@ -187,12 +205,13 @@ def test_terminal_evidence_recomputes_selected_search_significance(monkeypatch, 
         experiment["id"], policy=TerminalHoldoutPolicy(min_trades=5)
     )
     assert evidence["selected_multiple_testing"]["passed"] is True
+    assert evidence["selected_multiple_testing"]["dependence"]["nonzero_blocks"] == 10
     assert evidence["trial_count"] == 1
     assert evidence["max_candidate_trials"] == 20
 
     tampered = copy.deepcopy(evidence)
-    tampered["selected_multiple_testing"]["raw_p_value"] = 0.0
-    tampered["selected_multiple_testing"]["adjusted_p_value"] = 0.0
+    tampered["selected_multiple_testing"]["dependence"]["raw_p_value"] = 0.0
+    tampered["selected_multiple_testing"]["dependence"]["adjusted_p_value"] = 0.0
     core_names = {
         "schema_version", "method", "experiment_id", "experiment_hash", "selection_hash",
         "selection_policy_version", "candidate_id", "candidate_source_sha", "candidate_config",
