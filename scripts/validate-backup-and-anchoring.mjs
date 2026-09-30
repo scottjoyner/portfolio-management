@@ -22,6 +22,8 @@ const requiredFiles = [
   'scripts/audit-anchor-verify.mjs',
   'tests/backup-offsite.test.mjs',
   'tests/audit-anchor.test.mjs',
+  'packages/backtesting/src/counterfactualReplay.mjs',
+  'tests/counterfactual-replay.test.mjs',
 ];
 
 const read = path => readFileSync(path, 'utf8');
@@ -40,6 +42,8 @@ const backupVerify = read('scripts/backup-verify.mjs');
 const auditAnchor = read('scripts/audit-anchor.mjs');
 const auditVerify = read('scripts/audit-anchor-verify.mjs');
 const backupTests = read('tests/backup-offsite.test.mjs');
+const counterfactual = read('packages/backtesting/src/counterfactualReplay.mjs');
+const counterfactualTests = read('tests/counterfactual-replay.test.mjs');
 const anchorTests = read('tests/audit-anchor.test.mjs');
 const packageJson = read('package.json');
 const certifier = read('scripts/certify-production-paper.mjs');
@@ -77,6 +81,19 @@ const checks = [
   [auditVerify.includes('process.exit(1)') && auditVerify.includes('blocking: true'), 'anchor verification must block on failure'],
   [anchorTests.includes('rebuilt local chain is caught') && anchorTests.includes('sequence gap'), 'anchor tests must prove a rebuilt local chain is detected and that removed anchors are detected'],
 
+  // --- G-004: the counterfactual must be reproducible and cost-adjusted ---
+  [counterfactual.includes('buildReplayEnvelope') && counterfactual.includes('envelopeHash'), 'the counterfactual must run over a hashed replay envelope'],
+  [counterfactual.includes('runCounterfactualReplay') && counterfactual.includes('replayBotOverEnvelope'), 'the counterfactual must re-run the deterministic bot, not assert a number'],
+  [counterfactual.includes('attributeAgentDecision') && counterfactual.includes('costJustified'), 'attribution must net the agent and provider cost out of the incremental value'],
+  [counterfactual.includes('REPLAY_OUTCOME.PENDING'), 'a counterfactual that cannot be built must stay pending rather than be approximated'],
+  [counterfactual.includes('attribution_counterfactual_pending'), 'a pending counterfactual must produce no attribution record at all'],
+  [counterfactual.includes('maxPositionNotionalUsd'), 'the counterfactual must respect the envelope risk limits'],
+  [counterfactual.includes('feeBps') && counterfactual.includes('slippageBps'), 'the envelope must freeze the fee and slippage model so runs stay comparable'],
+  [counterfactual.includes('== null') && counterfactual.includes('Number(null) is 0'), 'null numerics must be rejected before coercion rather than read as zero'],
+  [counterfactualTests.includes('PRODUCE THE SAME HASH') && counterfactualTests.includes('fee or slippage assumption changes the hash'), 'replay tests must prove determinism and that cost assumptions are part of the identity'],
+  [counterfactualTests.includes('null or malformed attribution input stays pending') && counterfactualTests.includes('genuinely zero agent cost'), 'attribution tests must prove missing evidence stays pending while a real zero cost still resolves'],
+  [counterfactualTests.includes('not counted as a win'), 'attribution tests must prove a profitable override that did not cover its cost is not scored as a win'],
+
   // --- both must actually be wired in, or they are decoration ---
   [packageJson.includes('"backup:export"') && packageJson.includes('"backup:verify"'), 'package scripts must expose backup export and verification'],
   [packageJson.includes('"audit:anchor"') && packageJson.includes('"audit:anchor:verify"'), 'package scripts must expose anchor export and verification'],
@@ -96,7 +113,7 @@ if (errors.length) {
 
 process.stdout.write(`${JSON.stringify({
   ok: true,
-  contract: 'offsite-backup-and-audit-anchoring-v1',
+  contract: 'offsite-backup-anchoring-and-counterfactual-v1',
   backup: {
     signedManifests: true,
     asymmetricOwnership: true,
@@ -113,6 +130,13 @@ process.stdout.write(`${JSON.stringify({
     sequenceGapDetection: true,
     rootComparison: true,
     blocksCertificationOnMismatch: true
+  },
+  counterfactualReplay: {
+    hashedReplayEnvelope: true,
+    deterministic: true,
+    riskLimitsRespected: true,
+    costAdjusted: true,
+    pendingOnMissingEvidence: true
   },
   destinationSelectedBy: 'deployment-owner',
   liveTradingCertified: false
