@@ -2,7 +2,24 @@
 
 This register tracks the work required for the first supervised production-paper deployment. PR #30 merged to `main` on 2026-08-03; this register is maintained against the current `main` head rather than against a pull request. It does not authorize live trading.
 
-**Current certified head:** `79470e34a` ("Land the research and execution stack on main"), run `36768911776`, all twelve `release-readiness` jobs green. Any commit after this SHA invalidates the evidence below.
+## Evidence lookup
+
+A SHA written into this document goes stale the moment the next commit lands, including the commit that writes it. So do not treat the SHA below as the certification. The authoritative check is always the same and must be run against the head being deployed:
+
+```bash
+git rev-parse HEAD
+gh run list --branch main --limit 1 \
+  --json headSha,conclusion -q '.[] | select(.headSha == "'"$(git rev-parse HEAD)"'")'
+```
+
+A deploy is certified only when that returns `conclusion: success` for the exact `HEAD` you are deploying, and the run includes the `release-readiness` job. Anything else — a green run on an older SHA, or a run that predates the last commit — is historical evidence, not certification.
+
+For reference, the substantive release work landed as follows:
+
+| Change | Head | Run |
+|---|---|---|
+| Research and execution stack (G-011) | `79470e34a` | `36768911776` |
+| This register update | `41f039a68` | `36769319738` |
 
 ## Status definitions
 
@@ -16,8 +33,8 @@ This register tracks the work required for the first supervised production-paper
 
 | ID | Gap | Status | Acceptance criteria | Evidence / next action |
 |---|---|---|---|---|
-| G-001 | Truthful maintained and generated test inventory | Closed | Maintained suite passes; every generated file is either active and passing or explicitly retired with a reason; no active timeouts. | Original evidence: full inventory run #65 on head `cf7b552`. Re-confirmed at `79470e34a` by `broad-python-suite`, `maintained-python-inventory`, and the eight `coverage-python-inventory` shards (691 maintained tests pass, 408 Node tests pass). |
-| G-002 | Runner-normalized performance gate | Closed | Checked-in runner profile; warmups and repeated samples; median, p95, and throughput limits; runner drift fails CI; job blocks `release-readiness`. | `config/release-performance-thresholds.json`, threshold tests, blocking `performance-gate`. Exact-head evidence: run `36768911776` on `79470e34a`, `performance-gate` success, artifact `performance-smoke-<sha>`. |
+| G-001 | Truthful maintained and generated test inventory | Closed | Maintained suite passes; every generated file is either active and passing or explicitly retired with a reason; no active timeouts. | Original evidence: full inventory run #65 on head `cf7b552`. Re-confirmed at `79470e34a` by `broad-python-suite`, `maintained-python-inventory`, and the eight `coverage-python-inventory` shards: 691 maintained tests pass, 408 Node tests pass. |
+| G-002 | Runner-normalized performance gate | Closed | Checked-in runner profile; warmups and repeated samples; median, p95, and throughput limits; runner drift fails CI; job blocks `release-readiness`. | `config/release-performance-thresholds.json`, threshold tests, blocking `performance-gate`. Exact-head evidence: run `36768911776` on `79470e34a`, `performance-gate` success, artifact `performance-smoke-<sha>`. See Evidence lookup above before deploying. |
 | G-003 | Broad whole-state execution rewrites | Closed | Execution submit, approve, reject, cancel, order, and fill paths persist through normalized row repositories with expected versions and idempotency; no delete-and-reinsert operator-state save occurs on those routes; append-only audit evidence remains consistent. | `apps/api/src/executionRoutePersistence.mjs` routes through `persistExecutionMutation`; `tests/targeted-execution-persistence.test.mjs` rejects `broad_mutate_must_not_run`, `broad_save_must_not_run`, and direct `DELETE FROM` replacement. `operational:validate` asserts all four invariants. |
 | G-004 | Deterministic paid-agent counterfactual replay | Planned | Agent and bot receive identical immutable market window, decision timestamp, capital, fee/slippage model, risk limits, and instrument universe; replay produces reproducible action/PnL deltas; attribution records link provider cost, decision, execution, and counterfactual hash; missing evidence remains pending. | Build a replay envelope and attribution command around the existing replay engine, competition scoreboard, and economic attribution records. Add fixture-based determinism and cost-adjusted winner tests. |
 | G-005 | Off-host backup retention | Planned | Logical dumps leave the PostgreSQL volume; destination, encryption, retention, checksum, and ownership are configured; scheduled restore verification exists; failed upload or verification is visible and blocks deployment certification. | Add signed backup manifests and a pluggable filesystem/S3-compatible uploader. Target destination must be supplied by the deployment owner. |
