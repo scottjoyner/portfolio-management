@@ -13,10 +13,17 @@ import math
 import os
 import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - supported deployment targets are POSIX
+    fcntl = None
 
 from scripts.alpha_validation import performance_metrics, stable_hash, verify_alpha_validation_evidence
 from scripts.backtest_framework.canonical_replay import (
@@ -380,9 +387,34 @@ def verify_terminal_holdout_evidence(
     return not reasons, list(dict.fromkeys(reasons))
 
 
+@contextmanager
+def _exclusive_file_lock(path: Path) -> Iterator[None]:
+    if fcntl is None:
+        raise RuntimeError("interprocess tournament locking is unavailable on this platform")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _registry_mutation(method):
+    """Serialize one complete tournament state transition."""
+
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with _exclusive_file_lock(self.registry_lock_path):
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class ResearchTournament:
     def __init__(self, registry_path: Path | str = DEFAULT_REGISTRY_PATH, *, lineage: LineageStore | None = None):
         self.registry_path = Path(registry_path)
+        self.registry_lock_path = self.registry_path.with_name(f".{self.registry_path.name}.lock")
         self.lineage = lineage or LineageStore()
 
     def load(self) -> dict[str, Any]:
@@ -406,6 +438,7 @@ class ResearchTournament:
             raise KeyError(experiment_id)
         return row
 
+    @_registry_mutation
     def create_from_snapshot(
         self, snapshot: dict[str, Any], *, strategy_name: str, holdout_bars: int,
         embargo_bars: int = 0, min_search_bars: int = 200,
@@ -465,6 +498,7 @@ class ResearchTournament:
             min_sign_test_trades=min_sign_test_trades, experiment_id=experiment_id,
         )
 
+    @_registry_mutation
     def register_candidate(
         self, experiment_id: str, validation_evidence: Any, *,
         actor: str = "research-gate", reverify_source: bool = True,
@@ -484,49 +518,122 @@ class ResearchTournament:
         if any(row.get("candidate_id") == candidate_id for row in experiment["trials"]):
             raise ValueError("candidate already registered in this experiment")
         reasons: list[str] = []
-        alpha_valid, alpha_reasons = verify_alpha_validation_evidence(validation_evidence)
-        if not alpha_valid:
-            reasons.extend(f"alpha:{reason}" for reason in alpha_reasons)
-        if validation_evidence.get("replay_provenance_bound") is not True:
-            reasons.append("replay_provenance_required")
-        if alpha_valid and validation_evidence.get("replay_provenance_bound") is True:
-            replay_valid, replay_reasons = verify_evidence_replay_binding(
-                validation_evidence, reverify_source=reverify_source
-            )
-            if not replay_valid:
-                reasons.extend(f"replay:{reason}" for reason in replay_reasons)
-        attestation = validation_evidence.get("replay_attestation") or {}
-        if validation_evidence.get("dataset_hash") != plan["search_dataset"]["dataset_hash"]:
-            reasons.append("candidate_search_dataset_hash_mismatch")
-        if validation_evidence.get("dataset_id") != plan["search_dataset"]["dataset_id"]:
-            reasons.append("candidate_search_dataset_id_mismatch")
-        if attestation.get("strategy_name") != plan["strategy_name"]:
-            reasons.append("candidate_strategy_mismatch")
-        if validation_evidence.get("walk_forward_passed") is not True:
-            reasons.append("candidate_walk_forward_failed")
+        evidence_is_canonical = True
         try:
-            multiplicity = assess_candidate_significance(validation_evidence.get("fold_returns"), mp_artifact)
+            json.dumps(validation_evidence, sort_keys=True, allow_nan=False)
         except (TypeError, ValueError, OverflowError):
+            evidence_is_canonical = False
+
+        if evidence_is_canonical:
+            evidence_for_storage = validation_evidence
+            try:
+                alpha_valid, alpha_reasons = verify_alpha_validation_evidence(validation_evidence)
+            except (TypeError, ValueError, KeyError, AttributeError, OverflowError):
+                alpha_valid, alpha_reasons = False, ["verification_error"]
+            if not alpha_valid:
+                reasons.extend(f"alpha:{reason}" for reason in alpha_reasons)
+            if validation_evidence.get("replay_provenance_bound") is not True:
+                reasons.append("replay_provenance_required")
+            if alpha_valid and validation_evidence.get("replay_provenance_bound") is True:
+                try:
+                    replay_valid, replay_reasons = verify_evidence_replay_binding(
+                        validation_evidence, reverify_source=reverify_source
+                    )
+                except (TypeError, ValueError, KeyError, AttributeError, OverflowError, RuntimeError, ImportError):
+                    replay_valid, replay_reasons = False, ["verification_error"]
+                if not replay_valid:
+                    reasons.extend(f"replay:{reason}" for reason in replay_reasons)
+            attestation = validation_evidence.get("replay_attestation") or {}
+            if not isinstance(attestation, dict):
+                reasons.append("candidate_replay_attestation_invalid")
+                attestation = {}
+            if validation_evidence.get("dataset_hash") != plan["search_dataset"]["dataset_hash"]:
+                reasons.append("candidate_search_dataset_hash_mismatch")
+            if validation_evidence.get("dataset_id") != plan["search_dataset"]["dataset_id"]:
+                reasons.append("candidate_search_dataset_id_mismatch")
+            if attestation.get("strategy_name") != plan["strategy_name"]:
+                reasons.append("candidate_strategy_mismatch")
+            if validation_evidence.get("walk_forward_passed") is not True:
+                reasons.append("candidate_walk_forward_failed")
+            try:
+                multiplicity = assess_candidate_significance(
+                    validation_evidence.get("fold_returns"), mp_artifact
+                )
+            except (TypeError, ValueError, OverflowError):
+                multiplicity = _invalid_multiple_testing_assessment(mp_artifact)
+        else:
+            evidence_for_storage = {
+                "candidate_id": candidate_id,
+                "canonicalization_failed": True,
+            }
+            reasons.append("candidate_evidence_not_canonical")
             multiplicity = _invalid_multiple_testing_assessment(mp_artifact)
+
         if multiplicity.get("passed") is not True:
             reasons.extend(multiplicity.get("reasons") or ["multiple_testing_failed"])
-        metrics = {
-            "net_pnl_after_cost_usd": float(validation_evidence.get("net_pnl_after_cost_usd", 0.0)),
-            "profit_factor": float(validation_evidence.get("profit_factor", 0.0)),
-            "max_drawdown_pct": float(validation_evidence.get("max_drawdown_pct", 0.0)),
-            "annualized_return_pct": float(validation_evidence.get("annualized_return_pct", 0.0)),
-            "out_of_sample_trades": int(validation_evidence.get("out_of_sample_trades", 0)),
-        }
+
+        metrics_invalid = not evidence_is_canonical
+        if not metrics_invalid:
+            try:
+                metrics = {
+                    "net_pnl_after_cost_usd": float(
+                        validation_evidence.get("net_pnl_after_cost_usd", 0.0)
+                    ),
+                    "profit_factor": float(validation_evidence.get("profit_factor", 0.0)),
+                    "max_drawdown_pct": float(
+                        validation_evidence.get("max_drawdown_pct", 0.0)
+                    ),
+                    "annualized_return_pct": float(
+                        validation_evidence.get("annualized_return_pct", 0.0)
+                    ),
+                    "out_of_sample_trades": int(
+                        validation_evidence.get("out_of_sample_trades", 0)
+                    ),
+                }
+                finite_metric_names = (
+                    "net_pnl_after_cost_usd",
+                    "profit_factor",
+                    "max_drawdown_pct",
+                    "annualized_return_pct",
+                )
+                if not all(math.isfinite(metrics[name]) for name in finite_metric_names):
+                    raise ValueError("selection metrics must be finite")
+                if metrics["out_of_sample_trades"] < 0:
+                    raise ValueError("out_of_sample_trades must be non-negative")
+            except (TypeError, ValueError, OverflowError):
+                metrics_invalid = True
+
+        if metrics_invalid:
+            metrics = {
+                "net_pnl_after_cost_usd": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 1e30,
+                "annualized_return_pct": 0.0,
+                "out_of_sample_trades": 0,
+            }
+            if evidence_is_canonical:
+                reasons.append("candidate_selection_metrics_invalid")
+
         trial = {
-            "trial_index": len(experiment["trials"]) + 1, "candidate_id": candidate_id,
-            "candidate_source_sha": validation_evidence.get("candidate_source_sha"),
-            "candidate_config": validation_evidence.get("candidate_config"),
-            "candidate_config_hash": validation_evidence.get("candidate_config_hash"),
-            "validation_evidence_hash": validation_evidence.get("evidence_hash"),
-            "validation_evidence": validation_evidence, "selection_metrics": metrics,
-            "multiple_testing": multiplicity, "eligible": not reasons,
-            "reasons": list(dict.fromkeys(reasons)), "registered_at": _utc_now(),
+            "trial_index": len(experiment["trials"]) + 1,
+            "candidate_id": candidate_id,
+            "candidate_source_sha": evidence_for_storage.get("candidate_source_sha"),
+            "candidate_config": evidence_for_storage.get("candidate_config"),
+            "candidate_config_hash": evidence_for_storage.get("candidate_config_hash"),
+            "validation_evidence_hash": (
+                evidence_for_storage.get("evidence_hash") if evidence_is_canonical else None
+            ),
+            "validation_evidence": evidence_for_storage,
+            "selection_metrics": metrics,
+            "multiple_testing": multiplicity,
+            "eligible": not reasons,
+            "reasons": list(dict.fromkeys(reasons)),
+            "registered_at": _utc_now(),
         }
+        # Prove the complete registry trial can be encoded before lineage
+        # changes. This prevents malformed evidence from leaving an orphan
+        # candidate_trial event when strict registry persistence rejects it.
+        json.dumps(trial, sort_keys=True, allow_nan=False)
         event = self.lineage.append(
             "candidate_trial",
             {
@@ -544,6 +651,7 @@ class ResearchTournament:
         self.save(registry)
         return trial
 
+    @_registry_mutation
     def seal_selection(self, experiment_id: str, *, actor: str = "research-selector") -> dict[str, Any]:
         registry = self.load()
         experiment = self._experiment(registry, experiment_id)
@@ -608,6 +716,7 @@ class ResearchTournament:
         self.save(registry)
         return selection
 
+    @_registry_mutation
     def run_terminal_holdout(
         self, experiment_id: str, *, policy: TerminalHoldoutPolicy | None = None,
         actor: str = "terminal-holdout-runner",
