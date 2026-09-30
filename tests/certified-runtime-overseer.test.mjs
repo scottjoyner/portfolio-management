@@ -5,8 +5,13 @@ import {
   OVERSEER_POLICY_VERSION,
   OVERSEER_SCHEMA_VERSION,
   evaluateTradeIntent,
+  stableHash,
   verifyOverseerDecision,
 } from '../packages/execution/src/overseer.mjs';
+import {
+  CERTIFIED_SPOT_LIFECYCLE_METHOD,
+  deriveCertifiedSpotLifecycleAction,
+} from '../packages/execution/src/certifiedSpotLifecycle.mjs';
 
 function request(overrides = {}) {
   return {
@@ -38,6 +43,26 @@ function request(overrides = {}) {
   };
 }
 
+function spotLifecycle() {
+  return {
+    method: CERTIFIED_SPOT_LIFECYCLE_METHOD,
+    position_mode: 'spot_long_only',
+    dataset_kind: 'coinbase_candles',
+    dataset_symbol: 'BTC-USD',
+    granularity_seconds: 3600,
+    warmup_bars: 30,
+    fee_bps: 10,
+    max_hold_bars: 12,
+    buy_while_flat: 'open_long',
+    buy_while_long: 'noop',
+    sell_while_flat: 'noop',
+    sell_while_long: 'close_long',
+    max_hold_on_quiet_bar: true,
+    same_bar_reentry_after_forced_exit: false,
+    close_open_trade_at_observation_end: true,
+  };
+}
+
 function certification(overrides = {}) {
   return {
     certified: true,
@@ -55,6 +80,30 @@ function certification(overrides = {}) {
     execution_lifecycle_certified: false,
     ...overrides,
   };
+}
+
+function executableCertification(overrides = {}) {
+  const lifecycle = spotLifecycle();
+  return certification({
+    certification_scope: 'configured_spot_execution_v1',
+    execution_lifecycle_certified: true,
+    spot_execution_attestation_hash: '2'.repeat(64),
+    spot_execution_lifecycle: lifecycle,
+    spot_execution_lifecycle_hash: stableHash(lifecycle),
+    ...overrides,
+  });
+}
+
+function lifecycleAuthorization(cert = executableCertification()) {
+  const result = deriveCertifiedSpotLifecycleAction({
+    certification: cert,
+    symbol: 'BTC-USD',
+    signalAction: 'BUY',
+    openQuantity: 0,
+    observedAt: '2026-09-12T18:45:00.000Z',
+  });
+  assert.equal(result.ok, true, result.reasons?.join(',') || '');
+  return result.authorization;
 }
 
 const automaticOptions = {
@@ -81,22 +130,49 @@ test('signal-only certification cannot authorize automated execution lifecycle',
 });
 
 
+test('boolean lifecycle flag cannot bypass fresh spot attestation and authorization', () => {
+  const fake = certification({ execution_lifecycle_certified: true });
+  const result = evaluateTradeIntent(request({
+    tradePlan: { runtime_certification: fake },
+  }), automaticOptions);
+  assert.equal(result.overseerDecision.approved, false);
+  assert.ok(result.overseerDecision.reasons.includes('spot_execution_lifecycle_required'));
+  assert.ok(result.overseerDecision.reasons.includes('spot_execution_attestation_hash_required'));
+  assert.ok(result.overseerDecision.reasons.includes('certified_spot_lifecycle_authorization_required'));
+});
+
+
+test('valid spot certification still requires a hash-bound OPEN_LONG authorization', () => {
+  const cert = executableCertification();
+  const result = evaluateTradeIntent(request({
+    tradePlan: { runtime_certification: cert },
+  }), automaticOptions);
+  assert.equal(result.overseerDecision.approved, false);
+  assert.ok(result.overseerDecision.reasons.includes('certified_spot_lifecycle_authorization_required'));
+});
+
+
 test('automated entry independently requires positive executable edge', () => {
+  const cert = executableCertification();
   const result = evaluateTradeIntent(request({
     netExecutableEdgeUsd: 0,
-    tradePlan: { runtime_certification: certification({ execution_lifecycle_certified: true }) },
+    tradePlan: {
+      runtime_certification: cert,
+      lifecycle_authorization: lifecycleAuthorization(cert),
+    },
   }), automaticOptions);
   assert.equal(result.overseerDecision.approved, false);
   assert.ok(result.overseerDecision.reasons.includes('net_executable_edge_usd_not_positive'));
 });
 
 
-test('fully certified positive-edge automated entry passes paper overseer gate', () => {
+test('fully certified positive-edge OPEN_LONG passes paper overseer gate', () => {
+  const cert = executableCertification();
   const result = evaluateTradeIntent(request({
-    tradePlan: { runtime_certification: certification({
-      certification_scope: 'configured_execution_v1',
-      execution_lifecycle_certified: true,
-    }) },
+    tradePlan: {
+      runtime_certification: cert,
+      lifecycle_authorization: lifecycleAuthorization(cert),
+    },
   }), automaticOptions);
   assert.equal(result.overseerDecision.approved, true, result.overseerDecision.reasons.join(','));
   assert.equal(result.overseerDecision.decision, 'PAPER');
@@ -112,6 +188,21 @@ test('fully certified positive-edge automated entry passes paper overseer gate',
     now: '2026-09-12T18:45:01.000Z',
   });
   assert.equal(verification.ok, true, verification.reasons.join(','));
+});
+
+
+test('tampered lifecycle authorization is rejected independently', () => {
+  const cert = executableCertification();
+  const authorization = lifecycleAuthorization(cert);
+  authorization.openQuantity = 1;
+  const result = evaluateTradeIntent(request({
+    tradePlan: {
+      runtime_certification: cert,
+      lifecycle_authorization: authorization,
+    },
+  }), automaticOptions);
+  assert.equal(result.overseerDecision.approved, false);
+  assert.ok(result.overseerDecision.reasons.includes('certified_spot_lifecycle_authorization_hash_mismatch'));
 });
 
 
