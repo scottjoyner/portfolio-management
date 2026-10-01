@@ -871,6 +871,26 @@ def _symbol_word_match(keyword: str, text: str) -> bool:
 # Portfolio Optimizer
 # ---------------------------------------------------------------------------
 
+
+def _kill_switch_active() -> bool:
+    """Whether the operator has engaged the kill switch.
+
+    Delegates to the Coinbase execution resolver so there is exactly one kill
+    switch with one set of semantics. This loop previously rolled its own check
+    that only matched ("true", "1", "yes") and never looked at the sentinel
+    file, so `KILL_SWITCH=ON`, `KILL_SWITCH=TRUE`, `on`/`y`/`t`, or engaging the
+    switch with `touch data/trading_kill_switch` halted the trader and every
+    other execution path while this optimizer kept placing trades. An
+    unparseable value halted the trader too; here it did not.
+    """
+    try:
+        from coinbase.src.config import is_kill_switch_active as _canonical
+    except Exception:
+        # The canonical module is unavailable. Fail closed rather than trading.
+        return True
+    return _canonical()
+
+
 class PortfolioOptimizer:
     """Continuously monitors and improves the Coinbase portfolio."""
 
@@ -2646,10 +2666,10 @@ class PortfolioOptimizer:
         self.running = True
         logger.info("Optimizer started (dry_run=%s, interval=%ds)", self.dry_run, self.interval)
         while self.running:
-            # KILL_SWITCH check — immediate halt
-            ks = os.environ.get("KILL_SWITCH", "false").strip().lower()
-            if ks in ("true", "1", "yes"):
-                logger.warning("KILL_SWITCH active — halting optimizer")
+            # Kill switch — immediate halt. Same resolver as every other
+            # execution path, so engaging it stops this process too.
+            if _kill_switch_active():
+                logger.warning("Kill switch active — halting optimizer")
                 self.running = False
                 break
             try:

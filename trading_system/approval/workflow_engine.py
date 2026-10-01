@@ -117,12 +117,15 @@ class WorkflowEngine:
         if not isinstance(strategy_request, ApprovalRequest):
             raise TypeError("strategy_request must be an ApprovalRequest")
 
-        validation_results = validation_results or {}
+        # A required validation that is *absent* has not passed. The previous
+        # `if name in validation_results` guard meant a missing key was skipped
+        # entirely, so route_strategy(req) with no second argument approved a
+        # strategy that had had no code review and no security scan.
+        validation_results = validation_results if isinstance(validation_results, dict) else {}
         failed_validations = [
             name
             for name in self.REQUIRED_VALIDATIONS
-            if name in validation_results
-            and validation_results[name] is not True
+            if validation_results.get(name) is not True
         ]
         if failed_validations:
             return AwaitableApprovalResult(

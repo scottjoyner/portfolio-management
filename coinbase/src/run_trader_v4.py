@@ -5658,7 +5658,7 @@ class EventTraderV4:
         p.add_argument("--reset-paper", action="store_true", help="Reset paper state: clear positions, reset balance to $10k")
         p.add_argument("--live", action="store_true", help="Short for --mode live")
         p.add_argument("--bypass-safety", action="store_true", help="Skip startup safety checks (dangerous)")
-        p.add_argument("--max-hold", type=int, default=86400, help="Maximum position hold time in seconds (default 86400 = 24h). Stop tightens progressively at 25%/50%/75%/90% of max_hold.")
+        p.add_argument("--max-hold", type=int, default=86400, help="Maximum position hold time in seconds (default 86400 = 24h). Stop tightens progressively at 25/50/75/90 percent of max_hold.")
         args = p.parse_args()
 
         if args.reset_paper:

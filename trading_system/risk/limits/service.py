@@ -34,10 +34,24 @@ class LimitManager:
     def check_order(self, product_id: str, side: str, size: Decimal, price: Decimal) -> tuple[bool, str]:
         limit = self.limits.get(product_id)
         if limit is None:
-            return True, "no limit configured"
+            # Fail closed. "No limit configured" used to mean "no limit", so any
+            # product missing from the map -- a new symbol, a config load
+            # failure, a BTC-USD vs BTC/USD naming mismatch -- traded uncapped.
+            return False, f"no limit configured for {product_id}; refusing rather than trading uncapped"
 
         if not limit.allows_side(side):
             return False, f"side {side} not allowed for {product_id}"
+
+        # A zero or negative size or price makes notional zero or negative, which
+        # passes every notional comparison below. Refuse the input rather than
+        # doing the arithmetic on it.
+        try:
+            if size <= 0:
+                return False, f"order size {size} must be positive"
+            if price <= 0:
+                return False, f"order price {price} must be positive"
+        except TypeError:
+            return False, "order size and price must be numeric"
 
         notional = size * price
         if notional > limit.max_notional:

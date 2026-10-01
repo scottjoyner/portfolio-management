@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("approval_server")
 
@@ -33,43 +33,86 @@ logger = logging.getLogger("approval_server")
 DEFAULT_APPROVAL_TTL_SECONDS = 24 * 60 * 60  # 24h
 
 
+def parse_timestamp(value: Any) -> Optional[float]:
+    """Return epoch seconds for a timestamp we can actually interpret.
+
+    Accepts numeric epochs (int/float, or their string form) and ISO 8601 with or
+    without a timezone offset. Returns None when the value is unusable, which
+    callers must treat as "cannot prove this is still valid".
+
+    The ISO branch is not cosmetic. Every writer stamps ISO 8601 via
+    ``datetime.now(timezone.utc).isoformat()`` (portfolio_optimizer, the
+    dashboard approvals inbox), and this function previously only tried
+    ``float()``. Every production record therefore raised ValueError, and the
+    caller returned "not expired" -- so the 24h TTL never fired once, for any
+    record. A 30-day-old approval stayed approvable.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            # Naive timestamps are UTC here: every writer uses timezone-aware UTC.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    return None
+
+
 def is_expired(token_record: Dict[str, Any], ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS) -> bool:
     """Return True if the approval record is past its expiry timestamp.
 
-    Honors an explicit ``expiry_ts``; falls back to ``created_at`` plus ``ttl_seconds``.
-    Records with neither field are treated as non-expiring (legacy compatibility).
+    Honors an explicit ``expiry_ts``; falls back to ``created_at`` plus
+    ``ttl_seconds``. A record whose timestamp is missing or uninterpretable is
+    reported expired.
+
+    This gate decides whether a human approve click executes a trade, so a
+    timestamp we cannot read must not resolve to "approve": that is the
+    difference between an approval that lapses and one that lives forever.
     """
     if not isinstance(token_record, dict):
         return True
     now = time.time()
-    expiry = token_record.get("expiry_ts")
-    if expiry is not None:
-        try:
-            return float(expiry) < now
-        except (TypeError, ValueError):
-            return False
-    created = token_record.get("created_at")
+
+    if "expiry_ts" in token_record:
+        expiry = parse_timestamp(token_record.get("expiry_ts"))
+        # Present but unreadable: we cannot show it has not lapsed.
+        return expiry is None or expiry < now
+
+    created = parse_timestamp(token_record.get("created_at"))
     if created is None:
-        return False
-    try:
-        created_ts = float(created)
-    except (TypeError, ValueError):
-        return False
-    return (created_ts + ttl_seconds) < now
+        return True
+    return (created + ttl_seconds) < now
 
 
 def stamp_approval_timestamps(record: Dict[str, Any], ttl_seconds: int = DEFAULT_APPROVAL_TTL_SECONDS) -> Dict[str, Any]:
     """Ensure the approval record carries created_at + expiry_ts (idempotent)."""
     now = time.time()
-    if record.get("created_at") is None:
+    created = record.get("created_at")
+    if created is None:
         record["created_at"] = now
-    else:
-        try:
-            now = float(record["created_at"])
-        except (TypeError, ValueError):
-            now = time.time()
+        created = now
+
+    created_ts = parse_timestamp(created)
     if record.get("expiry_ts") is None:
-        record["expiry_ts"] = now + ttl_seconds
+        if created_ts is None:
+            # Do not derive an expiry from an unreadable created_at. That would
+            # silently hand a corrupt record a fresh TTL; is_expired() rejects it
+            # instead.
+            record["expiry_ts"] = None
+        else:
+            record["expiry_ts"] = created_ts + ttl_seconds
     return record
 
 
@@ -226,6 +269,11 @@ a {{ color:#1a1a2e; }}
             try:
                 with open(ip) as f:
                     entry = json.load(f)
+                # Inbox records were resolved with no expiry check at all, so a
+                # dashboard-submitted manual order stayed approvable indefinitely.
+                if is_expired(entry):
+                    logger.warning("Rejected %s for expired inbox token %s", status, token)
+                    return None, False
                 entry["status"] = status
                 entry["resolved_at"] = datetime.now(timezone.utc).isoformat()
                 with open(ip, "w") as f:

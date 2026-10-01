@@ -439,7 +439,14 @@ class CircuitBreaker:
         elif self._state == "HALF-OPEN":
             return self._half_open_calls > 0
         
-        return True
+        # An unrecognised state means the breaker is not in a state we can reason
+        # about. A guard named can_execute must default to refusing: the previous
+        # `return True` let any unexpected value (a None from a partial restore, a
+        # typo, a future state name) permit execution.
+        logging.error(
+            "Circuit breaker in unrecognised state %r; refusing execution", self._state
+        )
+        return False
     
     def reset(self):
         """Manually reset circuit to closed state."""

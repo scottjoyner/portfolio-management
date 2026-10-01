@@ -211,8 +211,90 @@ def test_approval_is_expired_fallback_ttl():
     assert approval_server.is_expired(rec2) is False
 
 
-def test_approval_is_expired_legacy_no_timestamp():
-    assert approval_server.is_expired({"status": "pending"}) is False
+def test_approval_is_expired_without_usable_timestamp():
+    """An unreadable timestamp must not resolve to "approve".
+
+    This gate decides whether a human approve click executes a trade. A record
+    whose timestamp cannot be read cannot be shown to be still valid, so it is
+    expired. It previously returned False, and the "legacy compatibility" case
+    meant an approval with no timestamp at all lived forever.
+    """
+    assert approval_server.is_expired({"status": "pending"}) is True
+    assert approval_server.is_expired({"created_at": "not-a-time"}) is True
+    assert approval_server.is_expired({"expiry_ts": "not-a-time"}) is True
+    assert approval_server.is_expired({"created_at": ""}) is True
+
+
+def test_approval_expiry_works_for_iso_timestamps():
+    """The shape every real writer produces.
+
+    portfolio_optimizer and the dashboard both stamp
+    ``datetime.now(timezone.utc).isoformat()``. is_expired used to try only
+    float(), so every production record raised ValueError and was reported
+    not-expired: the 24h TTL never fired once.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    old = (now - timedelta(days=30)).isoformat()
+    fresh = now.isoformat()
+
+    assert approval_server.is_expired({"created_at": old}) is True
+    assert approval_server.is_expired({"created_at": fresh}) is False
+
+    # Just past the 24h default TTL.
+    assert approval_server.is_expired(
+        {"created_at": (now - timedelta(hours=25)).isoformat()}
+    ) is True
+
+    # Naive timestamps are UTC here, since every writer uses aware UTC.
+    assert approval_server.is_expired(
+        {"created_at": (now - timedelta(days=30)).replace(tzinfo=None).isoformat()}
+    ) is True
+
+    # Z suffix.
+    assert approval_server.is_expired(
+        {"created_at": now.replace(tzinfo=None).isoformat() + "Z"}
+    ) is False
+
+    # Numeric epochs and their string form still work.
+    assert approval_server.is_expired({"created_at": time.time() - 30 * 86400}) is True
+    assert approval_server.is_expired({"created_at": str(time.time() - 100)}) is False
+
+
+def test_stamp_does_not_extend_a_corrupt_record():
+    """A corrupt created_at must not be handed a fresh TTL."""
+    record = approval_server.stamp_approval_timestamps({"created_at": "corrupt"})
+    assert approval_server.is_expired(record) is True
+
+
+def test_inbox_records_expire(tmp_path):
+    """Dashboard-submitted manual orders were resolved with no expiry check."""
+    import json as _json
+    import logging as _logging
+    from datetime import datetime, timedelta, timezone
+
+    _logging.disable(_logging.CRITICAL)
+    inbox = tmp_path / "approvals_inbox"
+    inbox.mkdir()
+    pending = tmp_path / "pending_approvals.json"
+    pending.write_text("{}")
+
+    def handler():
+        h = approval_server.ApprovalHandler.__new__(approval_server.ApprovalHandler)
+        h.pending_file = str(pending)
+        return h
+
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    (inbox / "stale.json").write_text(_json.dumps({"created_at": old, "status": "pending"}))
+    (inbox / "fresh.json").write_text(_json.dumps({
+        "created_at": datetime.now(timezone.utc).isoformat(), "status": "pending"}))
+
+    assert handler()._resolve_and_update("stale", "approved") == (None, False)
+    entry, ok = handler()._resolve_and_update("fresh", "approved")
+    assert ok is True
+    assert entry["status"] == "approved"
+    _logging.disable(_logging.NOTSET)
 
 
 def test_resolve_rejects_expired(tmp_path):

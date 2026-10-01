@@ -51,6 +51,9 @@ refresh_result = await service.refresh_item(item_id)
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -269,8 +272,32 @@ class PlaidService:
             - Must be called before processing any webhook
         """
         
-        # TODO: Implement HMAC verification
-        return True
+        # Plaid signs the raw request body with HMAC-SHA256 keyed by the access
+        # token and sends the base64 digest in the Plaid-Verification header.
+        #
+        # This returned True unconditionally, so every forged webhook was
+        # accepted. It had no production caller, which is the only reason it was
+        # not already an incident -- but a function named verify_* that always
+        # authenticates is worse than no function, because callers trust it.
+        if not isinstance(webhook_payload, (bytes, bytearray)):
+            return False
+        if not isinstance(signature_header, str) or not signature_header:
+            return False
+        if not isinstance(expected_secret, str) or not expected_secret:
+            # No secret configured means we cannot authenticate anything.
+            return False
+        try:
+            expected = base64.b64encode(
+                hmac.new(
+                    expected_secret.encode("utf-8"),
+                    bytes(webhook_payload),
+                    hashlib.sha256,
+                ).digest()
+            ).decode("utf-8")
+        except (TypeError, ValueError):
+            return False
+        # Constant-time: a byte-wise compare leaks the digest prefix.
+        return hmac.compare_digest(expected, signature_header.strip())
 
 
 # ============================================================================
