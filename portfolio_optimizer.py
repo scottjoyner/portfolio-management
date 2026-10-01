@@ -6233,12 +6233,49 @@ class PortfolioOptimizer:
 
         stop_pct = opp.stop_loss_pct / 100.0
         target_pct = opp.take_profit_pct / 100.0
+
+        # Validate the protective levels here rather than trusting the caller.
+        # This is the function that submits the stop and the target, so it is the
+        # only place a nonsense bracket can still be refused.
+        #
+        # The caller (_process_opportunity) gates on stop_loss_pct > 0 and
+        # entry_price_est > 0 but never looks at take_profit_pct, and Opportunity
+        # defaults both fields to 0.0. That allowed:
+        #   take_profit_pct = 0  -> target exactly at entry, closing immediately
+        #   take_profit_pct < 0  -> target BELOW entry, a "profit" target that takes
+        #                          a loss, and an inverted bracket
+        #   stop_loss_pct >= 100 -> negative stop price
+        # The upstream exit planner clamps these, but only on the paths that run
+        # it, and opportunities are built by many detectors.
+        if not (0.0 < stop_pct < 1.0):
+            logger.warning(
+                "  → Bracket stop_loss_pct=%.4f is not a usable protective stop "
+                "(needs 0 < pct < 100); skipping", opp.stop_loss_pct)
+            return
+        if target_pct <= 0.0:
+            logger.warning(
+                "  → Bracket take_profit_pct=%.4f is not a usable target "
+                "(needs pct > 0); skipping", opp.take_profit_pct)
+            return
+
         if side.upper() == "BUY":
             stop_price = entry_price * (1.0 - stop_pct)
             target_price = entry_price * (1.0 + target_pct)
         else:
             stop_price = entry_price * (1.0 + stop_pct)
             target_price = entry_price * (1.0 - target_pct)
+
+        # The levels must straddle entry. Getting this wrong turns a protective
+        # order into an instant trigger.
+        if side.upper() == "BUY":
+            inverted = not (stop_price < entry_price < target_price)
+        else:
+            inverted = not (target_price < entry_price < stop_price)
+        if inverted or stop_price <= 0:
+            logger.warning(
+                "  → Bracket levels do not straddle entry (entry=%.6f stop=%.6f "
+                "target=%.6f); skipping", entry_price, stop_price, target_price)
+            return
 
         # Preview via execution engine
         if self._exec_engine:

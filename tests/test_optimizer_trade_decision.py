@@ -509,3 +509,188 @@ class TestMacroRiskOverlay(unittest.TestCase):
             any(record.startswith("WARNING") for record in captured.output),
             f"the degradation must be at WARNING, got {captured.output}",
         )
+
+
+class _FakeBracketManager:
+    """Records what the executor tried to protect, so a test can assert on levels."""
+
+    def __init__(self):
+        self.placed: list[dict] = []
+
+    def place_bracket(self, product_id=None, side=None, base_size=None,
+                      entry_price=None, stop_price=None, target_price=None,
+                      strategy_id=None, **kwargs):
+        self.placed.append({
+            "product_id": product_id, "side": side, "base_size": base_size,
+            "entry_price": entry_price, "stop_price": stop_price,
+            "target_price": target_price, "strategy_id": strategy_id, **kwargs,
+        })
+        # The executor treats anything other than status OPEN as a failure.
+        return {"status": "OPEN", "bracket_id": "bracket-1", "entry_result": {"success": True}}
+
+    def force_flatten_bracket(self, bracket_id, reason=""):
+        self.flattened = getattr(self, "flattened", [])
+        self.flattened.append({"bracket_id": bracket_id, "reason": reason})
+        return {"status": "ok"}
+
+
+class TestBracketProtectiveLevels(unittest.TestCase):
+    """The bracket executor submits a stop and a target; it must validate both.
+
+    The caller gates on stop_loss_pct > 0 and entry_price_est > 0 but never looks
+    at take_profit_pct, and Opportunity defaults both to 0.0.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _opt(self, dry_run=False, require_approval=False):
+        opt = _optimizer(self.tmp, dry_run=dry_run, require_approval=require_approval)
+        opt._normalize_product_id = lambda cur, side, hint="": hint or "BTC-USD"
+        opt._capital_bucket_for = lambda opp: "opportunity"
+        opt._exec_engine = None
+        opt.brackets = _FakeBracketManager()
+        opt._bracket_mgr = opt.brackets
+        opt._save_brackets = lambda *a, **k: None
+        return opt
+
+    def _opp(self, side="BUY", stop=5.0, target=10.0, entry=50_000.0, opp_type=None):
+        return Opportunity(
+            opp_type=opp_type or OpportunityType.STRATEGY_SIGNAL,
+            currency="BTC", side=side, size_usd=500.0, reason="bracket test",
+            priority=1.0, product_id="BTC-USD", entry_price_est=entry,
+            stop_loss_pct=stop, take_profit_pct=target,
+        )
+
+    # ---- rejections ----
+
+    def test_zero_take_profit_is_refused(self):
+        opt = self._opt()
+        opp = self._opp(target=0.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(opt.brackets.placed, [], "target at entry is not a protective bracket")
+
+    def test_negative_take_profit_is_refused(self):
+        opt = self._opt()
+        opp = self._opp(target=-10.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(opt.brackets.placed, [],
+                         "a target below entry takes a loss; must not be submitted")
+
+    def test_zero_stop_is_refused(self):
+        opt = self._opt()
+        opp = self._opp(stop=0.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(opt.brackets.placed, [], "a stop at entry is not protective")
+
+    def test_stop_loss_over_100_percent_is_refused(self):
+        opt = self._opt()
+        opp = self._opp(stop=150.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(opt.brackets.placed, [], "a negative stop price must be refused")
+
+    def test_negative_stop_is_refused(self):
+        opt = self._opt()
+        opp = self._opp(stop=-5.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(opt.brackets.placed, [])
+
+    def test_non_positive_base_size_is_refused(self):
+        opt = self._opt()
+        opp = self._opp()
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.0, False)
+        self.assertEqual(opt.brackets.placed, [])
+
+    # ---- acceptance, and that the levels are the ones expected ----
+
+    def test_valid_buy_bracket_submits(self):
+        opt = self._opt()
+        opp = self._opp(stop=5.0, target=10.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(len(opt.brackets.placed), 1, "a well-formed bracket must still trade")
+
+    def test_valid_sell_bracket_submits(self):
+        opt = self._opt()
+        state = type("S", (), {})()
+        opp = self._opp(side="SELL", stop=5.0, target=10.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(len(opt.brackets.placed), 1)
+
+    def test_bracket_levels_are_computed_on_the_correct_side(self):
+        entry = 50_000.0
+        for side, stop, target, expect_stop, expect_target in (
+            ("BUY", 5.0, 10.0, entry * 0.95, entry * 1.10),
+            ("SELL", 5.0, 10.0, entry * 1.05, entry * 0.90),
+        ):
+            with self.subTest(side=side):
+                stop_price = entry * (1 - stop / 100) if side == "BUY" else entry * (1 + stop / 100)
+                target_price = entry * (1 + target / 100) if side == "BUY" else entry * (1 - target / 100)
+                self.assertAlmostEqual(stop_price, expect_stop, places=6)
+                self.assertAlmostEqual(target_price, expect_target, places=6)
+                if side == "BUY":
+                    self.assertLess(stop_price, entry)
+                    self.assertGreater(target_price, entry)
+                else:
+                    self.assertGreater(stop_price, entry)
+                    self.assertLess(target_price, entry)
+
+    def test_submitted_stop_and_target_straddle_entry(self):
+        """The placed levels, not just the arithmetic, must be correct."""
+        entry = 50_000.0
+        for side in ("BUY", "SELL"):
+            with self.subTest(side=side):
+                opt = self._opt()
+                opp = self._opp(side=side, stop=5.0, target=10.0, entry=entry)
+                po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+                self.assertEqual(len(opt.brackets.placed), 1)
+                bracket = opt.brackets.placed[0]
+                self.assertAlmostEqual(bracket["entry_price"], entry, places=6)
+                self.assertGreater(bracket["stop_price"], 0)
+                if side == "BUY":
+                    self.assertLess(bracket["stop_price"], entry)
+                    self.assertGreater(bracket["target_price"], entry)
+                else:
+                    self.assertGreater(bracket["stop_price"], entry)
+                    self.assertLess(bracket["target_price"], entry)
+                self.assertNotEqual(bracket["stop_price"], entry,
+                                    "a stop at entry is not protective")
+                self.assertNotEqual(bracket["target_price"], entry,
+                                    "a target at entry is not a profit target")
+
+    def test_rejected_bracket_is_not_marked_executed(self):
+        opt = self._opt()
+        opp = self._opp(target=0.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertFalse(opp.executed, "a refused bracket must not be recorded as a trade")
+
+    def test_sell_stop_at_exactly_100_percent_is_refused(self):
+        """The one input that distinguishes the stop-range guard from the others.
+
+        For a SELL, stop_loss_pct=100 puts the stop at 2x entry, which still
+        straddles entry and is still positive, so the straddle and non-positive-stop
+        checks accept it. Only the 0 < pct < 100 range check refuses it. Without
+        this case the range guard is indistinguishable from redundant, and removing
+        it would go unnoticed.
+        """
+        opt = self._opt()
+        opp = self._opp(side="SELL", stop=100.0, target=10.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(opt.brackets.placed, [],
+                         "a 100% stop on a short is a 100% loss stop and must be refused")
+
+    def test_short_stop_just_inside_the_valid_range_is_placed(self):
+        # The boundary either side of the range guard, so a widened or narrowed
+        # range is caught.
+        opt = self._opt()
+        opp = self._opp(side="SELL", stop=99.0, target=10.0)
+        po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+        self.assertEqual(len(opt.brackets.placed), 1, "99% is inside the range and must place")
+
+    def test_zero_and_negative_stop_are_refused_on_both_sides(self):
+        for side in ("BUY", "SELL"):
+            for stop in (0.0, -5.0):
+                with self.subTest(side=side, stop=stop):
+                    opt = self._opt()
+                    opp = self._opp(side=side, stop=stop, target=10.0)
+                    po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
+                    self.assertEqual(opt.brackets.placed, [])
