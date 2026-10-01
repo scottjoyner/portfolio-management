@@ -9,6 +9,7 @@ const commands = [
   ['firstProductionRelease', ['scripts/validate-first-prod-release.mjs']],
   ['runtime', ['scripts/validate-runtime-env.mjs']],
   ['backupAndAnchoring', ['scripts/validate-backup-and-anchoring.mjs']],
+  ['releaseControls', ['scripts/verify-release-controls.mjs']],
   ['migrationPlan', ['scripts/migrate-postgres.mjs', '--dry-run', '--json']],
 ];
 if (process.env.CERTIFY_RUN_SMOKE === 'true') commands.push(['smoke', ['scripts/smoke-production-paper.mjs']]);

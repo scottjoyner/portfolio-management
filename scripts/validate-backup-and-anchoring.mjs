@@ -2,7 +2,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 /**
- * Static contract for the off-host backup (G-005) and immutable audit anchoring
+ * Structural wiring contract -- presence only, not behaviour.
+ *
+ * Every check below is a substring match on a source file. That is a legitimate
+ * question for "is this wired in", and a worthless question for "does this
+ * work": disabling the backup upload readback outright left this validator
+ * green. Behavioural verification lives in scripts/verify-release-controls.mjs,
+ * which exercises the controls and is itself mutation-tested.
+ *
+ * Original scope: the off-host backup (G-005) and immutable audit anchoring
  * (G-006) controls.
  *
  * These two gaps are destination-neutral by design: the deployment owner picks
