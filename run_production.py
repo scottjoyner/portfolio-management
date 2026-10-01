@@ -391,31 +391,93 @@ def run_foreground() -> None:
         _remove_supervisor_pid(pidfile)
 
 
-def status() -> None:
+SUPERVISOR_STATE = LOGDIR / "supervisor_state.json"
+
+
+def _child_state(name: str) -> dict:
+    """Classify one supervised child for status reporting."""
+    cfg = PROCESSES[name]
+    state = {"name": name, "script": cfg["script"], "state": "STOPPED", "pid": None, "detail": None}
+
+    # A safety gate that forbids the start is not a crash. The system is working,
+    # but the child will never come up until a human clears it, so it must not be
+    # lumped in with "stopped".
+    if _trader_start_blocked(name):
+        state["state"] = "BLOCKED"
+        state["detail"] = (str(TRADER_CORRUPTION_SENTINEL)
+                           + " present; start refused pending operator review")
+        return state
+
+    pidfile = cfg["pidfile"]
+    if not pidfile.exists():
+        return state
+    try:
+        pid = int(pidfile.read_text().strip())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        state["state"] = "STALE_PID"
+        return state
+    state["state"] = "RUNNING"
+    state["pid"] = pid
+    return state
+
+
+def write_supervisor_state(children: list, supervisor_pid) -> None:
+    """Publish supervisor state so monitors need not scrape human-readable text."""
+    kill_active = False
+    try:
+        from coinbase.src.config import is_kill_switch_active
+        kill_active = bool(is_kill_switch_active())
+    except Exception:
+        kill_active = False
+
+    degraded = [c["name"] for c in children if c["state"] != "RUNNING"]
+    payload = {
+        "ts": time.time(),
+        "supervisor_pid": supervisor_pid,
+        "supervisor_running": supervisor_pid is not None,
+        "kill_switch_active": kill_active,
+        "children": children,
+        "degraded": degraded,
+        "healthy": not degraded,
+    }
+    try:
+        SUPERVISOR_STATE.write_text(_json.dumps(payload, indent=2) + "\n")
+    except OSError:
+        pass
+
+
+def status() -> int:
+    """Print supervisor state and return a shell exit code.
+
+    This is a health check, so it must fail when it finds trouble. It previously
+    returned nothing, so the process always exited 0: trader-v4 was BLOCKED by a
+    corruption sentinel for weeks while `status` reported success, systemd
+    reported the unit active, and nothing alerted.
+    """
+    sup_pid = None
     sup_pidfile = _pidfile_path()
     if sup_pidfile.exists():
         try:
             pid = int(sup_pidfile.read_text().strip())
             os.kill(pid, 0)
-            print(f"Supervisor: RUNNING (PID {pid})")
+            sup_pid = pid
         except (OSError, ValueError):
-            print("Supervisor: STOPPED")
+            sup_pid = None
+
+    if sup_pid is not None:
+        print(f"Supervisor: RUNNING (PID {sup_pid})")
     else:
         print("Supervisor: STOPPED")
 
-    for name in PROCESSES:
-        cfg = PROCESSES[name]
-        pidfile = cfg["pidfile"]
-        if pidfile.exists():
-            pid = pidfile.read_text().strip()
-            try:
-                pid = int(pid)
-                os.kill(pid, 0)
-                print(f"  {name}: RUNNING (PID {pid})")
-            except (OSError, ValueError):
-                print(f"  {name}: STALE PID ({pid})")
-        else:
-            print(f"  {name}: STOPPED")
+    children = [_child_state(name) for name in PROCESSES]
+    for child in children:
+        line = f"  {child['name']}: {child['state']}"
+        if child["pid"]:
+            line += f" (PID {child['pid']})"
+        if child["detail"]:
+            line += f" -- {child['detail']}"
+        print(line)
 
     hb = ROOT / "data" / ".daemon_heartbeat"
     if hb.exists():
@@ -424,6 +486,26 @@ def status() -> None:
             print(f"  Heartbeat: {age:.0f}s ago")
         except (ValueError, OSError):
             pass
+
+    write_supervisor_state(children, sup_pid)
+
+    if sup_pid is None:
+        print("")
+        print("DEGRADED: supervisor is not running")
+        return 1
+
+    degraded = [c["name"] for c in children if c["state"] != "RUNNING"]
+    if not degraded:
+        return 0
+
+    blocked = [c["name"] for c in children if c["state"] == "BLOCKED"]
+    print("")
+    if blocked:
+        print("DEGRADED: " + ", ".join(blocked) + " blocked by a safety gate. "
+              "These will not restart until an operator resolves the cause; see "
+              + str(TRADER_CORRUPTION_SENTINEL))
+    print("Not running: " + ", ".join(degraded))
+    return 1
 
 
 def stop() -> None:
@@ -521,7 +603,7 @@ def main() -> None:
         time.sleep(3)
         main()
     elif cmd == "status":
-        status()
+        sys.exit(status())
     else:
         print(f"Usage: {sys.argv[0]} {{start|run|stop|restart|status}}")
         sys.exit(1)

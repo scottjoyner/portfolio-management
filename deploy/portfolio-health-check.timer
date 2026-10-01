@@ -1,0 +1,15 @@
+[Unit]
+Description=Periodic portfolio trading stack health check
+# 5 minutes: fast enough that a blocked trading process is noticed the same
+# shift, slow enough to be free. run_production.py status is cheap.
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Spread across the interval so a fleet restart does not stampede.
+RandomizedDelaySec=30
+AccuracySec=30s
+Unit=portfolio-health-check.service
+
+[Install]
+WantedBy=timers.target

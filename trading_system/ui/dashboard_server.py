@@ -30,7 +30,9 @@ Usage:
 
 import http.server
 import socketserver
+import hmac
 import os
+import secrets
 import sys
 import json
 import argparse
@@ -707,6 +709,84 @@ def _status_bar_payload(op_state, trader_health):
     }
 
 
+SUPERVISOR_STATE_PATH = str(ROOT / "logs" / "supervisor_state.json")
+
+
+def _load_supervisor_state():
+    """Read the supervisor's published state, or None if unavailable.
+
+    run_production.py status writes this. It is the only place that knows whether a
+    supervised child is actually running, blocked by a safety gate, or gone.
+    """
+    return _load_json(SUPERVISOR_STATE_PATH, None)
+
+
+def api_ready():
+    """Readiness: is the whole system able to trade, or is it degraded?
+
+    Deliberately separate from /health. /health is the dashboard's *liveness*
+    probe and run_production.py restarts the dashboard when it is anything other
+    than healthy, so folding trader state into /health would restart-loop the
+    dashboard whenever the trader is blocked. Liveness asks "is this process up";
+    readiness asks "should the system be trading".
+    """
+    sup = _load_supervisor_state()
+    state = {
+        "timestamp": time.time(),
+        "ready": False,
+        "reason": None,
+        "kill_switch_active": False,
+        "children": [],
+        "degraded": [],
+        "blocked": [],
+    }
+
+    if sup is None:
+        # No supervisor state at all. Report not-ready rather than assuming health:
+        # the previous behaviour was to report healthy with no knowledge of the
+        # trading process, which is how a blocked trader went unnoticed for weeks.
+        state["reason"] = "supervisor state unavailable; cannot confirm trading children"
+        return state
+
+    state["kill_switch_active"] = bool(sup.get("kill_switch_active"))
+    state["children"] = sup.get("children", [])
+    state["degraded"] = sup.get("degraded", [])
+    state["blocked"] = [c["name"] for c in state["children"] if c.get("state") == "BLOCKED"]
+    state["supervisor_running"] = bool(sup.get("supervisor_running"))
+    state["supervisor_state_age_sec"] = round(time.time() - float(sup.get("ts", 0)), 1)
+
+    reasons = []
+    if not sup.get("supervisor_running"):
+        reasons.append("supervisor is not running")
+    if state["blocked"]:
+        reasons.append("blocked by a safety gate: " + ", ".join(state["blocked"]))
+    stale = [c["name"] for c in state["children"]
+             if c.get("state") not in ("RUNNING", "BLOCKED")]
+    if stale:
+        reasons.append("not running: " + ", ".join(stale))
+    if state["kill_switch_active"]:
+        reasons.append("kill switch is engaged (intentional halt, not a fault)")
+
+    # An engaged kill switch is an operator decision, not a fault: the system is
+    # behaving correctly. Report ready=false with a distinct reason so alerting can
+    # tell "operator halted us" apart from "we are broken".
+    state["ready"] = not reasons
+    state["reason"] = "; ".join(reasons) if reasons else None
+    state["halted_by_operator"] = state["kill_switch_active"] and not stale and not state["blocked"]
+    return state
+
+
+def api_ready_with_status():
+    """Readiness payload plus the HTTP code that should carry it.
+
+    503 when the system cannot trade, so this works as a real readiness probe
+    instead of something a human has to read and interpret. Evaluated once:
+    building the payload twice would let the two calls disagree.
+    """
+    payload = api_ready()
+    return payload, 200 if payload["ready"] else 503
+
+
 def api_health():
     state = {"status": "healthy", "timestamp": time.time(), "components": {}}
 
@@ -775,6 +855,19 @@ def api_health():
     health_vals = [state["components"].get(k) for k in _HEALTH_KEYS]
     all_ok = all(v in healthy_states for v in health_vals)
     state["status"] = "healthy" if all_ok else "degraded"
+
+    # Informational only. Deliberately excluded from _HEALTH_KEYS: the supervisor
+    # restarts this dashboard when /health is not healthy, so a blocked trader must
+    # not flip /health to degraded and cascade into a dashboard restart loop.
+    sup = _load_supervisor_state()
+    if sup is not None:
+        state["supervisor"] = {
+            "running": sup.get("supervisor_running"),
+            "degraded": sup.get("degraded", []),
+            "blocked": [c["name"] for c in sup.get("children", []) if c.get("state") == "BLOCKED"],
+            "children": {c["name"]: c.get("state") for c in sup.get("children", [])},
+            "state_age_sec": round(time.time() - float(sup.get("ts", 0)), 1),
+        }
 
     op_state = _load_json(OPERATOR_STATE_PATH, {})
     state["status_bar"] = _status_bar_payload(op_state, _load_trader_health())
@@ -3021,14 +3114,163 @@ def api_competition() -> dict:
 
 # ── Request Handler ─────────────────────────────────────────────
 
+# -- Mutating-endpoint authentication ---------------------------------
+#
+# Every endpoint in these sets can move money or change risk posture: submitting
+# an order, approving a pending trade, cancelling protective brackets, or
+# disengaging the kill switch. All of them were reachable by anyone who could
+# reach the port, and the documented invocation binds 0.0.0.0.
+#
+# They now require a bearer token from DASHBOARD_OPERATOR_TOKEN. If that is not
+# configured the server refuses to start rather than serving them unauthenticated:
+# "no token configured" must never degrade into "no authentication".
+
+OPERATOR_TOKEN_ENV = "DASHBOARD_OPERATOR_TOKEN"
+OPERATOR_TOKEN_FILE_ENV = "DASHBOARD_OPERATOR_TOKEN_FILE"
+MIN_OPERATOR_TOKEN_LEN = 24
+
+MUTATING_PREFIXES = ("/approvals/approve/", "/approvals/deny/")
+MUTATING_PATHS = frozenset({
+    "/capital/config", "/capital/buckets", "/capital/buckets/preset",
+    "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all",
+    "/arbitrage/execute", "/orders/submit", "/kill-switch",
+})
+
+
+def mutating_path(path):
+    return path in MUTATING_PATHS or path.startswith(MUTATING_PREFIXES)
+
+
+def operator_token_path():
+    """Where the operator token is persisted.
+
+    Outside the repository so it can never be committed, and unaffected by the
+    systemd unit's ProtectSystem=full.
+    """
+    configured = (os.environ.get(OPERATOR_TOKEN_FILE_ENV) or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
+    root = Path(base).expanduser() if base else Path.home() / ".config"
+    return root / "portfolio-management" / "dashboard_token"
+
+
+def _read_token_file(path):
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _provision_token_file(path):
+    """Create the token file with 0600 permissions if it is absent.
+
+    Exists so that a supervised start needs no manual step: run_production.py
+    spawns this server with none of the operator's shell environment, and a
+    hard "refuse to start without a token" rule would turn the dashboard into a
+    crash-loop on every service restart. Generating it here keeps the security
+    property (unconfigured never means unauthenticated) while letting the unit
+    come up on its own.
+    """
+    token = secrets.token_urlsafe(32)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # O_EXCL so a concurrent start cannot clobber a token another process
+        # just wrote, and so a pre-existing symlink is never followed.
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token + "\n")
+        finally:
+            os.chmod(str(path), 0o600)
+    except FileExistsError:
+        return _read_token_file(path)
+    except OSError:
+        return ""
+    return token
+
+
+def operator_token():
+    """Resolve the operator token: env override, then the persisted file.
+
+    The env var wins so CI and tests stay explicit. The file exists for the
+    supervised deployment.
+    """
+    from_env = (os.environ.get(OPERATOR_TOKEN_ENV) or "").strip()
+    if from_env:
+        return from_env
+
+    path = operator_token_path()
+    token = _read_token_file(path)
+    if not token:
+        token = _provision_token_file(path)
+    return token or ""
+
+
+def request_is_authorized(handler):
+    """Whether the handler's request carries the operator bearer token.
+
+    A module-level function rather than a handler method so that authorization
+    cannot be bypassed by a handler that does not inherit it, and so the test
+    harnesses that stand in a fake handler get the same check as the real one.
+    """
+    expected = operator_token()
+    if not expected:
+        return False
+    header = handler.headers.get("Authorization") or ""
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() != "bearer":
+        return False
+    return hmac.compare_digest(value.strip(), expected)
+
+
+def require_authorization(handler, path):
+    """Return True when the request may proceed, otherwise emit 401 and return False."""
+    if not mutating_path(path):
+        return True
+    if request_is_authorized(handler):
+        return True
+    handler._json_response(
+        json.dumps({
+            "ok": False,
+            "error": "unauthorized",
+            "detail": path + " changes capital or risk posture and requires a bearer token",
+        }),
+        status=401,
+    )
+    return False
+
+
+def require_operator_token_or_exit():
+    token = operator_token()
+    if not token:
+        raise SystemExit(
+            OPERATOR_TOKEN_ENV + " is not set. It is required because this server "
+            "exposes endpoints that submit orders, approve trades, cancel protective "
+            "brackets, and control the kill switch. Refusing to start rather than "
+            "serving them unauthenticated."
+        )
+    if len(token) < MIN_OPERATOR_TOKEN_LEN:
+        raise SystemExit(
+            "The operator token resolved from " + OPERATOR_TOKEN_ENV + " or "
+            + str(operator_token_path()) + " must be at least "
+            + str(MIN_OPERATOR_TOKEN_LEN) + " characters. "
+            "These endpoints submit real orders."
+        )
+    return token
+
+
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if not require_authorization(self, path):
+            return
 
         handlers = {
             "/health": lambda: api_health(),
+            "/ready": api_ready_with_status,
             "/accounts": lambda: api_accounts(),
             "/positions": lambda: api_positions(),
             "/strategies": lambda: api_strategies(),
@@ -3084,7 +3326,13 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if path in handlers:
             try:
                 data = handlers[path]()
-                self._json_response(json.dumps(data, default=str))
+                # A handler may return (payload, status) to control the code.
+                # Readiness needs this: 503 is the signal a load balancer or alert
+                # can act on, and /health must stay 200 while the process is up.
+                status = 200
+                if isinstance(data, tuple) and len(data) == 2 and isinstance(data[1], int):
+                    data, status = data
+                self._json_response(json.dumps(data, default=str), status=status)
             except Exception as e:
                 logger.error("%s error: %s", path, e)
                 self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
@@ -3164,6 +3412,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if not require_authorization(self, path):
+            return
         if path not in {"/capital/config", "/capital/buckets", "/capital/buckets/preset", "/actions/run", "/execution/brackets/cancel", "/execution/brackets/cancel-all", "/arbitrage/execute", "/orders/submit", "/kill-switch"}:
             self._json_response(json.dumps({"error": "not found"}), status=404)
             return
@@ -3270,13 +3520,23 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Trading System Dashboard Server')
-    parser.add_argument('--host', '-b', default='0.0.0.0', help='Bind address (default: 0.0.0.0)')
+    parser.add_argument('--host', '-b', default='127.0.0.1',
+                        help='Bind address. Defaults to loopback; pass 0.0.0.0 '
+                             'only behind an authenticating proxy, and only '
+                             'with DASHBOARD_OPERATOR_TOKEN set.')
     parser.add_argument('--port', '-p', type=int, default=8000, help='Port (default: 8000)')
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    # Refuse to serve capital-moving endpoints unauthenticated.
+    require_operator_token_or_exit()
+    if args.host not in ('127.0.0.1', 'localhost', '::1') and not operator_token():
+        raise SystemExit(
+            'Refusing to bind ' + args.host + ' without an operator token.'
+        )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)

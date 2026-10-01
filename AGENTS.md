@@ -273,6 +273,7 @@ Detection order per tick: TLH → coinbase universe → stock → fee tier → r
 ### UI Dashboard (trading_system/ui/)
 
 - `dashboard_server.py`: HTTP server with 15 REST endpoints (/health, /accounts, /positions, /strategies, /approvals, /performance, /evaluations/price/{instrument}, /research/hypotheses, /market/regime, /signals/opportunities, /signals/feed, /strategies/performance, /strategies/rebalance, /strategies/rebalance/presets, /strategies/stairstep)
+  - `dashboard_server.py` binds `127.0.0.1` by default (was `0.0.0.0`; pass `--host` to expose deliberately) and requires an operator token of min 24 chars, resolved from `DASHBOARD_OPERATOR_TOKEN`, else `DASHBOARD_OPERATOR_TOKEN_FILE`, else auto-provisioned at `~/.config/portfolio-management/dashboard_token` (0600, outside the repo). Auto-provisioning exists because `run_production.py` spawns the dashboard without the operator's shell environment and restart-loops any child that exits, so a hard "refuse without a token" rule would crash-loop it on every service restart. Startup still exits non-zero if no token can be resolved at all. Endpoints that move capital or change risk posture — `/approvals/approve/*`, `/approvals/deny/*`, `/capital/config`, `/capital/buckets`, `/capital/buckets/preset`, `/actions/run`, `/execution/brackets/cancel*`, `/arbitrage/execute`, `/orders/submit`, `/kill-switch` — return `401` without `Authorization: Bearer $DASHBOARD_OPERATOR_TOKEN`. Startup exits non-zero if the token is missing or too short, so "unconfigured" never degrades into "unauthenticated"
 - `dashboard.html`: Dark mode, collapsible cards, signal filtering (BUY/SELL/all), CSS shimmer loading skeletons, toast notifications, keyboard shortcuts (r=refresh, d=dark mode, ?=help), auto-refresh countdown bar, responsive two-column grid
 
 ## End-to-End Data Flow
@@ -356,9 +357,17 @@ python3 portfolio_optimizer.py --dry-run
 # Approval server
 python3 approval_server.py
 
-# Dashboard UI
+# Dashboard UI (operator endpoints require a bearer token, min 24 chars)
+# No manual step needed when run under the supervisor: the server auto-provisions
+# ~/.config/portfolio-management/dashboard_token (0600, outside the repo) on first
+# start. To supply your own instead:
+export DASHBOARD_OPERATOR_TOKEN="$(python3 -c 'import secrets;print(secrets.token_urlsafe(32))')"
 python3 trading_system/ui/dashboard_server.py
-# → open http://localhost:8080
+# → open http://localhost:8080 (read-only endpoints; mutating ones need
+#   `Authorization: Bearer $DASHBOARD_OPERATOR_TOKEN`)
+#
+# Retrieve the auto-provisioned token with:
+#   cat ~/.config/portfolio-management/dashboard_token
 
 # Benchmark all strategies on BTC-USD
 python3 backtester.py
@@ -395,7 +404,68 @@ Recommended order for a code/UI redeploy:
 1. Run the relevant compile checks or tests.
 2. Update the dashboard/UI if new API fields were added.
 3. Restart the supervisor with `sudo systemctl restart portfolio-trader.service`.
-4. Confirm `run_production.py status` shows all children healthy.
+4. Confirm `python3 run_production.py status` exits 0 (see "Health & Readiness").
+
+## Health & Readiness
+
+`run_production.py status` is a **health check**, not a printout. It exits non-zero
+when the supervisor is down, or any supervised child is not `RUNNING`, and it
+distinguishes a **safety block** from a crash:
+
+| State | Meaning | Action |
+|---|---|---|
+| `RUNNING` | child alive | none |
+| `BLOCKED` | a safety gate refuses to start it (e.g. `data/trader_state_corrupt`) | **will not restart on its own.** An operator must resolve the cause |
+| `STOPPED` | never started, or not currently running | inspect `logs/<name>.log` |
+| `STALE_PID` | pidfile exists but the process is gone | the supervisor will restart it |
+
+A `BLOCKED` child is the system working correctly: a gate refused to start trading
+on bad state. It is still a degraded system, because nothing is trading.
+
+```bash
+# exit 0 = healthy, 1 = degraded. Machine-readable copy written to:
+#   logs/supervisor_state.json
+python3 run_production.py status
+
+# single gate for cron / systemd timers / external monitors
+#   0 healthy (or operator-halted), 1 degraded, 2 check could not run
+python3 scripts/health_check.py
+python3 scripts/health_check.py --json
+```
+
+### Liveness vs readiness
+
+These are deliberately separate, because `run_production.py` **restarts the
+dashboard** when `/health` is anything other than healthy. Folding trader state
+into `/health` would turn a blocked trader into a dashboard restart loop.
+
+| Endpoint | Question | Codes |
+|---|---|---|
+| `GET /health` | is the dashboard process alive? | `200` while up, regardless of trader state |
+| `GET /ready`  | should the system be trading? | `200` ready, `503` not ready, with a `reason` |
+
+```bash
+curl -s localhost:8002/ready | jq          # read-only, no token needed
+# {"ready": false, "reason": "blocked by a safety gate: trader-v4", ...}
+```
+
+An engaged kill switch is reported as an operator **halt**, not a fault:
+`halted_by_operator: true`. `scripts/health_check.py` exits 0 for that case so
+pulling the kill switch does not page anyone; pass `--alert-on-halt` to change it.
+
+### Periodic alerting
+
+```bash
+sudo cp deploy/portfolio-health-check.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now portfolio-health-check.timer
+systemctl list-timers portfolio-health-check.timer
+```
+
+A non-zero check makes `systemctl status portfolio-health-check.timer` show
+failures. To page a human, add an `OnFailure=` target to
+`portfolio-health-check.service` pointing at whatever notification transport you
+use (email, Slack webhook, PagerDuty) — it is intentionally not hardcoded.
 
 Notes:
 1. `run_production.py start` is systemd-aware and stays in the foreground when invoked by the unit.

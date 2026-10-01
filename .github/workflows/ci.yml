@@ -179,9 +179,15 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install -r deploy/requirements.venv-lock.txt
         python -m pip install pytest-asyncio
+    - name: Reject fail-open guards
+      run: python scripts/detect_python_fail_open.py
     - name: Run merge-critical Python and execution-risk tests
       run: |
         python -m pytest \
+          tests/test_python_fail_closed.py \
+          tests/test_python_fail_open_detector.py \
+          tests/test_supervisor_contract.py \
+          tests/test_production_health.py \
           tests/test_competition_scoreboard.py \
           tests/test_hermes_agent_accounting.py \
           tests/test_hermes_agent_trader_v2.py \

@@ -1,10 +1,15 @@
 import io
 import json
+import os
+import pathlib
+import tempfile
 import time
 import unittest
 from unittest import mock
 
 import trading_system.ui.dashboard_server as ds
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 def patch(attr, **kw):
@@ -321,14 +326,39 @@ class TestOperatorActions(unittest.TestCase):
         self.assertEqual(out["presets"][0]["name"], "x")
 
 
-def make_handler(path="/", body=None):
+# Endpoints that move money or change risk posture now require the operator
+# bearer token. These tests exercise the routing behind those endpoints, so they
+# present a valid token; the refusal path has its own tests below.
+OPERATOR_TOKEN = "test-operator-token-0123456789abcdef"
+
+
+def setUpModule():
+    os.environ[ds.OPERATOR_TOKEN_ENV] = OPERATOR_TOKEN
+
+
+def tearDownModule():
+    os.environ.pop(ds.OPERATOR_TOKEN_ENV, None)
+
+
+def operator_headers(extra=None):
+    headers = {"Authorization": "Bearer " + OPERATOR_TOKEN}
+    headers.update(extra or {})
+    return headers
+
+
+def make_handler(path="/", body=None, authorized=True):
     h = ds.DashboardHandler.__new__(ds.DashboardHandler)
     h.path = path
     h._json_response = mock.MagicMock()
     if body is not None:
         raw = json.dumps(body).encode()
-        h.headers = {"Content-Length": str(len(raw))}
+        headers = {"Content-Length": str(len(raw))}
+        if authorized:
+            headers = operator_headers(headers)
+        h.headers = headers
         h.rfile = io.BytesIO(raw)
+    elif authorized:
+        h.headers = operator_headers()
     return h
 
 
@@ -455,7 +485,7 @@ class TestDashboardHandlerPOST(unittest.TestCase):
         h.path = "/capital/config"
         h._json_response = mock.MagicMock()
         raw = b"{bad"
-        h.headers = {"Content-Length": str(len(raw))}
+        h.headers = operator_headers({"Content-Length": str(len(raw))})
         h.rfile = io.BytesIO(raw)
         h.do_POST()
         _, kwargs = h._json_response.call_args
@@ -465,7 +495,7 @@ class TestDashboardHandlerPOST(unittest.TestCase):
         h = ds.DashboardHandler.__new__(ds.DashboardHandler)
         h.path = "/capital/config"
         h._json_response = mock.MagicMock()
-        h.headers = {"Content-Length": "notanint"}
+        h.headers = operator_headers({"Content-Length": "notanint"})
         h.rfile = io.BytesIO(b"")
         with patch("_save_capital_policy", return_value={}):
             h.do_POST()
@@ -596,6 +626,134 @@ class TestHandlerMisc(unittest.TestCase):
         sup.assert_called_once()
 
 
+class TestOperatorAuthorization(unittest.TestCase):
+    """Mutating endpoints must refuse an unauthenticated caller."""
+
+    def test_mutating_post_without_token_is_401(self):
+        for path in ("/capital/config", "/orders/submit", "/arbitrage/execute",
+                     "/execution/brackets/cancel-all", "/kill-switch"):
+            with self.subTest(path=path):
+                h = make_handler(path, body={"x": 1}, authorized=False)
+                h.do_POST()
+                _, kwargs = h._json_response.call_args
+                self.assertEqual(kwargs.get("status"), 401)
+
+    def test_approval_prefix_requires_token(self):
+        h = make_handler("/approvals/approve/abc123", body={}, authorized=False)
+        h.do_POST()
+        _, kwargs = h._json_response.call_args
+        self.assertEqual(kwargs.get("status"), 401)
+
+    def test_wrong_token_is_401(self):
+        h = make_handler("/capital/config", body={"x": 1})
+        h.headers["Authorization"] = "Bearer wrong-token-value-0123456789"
+        h.do_POST()
+        _, kwargs = h._json_response.call_args
+        self.assertEqual(kwargs.get("status"), 401)
+
+    def test_read_only_paths_need_no_token(self):
+        self.assertFalse(ds.mutating_path("/health"))
+        self.assertFalse(ds.mutating_path("/positions"))
+        self.assertTrue(ds.mutating_path("/kill-switch"))
+        self.assertTrue(ds.mutating_path("/approvals/deny/x"))
+
+    def test_token_is_provisioned_when_nothing_is_configured(self):
+        """A supervised start must come up on its own.
+
+        run_production.py spawns this server without the operator's shell
+        environment, and the supervisor restarts any child that exits. A hard
+        "refuse to start without a token" rule therefore crash-loops the
+        dashboard on every service restart.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ)
+            os.environ.pop(ds.OPERATOR_TOKEN_ENV, None)
+            os.environ.pop(ds.OPERATOR_TOKEN_FILE_ENV, None)
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                token = ds.operator_token()
+                self.assertGreaterEqual(len(token), ds.MIN_OPERATOR_TOKEN_LEN)
+                path = pathlib.Path(tmp) / "portfolio-management" / "dashboard_token"
+                self.assertTrue(path.exists())
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                # Stable across calls, so restarts do not rotate it.
+                self.assertEqual(ds.operator_token(), token)
+            finally:
+                os.environ.clear()
+                os.environ.update(env)
+
+    def test_token_lives_outside_the_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ)
+            os.environ.pop(ds.OPERATOR_TOKEN_ENV, None)
+            os.environ.pop(ds.OPERATOR_TOKEN_FILE_ENV, None)
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                ds.operator_token()
+                self.assertFalse(ds.operator_token_path().is_relative_to(REPO_ROOT))
+            finally:
+                os.environ.clear()
+                os.environ.update(env)
+
+    def test_env_var_overrides_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {ds.OPERATOR_TOKEN_ENV: OPERATOR_TOKEN}):
+                self.assertEqual(ds.operator_token(), OPERATOR_TOKEN)
+
+    def test_explicit_token_file_is_honoured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "custom_token"
+            target.write_text("file-supplied-token-0123456789\n")
+            env = dict(os.environ)
+            os.environ.pop(ds.OPERATOR_TOKEN_ENV, None)
+            os.environ[ds.OPERATOR_TOKEN_FILE_ENV] = str(target)
+            try:
+                self.assertEqual(ds.operator_token(), "file-supplied-token-0123456789")
+            finally:
+                os.environ.clear()
+                os.environ.update(env)
+
+    def test_short_token_in_file_refuses_to_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "short"
+            target.write_text("tooshort\n")
+            env = dict(os.environ)
+            os.environ.pop(ds.OPERATOR_TOKEN_ENV, None)
+            os.environ[ds.OPERATOR_TOKEN_FILE_ENV] = str(target)
+            try:
+                with self.assertRaises(SystemExit):
+                    ds.require_operator_token_or_exit()
+            finally:
+                os.environ.clear()
+                os.environ.update(env)
+
+    def test_startup_refuses_when_no_token_can_be_resolved(self):
+        """Unprovisionable must still refuse, not serve unauthenticated."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # A path that cannot be created: the parent is a file, not a dir.
+            blocker = pathlib.Path(tmp) / "blocker"
+            blocker.write_text("not a directory")
+            env = dict(os.environ)
+            os.environ.pop(ds.OPERATOR_TOKEN_ENV, None)
+            os.environ[ds.OPERATOR_TOKEN_FILE_ENV] = str(blocker / "sub" / "token")
+            try:
+                with self.assertRaises(SystemExit):
+                    ds.require_operator_token_or_exit()
+            finally:
+                os.environ.clear()
+                os.environ.update(env)
+
+    def test_short_env_token_refuses_to_start(self):
+        env = dict(os.environ)
+        try:
+            os.environ[ds.OPERATOR_TOKEN_ENV] = "short"
+            with self.assertRaises(SystemExit):
+                ds.require_operator_token_or_exit()
+        finally:
+            os.environ.clear()
+            os.environ.update(env)
+
+
 class TestMain(unittest.TestCase):
     def test_parse_args(self):
         with mock.patch("sys.argv", ["prog", "--port", "9999", "--host", "127.0.0.1"]):
@@ -603,7 +761,8 @@ class TestMain(unittest.TestCase):
         self.assertEqual(args.port, 9999)
 
     def test_main(self):
-        with mock.patch("sys.argv", ["prog"]), \
+        with mock.patch.dict(os.environ, {ds.OPERATOR_TOKEN_ENV: OPERATOR_TOKEN}), \
+                mock.patch("sys.argv", ["prog"]), \
                 mock.patch("os.chdir"), \
                 mock.patch("socketserver.TCPServer.server_bind"), \
                 mock.patch("socketserver.TCPServer.server_activate"), \

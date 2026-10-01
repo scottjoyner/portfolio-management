@@ -1,0 +1,24 @@
+[Unit]
+Description=Portfolio trading stack health check (readiness + supervised children)
+# Deliberately does NOT Requires=portfolio-trader.service: this check must still
+# run and report when the trading stack is the thing that is broken.
+After=portfolio-trader.service
+
+[Service]
+Type=oneshot
+User=scott
+Group=scott
+WorkingDirectory=/home/scott/git/portfolio-management
+Environment=HOME=/home/scott
+Environment=DASHBOARD_PORT=8002
+Environment=PYTHONPATH=/home/scott/git/portfolio-management:/home/scott/git/portfolio-management/trading_system
+ExecStart=/home/scott/git/portfolio-management/.venv/bin/python /home/scott/git/portfolio-management/scripts/health_check.py
+# The script's exit code is the contract: 0 healthy (or operator-halted), 1 degraded,
+# 2 the check could not run. Non-zero here makes `systemctl status
+# portfolio-health-check.timer` show failures and, once OnFailure= is pointed at a
+# notification target, pages a human.
+TimeoutStartSec=120
+# Read-only by design.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
