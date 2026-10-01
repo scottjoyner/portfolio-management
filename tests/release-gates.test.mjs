@@ -134,11 +134,18 @@ test('the rehearsal record cannot certify its own target host', () => {
 
 test('release status separates automated gates from human gates, and refuses to certify', () => {
   // The point of this command is the distinction, so assert the distinction.
+  // The test run is skipped: release-status invokes the suite, and the suite
+  // contains this test, so leaving it on recurses.
   const result = spawnSync(process.execPath, ['scripts/release-status.mjs'], {
     encoding: 'utf8',
+    env: { ...process.env, RELEASE_STATUS_SKIP_TESTS: 'true' },
     maxBuffer: 32 * 1024 * 1024
   });
   const report = JSON.parse(result.stdout);
+  // The exit code tracks the automated gates only. Outstanding human gates are
+  // the expected state and must not be reported as an automated failure.
+  assert.equal(result.status, report.automatedGatesGreen ? 0 : 1, 'exit code must track automatedGatesGreen, not the human gates');
+  assert.equal(report.humanGatesOutstanding, true, 'human gates are genuinely outstanding and must be reported');
 
   for (const area of ['source', 'tests', 'releaseControls', 'rehearsal', 'gapRegister', 'humanGates', 'certification']) {
     assert.ok(report.sections.some(section => section.area === area), `missing section: ${area}`);

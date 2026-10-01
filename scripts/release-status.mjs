@@ -48,22 +48,39 @@ sections.push({
 
 /* ------------------------------ test gates ------------------------------ */
 
-const nodeTests = nodeCommand(['scripts/run-node-test-shard.mjs']);
+// Running the suite from here recurses: the suite contains the test that calls
+// this command. The guard makes the nesting explicit rather than incidental.
+const skipTestRun = process.env.RELEASE_STATUS_SKIP_TESTS === 'true' || process.env.NODE_TEST_CONTEXT !== undefined;
 const nodeSummary = {};
-for (const line of nodeTests.stdout.split('\n')) {
-  const match = line.match(/^# (tests|pass|fail|skipped) (\d+)$/);
-  if (match) nodeSummary[match[1]] = Number(match[2]);
+if (skipTestRun) {
+  sections.push({
+    area: 'tests',
+    note: 'skipped: invoked from within a test run, which would otherwise recurse',
+    lines: [{ label: 'skipped', value: true }]
+  });
+} else {
+  const nodeTests = nodeCommand(['scripts/run-node-test-shard.mjs']);
+  if (nodeTests.status !== 0) {
+    // A failed test run must be a blocker, not an empty section. Reporting nulls
+    // here is what let a broken nested spawn look like a pass.
+    process.stderr.write(`${JSON.stringify({ ok: false, error: 'release_status_test_run_failed', stderr: String(nodeTests.stderr).slice(0, 2000) }, null, 2)}\n`);
+    process.exit(1);
+  }
+  for (const line of nodeTests.stdout.split('\n')) {
+    const match = line.match(/^# (tests|pass|fail|skipped) (\d+)$/);
+    if (match) nodeSummary[match[1]] = Number(match[2]);
+  }
+  sections.push({
+    area: 'tests',
+    note: 'run with the same recursive discovery CI uses, via npm test',
+    lines: [
+      { label: 'nodeTests', value: nodeSummary.tests ?? null },
+      { label: 'nodePassing', value: nodeSummary.pass ?? null },
+      { label: 'nodeFailing', value: nodeSummary.fail ?? null },
+      { label: 'nodeSkipped', value: nodeSummary.skipped ?? null }
+    ]
+  });
 }
-sections.push({
-  area: 'tests',
-  note: 'run with the same recursive discovery CI uses, via npm test',
-  lines: [
-    { label: 'nodeTests', value: nodeSummary.tests ?? null },
-    { label: 'nodePassing', value: nodeSummary.pass ?? null },
-    { label: 'nodeFailing', value: nodeSummary.fail ?? null },
-    { label: 'nodeSkipped', value: nodeSummary.skipped ?? null }
-  ]
-});
 
 /* ------------------------------ controls ------------------------------ */
 
