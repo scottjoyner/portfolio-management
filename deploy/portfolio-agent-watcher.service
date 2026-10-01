@@ -1,34 +1,36 @@
 [Unit]
-Description=Hermes Agent paper-trader exit-only watcher (high-frequency stop-loss)
-Documentation=scripts/hermes_agent_watch.py
-After=network-online.target portfolio-trader.service
-Wants=network-online.target
-# Co-start with the main trading stack so the agent's open positions always
-# have a tight-cadence stop watcher after a reboot. The watcher is EXIT-ONLY
-# (never opens), paper-only, and honors KILL_SWITCH — safe to run alongside.
-PartOf=portfolio-trader.service
+# DO NOT INSTALL THIS FILE.
+#
+# Retired. The Hermes agent exit-only watcher is a managed child of the trading
+# supervisor (run_production.py, PROCESSES["agent-watcher"]). Installing this as a
+# separate unit starts a SECOND watcher.
+#
+# That is not hypothetical. On the host this repository runs on, two watchers were
+# running simultaneously: the supervisor's child, and an orphan left behind after
+# this unit was installed and then disabled but not removed. Both were doing
+# read -> mutate -> save on data/hermes_agent_ledger.json, where two writers can
+# lose one another's close. The watcher now also refuses to start while another
+# holds an exclusive lock, but that only prevents a third; the duplicate itself is
+# a configuration mistake this file invites.
+#
+# If this unit is installed on your host, remove it:
+#   sudo systemctl disable --now portfolio-agent-watcher.service
+#   sudo rm /etc/systemd/system/portfolio-agent-watcher.service
+#   sudo systemctl daemon-reload
+#   python3 scripts/health_check.py     # reports any unmanaged_duplicate
+#
+# To change how the watcher is supervised, edit the PROCESSES table in
+# run_production.py. Not this file.
+
+Description=RETIRED -- the agent watcher is supervised by run_production.py
+Documentation=docs/AGENTS.md
+ConditionPathExists=/nonexistent/retired-do-not-install
 
 [Service]
-Type=simple
-User=scott
-Group=scott
-WorkingDirectory=/home/scott/git/portfolio-management
-Environment=HOME=/home/scott
-Environment=PATH=/home/scott/.npm-global/bin:/home/scott/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/scott/git/portfolio-management/.venv/bin/python3 /home/scott/git/portfolio-management/scripts/hermes_agent_watch.py --interval 20 --quiet
-ExecStop=/bin/kill -TERM $MAINPID
-Restart=on-failure
-RestartSec=10
-# Watcher must never be left dead silently: escalate if it keeps crashing.
-RestartSteps=5
-RestartMaxDelaySec=60
+Type=ones
+ExecStart=/bin/echo "portfolio-agent-watcher.service is retired. The agent watcher is a managed child of run_production.py. Remove this unit; see the comment in this file."
 StandardOutput=journal
 StandardError=journal
-
-# Security hardening (mirror of portfolio-trader.service)
-NoNewPrivileges=true
-ProtectSystem=full
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

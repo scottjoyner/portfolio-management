@@ -1,5 +1,34 @@
 #!/bin/bash
 # ============================================================================
+# RETIRED FOR THE SYSTEMD DEPLOYMENT -- READ THIS FIRST
+# ----------------------------------------------------------------------------
+# This script inspects a single Docker container (`trading-runtime-destructor`)
+# from deploy/docker-compose.prod.yml.
+#
+# The production trading stack does not run in that container. It runs as
+# systemd-managed Python under deploy/portfolio-trader.service:
+# run_production.py supervising unified_market_daemon, dashboard_server,
+# run_trader_v4 and the hermes agent watcher. None of those are containers.
+#
+# So for the deployment this repository actually ships, this script checks
+# nothing that matters, and reports success while the system is down. That is
+# the same defect as the dashboard's /health endpoint reporting "healthy" with
+# no knowledge of the trading process, and it is how trader-v4 stayed BLOCKED
+# by a corruption sentinel for ten weeks without anyone noticing.
+#
+# USE THIS INSTEAD:
+#     python3 scripts/health_check.py
+#
+# which checks the supervisor's children, distinguishes a safety BLOCKED from a
+# crash, probes readiness, and exits non-zero on degradation. It is also wired to
+# deploy/portfolio-health-check.timer.
+#
+# Kept only because deploy/README_DEPLOYMENT.md still references it and because
+# the container path may still be useful for the Node stack. It is NOT a health
+# check for the trading system.
+# ============================================================================
+#
+# ============================================================================
 # Trading System Health Monitor - Destroyer Production
 ## Machine: ThinkPad T14 i7 32GB RAM | Alias: destroyer
 ## Date: 2026-05-27 | Purpose: Post-deployment health verification
