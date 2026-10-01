@@ -16,6 +16,7 @@
     "audit:anchor:verify": "node scripts/audit-anchor-verify.mjs",
     "backup-and-anchoring:validate": "node scripts/validate-backup-and-anchoring.mjs",
     "controls:verify": "node scripts/verify-release-controls.mjs",
+    "release:status": "node scripts/release-status.mjs",
     "rehearse:deployment": "node scripts/rehearse-deployment.mjs",
     "release-record": "node scripts/release-record.mjs",
     "overseer:migrate": "node scripts/migrate-overseer-authorizations.mjs",
