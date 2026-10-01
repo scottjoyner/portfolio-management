@@ -211,3 +211,7 @@ export function verifyStoredExecutionAuthorization(state, { now } = {}) {
     reasons,
   };
 }
+
+// The gate below exists because a 141-commit stack was once self-merged
+// with a fully green suite. A test suite cannot tell you an authorization
+// check got weaker; a second reader can.
