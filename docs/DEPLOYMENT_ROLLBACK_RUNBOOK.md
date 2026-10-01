@@ -163,6 +163,29 @@ Before the first deploy onto a host that already holds operator or execution
 state, either drain that state or plan to re-authorize it. For a fresh
 production-paper host there is nothing to migrate.
 
+If any state predates the current policy, migrate it rather than letting it
+strand:
+
+```bash
+npm run overseer:migrate -- --input <stored-authorizations.json> \
+  --require-approval true [--now <iso>] [--apply --output <migrated.json>]
+```
+
+The command is dry-run unless `--apply` is passed, and it refuses to run without
+an explicit `--require-approval`, because the options it uses must match the
+deployment's. `--now` pins the evaluation moment so a run is reproducible.
+
+Read the report before applying. Each authorization is one of:
+
+- **migrated** — verified under its own policy, re-evaluated under the current
+  one, and the result verifies under the current policy.
+- **expired** — stale. Not tampering, and deliberately not re-issued: that would
+  resurrect authority that was allowed to lapse.
+- **quarantined** — does not verify even under the policy it was minted with.
+  Treat as an incident. `--apply` is blocked while anything is quarantined.
+- **refused** — the legacy policy approved it and the current policy does not.
+  That is a real policy change, not a migration, and it needs a human decision.
+
 Confirm the deployed policy version matches the source tree:
 
 ```bash

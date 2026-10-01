@@ -27,6 +27,9 @@ const requiredFiles = [
   'scripts/rehearse-deployment.mjs',
   'scripts/release-record.mjs',
   'tests/release-gates.test.mjs',
+  'packages/execution/src/overseerMigration.mjs',
+  'tests/overseer-migration.test.mjs',
+  'scripts/migrate-overseer-authorizations.mjs',
 ];
 
 const read = path => readFileSync(path, 'utf8');
@@ -51,6 +54,9 @@ const rehearsal = read('scripts/rehearse-deployment.mjs');
 const releaseRecord = read('scripts/release-record.mjs');
 const compose = read('docker-compose.production.yml');
 const releaseGateTests = read('tests/release-gates.test.mjs');
+const overseerMigration = read('packages/execution/src/overseerMigration.mjs');
+const overseerMigrationTests = read('tests/overseer-migration.test.mjs');
+const overseerMigrationCli = read('scripts/migrate-overseer-authorizations.mjs');
 const anchorTests = read('tests/audit-anchor.test.mjs');
 const packageJson = read('package.json');
 const certifier = read('scripts/certify-production-paper.mjs');
@@ -120,6 +126,19 @@ const checks = [
   [compose.includes('host.docker.internal:host-gateway'), 'the API and worker must be able to resolve a host inference node, which localRequired deployments require'],
   [releaseGateTests.includes('still fails') && releaseGateTests.includes('gate is satisfiable'), 'release record tests must prove the human review is required and that the gate is reachable'],
 
+  // --- G-012: a policy change must have a path forward, not just a wall ---
+  [overseerMigration.includes('classifyStoredAuthorization') && overseerMigration.includes('MIGRATION_DISPOSITION'), 'stored authorizations must be classified before any migration'],
+  [overseerMigration.includes('verifyStoredExecutionAuthorizationV3'), 'a legacy authorization must be judged by the policy it was minted under, not by the current one'],
+  [overseerMigration.includes('MIGRATION_DISPOSITION.UNSOUND') && overseerMigration.includes('quarantined: true'), 'an authorization that fails its own policy must be quarantined, never re-issued'],
+  [overseerMigration.includes('MIGRATION_DISPOSITION.EXPIRED'), 'an expired authorization must be triaged separately from a tampered one'],
+  [overseerMigration.includes('current_policy_does_not_approve'), 'a trade the current policy refuses must not be carried forward'],
+  [overseerMigration.includes('overseerMigration:') && overseerMigration.includes('Nothing may be added to the decision object itself'), 'migration provenance must be recorded outside the hashed decision'],
+  [overseerMigration.includes('overseerOptions'), 'migration must use the deployment overseer options rather than guessing them'],
+  [overseerMigrationCli.includes('apply') && overseerMigrationCli.includes('Dry-run by default'), 'the migration command must be dry-run unless explicitly applied'],
+  [overseerMigrationCli.includes('overseer_migration_quarantine_blocks_apply'), 'applying a migration must be blocked while any item is quarantined'],
+  [overseerMigrationTests.includes('MIGRATION WORKS') && overseerMigrationTests.includes('the fixture is a real legacy authorization'), 'migration tests must prove a genuine legacy authorization is re-minted and verifies'],
+  [overseerMigrationTests.includes('triaged as expired, not as tampering'), 'migration tests must prove expiry is not reported as tampering'],
+
   // --- both must actually be wired in, or they are decoration ---
   [packageJson.includes('"backup:export"') && packageJson.includes('"backup:verify"'), 'package scripts must expose backup export and verification'],
   [packageJson.includes('"audit:anchor"') && packageJson.includes('"audit:anchor:verify"'), 'package scripts must expose anchor export and verification'],
@@ -171,6 +190,14 @@ process.stdout.write(`${JSON.stringify({
     serviceHealthVerified: true,
     preDeployBackupProduced: true,
     selfCertifiesTargetHost: false
+  },
+  overseerPolicyMigration: {
+    classifiesBeforeMigrating: true,
+    legacyJudgedByLegacyPolicy: true,
+    quarantinesUnsound: true,
+    separatesExpired: true,
+    refusesPolicyRejections: true,
+    dryRunByDefault: true
   },
   manualGates: {
     namedOwnership: 'release-record.json',
