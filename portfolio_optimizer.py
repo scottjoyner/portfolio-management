@@ -872,6 +872,31 @@ def _symbol_word_match(keyword: str, text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _approval_is_expired(entry: dict) -> bool:
+    """Whether an approved trade is too old, or too odd, to execute.
+
+    The execution side of the approval gate. approval_server.is_expired protects
+    the approve *link*; this protects the *execution*, which is the half that moves
+    money and previously had no age check in either the canonical file or the
+    shared inbox.
+
+    Fails closed. If the timestamp cannot be read the approval does not run, which
+    is recoverable (fix the clock or re-approve) whereas executing a stale trade
+    at an unrelated price is not.
+    """
+    try:
+        from approval_server import is_expired
+    except Exception as exc:
+        logger.error("Cannot evaluate approval expiry (%s); refusing to execute "
+                     "approved trades rather than executing unbounded ones", exc)
+        return True
+    try:
+        return bool(is_expired(entry))
+    except Exception as exc:
+        logger.error("Approval expiry evaluation failed (%s); refusing to execute", exc)
+        return True
+
+
 def _kill_switch_active() -> bool:
     """Whether the operator has engaged the kill switch.
 
@@ -2452,6 +2477,17 @@ class PortfolioOptimizer:
         for token, entry in list(pending.items()):
             if entry.get("status") != "approved":
                 continue
+            # Age-check at execution, not only at the approve click.
+            # approval_server rejects a lapsed token when the link is followed, but
+            # an entry approved while the optimizer was down sat in this file with
+            # status "approved" and nothing bounded when it could run. It executed
+            # on whatever tick came next, at that tick's price, however long after
+            # the human said yes. An approval whose age cannot be evaluated is not
+            # executed.
+            if _approval_is_expired(entry):
+                logger.warning("  -> Approved entry %s is expired or unreadable, not executing", token[:12])
+                pending.pop(token, None)
+                continue
             logger.info("Executing approved trade: %s %s $%.0f",
                          entry.get("side", ""), entry.get("currency", ""),
                          float(entry.get("size_usd", 0)))
@@ -2486,6 +2522,16 @@ class PortfolioOptimizer:
                 continue
             status = entry.get("status")
             if status == "approved":
+                # Same age gate as the canonical file. Inbox entries carried no
+                # expiry check at all, so a stale approved manual order executed
+                # on any tick until something else removed it.
+                if _approval_is_expired(entry):
+                    logger.warning("  -> Inbox approval %s is expired or unreadable, not executing", fn[:12])
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+                    continue
                 try:
                     self._execute_approved(entry)
                 except Exception as e:

@@ -465,3 +465,90 @@ class TestOneKillSwitchSemantics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestApprovalExpiryAtExecution(unittest.TestCase):
+    """The execution side of the approval gate.
+
+    approval_server rejects a lapsed token when the approve link is followed. That
+    was the only age check. The optimizer -- the code that actually moves the
+    money -- had none, so an entry approved while it was down sat with status
+    "approved" and executed on whatever tick came next, at that tick's price. The
+    inbox path had no check at all.
+    """
+
+    def _run(self, records, inbox_records=None):
+        import json
+        import os
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        import portfolio_optimizer
+
+        now = datetime.now(timezone.utc)
+        tmp = tempfile.mkdtemp()
+        pending = os.path.join(tmp, "pending_approvals.json")
+        inbox = os.path.join(tmp, "approvals_inbox")
+        os.makedirs(inbox)
+        json.dump(records, open(pending, "w"))
+        for name, entry in (inbox_records or {}).items():
+            json.dump(entry, open(os.path.join(inbox, name), "w"))
+
+        executed = []
+        stub = type("Stub", (), {})()
+        stub.require_approval = True
+        stub.pending_file = pending
+        stub._execute_approved = lambda e: executed.append(dict(e))
+        stub._check_inbox_approvals = (
+            lambda: portfolio_optimizer.PortfolioOptimizer._check_inbox_approvals(stub))
+        portfolio_optimizer.PortfolioOptimizer._check_pending_approvals(stub)
+        return executed
+
+    def _entry(self, age_hours, reason):
+        from datetime import datetime, timedelta, timezone
+        return {
+            "status": "approved", "side": "BUY", "currency": "BTC",
+            "product_id": "BTC-USD", "size_usd": 1000, "reason": reason,
+            "created_at": (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat(),
+        }
+
+    def test_stale_canonical_approval_is_not_executed(self):
+        executed = self._run({"tok": self._entry(24 * 30, "stale")})
+        self.assertEqual(executed, [], "a 30-day-old approval must not execute")
+
+    def test_fresh_canonical_approval_still_executes(self):
+        executed = self._run({"tok": self._entry(1, "fresh")})
+        self.assertEqual([e["reason"] for e in executed], ["fresh"])
+
+    def test_stale_inbox_approval_is_not_executed(self):
+        executed = self._run({}, {"old.json": self._entry(24 * 30, "stale-inbox")})
+        self.assertEqual(executed, [], "the inbox had no expiry check at all")
+
+    def test_fresh_inbox_approval_still_executes(self):
+        executed = self._run({}, {"new.json": self._entry(1, "fresh-inbox")})
+        self.assertEqual([e["reason"] for e in executed], ["fresh-inbox"])
+
+    def test_unreadable_timestamp_is_not_executed(self):
+        import portfolio_optimizer
+        for entry in ({}, {"created_at": "garbage"}, {"created_at": ""}):
+            with self.subTest(entry=entry):
+                self.assertTrue(portfolio_optimizer._approval_is_expired(entry))
+
+    def test_expiry_gate_fails_closed_if_it_cannot_be_evaluated(self):
+        import portfolio_optimizer
+        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+        def boom(name, *args, **kwargs):
+            if name == "approval_server":
+                raise ImportError("simulated")
+            return real_import(name, *args, **kwargs)
+
+        import builtins
+        saved = builtins.__import__
+        builtins.__import__ = boom
+        try:
+            self.assertTrue(
+                portfolio_optimizer._approval_is_expired({"created_at": "anything"}),
+                "an approval whose age cannot be evaluated must not execute",
+            )
+        finally:
+            builtins.__import__ = saved
