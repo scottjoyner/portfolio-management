@@ -311,3 +311,128 @@ class TestHealthCheckExitCodes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestWatcherSingleWriterLock(unittest.TestCase):
+    """Two watchers on one ledger can lose a close.
+
+    An orphaned exit-only watcher was found running on this host alongside the
+    supervisor's own. The docstring asserted single-writer safety by convention;
+    nothing enforced it.
+    """
+
+    def _module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "hermes_agent_watch", REPO_ROOT / "scripts" / "hermes_agent_watch.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_second_watcher_is_refused(self):
+        watch = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = str(Path(tmp) / "ledger.lock")
+            first = watch.acquire_single_instance_lock(lock)
+            try:
+                with self.assertRaises(SystemExit) as caught:
+                    watch.acquire_single_instance_lock(lock)
+                self.assertIn("another exit-only watcher", str(caught.exception))
+            finally:
+                first.close()
+
+    def test_lock_is_released_on_close(self):
+        watch = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = str(Path(tmp) / "ledger.lock")
+            watch.acquire_single_instance_lock(lock).close()
+            second = watch.acquire_single_instance_lock(lock)
+            second.close()
+
+    def test_lock_records_the_holding_pid(self):
+        watch = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "ledger.lock"
+            handle = watch.acquire_single_instance_lock(str(lock))
+            try:
+                self.assertIn(str(os.getpid()), lock.read_text())
+            finally:
+                handle.close()
+
+    def test_refusal_names_the_other_pid(self):
+        watch = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = str(Path(tmp) / "ledger.lock")
+            handle = watch.acquire_single_instance_lock(lock)
+            try:
+                with self.assertRaises(SystemExit) as caught:
+                    watch.acquire_single_instance_lock(lock)
+                self.assertIn(str(os.getpid()), str(caught.exception))
+            finally:
+                handle.close()
+
+    def test_daemon_path_actually_takes_the_lock(self):
+        """Assert the call site, not just the helper.
+
+        Testing acquire_single_instance_lock directly passed even with the call
+        removed from main(), which is the same gap that let the weak kill switch
+        and the discarded status exit code survive.
+        """
+        script = REPO_ROOT / "scripts" / "hermes_agent_watch.py"
+        source = script.read_text()
+        import ast as _ast
+        tree = _ast.parse(source)
+        main_fn = next((n for n in _ast.walk(tree)
+                        if isinstance(n, _ast.FunctionDef) and n.name == "main"), None)
+        self.assertIsNotNone(main_fn, "main() must exist")
+        called = {
+            n.func.id for n in _ast.walk(main_fn)
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+        }
+        self.assertIn(
+            "acquire_single_instance_lock", called,
+            "the daemon path in main() must take the single-writer lock",
+        )
+
+
+class TestOrphanDetection(unittest.TestCase):
+    """A supervised component running outside its supervisor must be visible.
+
+    An exit-only watcher was found on this host running from a disabled user unit
+    alongside the supervisor's own, both doing read-modify->save on one ledger.
+    """
+
+    def _ps_line(self, pid, age, args):
+        # Reproduces ps's right-aligned columns, which broke a naive parser.
+        return f"{pid:>7} {age:>8} {args}"
+
+    def test_parser_handles_right_aligned_ps_columns(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "health_check", REPO_ROOT / "scripts" / "health_check.py")
+        health = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(health)
+
+        sample = "\n".join([
+            self._ps_line(2394496, 455842, "/venv/bin/python /repo/scripts/hermes_agent_watch.py --interval 20"),
+            self._ps_line(999999, 3, "/venv/bin/python /repo/scripts/hermes_agent_watch.py --interval 20"),
+            self._ps_line(630945, 1229338, "/venv/bin/python3 /repo/trading_system/ui/dashboard_server.py --port 8002"),
+        ])
+
+        original = health.subprocess.run
+
+        def fake_run(cmd, *a, **kw):
+            if cmd[:3] == ["ps", "-eo", "pid=,etimes=,args="]:
+                return subprocess.CompletedProcess(cmd, 0, sample, "")
+            return original(cmd, *a, **kw)
+
+        health.subprocess.run = fake_run
+        try:
+            findings = health.check_unmanaged_duplicates()
+        finally:
+            health.subprocess.run = original
+
+        orphans = [f for f in findings if f.check == "unmanaged_duplicate"]
+        self.assertTrue(orphans, "the 455k-second orphan must be reported")
+        self.assertIn("2394496", orphans[0].detail)
+        # The young one is a --help probe or a manual start, not an orphan.
+        self.assertNotIn("999999", orphans[0].detail)

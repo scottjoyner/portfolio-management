@@ -161,6 +161,62 @@ def check_liveness() -> list[Finding]:
     return []
 
 
+def check_unmanaged_duplicates() -> list[Finding]:
+    """A supervised component running outside its supervisor.
+
+    An orphaned child is invisible to the supervisor's pidfile accounting: it does
+    not know the process exists, will not restart it, and will not stop it. On
+    this host an exit-only watcher was found running from a disabled user unit
+    alongside the supervisor's own, both doing read-modify->save on one ledger.
+    """
+    findings: list[Finding] = []
+    # (argv needle, supervised component, lock/enforcement hint)
+    patterns = {
+        "hermes_agent_watch.py": "agent-watcher",
+        "run_trader_v4.py": "trader-v4",
+        "dashboard_server.py": "dashboard",
+        "unified_market_daemon.py": "daemon",
+    }
+    try:
+        state = json.loads(SUPERVISOR_STATE.read_text())
+    except Exception:
+        return findings  # freshness check reports this
+    managed = {c.get("pid") for c in state.get("children", []) if c.get("pid")}
+
+    # Only long-lived processes count. A `--help` probe or a one-off manual start
+    # matches the same argv within seconds, and reporting those as orphans makes
+    # the check cry wolf. A real orphan is hours old.
+    min_age_s = 300
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,etimes=,args="], capture_output=True,
+                             text=True, timeout=30).stdout
+    except Exception:
+        return findings
+    for line in out.splitlines():
+        # ps right-aligns columns, so the fields are separated by runs of spaces.
+        # Splitting on a single space yields an empty age field and silently skips
+        # every line, which is how this check found nothing on its first run.
+        fields = line.split(None, 2)
+        if len(fields) < 3:
+            continue
+        pid_text, age_text, args = fields
+        if not pid_text.isdigit() or not age_text.isdigit():
+            continue
+        pid = int(pid_text)
+        if int(age_text) < min_age_s:
+            continue
+        for needle, component in patterns.items():
+            if needle in args and pid != os.getpid() and "ps -eo" not in args:
+                if pid not in managed:
+                    findings.append(Finding(
+                        "degraded", "unmanaged_duplicate",
+                        f"{component} is running as pid {pid} but is not in any supervisor "
+                        f"pidfile; an orphan mutates state the supervisor does not track",
+                    ))
+                break
+    return findings
+
+
 def check_kill_switch() -> list[Finding]:
     """An engaged kill switch is an operator decision, so report it as `halted`."""
     try:
@@ -183,6 +239,7 @@ def run(alert_on_halt: bool = False) -> dict:
     findings.extend(check_readiness())
     findings.extend(check_liveness())
     findings.extend(check_kill_switch())
+    findings.extend(check_unmanaged_duplicates())
 
     hard = [f for f in findings if f.severity in ("degraded", "error")]
     halted = [f for f in findings if f.severity == "halted"]

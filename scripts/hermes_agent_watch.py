@@ -16,9 +16,14 @@ WHAT IT DOES *NOT* DO
   * It never OPENS positions. Entries stay 100% with the 15-min strategic loop.
   * It never touches sizing, leverage, or the drawdown circuit.
   * It writes only via the same close_position / close_short trader functions the
-    loop uses, so the ledger stays consistent and single-writer-safe (the loop and
-    watcher both mutate data/hermes_agent_ledger.json but only ever through the
-    trader's load->mutate->save, and closes are idempotent on an already-flat pos).
+    loop uses, and closes are idempotent on an already-flat position.
+  * Single-writer is *enforced*, not assumed: the daemon holds an exclusive
+    flock on data/hermes_agent_ledger.lock for its lifetime and refuses to start
+    while another watcher holds it. Idempotent closes stop a double-close of one
+    position, but they do not stop two processes doing read->mutate->save on one
+    ledger and losing each other's write. A second watcher was found running on
+    this host, orphaned from a disabled unit, which is exactly the case the lock
+    now rejects.
 
 SAFETY
   * Honors KILL_SWITCH (env) — exits immediately, does nothing.
@@ -41,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import os
 import sys
 import time
@@ -168,6 +174,46 @@ def watch_once(client, verbose: bool = True) -> dict:
     return {"checked": checked, "closed": closed}
 
 
+WATCHER_LOCK_PATH = "data/hermes_agent_ledger.lock"
+
+
+def acquire_single_instance_lock(path: str = WATCHER_LOCK_PATH):
+    """Take an exclusive lock so only one watcher mutates the ledger at a time.
+
+    Returns the held file object, which must stay referenced for the process
+    lifetime: closing it, or dropping the reference, releases the lock.
+
+    Raises SystemExit if another instance already holds it. Refusing is correct:
+    two watchers racing on one ledger can silently lose a close.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(target, "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        holder = ""
+        try:
+            recorded = target.read_text().strip()
+            holder = f" (pid {recorded})" if recorded else ""
+        except OSError:
+            pass
+        handle.close()
+        raise SystemExit(
+            f"[watch] another exit-only watcher already holds {target}{holder}. Two "
+            "watchers on one ledger can lose a close. Stop the other instance first "
+            "(look for an orphan left behind by a disabled unit), then restart this one."
+        )
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+    except OSError:
+        pass
+    return handle
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Hermes agent exit-only watcher")
     ap.add_argument("--interval", type=float, default=20.0,
@@ -181,6 +227,14 @@ def main() -> int:
     if KILL_SWITCH:
         print("[watch] KILL_SWITCH active — exiting")
         return 0
+
+    # Claim single-writer before doing anything else. --once is one immediate pass
+    # and does not contend, so the lock is daemon-only. Taken before the client is
+    # built so a duplicate exits without touching the network or the ledger.
+    lock_handle = None
+    if not args.once:
+        lock_handle = acquire_single_instance_lock()
+        assert lock_handle is not None  # keep the lock alive for the process lifetime
 
     # Lazy client init (reuses the loop's CBClient path).
     from coinbase.src.cb_client import CBClient
@@ -197,9 +251,8 @@ def main() -> int:
                       f"{c['price']:.6g} -> pnl={c['pnl']}")
         return 0
 
-    # Daemon loop.
     print(f"[watch] exit-only watcher started — interval={args.interval}s "
-          f"(paper-only, never opens positions)")
+          f"(paper-only, never opens positions) pid={os.getpid()}")
     while True:
         try:
             res = watch_once(client, verbose=verbose)
