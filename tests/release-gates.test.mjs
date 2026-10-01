@@ -112,6 +112,18 @@ test('the review packet names the security surface and does not claim a review',
   assert.match(packet.note, /not a review/i);
 });
 
+test('the rehearsal refuses a dirty tree, because a SHA then identifies nothing', () => {
+  // Regression guard for a real evidence-integrity defect: the runner recorded
+  // the HEAD SHA of a dirty tree, so the record cited a commit that could not
+  // have produced the result. Loading that commit later shows a broken compose
+  // file and makes a passing rehearsal look fabricated.
+  const rehearsal = fs.readFileSync('scripts/rehearse-deployment.mjs', 'utf8');
+  assert.ok(rehearsal.includes('rehearsal_working_tree_dirty'));
+  assert.ok(rehearsal.includes('status.stdout.trim() !=='));
+  // The dirty-tree refusal must throw rather than merely record a flag.
+  assert.ok(/if \(status\.stdout\.trim\(\) !== ''\) \{\s*throw/.test(rehearsal), 'a dirty tree must abort the rehearsal, not just be noted');
+});
+
 test('the rehearsal record cannot certify its own target host', () => {
   const rehearsal = fs.readFileSync('scripts/rehearse-deployment.mjs', 'utf8');
   assert.ok(rehearsal.includes('certifiesTargetHost: false'));

@@ -148,7 +148,25 @@ step('source-revision', commands => {
   commands.push(head);
   const status = run('git', ['status', '--short'], { allowFailure: true });
   commands.push(status);
-  return { releaseSha: head.stdout.trim(), workingTreeClean: status.stdout.trim() === '' };
+
+  // A dirty tree invalidates the whole record. The SHA names a commit whose tree
+  // was not what got deployed or tested, so every later step would be evidence
+  // for something other than what the SHA points at. This is not a warning: the
+  // first version of this runner recorded the SHA anyway, and the resulting
+  // record cited a commit that could not have produced the result.
+  if (status.stdout.trim() !== '') {
+    throw Object.assign(new Error('rehearsal_working_tree_dirty'), {
+      step: {
+        command: 'git status --short',
+        ok: false,
+        status: 1,
+        stdout: status.stdout,
+        stderr: 'The working tree has uncommitted changes. The recorded SHA would not identify the tree that was tested, so the evidence would be worthless. Commit or stash first.',
+        durationMs: status.durationMs
+      }
+    });
+  }
+  return { releaseSha: head.stdout.trim(), workingTreeClean: true };
 });
 
 step('preflight-port', commands => {
