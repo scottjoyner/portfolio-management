@@ -1370,11 +1370,13 @@ class PortfolioOptimizer:
             brackets = self._bracket_mgr.active_brackets()
             if not brackets:
                 return
+            skipped = 0
             for bid, b in list(brackets.items()):
                 if b.get("status") != "OPEN":
                     continue
                 pid = b.get("product_id", "")
                 if not pid:
+                    skipped += 1
                     continue
                 try:
                     resp = self.cli.best_bid_ask(pid)
@@ -1387,9 +1389,30 @@ class PortfolioOptimizer:
                         continue
                     if mid <= 0:
                         continue
-                    initial_stop_dist = b.get("initial_stop_dist", 0)
                     side = b.get("side", "BUY")
-                    r_multiple = (mid - float(b.get("entry_price", mid))) / max(initial_stop_dist, 0.001)
+                    entry_price = float(b.get("entry_price") or mid or 0.0)
+
+                    # Recover the stop distance rather than inventing one. This used
+                    # to be `max(initial_stop_dist, 0.001)`, which fabricates a 0.001
+                    # distance for any bracket lacking the field and inflates
+                    # r_multiple by up to 1000x. Every term in
+                    # compute_trailing_stop scales with initial_stop_dist, so that
+                    # drove the protective stop to the highest observed price.
+                    # run_trader_v4 already recovers it from entry and current stop;
+                    # the optimizer did not.
+                    initial_stop_dist = float(b.get("initial_stop_dist") or 0.0)
+                    if initial_stop_dist <= 0:
+                        current_stop = float(b.get("stop_price") or 0.0)
+                        if current_stop > 0 and entry_price > 0:
+                            initial_stop_dist = abs(entry_price - current_stop)
+                    if initial_stop_dist <= 0:
+                        skipped += 1
+                        logger.warning(
+                            "  -> Bracket %s has no usable stop distance; leaving its "
+                            "existing stop untouched this poll", bid)
+                        continue
+
+                    r_multiple = (mid - entry_price) / initial_stop_dist
                     if side.upper() == "SELL":
                         r_multiple = -r_multiple
                     age_s = time.time() - float(b.get("created_at", time.time()))
@@ -1403,10 +1426,20 @@ class PortfolioOptimizer:
                         initial_stop_dist, r_multiple, max_hold_s, age_s,
                     )
                 except Exception as e:
+                    # Counted and summarised below rather than logged per bracket: a
+                    # transient bid/ask failure every poll would otherwise flood the
+                    # log, which is how silent loss of protection gets ignored.
+                    skipped += 1
                     logger.debug("Bracket %s poll error: %s", bid, e)
+            if skipped:
+                logger.warning(
+                    "Bracket poll: %d of %d bracket(s) not managed this cycle; their "
+                    "protective stops were left unchanged", skipped, len(brackets))
             self._save_brackets()
         except Exception as e:
-            logger.debug("Bracket poll failed: %s", e)
+            # The whole poll failed: every open position lost its trailing-stop
+            # management for this cycle. That is not a debug-level event.
+            logger.warning("Bracket poll failed entirely; no trailing stops updated: %s", e)
 
     def _load_graph_universe(self, *, limit: int = 5000, only_coinbase: bool = True) -> None:
         if not _HAS_COINBASE_GRAPH:

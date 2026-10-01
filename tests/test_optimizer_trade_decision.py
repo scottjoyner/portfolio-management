@@ -694,3 +694,193 @@ class TestBracketProtectiveLevels(unittest.TestCase):
                     opp = self._opp(side=side, stop=stop, target=10.0)
                     po.PortfolioOptimizer._execute_with_bracket(opt, opp, 0.01, False)
                     self.assertEqual(opt.brackets.placed, [])
+
+
+class _FakeBracketState:
+    """Stands in for the bracket manager's active_brackets() view."""
+
+    def __init__(self, brackets):
+        self._brackets = brackets
+        self.stop_updates: list[tuple] = []
+        self.tp_updates: list[tuple] = []
+        self.saved = 0
+
+    def active_brackets(self):
+        return self._brackets
+
+    def update_trailing_stop(self, bid, price, high, low, dist, r, max_hold, age):
+        self.stop_updates.append((bid, dist, r))
+        return True
+
+    def update_trailing_take_profit(self, bid, price, high, low, dist, r, max_hold, age):
+        self.tp_updates.append((bid, dist, r))
+        return True
+
+
+class TestBracketPollStopDistance(unittest.TestCase):
+    """A bracket with no usable stop distance must keep its existing stop.
+
+    _poll_brackets used `max(initial_stop_dist, 0.001)`, inventing a distance for
+    any bracket lacking the field and inflating r_multiple by up to 1000x. Because
+    every term in compute_trailing_stop scales with initial_stop_dist, that drove
+    the protective stop to the highest observed price.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _opt(self, brackets, bid_ask=None):
+        opt = po.PortfolioOptimizer.__new__(po.PortfolioOptimizer)
+        opt.dry_run = False
+        opt.brackets = _FakeBracketState(brackets)
+        opt._bracket_mgr = opt.brackets
+        opt._save_brackets = lambda: setattr(opt.brackets, "saved", opt.brackets.saved + 1)
+        opt.cli = _FakeCLI()
+        opt.cli.best_bid_ask = lambda pid: bid_ask or {
+            "bids": [[110.0, "1"]], "asks": [[110.0, "1"]]}
+        return opt
+
+    def _bracket(self, **kw):
+        b = {"status": "OPEN", "product_id": "BTC-USD", "side": "BUY",
+             "entry_price": 100.0, "stop_price": 95.0, "initial_stop_dist": 5.0,
+             "created_at": 1.0}
+        b.update(kw)
+        return b
+
+    def test_normal_bracket_is_managed(self):
+        opt = self._opt({"b1": self._bracket()})
+        po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(len(opt.brackets.stop_updates), 1)
+        bid, dist, r = opt.brackets.stop_updates[0]
+        self.assertAlmostEqual(dist, 5.0, places=6)
+
+    def test_missing_stop_distance_is_recovered_from_entry_and_stop(self):
+        # run_trader_v4 already did this; the optimizer now matches it.
+        opt = self._opt({"b1": self._bracket(initial_stop_dist=0.0)})
+        po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(len(opt.brackets.stop_updates), 1)
+        _, dist, _ = opt.brackets.stop_updates[0]
+        self.assertAlmostEqual(dist, 5.0, places=6,
+                               msg="abs(entry 100 - stop 95) = 5")
+
+    def test_absent_field_is_recovered(self):
+        b = self._bracket()
+        b.pop("initial_stop_dist")
+        opt = self._opt({"b1": b})
+        po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(len(opt.brackets.stop_updates), 1)
+
+    def test_unrecoverable_distance_is_skipped_not_fabricated(self):
+        # No stored distance AND no usable current stop: refuse, leave the stop be.
+        opt = self._opt({"b1": self._bracket(initial_stop_dist=0.0, stop_price=0.0)})
+        po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(opt.brackets.stop_updates, [],
+                         "a fabricated 0.001 distance must not be used")
+        self.assertEqual(opt.brackets.tp_updates, [])
+
+    def test_skip_is_logged_at_warning(self):
+        opt = self._opt({"b1": self._bracket(initial_stop_dist=0.0, stop_price=0.0)})
+        with self.assertLogs("optimizer", level="WARNING") as captured:
+            po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertTrue(any("not managed" in line or "no usable stop distance" in line
+                            for line in captured.output),
+                        f"unmanaged protection must be visible: {captured.output}")
+
+    def test_r_multiple_is_not_inflated(self):
+        # mid 110 from entry 100 with a true distance of 5 is R=2. With the old
+        # max(dist, 0.001) divisor this would have been R=2000.
+        opt = self._opt({"b1": self._bracket(initial_stop_dist=5.0)})
+        po.PortfolioOptimizer._poll_brackets(opt)
+        _, _, r = opt.brackets.stop_updates[0]
+        self.assertAlmostEqual(r, 2.0, places=6)
+
+    def test_short_side_distance_and_r(self):
+        opt = self._opt({"b1": self._bracket(side="SELL", entry_price=100.0,
+                                             stop_price=105.0, initial_stop_dist=5.0)},
+                        bid_ask={"bids": [[90.0, "1"]], "asks": [[90.0, "1"]]})
+        po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(len(opt.brackets.stop_updates), 1)
+        _, _, r = opt.brackets.stop_updates[0]
+        self.assertAlmostEqual(r, 2.0, places=6, msg="a short from 100 to 90 on 5 is R=2")
+
+    def test_dry_run_does_not_poll(self):
+        opt = self._opt({"b1": self._bracket()})
+        opt.dry_run = True
+        po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(opt.brackets.stop_updates, [])
+
+    def test_whole_poll_failure_is_logged_at_warning(self):
+        opt = self._opt({"b1": self._bracket()})
+
+        def boom():
+            raise RuntimeError("order book unavailable")
+        opt.brackets.active_brackets = boom
+        with self.assertLogs("optimizer", level="WARNING") as captured:
+            po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertTrue(any("poll failed" in line for line in captured.output),
+                        f"losing all trailing-stop management must be visible: {captured.output}")
+
+
+    def test_skip_summary_is_reported(self):
+        """The per-bracket line alone does not scale to many brackets.
+
+        One warning per skipped bracket every poll would flood the log, which is why
+        the summary exists. This asserts it is emitted and counts correctly.
+        """
+        opt = self._opt({
+            "b1": self._bracket(initial_stop_dist=0.0, stop_price=0.0),
+            "b2": self._bracket(initial_stop_dist=0.0, stop_price=0.0),
+            "b3": self._bracket(),
+            "b4": self._bracket(status="CLOSED"),
+        })
+        with self.assertLogs("optimizer", level="WARNING") as captured:
+            po.PortfolioOptimizer._poll_brackets(opt)
+        summaries = [line for line in captured.output if "not managed this cycle" in line]
+        self.assertTrue(summaries, f"the summary must be emitted: {captured.output}")
+        self.assertIn("2 of 4", summaries[0],
+                      "should count the two unmanageable brackets of the four")
+        self.assertEqual(len(opt.brackets.stop_updates), 1,
+                         "only the healthy bracket should be managed")
+
+    def test_bracket_without_product_id_counts_as_skipped(self):
+        opt = self._opt({"b1": self._bracket(product_id="")})
+        with self.assertLogs("optimizer", level="WARNING") as captured:
+            po.PortfolioOptimizer._poll_brackets(opt)
+        self.assertEqual(opt.brackets.stop_updates, [])
+        self.assertTrue(any("not managed" in line for line in captured.output))
+
+
+class TestTrailingStopRefusesWithoutDistance(unittest.TestCase):
+    """The shared primitive must not collapse to the current price."""
+
+    def _call(self, **kw):
+        from coinbase.src.execution_v2 import compute_trailing_stop
+        params = dict(side="BUY", entry_price=100.0, current_stop=95.0,
+                      highest_price=110.0, lowest_price=95.0,
+                      initial_stop_dist=5.0, r_multiple=2.0,
+                      max_hold_s=86400, age_s=100.0)
+        params.update(kw)
+        return compute_trailing_stop(**params)
+
+    def test_zero_distance_leaves_the_stop_untouched(self):
+        stop, be = self._call(initial_stop_dist=0.0, r_multiple=1000.0)
+        self.assertEqual(stop, 95.0)
+        self.assertFalse(be)
+
+    def test_none_distance_leaves_the_stop_untouched(self):
+        stop, _ = self._call(initial_stop_dist=None)
+        self.assertEqual(stop, 95.0)
+
+    def test_negative_distance_leaves_the_stop_untouched(self):
+        stop, _ = self._call(initial_stop_dist=-5.0)
+        self.assertEqual(stop, 95.0)
+
+    def test_short_side_zero_distance(self):
+        stop, _ = self._call(side="SELL", current_stop=105.0, highest_price=110.0,
+                             lowest_price=90.0, initial_stop_dist=0.0, r_multiple=1000.0)
+        self.assertEqual(stop, 105.0)
+
+    def test_normal_distance_still_trails(self):
+        stop, be = self._call(initial_stop_dist=10.0, r_multiple=2.0)
+        self.assertGreaterEqual(stop, 100.0, "a real distance must still trail up")
+        self.assertTrue(be)

@@ -130,6 +130,16 @@ def compute_trailing_stop(
     an order (live) or just update the in-memory stop (paper). ``side`` is "BUY"/"SELL".
     """
     side = side.upper()
+
+    # Without a stop distance there is no trail to compute, and every term below
+    # multiplies initial_stop_dist, so a distance of zero collapses to
+    # `stop = highest_price` for a long (lowest_price for a short): the protective
+    # stop gets dragged to the current market on the first poll. Returning the
+    # existing stop unchanged is the only safe action -- it keeps whatever
+    # protection the bracket was opened with.
+    if initial_stop_dist is None or initial_stop_dist <= 0:
+        return current_stop, bool(breakeven_set)
+
     vol_mult = 1.5 if regime == "high_volatility" else 1.0
     trailing_dist = initial_stop_dist * vol_mult
     be_set = bool(breakeven_set)
