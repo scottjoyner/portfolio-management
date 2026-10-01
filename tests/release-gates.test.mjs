@@ -131,3 +131,32 @@ test('the rehearsal record cannot certify its own target host', () => {
   // The teardown must not use the prohibited `down -v`.
   assert.ok(!rehearsal.includes("'down', '-v'"));
 });
+
+test('release status separates automated gates from human gates, and refuses to certify', () => {
+  // The point of this command is the distinction, so assert the distinction.
+  const result = spawnSync(process.execPath, ['scripts/release-status.mjs'], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024
+  });
+  const report = JSON.parse(result.stdout);
+
+  for (const area of ['source', 'tests', 'releaseControls', 'rehearsal', 'gapRegister', 'humanGates', 'certification']) {
+    assert.ok(report.sections.some(section => section.area === area), `missing section: ${area}`);
+  }
+
+  // No tool can attest to human sign-off, so this must never be computed true.
+  assert.equal(report.readyToDeploy, false);
+  assert.match(report.readyToDeployReason, /cannot attest/i);
+
+  // The rehearsal must be cross-checked against the head being deployed.
+  const rehearsal = report.sections.find(section => section.area === 'rehearsal');
+  const match = rehearsal.lines.find(line => line.label === 'matchesCurrentHead');
+  assert.ok(match, 'the rehearsal must be compared against the current head');
+  const host = rehearsal.lines.find(line => line.label === 'certifiesTargetHost');
+  assert.equal(host.value, false, 'a rehearsal must never claim to certify its target host');
+
+  // Human gates must be enumerated by name rather than summarised away.
+  const human = report.sections.find(section => section.area === 'humanGates');
+  const owners = human.lines.find(line => line.label === 'namedOwnersOutstanding');
+  assert.ok(owners.value > 0, 'owners are genuinely outstanding and must be reported as such');
+});
