@@ -189,6 +189,7 @@ jobs:
           tests/test_supervisor_contract.py \
           tests/test_production_health.py \
           tests/test_systemd_units.py \
+          tests/test_optimizer_trade_decision.py \
           tests/test_competition_scoreboard.py \
           tests/test_hermes_agent_accounting.py \
           tests/test_hermes_agent_trader_v2.py \

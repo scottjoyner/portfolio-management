@@ -2569,8 +2569,16 @@ class PortfolioOptimizer:
         base_qty = 0.0
         if not is_quote and self.state:
             holder = self.state.holdings.get(currency, {})
-            price = holder.get("price", 0) or 1
-            base_qty = size_usd / price if price > 0 else 0
+            # Same defect as the opportunity path: a missing or zero price used to
+            # read as $1, so a $500 approved BTC sell sized 500 BTC.
+            try:
+                price = float(holder.get("price") or 0.0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price <= 0:
+                logger.warning("  → No usable price for held %s, refusing to size the sell", currency)
+                return
+            base_qty = size_usd / price
             if base_qty <= 0:
                 logger.warning("  → Cannot compute base quantity, skipping")
                 return
@@ -6382,8 +6390,20 @@ class PortfolioOptimizer:
             base_qty = opp.size_usd / entry_price if entry_price > 0 else 0
         else:
             holder = self.state.holdings.get(opp.currency, {})
-            price = holder.get("price", 0) or 1
-            base_qty = opp.size_usd / price if price > 0 else 0
+            # An unusable price must refuse the sell, not default to $1. This read
+            # as `holder.get("price", 0) or 1`, so a holding whose price was missing
+            # or zero priced at 1 and base_qty became size_usd itself: a $500 BTC
+            # sell computed 500 BTC. The `base_qty <= 0` guard below could not
+            # catch it, because the quantity was enormous rather than zero.
+            try:
+                price = float(holder.get("price") or 0.0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price <= 0:
+                logger.warning(
+                    "  → No usable price for held %s, refusing to size the sell", opp.currency)
+                return
+            base_qty = opp.size_usd / price
             if base_qty <= 0:
                 logger.warning("  → Cannot compute base quantity, skipping")
                 return
