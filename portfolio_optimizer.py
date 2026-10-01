@@ -3610,19 +3610,52 @@ class PortfolioOptimizer:
 
         # Get cross-asset regime state
         regime_state = None
+        degraded = []
         if self._cross_asset_regime:
             try:
                 regime_state = self._cross_asset_regime.get_state(refresh=False)
+                if regime_state is None:
+                    degraded.append("cross_asset_regime:no_state")
             except Exception as e:
-                logger.debug("Cross-asset regime refresh failed: %s", e)
+                degraded.append(f"cross_asset_regime:{type(e).__name__}")
+                regime_state = None
+
+        # An engine that is simply not configured is a configuration state, not a
+        # degradation. Only failures are recorded here, so this flag stays
+        # meaningful instead of being permanently true on a default deployment.
 
         # Get macro risk signal
         macro_sig = None
         if self._macro_risk:
             try:
                 macro_sig = self._macro_risk.get_signal()
+                if macro_sig is None:
+                    degraded.append("macro_risk:no_signal")
             except Exception as e:
-                logger.debug("Macro risk signal failed: %s", e)
+                degraded.append(f"macro_risk:{type(e).__name__}")
+                macro_sig = None
+
+        # An advisory overlay, not a safety limit. Unlike the kill switch or the
+        # position limits, this must NOT halt trading when a third-party macro feed
+        # is unavailable -- that would turn Yahoo Finance into a trading gate. So it
+        # fails open on the *data*.
+        #
+        # What it must not do is fail open silently. It used to return every
+        # opportunity untouched with a logger.debug, which is invisible at default
+        # level, so a risk-off suppression could be off for weeks with nothing in
+        # the logs. The degradation is now logged at warning, tagged onto every
+        # opportunity so it reaches the trade record, and recorded on the instance
+        # so health reporting can see that the macro gate is degraded.
+        # Only actual failures count. A deployment that never configured these
+        # optional engines has not degraded anything, and folding that case in
+        # would leave this flag permanently true and train operators to ignore it.
+        self.macro_risk_filter_degraded = bool(degraded)
+        if degraded:
+            logger.warning(
+                "Cross-asset/macro risk overlay DEGRADED (%s); sizing and long-suppression "
+                "are not being applied this tick", ", ".join(degraded))
+            for opp in opportunities:
+                opp.meta["macro_risk_overlay"] = "degraded:" + ",".join(degraded)
 
         if not regime_state and not macro_sig:
             return opportunities
@@ -3631,14 +3664,42 @@ class PortfolioOptimizer:
         for opp in opportunities:
             # ── Cross-asset regime gate ──────────────────────────
             if regime_state:
+                # getattr, not attribute access. A partial or older regime object
+                # raised AttributeError straight out of this filter, which is called
+                # from _detect_opportunities, so one missing macro field aborted the
+                # entire signal-detection tick and lost all ten detection dimensions
+                # rather than just this advisory overlay.
+                allows_new_longs = bool(getattr(regime_state, "allows_new_longs", False))
+                risk_multiplier = getattr(regime_state, "risk_multiplier", None)
+                regime_name = getattr(regime_state, "regime", None)
+                trend_bias = getattr(regime_state, "trend_bias", None)
+
+                missing = [
+                    field for field, value in (
+                        ("allows_new_longs", getattr(regime_state, "allows_new_longs", None)),
+                        ("risk_multiplier", risk_multiplier),
+                        ("regime", regime_name),
+                    )
+                    if value is None
+                ]
+                if missing:
+                    # Absent fields default conservatively (no new longs), but the
+                    # data is incomplete and that must be visible rather than silent.
+                    marker = "degraded:regime_fields_missing=" + ",".join(missing)
+                    self.macro_risk_filter_degraded = True
+                    opp.meta["macro_risk_overlay"] = marker
+                    logger.warning("Cross-asset regime object is missing %s; "
+                                   "treating as not allowing new longs",
+                                   ",".join(missing))
+
                 # Suppress BUY when regime forbids new longs
-                if opp.side == "BUY" and not regime_state.allows_new_longs:
+                if opp.side == "BUY" and not allows_new_longs:
                     logger.debug("  Suppressing %s BUY (regime=%s forbids new longs)",
                                  opp.currency, regime_state.regime)
                     continue
 
                 # Scale size by risk multiplier
-                risk_mult = regime_state.risk_multiplier
+                risk_mult = risk_multiplier if isinstance(risk_multiplier, (int, float)) else 1.0
                 if risk_mult < 1.0:
                     opp.size_usd = max(opp.size_usd * risk_mult, 0.0)
                     if opp.size_usd < self.min_value:
@@ -3647,19 +3708,24 @@ class PortfolioOptimizer:
                         continue
 
                 # Reduce priority in risk-off
-                if regime_state.regime in ("crash", "risk_off"):
+                if regime_name in ("crash", "risk_off"):
                     opp.priority *= 0.6
-                elif regime_state.regime == "rebound":
+                elif regime_name == "rebound":
                     opp.priority *= 1.15
 
                 # Tag metadata
-                opp.meta["cross_asset_regime"] = regime_state.regime
-                opp.meta["cross_asset_risk_mult"] = round(regime_state.risk_multiplier, 3)
-                opp.meta["cross_asset_trend_bias"] = regime_state.trend_bias
+                opp.meta["cross_asset_regime"] = regime_name
+                opp.meta["cross_asset_risk_mult"] = round(float(risk_mult), 3)
+                opp.meta["cross_asset_trend_bias"] = trend_bias
 
             # ── Macro risk penalty ──────────────────────────────
             if macro_sig:
-                macro_score = macro_sig.macro_score
+                macro_score = getattr(macro_sig, "macro_score", None)
+                if not isinstance(macro_score, (int, float)):
+                    opp.meta["macro_risk_overlay"] = "degraded:macro_score_unreadable"
+                    self.macro_risk_filter_degraded = True
+                    filtered.append(opp)
+                    continue
                 # Extreme macro risk-off: confidence penalty
                 if macro_score >= 1.5 and opp.side == "BUY":
                     opp.priority *= 0.7

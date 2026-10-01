@@ -86,6 +86,8 @@ logs/
 *.sock
 
 # Keep data source code and seed CSVs deployable, but ignore generated state/cache files.
+# Runtime paper-state archives written by coinbase/src/run_trader_v4.py.
+data/state_backups/
 data/*.log
 data/.daemon_heartbeat
 data/.competition_heartbeat

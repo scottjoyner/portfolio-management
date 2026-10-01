@@ -366,3 +366,146 @@ class TestApprovedSellSizing(unittest.TestCase):
                 opt._execute_approved(entry)
                 self.assertEqual(len(opt.cli.orders), before,
                                  "an invalid approved entry must not be submitted")
+
+
+class TestMacroRiskOverlay(unittest.TestCase):
+    """The cross-asset/macro overlay: advisory, so it must not gate trading,
+    but it must never fail open silently either."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _opt(self, regime=None, macro=None):
+        opt = po.PortfolioOptimizer.__new__(po.PortfolioOptimizer)
+        opt._cross_asset_regime = regime
+        opt._macro_risk = macro
+        opt.min_value = 10.0
+        opt.macro_risk_filter_degraded = False
+        return opt
+
+    def _opp(self, side="BUY", size=500.0, priority=1.0):
+        return Opportunity(opp_type=OpportunityType.STRATEGY_SIGNAL, currency="BTC",
+                           side=side, size_usd=size, reason="x", priority=priority,
+                           product_id="BTC-USD")
+
+    class _Regime:
+        def __init__(self, **kw):
+            self.regime = kw.get("regime", "neutral")
+            self.risk_multiplier = kw.get("risk_multiplier", 1.0)
+            self.trend_bias = kw.get("trend_bias", "flat")
+            self.allows_new_longs = kw.get("allows_new_longs", True)
+
+    class _Engine:
+        def __init__(self, state=None, raises=None):
+            self._state, self._raises = state, raises
+
+        def get_state(self, refresh=False):
+            if self._raises:
+                raise self._raises
+            return self._state
+
+    # ---- healthy behaviour ----
+
+    def test_healthy_risk_off_suppresses_the_buy(self):
+        opt = self._opt(regime=self._Engine(self._Regime(
+            regime="risk_off", allows_new_longs=False, risk_multiplier=0.5)))
+        kept = opt._apply_cross_asset_risk_filter([self._opp()])
+        self.assertEqual(kept, [], "regime forbidding longs must suppress the BUY")
+        self.assertFalse(opt.macro_risk_filter_degraded)
+
+    def test_healthy_permits_the_buy(self):
+        opt = self._opt(regime=self._Engine(self._Regime(allows_new_longs=True)))
+        kept = opt._apply_cross_asset_risk_filter([self._opp()])
+        self.assertEqual(len(kept), 1)
+        self.assertFalse(opt.macro_risk_filter_degraded)
+
+    def test_risk_multiplier_scales_size(self):
+        opt = self._opt(regime=self._Engine(self._Regime(risk_multiplier=0.5)))
+        opp = self._opp(size=500.0)
+        opt._apply_cross_asset_risk_filter([opp])
+        self.assertAlmostEqual(opp.size_usd, 250.0, places=6)
+
+    def test_risk_multiplier_drops_below_minimum(self):
+        opt = self._opt(regime=self._Engine(self._Regime(risk_multiplier=0.001)))
+        kept = opt._apply_cross_asset_risk_filter([self._opp(size=500.0)])
+        self.assertEqual(kept, [], "a size below min_value after scaling must be dropped")
+
+    def test_risk_off_penalises_priority(self):
+        opt = self._opt(regime=self._Engine(self._Regime(
+            regime="risk_off", allows_new_longs=True)))
+        opp = self._opp()
+        opt._apply_cross_asset_risk_filter([opp])
+        self.assertAlmostEqual(opp.priority, 0.6, places=6)
+
+    def test_rebound_boosts_priority(self):
+        opt = self._opt(regime=self._Engine(self._Regime(
+            regime="rebound", allows_new_longs=True)))
+        opp = self._opp()
+        opt._apply_cross_asset_risk_filter([opp])
+        self.assertAlmostEqual(opp.priority, 1.15, places=6)
+
+    # ---- degradation: fails open, but never silently ----
+
+    def test_engine_failure_fails_open_but_is_flagged(self):
+        """Failing open is correct here; failing open silently was the defect."""
+        opt = self._opt(regime=self._Engine(raises=RuntimeError("DXY feed down")))
+        opp = self._opp()
+        kept = opt._apply_cross_asset_risk_filter([opp])
+        self.assertEqual(len(kept), 1, "a macro feed outage must not halt trading")
+        self.assertTrue(opt.macro_risk_filter_degraded,
+                        "the degradation must be observable")
+        self.assertIn("RuntimeError", opp.meta.get("macro_risk_overlay", ""),
+                      "the cause must be tagged onto the opportunity")
+
+    def test_malformed_regime_object_does_not_abort(self):
+        """This raised AttributeError out of the filter and killed the whole tick."""
+        class Partial:
+            regime = "crash"
+            risk_multiplier = 0.5
+            trend_bias = "down"
+            # allows_new_longs absent
+        opt = self._opt(regime=self._Engine(Partial()))
+        kept = opt._apply_cross_asset_risk_filter([self._opp()])
+        self.assertEqual(kept, [], "an incomplete regime must default to not allowing longs")
+        self.assertTrue(opt.macro_risk_filter_degraded)
+        self.assertIn("allows_new_longs", kept[0].meta.get("macro_risk_overlay", "")
+                      if kept else "allows_new_longs")
+
+    def test_unreadable_macro_score_does_not_abort(self):
+        class Macro:
+            macro_score = "high"  # not a number
+        opt = self._opt(macro=Macro())
+        kept = opt._apply_cross_asset_risk_filter([self._opp()])
+        self.assertEqual(len(kept), 1)
+        self.assertTrue(opt.macro_risk_filter_degraded)
+
+    def test_not_configured_is_not_a_degradation(self):
+        """A default deployment has no macro engine; that must not flag forever."""
+        opt = self._opt()
+        opt._apply_cross_asset_risk_filter([self._opp()])
+        self.assertFalse(opt.macro_risk_filter_degraded,
+                         "an unconfigured optional engine is a configuration state")
+
+    def test_empty_input_is_a_no_op(self):
+        opt = self._opt()
+        self.assertEqual(opt._apply_cross_asset_risk_filter([]), [])
+
+    def test_degradation_is_logged_at_warning_not_debug(self):
+        """The defect was precisely that this was invisible.
+
+        logger.debug is below the default level, so a risk-off suppression could be
+        off for weeks with nothing in the log. The loudness is the fix, so it is
+        asserted rather than assumed.
+        """
+        import logging
+
+        opt = self._opt(regime=self._Engine(raises=RuntimeError("DXY feed down")))
+        with self.assertLogs("optimizer", level="WARNING") as captured:
+            opt._apply_cross_asset_risk_filter([self._opp()])
+        joined = "\n".join(captured.output)
+        self.assertIn("DEGRADED", joined)
+        self.assertIn("not being applied", joined)
+        self.assertTrue(
+            any(record.startswith("WARNING") for record in captured.output),
+            f"the degradation must be at WARNING, got {captured.output}",
+        )

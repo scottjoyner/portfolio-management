@@ -21,8 +21,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from coinbase.src.run_trader_v4 import EventTraderV4
 
+# Quiet this module's output without silencing logging for the whole session.
+#
+# This used to call logging.disable(logging.CRITICAL) at import time and never
+# restored it, which globally disabled every logger for the rest of the pytest run.
+# That silently broke any later test asserting on log output: the record never
+# existed, so assertLogs reported "no logs of level WARNING or higher" and the test
+# failed for a reason that had nothing to do with the code under test. It also
+# meant a real logging regression could not be observed from a full-suite run.
+#
+# Scoped instead: this module's own loggers are silenced, and the global threshold
+# is left alone.
 logging = __import__("logging")
-logging.disable(logging.CRITICAL)
+_QUIETED = [logging.getLogger(name) for name in
+            ("trader_v4", "coinbase", "optimizer", "urllib3", "asyncio")]
+for _logger in _QUIETED:
+    _logger.addHandler(logging.NullHandler())
+    _logger.propagate = False
 
 
 def _make_trader(products):
