@@ -251,6 +251,32 @@ npm run audit:anchor:verify -- --chain "$AUDIT_EVENTS_JSON" --anchors "$ANCHOR_D
 
 ## Required manual host certification
 
+The rehearsal and the release record are executable rather than a checklist to
+walk through. Run them; do not assert that they were done.
+
+```bash
+# Executes the runbook sequence and writes a step-by-step evidence record.
+npm run rehearse:deployment -- --env-file /secure/path/portfolio.env
+
+# Generates the release record with every name left blank, then fails closed
+# naming exactly what is still missing.
+npm run release-record init
+npm run release-record validate
+
+# The review packet a human reviewer needs, narrowed to the security surface.
+node scripts/release-record.mjs packet
+```
+
+`rehearse:deployment` refuses to run against an occupied API port, because a
+smoke test that validates an unrelated service is worse than no rehearsal. The
+record it writes sets `certifiesTargetHost: false`; confirming that the host is
+the intended deployment target is a human judgement.
+
+`release-record validate` exits non-zero until all eight owners, the evidence
+fields, and both attestations are filled in. It never fills a name in on your
+behalf, and it rejects any live-trading claim.
+
+
 1. Name the release operator, reviewer, rollback owner, and incident owner.
 2. Confirm the exact source SHA matches the reviewed head.
 3. Record current and candidate image digests.

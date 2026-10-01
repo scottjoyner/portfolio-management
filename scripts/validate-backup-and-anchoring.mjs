@@ -24,6 +24,9 @@ const requiredFiles = [
   'tests/audit-anchor.test.mjs',
   'packages/backtesting/src/counterfactualReplay.mjs',
   'tests/counterfactual-replay.test.mjs',
+  'scripts/rehearse-deployment.mjs',
+  'scripts/release-record.mjs',
+  'tests/release-gates.test.mjs',
 ];
 
 const read = path => readFileSync(path, 'utf8');
@@ -44,6 +47,10 @@ const auditVerify = read('scripts/audit-anchor-verify.mjs');
 const backupTests = read('tests/backup-offsite.test.mjs');
 const counterfactual = read('packages/backtesting/src/counterfactualReplay.mjs');
 const counterfactualTests = read('tests/counterfactual-replay.test.mjs');
+const rehearsal = read('scripts/rehearse-deployment.mjs');
+const releaseRecord = read('scripts/release-record.mjs');
+const compose = read('docker-compose.production.yml');
+const releaseGateTests = read('tests/release-gates.test.mjs');
 const anchorTests = read('tests/audit-anchor.test.mjs');
 const packageJson = read('package.json');
 const certifier = read('scripts/certify-production-paper.mjs');
@@ -94,6 +101,25 @@ const checks = [
   [counterfactualTests.includes('null or malformed attribution input stays pending') && counterfactualTests.includes('genuinely zero agent cost'), 'attribution tests must prove missing evidence stays pending while a real zero cost still resolves'],
   [counterfactualTests.includes('not counted as a win'), 'attribution tests must prove a profitable override that did not cover its cost is not scored as a win'],
 
+  // --- G-007: the rehearsal must produce evidence, not a claim ---
+  [rehearsal.includes('preflight-port') && rehearsal.includes('rehearsal_api_port_occupied'), 'the rehearsal must refuse to run against an occupied API port rather than smoke-test a foreign service'],
+  [rehearsal.includes('apply-migrations') && rehearsal.includes('rehearsal_migrate_not_idempotent'), 'the rehearsal must prove migration idempotency, not just that migrations ran'],
+  [rehearsal.includes('rehearsal_services_not_running'), 'the rehearsal must verify the application services actually came up'],
+  [rehearsal.includes('predeploy-backup') && rehearsal.includes('rehearsal_backup_empty'), 'the rehearsal must produce and size-check a pre-deploy logical backup'],
+  [rehearsal.includes("PAPER_ONLY_FLAGS") && rehearsal.includes('rehearsal_paper_only_flags_violated'), 'the rehearsal must verify the paper-only flags in the rendered compose model'],
+  [rehearsal.includes('volumesRemoved: false') && rehearsal.includes("['down']"), 'the rehearsal teardown must not use down -v, which the runbook prohibits as a rollback'],
+  [rehearsal.includes('certifiesTargetHost: false'), 'the rehearsal record must not self-certify the target host'],
+
+  // --- G-008/G-009: the manual gates must be artifacts that fail closed ---
+  [releaseRecord.includes('owner_missing') && releaseRecord.includes('REQUIRED_OWNERS'), 'named ownership must be a validated record rather than prose'],
+  [releaseRecord.includes('attestation_missing') && releaseRecord.includes('humanReviewCompleted'), 'the human review must be a required attestation'],
+  [releaseRecord.includes('live_trading_claim_forbidden'), 'the release record must reject any live-trading certification claim'],
+  [releaseRecord.includes('Object.fromEntries(REQUIRED_OWNERS.map(([key]) => [key, null]))'), 'the release record must never auto-fill a name'],
+  [packageJson.includes('"rehearse:deployment"') && packageJson.includes('"release-record"'), 'package scripts must expose the rehearsal and release record'],
+  [certifier.includes('scripts/release-record.mjs') || certifier.includes('releaseRecord'), 'certification must run the release record validation'],
+  [compose.includes('host.docker.internal:host-gateway'), 'the API and worker must be able to resolve a host inference node, which localRequired deployments require'],
+  [releaseGateTests.includes('still fails') && releaseGateTests.includes('gate is satisfiable'), 'release record tests must prove the human review is required and that the gate is reachable'],
+
   // --- both must actually be wired in, or they are decoration ---
   [packageJson.includes('"backup:export"') && packageJson.includes('"backup:verify"'), 'package scripts must expose backup export and verification'],
   [packageJson.includes('"audit:anchor"') && packageJson.includes('"audit:anchor:verify"'), 'package scripts must expose anchor export and verification'],
@@ -113,7 +139,7 @@ if (errors.length) {
 
 process.stdout.write(`${JSON.stringify({
   ok: true,
-  contract: 'offsite-backup-anchoring-and-counterfactual-v1',
+  contract: 'production-paper-release-evidence-v1',
   backup: {
     signedManifests: true,
     asymmetricOwnership: true,
@@ -137,6 +163,19 @@ process.stdout.write(`${JSON.stringify({
     riskLimitsRespected: true,
     costAdjusted: true,
     pendingOnMissingEvidence: true
+  },
+  rehearsal: {
+    executableSequence: true,
+    portPreflight: true,
+    migrationIdempotencyProven: true,
+    serviceHealthVerified: true,
+    preDeployBackupProduced: true,
+    selfCertifiesTargetHost: false
+  },
+  manualGates: {
+    namedOwnership: 'release-record.json',
+    humanReview: 'release-record.json',
+    failsClosedWhenAbsent: true
   },
   destinationSelectedBy: 'deployment-owner',
   liveTradingCertified: false

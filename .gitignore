@@ -147,6 +147,9 @@ config/kalshi_private_key.pem
 .coveragerc
 .opencode/
 data/feed_cache/
+# Rehearsal evidence: backup dumps and generated records are host-local artifacts.
+data/rehearsal/
+
 data/*_state.json
 data/*_state.json.bak*
 data/*.db-shm

@@ -23,6 +23,11 @@ if (process.env.CERTIFY_VERIFY_BACKUP === 'true') {
 if (process.env.CERTIFY_VERIFY_ANCHORS === 'true') {
   commands.push(['auditAnchorVerification', ['scripts/audit-anchor-verify.mjs']]);
 }
+// G-008/G-009: the manual gates. The record cannot be auto-satisfied, so it is
+// reported as an unresolved control unless a named, reviewed record exists.
+if (process.env.CERTIFY_VERIFY_RELEASE_RECORD === 'true') {
+  commands.push(['releaseRecord', ['scripts/release-record.mjs', 'validate']]);
+}
 
 const checks = [];
 for (const [name, args] of commands) {
@@ -56,6 +61,7 @@ if (!remoteDisabled) failures.push('remote_llm_execution_disabled');
 const unverified = [];
 if (process.env.CERTIFY_VERIFY_BACKUP !== 'true') unverified.push('offsite_backup_destination_unverified');
 if (process.env.CERTIFY_VERIFY_ANCHORS !== 'true') unverified.push('external_audit_anchor_unverified');
+if (process.env.CERTIFY_VERIFY_RELEASE_RECORD !== 'true') unverified.push('named_ownership_and_human_review_unverified');
 
 const report = {
   ok: failures.length === 0,

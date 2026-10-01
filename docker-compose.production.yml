@@ -152,6 +152,14 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # LOCAL_LLM_EXECUTION_REQUIRED=true is the required default, so the API has
+    # to be able to reach an inference node running on the host. Without this,
+    # host.docker.internal does not resolve inside the container and every local
+    # node reports unreachable, which fails /api/economics/intelligence/nodes and
+    # blocks a production-paper deployment. The host node must bind a
+    # non-loopback address for this to work.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3000}:3000"
     healthcheck:
@@ -177,6 +185,9 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # Same host-inference reachability as the API; see the api service comment.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "node", "scripts/check-economic-worker-health.mjs"]
       interval: 30s
