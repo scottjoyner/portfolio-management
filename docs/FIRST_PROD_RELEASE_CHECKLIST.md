@@ -276,6 +276,29 @@ the intended deployment target is a human judgement.
 fields, and both attestations are filled in. It never fills a name in on your
 behalf, and it rejects any live-trading claim.
 
+### Independent review of the security-critical surface
+
+CI runs an `independent-review` job on every pull request. When a change touches
+the security-critical surface -- the execution authorization boundary, the audit
+chain and anchoring, the capital risk and portfolio allocation gates, the secret
+and runtime-state scanners, the migration and rehearsal tooling, the production
+compose model, or the performance thresholds -- the change needs an **approving
+review from somebody other than the author**. A self-approval does not count.
+
+This gate exists because of an observed failure, not a hypothetical one: a
+141-commit stack that rewrote the fail-closed authorization boundary was merged
+with every pull request authored and approved by the same account. The test
+suite was green throughout, which is exactly why it could not catch it. A green
+suite cannot tell you an authorization check got weaker.
+
+The gate fails closed if it cannot determine what changed, rather than assuming
+nothing sensitive did. To review the surface, run:
+
+```bash
+npm run review:gate
+node scripts/release-record.mjs packet
+```
+
 
 1. Name the release operator, reviewer, rollback owner, and incident owner.
 2. Confirm the exact source SHA matches the reviewed head.

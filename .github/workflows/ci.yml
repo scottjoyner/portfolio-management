@@ -6,11 +6,36 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  independent-review:
+    name: independent-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only meaningful for pull requests; pushes have nothing to review.
+    if: github.event_name == 'pull_request'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        # Full history so the base..head diff can be computed without fetching.
+        fetch-depth: 0
+    - name: Require an independent review of the security-critical surface
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Explicit, so the gate is never handed an empty diff and concludes nothing sensitive changed.
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+        node scripts/require-independent-review.mjs
+
   runtime-state-guard:
     name: runtime-state-guard
     runs-on: ubuntu-latest

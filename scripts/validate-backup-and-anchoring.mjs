@@ -30,6 +30,8 @@ const requiredFiles = [
   'packages/execution/src/overseerMigration.mjs',
   'tests/overseer-migration.test.mjs',
   'scripts/migrate-overseer-authorizations.mjs',
+  'scripts/require-independent-review.mjs',
+  'tests/independent-review-gate.test.mjs',
 ];
 
 const read = path => readFileSync(path, 'utf8');
@@ -57,6 +59,9 @@ const releaseGateTests = read('tests/release-gates.test.mjs');
 const overseerMigration = read('packages/execution/src/overseerMigration.mjs');
 const overseerMigrationTests = read('tests/overseer-migration.test.mjs');
 const overseerMigrationCli = read('scripts/migrate-overseer-authorizations.mjs');
+const reviewGate = read('scripts/require-independent-review.mjs');
+const reviewGateTests = read('tests/independent-review-gate.test.mjs');
+const workflowFile = read('.github/workflows/ci.yml');
 const anchorTests = read('tests/audit-anchor.test.mjs');
 const packageJson = read('package.json');
 const certifier = read('scripts/certify-production-paper.mjs');
@@ -139,6 +144,16 @@ const checks = [
   [overseerMigrationTests.includes('MIGRATION WORKS') && overseerMigrationTests.includes('the fixture is a real legacy authorization'), 'migration tests must prove a genuine legacy authorization is re-minted and verifies'],
   [overseerMigrationTests.includes('triaged as expired, not as tampering'), 'migration tests must prove expiry is not reported as tampering'],
 
+  // --- G-009: the review gap that actually happened must not recur ---
+  [reviewGate.includes('SECURITY_SURFACE') && reviewGate.includes('securitySurfaceTouched'), 'the review gate must define an explicit security surface'],
+  [reviewGate.includes('findIndependentApproval') && reviewGate.includes('isAuthor'), 'the review gate must reject a self-approval'],
+  [reviewGate.includes('latestByReviewer'), 'the review gate must honour a reviewer latest state, not an earlier approval'],
+  [reviewGate.includes('independent_review_changed_paths_unavailable'), 'the review gate must fail closed when it cannot determine what changed'],
+  [reviewGateTests.includes('self-approved security change fails') && reviewGateTests.includes('every surface path is a file that actually exists'), 'review gate tests must cover self-approval and stale surface entries'],
+  [workflowFile.includes('independent-review:') && workflowFile.includes('require-independent-review.mjs'), 'CI must run the independent review gate'],
+  [workflowFile.includes('pull-requests: read'), 'CI must be able to read pull request reviews'],
+  [workflowFile.includes('pull_request.base.sha') && workflowFile.includes('pull_request.head.sha'), 'CI must give the review gate an explicit diff to inspect'],
+
   // --- both must actually be wired in, or they are decoration ---
   [packageJson.includes('"backup:export"') && packageJson.includes('"backup:verify"'), 'package scripts must expose backup export and verification'],
   [packageJson.includes('"audit:anchor"') && packageJson.includes('"audit:anchor:verify"'), 'package scripts must expose anchor export and verification'],
@@ -198,6 +213,13 @@ process.stdout.write(`${JSON.stringify({
     separatesExpired: true,
     refusesPolicyRejections: true,
     dryRunByDefault: true
+  },
+  independentReview: {
+    securitySurfaceDefined: true,
+    selfApprovalRejected: true,
+    latestReviewStateHonoured: true,
+    failsClosedOnUnknownDiff: true,
+    enforcedInCi: true
   },
   manualGates: {
     namedOwnership: 'release-record.json',
