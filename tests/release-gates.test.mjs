@@ -167,15 +167,23 @@ test('release status separates automated gates from human gates, and refuses to 
   if (line('rehearsedSha') !== null) {
     assert.equal(host, false, 'a rehearsal must never claim to certify its target host');
   }
-  // Exactly one rehearsal blocker applies: either there is no record, or there
-  // is one for a different head. Neither may pass quietly.
+  // Rehearsal evidence must be rejected for the right reason. A record is
+  // acceptable only when it is complete AND was produced by the head being
+  // deployed; those are independent facts and either alone is disqualifying.
   const blockers = report.blockers.join(' | ');
+  const complete = line('recordIsComplete');
   if (line('rehearsedSha') === null) {
     assert.match(blockers, /no rehearsal evidence/i, 'no rehearsal on disk must be an explicit blocker');
   } else if (line('matchesCurrentHead') === false) {
     assert.match(blockers, /rehearsal evidence is for/i, 'a rehearsal for another head must be an explicit blocker');
+  } else if (complete === false) {
+    // The branch that was missing. `--only` writes a record carrying the current
+    // head's SHA with a fraction of the steps, so a SHA comparison alone reported
+    // a one-step run as a rehearsal of the head, and every assertion below then
+    // passed against evidence that certified nothing.
+    assert.match(blockers, /partial/i, 'a partial rehearsal must be an explicit blocker');
   } else {
-    assert.doesNotMatch(blockers, /rehearsal/i, 'a current rehearsal must not be reported as a blocker');
+    assert.doesNotMatch(blockers, /rehearsal/i, 'a complete rehearsal of the current head must not be reported as a blocker');
   }
 
   // Human gates must be enumerated by name rather than summarised away. The

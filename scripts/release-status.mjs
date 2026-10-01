@@ -114,6 +114,23 @@ if (fs.existsSync(rehearsalPath)) {
   }
 }
 const rehearsalSha = rehearsal?.releaseSha ?? null;
+
+// The SHA match is necessary but not sufficient. A `--only` subset run records
+// the same releaseSha with a fraction of the steps, so a SHA comparison alone
+// accepted a one-step record as a rehearsal of the head. A record that did not
+// execute the whole sequence does not certify anything about this revision.
+const REHEARSAL_REQUIRED_STEPS = [
+  'source-revision', 'declared-services', 'trading-services-startup-contract',
+  'preflight-port', 'render-compose-model', 'build-images', 'start-postgres',
+  'apply-migrations', 'start-application', 'predeploy-backup',
+  'production-paper-smoke', 'teardown'
+];
+const rehearsalStepNames = new Set((rehearsal?.steps ?? []).map(s => s?.name));
+const rehearsalMissingSteps = rehearsal ? REHEARSAL_REQUIRED_STEPS.filter(n => !rehearsalStepNames.has(n)) : null;
+const rehearsalIsPartial = Boolean(rehearsal && (rehearsal.partial === true || rehearsalMissingSteps.length > 0));
+// Pure SHA comparison, so a reader can tell "wrong revision" apart from
+// "incomplete run". They are independent: a partial record for this head matches
+// the SHA and still certifies nothing.
 const rehearsalMatchesHead = rehearsalSha != null && rehearsalSha === head;
 sections.push({
   area: 'rehearsal',
@@ -124,7 +141,9 @@ sections.push({
     { label: 'stepsPassed', value: rehearsal ? rehearsal.steps.filter(s => s.status === 'passed').length : null },
     { label: 'stepsTotal', value: rehearsal?.steps?.length ?? null },
     { label: 'workingTreeCleanAtRehearsal', value: rehearsal?.steps?.find(s => s.name === 'source-revision')?.detail?.workingTreeClean ?? null },
-    { label: 'certifiesTargetHost', value: rehearsal?.certifiesTargetHost ?? null }
+    { label: 'certifiesTargetHost', value: rehearsal?.certifiesTargetHost ?? null },
+    { label: 'recordIsComplete', value: rehearsal ? !rehearsalIsPartial : null },
+    { label: 'missingSteps', value: rehearsalMissingSteps }
   ]
 });
 
@@ -201,10 +220,19 @@ sections.push({
 // it cannot prove a person reviewed a diff or owns an incident.
 const blockers = [];
 if (treeDirty) blockers.push('working tree is dirty: the head does not identify the tree you would deploy');
+if (rehearsalIsPartial) blockers.push('rehearsal record is partial; re-run the full sequence without --only');
 if (nodeSummary.fail > 0) blockers.push(`${nodeSummary.fail} node test(s) failing`);
 if (controlReport && controlReport.ok === false) blockers.push('release control verification is failing');
 if (!rehearsal) blockers.push('no rehearsal evidence on disk');
-else if (!rehearsalMatchesHead) blockers.push(`rehearsal evidence is for ${rehearsalSha ? rehearsalSha.slice(0, 12) : 'unknown'}, not the current head`);
+else {
+  if (!rehearsalMatchesHead) blockers.push(`rehearsal evidence is for ${rehearsalSha ? rehearsalSha.slice(0, 12) : 'unknown'}, not the current head`);
+  if (rehearsalIsPartial) {
+    blockers.push(
+      `rehearsal evidence for ${rehearsalSha ? rehearsalSha.slice(0, 12) : 'unknown'} is partial ` +
+      `(missing: ${rehearsalMissingSteps.join(', ')}); a subset run cannot certify a revision`
+    );
+  }
+}
 if (recordReport && recordReport.ok === false) blockers.push(`${outstanding.length} release-record item(s) outstanding, including human sign-off`);
 
 const automatedGreen = !treeDirty

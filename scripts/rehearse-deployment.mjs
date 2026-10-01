@@ -22,6 +22,38 @@ import path from 'node:path';
  */
 
 const COMPOSE_FILE = 'docker-compose.production.yml';
+const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+
+// Services this run depends on. Asserted against `compose config --services`
+// before anything starts.
+//
+// The start-application step originally only checked that `compose ps` listed
+// `api` and `economic-worker` as running. `compose ps` enumerates containers in
+// the project, not only the services defined in the file it was handed, so a
+// container left behind by an earlier stack satisfied the check. A rehearsal
+// recorded on 2026-10-01 reported `economic-worker:running` and 10/10 passed
+// even though no compose file in this repository defines `economic-worker` --
+// the step certified a container the committed configuration does not specify.
+// Requiring the service to be declared first turns that from a silent false pass
+// into an immediate, explicit failure.
+const REQUIRED_SERVICES = ['api', 'economic-worker', 'postgres'];
+
+// Every step a complete run executes. A record missing any of these is partial by
+// construction, whatever flags produced it.
+const EXPECTED_STEPS = [
+  'source-revision',
+  'declared-services',
+  'trading-services-startup-contract',
+  'preflight-port',
+  'render-compose-model',
+  'build-images',
+  'start-postgres',
+  'apply-migrations',
+  'start-application',
+  'predeploy-backup',
+  'production-paper-smoke',
+  'teardown'
+];
 
 const PAPER_ONLY_FLAGS = {
   LIVE_TRADING: 'false',
@@ -167,6 +199,58 @@ step('source-revision', commands => {
     });
   }
   return { releaseSha: head.stdout.trim(), workingTreeClean: true };
+});
+
+step('declared-services', commands => {
+  const declared = compose(['config', '--services']);
+  commands.push(declared);
+  const defined = new Set(String(declared.stdout || '').split(/\s+/).filter(Boolean));
+  const missing = REQUIRED_SERVICES.filter(service => !defined.has(service));
+  if (missing.length) {
+    throw Object.assign(new Error(`rehearsal_services_not_declared:${missing.join(',')}`), {
+      step: {
+        command: `docker compose -f ${COMPOSE_FILE} config --services`,
+        ok: false,
+        status: 1,
+        stdout: declared.stdout,
+        stderr: `${COMPOSE_FILE} defines [${[...defined].join(', ')}] but this rehearsal requires [${REQUIRED_SERVICES.join(', ')}]. Missing: ${missing.join(', ')}. A step that waits for an undeclared service gets satisfied by any stale container in the project, so the record would certify something this repository does not define.`,
+        durationMs: declared.durationMs
+      }
+    });
+  }
+  return { declared: [...defined] };
+});
+
+step('trading-services-startup-contract', commands => {
+  // This rehearsal only ever starts compose services (api, postgres,
+  // economic-worker). The services that actually trade are systemd-managed
+  // Python: run_production.py supervising unified_market_daemon,
+  // dashboard_server, run_trader_v4 and the hermes agent watcher. Nothing in the
+  // compose stack starts them, so "10/10 steps passed" says nothing about
+  // whether the trading system comes up.
+  //
+  // Rather than pretend otherwise, check the startup contract those services are
+  // supervised under: the scripts exist, their argparse configuration is sound,
+  // and the dashboard can resolve its operator token in a systemd-like
+  // environment. That is the part which has bitten before -- a required token
+  // turned into a dashboard crash-loop on every service restart, and a bare `%`
+  // in an argparse help string broke run_trader_v4 -- both invisible to unit
+  // tests because they only appear when the documented way to run is used.
+  const venvPython = path.join(ROOT, '.venv', 'bin', 'python');
+  const python = fs.existsSync(venvPython) ? venvPython : 'python3';
+  const contract = run(python, ['-m', 'pytest', 'tests/test_supervisor_contract.py', '-q'], {
+    cwd: ROOT,
+    env: { ...process.env, PYTHONPATH: `${ROOT}${path.delimiter}${path.join(ROOT, 'trading_system')}` }
+  });
+  commands.push(contract);
+  if (!contract.ok) {
+    throw Object.assign(new Error('rehearsal_trading_services_startup_contract_failed'), { step: contract });
+  }
+  return {
+    covered: ['run_production.py children exist', 'argparse configuration sound',
+              'dashboard resolves an operator token under a systemd-like env'],
+    notCovered: 'the compose rehearsal does not start, restart or health-check the systemd-managed trading services; see deploy/portfolio-trader.service'
+  };
 });
 
 step('preflight-port', commands => {
@@ -331,6 +415,14 @@ const record = {
   paperOnlyFlags: PAPER_ONLY_FLAGS,
   steps,
   failures,
+  // A `--only` run executes a subset, so it cannot speak for the whole
+  // sequence. It must not be mistaken for a rehearsal of this head: this flag
+  // was found writing a one-step record over a complete ten-step one, which then
+  // matched the head and made `release-status` treat an unrehearsed revision as
+  // rehearsed. Partial runs are labelled and never copied over canonical evidence.
+  partial: Boolean(options.only),
+  onlyStep: options.only ?? null,
+  expectedSteps: EXPECTED_STEPS,
   // Explicitly not a certification. This record shows the sequence ran on this
   // host. Whether this host is the intended deployment target is a human
   // judgement that this script has no way to make.
@@ -338,10 +430,24 @@ const record = {
   liveTradingCertified: false
 };
 
+const missingSteps = EXPECTED_STEPS.filter(name => !steps.some(s => s.name === name));
+record.complete = missingSteps.length === 0;
+record.missingSteps = missingSteps;
+
 const recordPath = path.join(workDir, 'rehearsal-record.json');
 fs.writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
 
-if (!options.keep) {
+if (options.only) {
+  // Deliberately does not copy into the evidence directory. A subset run is a
+  // debugging aid; promoting it to evidence would let a one-step run certify a
+  // head, which is exactly the false pass this guards against.
+  process.stderr.write(
+    `--only ${options.only}: wrote a PARTIAL record (${steps.length}/${EXPECTED_STEPS.length} steps). ` +
+    'It was NOT copied to the evidence directory. Re-run without --only to produce a recordable rehearsal.\n'
+  );
+}
+
+if (!options.keep && !options.only) {
   // The record and the pre-deploy dump are the evidence; the scratch tree is not.
   const evidenceDir = path.resolve(process.env.REHEARSAL_EVIDENCE_DIR || path.join(process.cwd(), 'data', 'rehearsal'));
   fs.mkdirSync(evidenceDir, { recursive: true });
