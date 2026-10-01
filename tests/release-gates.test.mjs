@@ -155,15 +155,39 @@ test('release status separates automated gates from human gates, and refuses to 
   assert.equal(report.readyToDeploy, false);
   assert.match(report.readyToDeployReason, /cannot attest/i);
 
-  // The rehearsal must be cross-checked against the head being deployed.
+  // The rehearsal must be cross-checked against the head being deployed. CI has
+  // no rehearsal record -- the evidence is host-local and gitignored -- so both
+  // "no record" and "record for another head" must surface as blockers rather
+  // than as a quiet pass.
   const rehearsal = report.sections.find(section => section.area === 'rehearsal');
-  const match = rehearsal.lines.find(line => line.label === 'matchesCurrentHead');
-  assert.ok(match, 'the rehearsal must be compared against the current head');
-  const host = rehearsal.lines.find(line => line.label === 'certifiesTargetHost');
-  assert.equal(host.value, false, 'a rehearsal must never claim to certify its target host');
+  const line = label => rehearsal.lines.find(entry => entry.label === label)?.value ?? null;
+  assert.ok(rehearsal.lines.some(entry => entry.label === 'matchesCurrentHead'), 'the rehearsal must be compared against the current head');
 
-  // Human gates must be enumerated by name rather than summarised away.
+  const host = line('certifiesTargetHost');
+  if (line('rehearsedSha') !== null) {
+    assert.equal(host, false, 'a rehearsal must never claim to certify its target host');
+  }
+  // Exactly one rehearsal blocker applies: either there is no record, or there
+  // is one for a different head. Neither may pass quietly.
+  const blockers = report.blockers.join(' | ');
+  if (line('rehearsedSha') === null) {
+    assert.match(blockers, /no rehearsal evidence/i, 'no rehearsal on disk must be an explicit blocker');
+  } else if (line('matchesCurrentHead') === false) {
+    assert.match(blockers, /rehearsal evidence is for/i, 'a rehearsal for another head must be an explicit blocker');
+  } else {
+    assert.doesNotMatch(blockers, /rehearsal/i, 'a current rehearsal must not be reported as a blocker');
+  }
+
+  // Human gates must be enumerated by name rather than summarised away. The
+  // release record is host-local and gitignored, so on a clean CI checkout it
+  // is absent entirely; that must still read as outstanding rather than green.
   const human = report.sections.find(section => section.area === 'humanGates');
   const owners = human.lines.find(line => line.label === 'namedOwnersOutstanding');
-  assert.ok(owners.value > 0, 'owners are genuinely outstanding and must be reported as such');
+  const items = human.lines.find(line => line.label === 'items').value ?? [];
+  if (owners.value > 0) {
+    assert.equal(items.length > 0, true, 'outstanding gates must be listed by name, not just counted');
+    assert.ok(items.some(item => item.startsWith('owner_missing:')), 'named owners must appear by name');
+  } else {
+    assert.equal(report.humanGatesOutstanding, true, 'with no release record at all, human gates must still read as outstanding');
+  }
 });
