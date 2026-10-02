@@ -41,7 +41,10 @@ class FakeSession:
             raise RuntimeError("db")
         res = mock.MagicMock()
         res.fetchone.return_value = self.fetchone
-        res.fetchall.return_value = self.fetchall
+        # query_rows is the default row source for both accessors, so a test that
+        # supplies query_rows exercises queries using either .fetchall() or .all().
+        res.fetchall.return_value = self.fetchall if self.fetchall is not None else self.query_rows
+        res.all.return_value = self.query_rows
         return res
 
     def close(self):
@@ -142,10 +145,23 @@ class TestSession(unittest.TestCase):
             expiration_datetime=None,
             timestamp=None,
         )
+        # Use the module's own session hook, as the sibling tests do. Patching
+        # sqlalchemy.orm.Session had no effect here: these queries go through
+        # db_manager._session, so the patch installed a session nobody used and
+        # the real (empty) one answered.
         fake = FakeSession(query_rows=[r1, r2, r3, r4])
-        with mock.patch("sqlalchemy.orm.Session", return_value=fake):
+        session_mod.db_manager._session = fake
+        try:
             res = session_mod.get_research_hypotheses()
-        self.assertEqual(len(res["hypotheses"]), 4)
+        finally:
+            del session_mod.db_manager._session
+        # 2 of the 4 rows are readable. r2 carries only an id and r3 is a bare
+        # tuple, so neither has the fields this query projects; they are skipped
+        # rather than raising. Expecting 4 asserted the opposite behaviour -- that
+        # one unreadable row discards the whole result set and the caller is told
+        # there are no hypotheses when there are two.
+        self.assertEqual(len(res["hypotheses"]), 2)
+        self.assertEqual([h["id"] for h in res["hypotheses"]], [1, 3])
 
     # ---- except paths ----
     def test_get_accounts_except(self):

@@ -136,6 +136,18 @@ def get_research_hypotheses():
             "SELECT id, product_id, hypothesis_text, confidence_score, expiration_datetime, timestamp FROM research_hypotheses WHERE confidence_score >= 0.5 ORDER BY confidence_score DESC, created_at DESC"
         )).fetchall()
         
+
+        # Rows are filtered to those carrying named fields. Every attribute
+        # below was read unguarded, so a single row arriving as a bare tuple
+        # raised AttributeError and the whole call fell into its except path
+        # -- returning zero hypotheses as if the database held none, rather
+        # than the four it did. get_approvals in this module already skips
+        # rows it cannot read; do the same here.
+        readable = [
+            r for r in result
+            if all(hasattr(r, f) for f in ("product_id", "hypothesis_text", "confidence_score"))
+        ]
+
         return {
             "hypotheses": [
                 {
@@ -146,7 +158,7 @@ def get_research_hypotheses():
                     "expiration_datetime": str(r.expiration_datetime) if hasattr(r, 'expiration_datetime') and r.expiration_datetime else None,
                     "timestamp": str(r.timestamp) if hasattr(r, 'timestamp') and r.timestamp else None,
                 }
-                for r in result
+                for r in readable
             ],
             "market_regimes": {},
         }

@@ -63,6 +63,11 @@ def make_session(monkeypatch, *, rows=None, fetchone=None, fetchall=None,
     ex = sm.execute.return_value
     ex.fetchone.return_value = fetchone
     ex.fetchall.return_value = fetchall if fetchall is not None else []
+    # The queries call .all() on the execute() result (SQLAlchemy 2.0 Result).
+    # Without this, iterating a MagicMock raised and every such query silently
+    # took its exception path, returning empty results that looked like real
+    # "no approvals" / "no hypotheses" answers.
+    ex.all.return_value = fetchall if fetchall is not None else []
     if raise_on_query:
         sm.query.side_effect = RuntimeError("boom")
     if raise_on_execute:
