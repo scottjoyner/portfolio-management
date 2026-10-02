@@ -7,6 +7,16 @@ from trading_system.approval.workflow_engine import (
 )
 
 
+# route_strategy refuses when a required validation is absent rather than
+# skipped. Passing no validation_results used to auto-approve a strategy that
+# had had no code review and no security scan, so these tests now supply the
+# validations they depend on, and the refusal is asserted separately.
+ALL_VALIDATED = {
+    "code_review_passed": True,
+    "security_scan_passed": True,
+    "performance_benchmark_met": True,
+}
+
 class TestWorkflowEngine(unittest.IsolatedAsyncioTestCase):
     def test_tier_enum(self):
         self.assertEqual(ApprovalTier.AUTO_APPROVE.value, "auto")
@@ -56,29 +66,48 @@ class TestWorkflowEngine(unittest.IsolatedAsyncioTestCase):
     async def test_route_auto(self):
         eng = WorkflowEngine()
         req = ApprovalRequest("k", "1.0", 0.1, 100, 10)
-        res = await eng.route_strategy(req)
+        res = await eng.route_strategy(req, dict(ALL_VALIDATED))
         self.assertEqual(res["status"], "approved")
         self.assertEqual(res["tier"], "auto")
 
     async def test_route_full_scale(self):
         eng = WorkflowEngine()
         req = ApprovalRequest("k", "1.0", 0.7, 100, 10)
-        res = await eng.route_strategy(req)
+        res = await eng.route_strategy(req, dict(ALL_VALIDATED))
         self.assertEqual(res["status"], "pending_review")
         self.assertEqual(res["tier"], "production")
 
     async def test_route_canary(self):
         eng = WorkflowEngine()
         req = ApprovalRequest("k", "1.0", 0.5, 100, 10)
-        res = await eng.route_strategy(req)
+        res = await eng.route_strategy(req, dict(ALL_VALIDATED))
         self.assertEqual(res["status"], "canary_approved")
         self.assertEqual(res["tier"], "canary")
 
-    async def test_route_with_validation_results(self):
+    async def test_route_with_partial_validations_is_rejected(self):
+        """A partial validation set does not approve.
+
+        Passing no validation_results auto-approved a strategy with no code review
+        and no security scan, because `if name in validation_results` skipped an
+        absent key instead of failing on it. Absent and false are the same answer.
+        """
         eng = WorkflowEngine()
         req = ApprovalRequest("k", "1.0", 0.1, 100, 10)
         res = await eng.route_strategy(req, {"code_review_passed": True})
-        self.assertEqual(res["status"], "approved")
+        self.assertEqual(res["status"], "rejected")
+        self.assertTrue(res["requires_human_approval"])
+
+    async def test_route_with_no_validations_is_rejected(self):
+        eng = WorkflowEngine()
+        req = ApprovalRequest("k", "1.0", 0.1, 100, 10)
+        res = await eng.route_strategy(req)
+        self.assertEqual(res["status"], "rejected")
+
+    async def test_route_validation_false_is_rejected(self):
+        eng = WorkflowEngine()
+        req = ApprovalRequest("k", "1.0", 0.1, 100, 10)
+        res = await eng.route_strategy(req, {**ALL_VALIDATED, "security_scan_passed": False})
+        self.assertEqual(res["status"], "rejected")
 
 
 if __name__ == "__main__":
