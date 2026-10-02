@@ -468,3 +468,57 @@ class TestDashboardReportsTruthToTheOperator(unittest.TestCase):
         result = m._execute_manual_operation("noop", {})
         self.assertTrue(result["success"])
         self.assertNotIn("status", result)
+
+
+class TestDataDirIsOverridable(unittest.TestCase):
+    """The data directory was a hardcoded relative path in a dozen places.
+
+    Every one of those paths was a function of the process working directory,
+    so a test run from the repository root read and wrote the operator's live
+    data/. A cleanup that globbed a state filename there deleted a
+    paper-trading ledger and all four of its backups, irrecoverably.
+
+    Resolving through one function means a run can be pointed elsewhere, so
+    this asserts the seam actually works rather than trusting it.
+    """
+    def test_default_is_the_repo_relative_data_dir(self):
+        from coinbase.src.run_trader_v4 import _data_dir
+        self.assertEqual(str(_data_dir()), "data")
+
+    def test_override_redirects_every_state_path(self):
+        from coinbase.src import run_trader_v4 as m
+
+        previous = os.environ.get("TRADING_DATA_DIR")
+        os.environ["TRADING_DATA_DIR"] = "/tmp/isolation-probe"
+        try:
+            self.assertEqual(str(m._data_dir()), "/tmp/isolation-probe")
+            self.assertEqual(
+                str(m._state_path("paper_trader_v4_state.json")),
+                "/tmp/isolation-probe/paper_trader_v4_state.json",
+            )
+            trader = m.EventTraderV4(mode="paper", products=["BTC-USD"], dry_run=True)
+            self.assertTrue(
+                str(trader._paper_state_path).startswith("/tmp/isolation-probe/"),
+                f"trader still writes to the live data dir: {trader._paper_state_path}",
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("TRADING_DATA_DIR", None)
+            else:
+                os.environ["TRADING_DATA_DIR"] = previous
+
+    def test_no_hardcoded_data_path_remains(self):
+        """Guards against a new call site reintroducing the hazard."""
+        import ast
+
+        source = Path(__file__).resolve().parents[1] / "coinbase" / "src" / "run_trader_v4.py"
+        offenders = []
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("Path", "open") and node.args):
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                if first.value == "data" or first.value.startswith("data/"):
+                    offenders.append(f"{source.name}:{node.lineno} {first.value!r}")
+        self.assertEqual(offenders, [], "route these through _state_path()/_data_dir()")

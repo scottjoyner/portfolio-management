@@ -242,6 +242,30 @@ class PulseRecord:
         return self.pulse_count >= 3 and self.age_s < 600
 
 
+
+# The data directory used to be a hardcoded relative path in a dozen places,
+# which made every one of those paths a function of the process working
+# directory. A test run from the repository root therefore read and wrote the
+# operator's live data/ directory, and a cleanup that globbed a state filename
+# there destroyed a paper-trading ledger and its backups with no way back.
+#
+# Resolving through one function means a run can be pointed somewhere else, and
+# means the test suite can prove it is isolated instead of assuming it.
+def _data_dir() -> Path:
+    override = os.environ.get("TRADING_DATA_DIR")
+    if override:
+        return Path(override)
+    return Path("data")
+
+
+def _state_path(*parts: str) -> Path:
+    """Path to a file inside the data directory.
+
+    Named _state_path rather than data_path to stay clear of the local
+    `data_dir` variable used in the integrity check below.
+    """
+    return _data_dir().joinpath(*parts)
+
 class EventTraderV4:
     """Event-driven trading daemon — all 25 strategies in Rust.
 
@@ -386,7 +410,7 @@ class EventTraderV4:
         return (True, f"{key} set to {value}")
 
     def _persist_knobs(self) -> None:
-        path = Path("data/tuner_state_v4.json")
+        path = _state_path("tuner_state_v4.json")
         state = {k: getattr(self, k, default) for k, (_, _, _, default, _) in self.TUNABLE_KNOBS.items()}
         try:
             path.write_text(json.dumps(state, indent=2))
@@ -394,7 +418,7 @@ class EventTraderV4:
             log.debug("Failed to persist tuner state: %s", e)
 
     def _load_knobs(self) -> None:
-        path = Path("data/tuner_state_v4.json")
+        path = _state_path("tuner_state_v4.json")
         if not path.exists():
             return
         try:
@@ -520,7 +544,7 @@ class EventTraderV4:
         self._tick_count = 0
         self._bt_cache: Dict[str, Any] = {}
         self._bt_cache_lock = threading.Lock()
-        self._bt_cache_path = Path("data/bt_cache_v4.json")
+        self._bt_cache_path = _state_path("bt_cache_v4.json")
         self._bt_cache_dirty = False
 
         # Per-tick caches to avoid recomputing the same slice/state across the
@@ -532,7 +556,7 @@ class EventTraderV4:
 
         self._hot_scores: Dict[str, float] = defaultdict(float)
         self._hot_lock = threading.Lock()
-        self._hot_scores_path = Path("data/hot_scores_v4.json")
+        self._hot_scores_path = _state_path("hot_scores_v4.json")
 
         self._signal_pulses: Dict[str, PulseRecord] = {}
         self._pulse_lock = threading.Lock()
@@ -721,7 +745,7 @@ class EventTraderV4:
         _state_name = ("live_trader_v4_state.json"
                        if self.mode in ("live", "approval")
                        else "paper_trader_v4_state.json")
-        self._paper_state_path = Path("data") / _state_name
+        self._paper_state_path = _data_dir() / _state_name
 
         # ── Per-strategy analytics ──────────────────────────────
         self.strategy_stats: Dict[str, Dict[str, float]] = {}
@@ -966,7 +990,7 @@ class EventTraderV4:
             import os as _os
             _live_authorized = (
                 _os.environ.get("ALLOW_LIVE_TRADING", "").strip() == "1"
-                or Path("data/live_authorized").exists()
+                or _state_path("live_authorized").exists()
             )
             if not _live_authorized:
                 raise RuntimeError(
@@ -1148,7 +1172,7 @@ class EventTraderV4:
                             # Drop a sentinel so the autostart watchdog will NOT
                             # thrash-relaunch on this corrupt ledger.
                             try:
-                                Path("data/trader_state_corrupt").write_text(
+                                _state_path("trader_state_corrupt").write_text(
                                     f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode={self.mode} "
                                     f"path={self._paper_state_path.name}\n"
                                     f"cash ledger integrity fail: cash={_cash:.2f} "
@@ -1161,7 +1185,7 @@ class EventTraderV4:
                         validate_issues.append(f"Paper ledger integrity check error: {_e}")
             except (json.JSONDecodeError, OSError) as e:
                 validate_issues.append(f"Paper state file unreadable: {e}")
-        data_dir = Path("data")
+        data_dir = _data_dir()
         if not data_dir.exists():
             data_dir.mkdir(parents=True, exist_ok=True)
         logs_dir = Path("logs")
@@ -2002,7 +2026,7 @@ class EventTraderV4:
     def _save_core_holdings_state(self) -> None:
         """Persist core holdings independently of paper state (used by all modes)."""
         try:
-            path = Path("data/core_holdings.json")
+            path = _state_path("core_holdings.json")
             data = [
                 {
                     "product_id": h.product_id,
@@ -2029,7 +2053,7 @@ class EventTraderV4:
     def _load_core_holdings_state(self) -> None:
         """Load core holdings from disk (used by all modes)."""
         try:
-            path = Path("data/core_holdings.json")
+            path = _state_path("core_holdings.json")
             if not path.exists():
                 return
             data = json.loads(path.read_text())
@@ -2177,7 +2201,7 @@ class EventTraderV4:
         blocks relaunch until the operator removes it (and fixes the state).
         """
         try:
-            _sentinel = Path("data/trader_state_corrupt")
+            _sentinel = _state_path("trader_state_corrupt")
             _sentinel.write_text(
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode={self.mode} "
                 f"path={self._paper_state_path.name}\n{reason}\n"
@@ -3482,7 +3506,7 @@ class EventTraderV4:
                             f"Real equity drawdown {_dd:.1%} >= {_dd_cap:.1%}. Stopping bot.",
                             {"reason": self._cb_breach_reason})
                         try:
-                            Path("data/trader_state_corrupt").write_text(
+                            _state_path("trader_state_corrupt").write_text(
                                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode=live "
                                 f"path={self._paper_state_path.name}\n"
                                 f"HARD HALT max_drawdown: dd={_dd:.1%}>=cap={_dd_cap:.1%}\n")
@@ -4653,7 +4677,7 @@ class EventTraderV4:
                 "active_positions": {"value": round(pos_val, 2), "pct": round(pos_val / total * 100, 1) if total > 0 else 0},
             }
             self._capital_buckets = buckets
-            Path("data/equity_summary.json").write_text(json.dumps(buckets, indent=2))
+            _state_path("equity_summary.json").write_text(json.dumps(buckets, indent=2))
             self.health_status["capital_buckets"] = buckets
         except Exception as e:
             log.debug("Capital buckets compute failed: %s", e)
@@ -4717,7 +4741,7 @@ class EventTraderV4:
         return "\n".join(lines)
 
     def _save_analytics(self) -> None:
-        path = Path("data/strategy_analytics.json")
+        path = _state_path("strategy_analytics.json")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -4846,7 +4870,7 @@ class EventTraderV4:
         orinth_review = self._llm_review(prompt, "orinth")
         vibethinker_review = self._llm_review(prompt, "vibethinker")
         proposal = {"ts": time.time(), "orinth": orinth_review, "vibethinker": vibethinker_review}
-        path = Path("data/experiment_proposals.json")
+        path = _state_path("experiment_proposals.json")
         try:
             existing = json.loads(path.read_text()) if path.exists() else []
             existing.append(proposal)
@@ -5662,11 +5686,11 @@ class EventTraderV4:
         args = p.parse_args()
 
         if args.reset_paper:
-            reset_path = Path("data/paper_trader_v4_state.json")
+            reset_path = _state_path("paper_trader_v4_state.json")
             if reset_path.exists():
                 reset_path.unlink()
                 log.warning("Paper state reset requested — deleted %s", reset_path)
-            for bak in Path("data").glob("paper_trader_v4_state.json.bak*"):
+            for bak in _data_dir().glob("paper_trader_v4_state.json.bak*"):
                 bak.unlink()
 
         if args.live:
@@ -6022,7 +6046,7 @@ class HealthServer:
                     notifs.reverse()
                     body = json.dumps({"notifications": notifs}, indent=2).encode()
                 elif self.path.startswith("/experiments"):
-                    path = Path("data/experiment_proposals.json")
+                    path = _state_path("experiment_proposals.json")
                     if path.exists():
                         body = path.read_bytes()
                     else:
