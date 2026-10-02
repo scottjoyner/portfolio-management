@@ -24,8 +24,10 @@ class TestAggregator(unittest.TestCase):
         self.assertIsNone(c)
         self.assertEqual(a._current.open, 100.0)
         # same bucket -> updates high/low/close/volume
-        a.ingest_trade(105.0, 2.0, _ts(1020))
-        a.ingest_trade(95.0, 0.5, _ts(1040))
+        # All inside the bucket starting at 960. 1000, 1020 and 1040 straddle
+        # two 60s buckets, so these "same bucket" assertions were split.
+        a.ingest_trade(105.0, 2.0, _ts(1005))
+        a.ingest_trade(95.0, 0.5, _ts(1015))
         self.assertEqual(a._current.high, 105.0)
         self.assertEqual(a._current.low, 95.0)
         self.assertEqual(a._current.close, 95.0)

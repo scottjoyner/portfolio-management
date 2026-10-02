@@ -32,9 +32,21 @@ class FeatureComputer:
     def ingest_trade(self, price: float, size: float, side: str) -> None:
         self._prices.append(price)
         self._volumes.append(size)
+        # Index-aligned with _prices: every trade contributes to exactly one of
+        # the two, and the untouched one records 0.0.
+        #
+        # These used to be *partitioned* lists -- _buys held only BUY sizes and
+        # _sells only SELL sizes. Two consequences, both wrong:
+        #   - the trim below could never bound them to 500, since neither half
+        #     reaches 500 when trades alternate, so the buffers grew unbounded;
+        #   - compute() read the last 100 of each, so buy_ratio_1m spanned ~200
+        #     trades while volume_1m spanned 100. The two were not the same
+        #     window, and the ratio did not describe the volume it claimed to.
         if side.upper() == "BUY":
             self._buys.append(size)
+            self._sells.append(0.0)
         else:
+            self._buys.append(0.0)
             self._sells.append(size)
         max_samples = 500
         if len(self._prices) > max_samples:
