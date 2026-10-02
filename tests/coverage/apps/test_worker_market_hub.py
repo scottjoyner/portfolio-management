@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from _helpers import install_fakes
+from tests.coverage.apps._helpers import install_fakes
 
 install_fakes({
     "core.config.settings": {"Settings": MagicMock()},

@@ -21,17 +21,29 @@ class MetricsCollector:
         if name == 'errors':
             self.error_count.inc()
             return
+        # The label set is not known until the first call, so a Counter cannot be
+        # declared with labelnames and later used bare. Encode the labels into
+        # the metric name instead: one registered name per (name, label-set).
+        #
+        # Creating a Counter per label *set* but naming every one of them `name`
+        # registered the same name repeatedly and raised Duplicated timeseries,
+        # so inc("orders_total") after inc("orders_total", labels={...}) failed.
+        key = name
         if labels:
             key = f"{name}{{{','.join(f'{k}={v}' for k, v in labels.items())}}}"
+            metric_name = name + "".join(f"_{k}_{v}" for k, v in sorted(labels.items()))
         else:
-            key = name
+            metric_name = name
         if key not in self._counters:
-            self._counters[key] = Counter(name, name)
+            # Same instance registry as the static metrics above. Without it this
+            # registers in prometheus_client's global default registry, so a
+            # second MetricsCollector raised Duplicated timeseries there too.
+            self._counters[key] = Counter(metric_name, name, registry=self._registry)
         self._counters[key].inc()
 
     def gauge(self, name: str, value: float) -> None:
         if name not in self._gauges:
-            self._gauges[name] = Gauge(name, name)
+            self._gauges[name] = Gauge(name, name, registry=self._registry)
         self._gauges[name].set(value)
 
     def observe_request(self, duration_ms: float) -> None:

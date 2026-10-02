@@ -10,7 +10,11 @@ def _isolated_registry(monkeypatch):
     # own registry so repeated instantiation in tests does not raise
     # "Duplicated timeseries".
     def mk(cls):
-        return lambda name, documentation: cls(name, documentation, registry=CollectorRegistry())
+        # Accept whatever the product passes, including registry=. The dynamic
+        # helpers previously registered in the global default registry, which is
+        # what made isolation necessary here.
+        return lambda name, documentation, **kw: cls(
+            name, documentation, registry=kw.get("registry") or CollectorRegistry())
 
     monkeypatch.setattr(metrics, "Counter", mk(Counter))
     monkeypatch.setattr(metrics, "Gauge", mk(Gauge))

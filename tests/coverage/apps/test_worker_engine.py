@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from _helpers import install_fakes
+from tests.coverage.apps._helpers import install_fakes
 
 install_fakes({
     "core.config.settings": {"Settings": MagicMock()},

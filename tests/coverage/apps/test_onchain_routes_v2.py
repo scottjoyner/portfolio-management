@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-from _helpers import install_fakes
+from tests.coverage.apps._helpers import install_fakes
 
 
 class _FeedHealthRecord:

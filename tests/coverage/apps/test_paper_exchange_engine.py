@@ -3,7 +3,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from _helpers import install_fakes
+from tests.coverage.apps._helpers import install_fakes
 
 install_fakes({
     "execution.queue_model.models": None,
