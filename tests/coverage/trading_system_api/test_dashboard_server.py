@@ -60,6 +60,9 @@ class _ImmediateExecutor:
         return _F()
 
 
+OPERATOR_TOKEN = "test-operator-token-0123456789abcdef"
+
+
 class _BadValueState:
     """State store stand-in whose stats() reports a hard-bad component value."""
 
@@ -73,7 +76,7 @@ class _BadValueState:
 class FakeHandler:
     """Minimal stand-in for DashboardHandler without a real socket."""
 
-    def __init__(self, path, method="GET", body=None):
+    def __init__(self, path, method="GET", body=None, authorized=True):
         self.path = path
         self.command = method
         self._body = body
@@ -82,7 +85,19 @@ class FakeHandler:
         self.wfile = io.BytesIO()
         self.rfile = io.BytesIO(body or b"")
         self.headers = {"Content-Length": str(len(body or b""))}
+        # Endpoints that move capital or change risk posture require a bearer
+        # token. These tests exercise the routing behind those endpoints, not the
+        # authorisation itself, so they present a token by default. The refusal
+        # path is covered in tests/coverage/ui/test_dashboard_handler.py.
+        if authorized:
+            self.headers["Authorization"] = "Bearer " + OPERATOR_TOKEN
         self.dashboard_served = False
+
+    # Read class-level configuration off the real handler rather than restating it,
+    # so this fake cannot drift from what do_POST/do_GET actually use. do_POST reads
+    # self.MAX_POST_SIZE, which the fake was missing, so every POST routing test
+    # died before reaching the endpoint.
+    MAX_POST_SIZE = m.DashboardHandler.MAX_POST_SIZE
 
     def send_response(self, status):
         self.status = status
@@ -122,6 +137,19 @@ def make_handler(path, method="GET", body=None):
     return h
 
 
+@pytest.fixture(autouse=True)
+def _isolated_operator_token(monkeypatch):
+    """Force a scratch operator token for every test in this file.
+
+    Without this, any test that does not request `env` leaves
+    DASHBOARD_OPERATOR_TOKEN unset, and the server auto-provisions a token against
+    the operator's real file at ~/.config/portfolio-management/dashboard_token.
+    A test run would then read -- or worse, create -- the operator's live token.
+    Autouse so no test can opt out by accident.
+    """
+    monkeypatch.setenv(m.OPERATOR_TOKEN_ENV, OPERATOR_TOKEN)
+
+
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     # Redirect all data paths to temp files
@@ -137,6 +165,9 @@ def env(monkeypatch, tmp_path):
     def _no_net(*a, **k):
         raise URLError("blocked")
     monkeypatch.setattr(m, "urlopen", _no_net)
+    # Configuring a token here rather than letting it auto-provision keeps these
+    # tests off the operator's real token file.
+    monkeypatch.setenv(m.OPERATOR_TOKEN_ENV, OPERATOR_TOKEN)
     return tmp_path
 
 
