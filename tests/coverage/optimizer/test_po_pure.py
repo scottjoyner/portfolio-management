@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 
 import portfolio_optimizer as P
-from tests.coverage.optimizer.conftest import make_state, holding, opt  # noqa: F401
+from tests.coverage.optimizer.conftest import make_state, holding, opt, _warm_feed  # noqa: F401
 
 
 # ===========================================================================
@@ -636,7 +636,9 @@ def test_detect_stock_opportunities(opt):
         assert opt._detect_stock_opportunities() == []
 
 
-def test_detect_funding_and_onchain(opt):
+def test_detect_funding_and_onchain(
+opt):
+    _warm_feed(opt)
     opt.last_execution.clear()
     opt.state = make_state({"BTC": holding("BTC", 5000, "safe", price=30000)})
     opt.cli.get_price.return_value = {"price": 30000.0}

@@ -63,3 +63,20 @@ def holding(currency, value, classification, **kw):
         "liquidity_score": kw.get("liquidity_score", 0.8),
         "spread": kw.get("spread", 0.001),
     }
+
+
+def _warm_feed(opt, symbol="BTC-USD", bars=100, close=30000.0):
+    """Give the detector enough real candle history to reach its strategies.
+
+    _detect_funding_and_onchain_signals needs >=30 BTC closes for indicator
+    warmup and skips the whole strategy otherwise, logging at debug so the
+    failure looks like "no signal" rather than "no data". Mocking the strategy
+    is not enough -- the feed has to be mocked too, or the test asserts against
+    a code path that never ran.
+    """
+    candles = [[0, str(close + i), str(close + i), str(close + i + 10),
+                str(close + i), "1"] for i in range(bars)]
+    mgr = mock.MagicMock()
+    mgr.get_candles_batch.return_value = {symbol: candles}
+    opt._feed_mgr = mgr
+    return mgr

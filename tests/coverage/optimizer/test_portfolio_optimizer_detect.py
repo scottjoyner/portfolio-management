@@ -8,7 +8,7 @@ import pytest
 import portfolio_optimizer as P
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import BacktestVerdict
-from tests.coverage.optimizer.conftest import make_state, holding
+from tests.coverage.optimizer.conftest import make_state, holding, _warm_feed
 
 
 def _candles(n=120, start=100, step=1):
@@ -193,7 +193,9 @@ def test_detect_accumulator_signals(opt):
 # Funding / on-chain
 # ---------------------------------------------------------------------------
 
-def test_detect_funding_and_onchain(opt):
+def test_detect_funding_and_onchain(
+opt):
+    _warm_feed(opt)
     opt.last_execution.clear()
     opt.state = make_state({"BTC": holding("BTC", 5000, "safe", price=30000)})
     opt.cli.get_price.return_value = {"price": 30000.0}

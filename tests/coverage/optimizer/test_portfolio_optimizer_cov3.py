@@ -18,6 +18,7 @@ import sys
 import time
 from types import SimpleNamespace
 from unittest import mock
+from tests.coverage.optimizer.conftest import _warm_feed
 
 import pytest
 
@@ -791,6 +792,7 @@ def test_detect_event_markets_exception(opt):
 # ---------------------------------------------------------------------------
 
 def test_detect_funding_and_onchain(opt):
+    _warm_feed(opt)
     _rich_state(opt, {"BTC": holding("BTC", 30000, "safe", price=30000.0, product_id="BTC-USD")})
     opt.cli.get_price.return_value = {"price": 30000.0}
     opt.cli.best_product.return_value = "BTC-USD"

@@ -15,6 +15,7 @@ import os
 import time
 from types import SimpleNamespace
 from unittest import mock
+from tests.coverage.optimizer.conftest import _warm_feed
 
 import pytest
 
@@ -717,6 +718,7 @@ def test_execute_with_bracket_pending_live(opt):
 # ---------------------------------------------------------------------------
 
 def test_detect_funding_only(opt):
+    _warm_feed(opt)
     _rich_state(opt, {"BTC": holding("BTC", 30000, "safe", price=30000.0,
                                      product_id="BTC-USD")})
     opt.cli.get_price.return_value = {"price": 30000.0}
