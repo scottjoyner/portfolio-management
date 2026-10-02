@@ -522,3 +522,58 @@ class TestDataDirIsOverridable(unittest.TestCase):
                 if first.value == "data" or first.value.startswith("data/"):
                     offenders.append(f"{source.name}:{node.lineno} {first.value!r}")
         self.assertEqual(offenders, [], "route these through _state_path()/_data_dir()")
+
+
+class TestDashboardDataPathsAreOverridable(unittest.TestCase):
+    """The dashboard bound eight state paths to ROOT/'data' at import.
+
+    Nothing could redirect them, so a test run from the repository root
+    operated on the operator's live operator-state, approvals and capital
+    buckets -- the files that gate real trades. Same seam as run_trader_v4:
+    TRADING_DATA_DIR, defaulting to the original path.
+    """
+    EXPECTED = (
+        "OPERATOR_STATE_PATH", "SIGNAL_CACHE_PATH", "APPROVALS_PATH",
+        "CAPITAL_BUCKETS_PATH", "EQUITY_SUMMARY_PATH", "OPERATOR_ACTIONS_PATH",
+    )
+
+    def test_every_state_path_follows_the_override(self):
+        from trading_system.ui import dashboard_server as ds
+
+        previous = os.environ.get("TRADING_DATA_DIR")
+        os.environ["TRADING_DATA_DIR"] = "/tmp/dash-probe"
+        try:
+            import importlib
+            reloaded = importlib.reload(ds)
+            for name in self.EXPECTED:
+                with self.subTest(path=name):
+                    self.assertTrue(
+                        str(getattr(reloaded, name)).startswith("/tmp/dash-probe/"),
+                        f"{name} still points at the live data dir: {getattr(reloaded, name)}",
+                    )
+            self.assertEqual(
+                str(reloaded.APPROVALS_INBOX), "/tmp/dash-probe/approvals_inbox")
+            # A trailing `or True` crept in here and made this vacuous. The
+            # state DB is covered by its own test below, so assert nothing
+            # vacuous here.
+        finally:
+            if previous is None:
+                os.environ.pop("TRADING_DATA_DIR", None)
+            else:
+                os.environ["TRADING_DATA_DIR"] = previous
+            importlib.reload(ds)
+
+    def test_state_db_is_separately_overridable(self):
+        from trading_system.ui import dashboard_server as ds
+        previous = os.environ.get("TRADING_STATE_DB")
+        os.environ["TRADING_STATE_DB"] = "/tmp/dash-probe/opt.db"
+        try:
+            import importlib
+            reloaded = importlib.reload(ds)
+            self.assertEqual(str(reloaded.STATE_DB_PATH), "/tmp/dash-probe/opt.db")
+        finally:
+            if previous is None:
+                os.environ.pop("TRADING_STATE_DB", None)
+            else:
+                os.environ["TRADING_STATE_DB"] = previous
+            importlib.reload(ds)

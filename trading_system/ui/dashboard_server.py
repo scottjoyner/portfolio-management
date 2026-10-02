@@ -54,17 +54,31 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
 
-OPERATOR_STATE_PATH = str(ROOT / 'data' / 'operator-state.json')
-SIGNAL_CACHE_PATH = str(ROOT / 'data' / '.unified_signal_cache.json')
-APPROVALS_PATH = str(ROOT / 'data' / 'pending_approvals.json')
+# These paths were bound to ROOT/'data' at import, so nothing could redirect
+# them and a test run from the repository root operated on the operator's live
+# files. TRADING_DATA_DIR moves them; the default is the same path as before, so
+# a production run is unchanged.
+def data_dir() -> Path:
+    override = os.environ.get('TRADING_DATA_DIR')
+    return Path(override) if override else ROOT / 'data'
+
+
+def state_db_path() -> Path:
+    override = os.environ.get('TRADING_STATE_DB')
+    return Path(override) if override else ROOT / 'optimizer_state.db'
+
+
+OPERATOR_STATE_PATH = str(data_dir() / 'operator-state.json')
+SIGNAL_CACHE_PATH = str(data_dir() / '.unified_signal_cache.json')
+APPROVALS_PATH = str(data_dir() / 'pending_approvals.json')
 # Shared, permission-tolerant inbox for manual orders so the dashboard can persist
 # approvals even when it runs as a different user than the optimizer (which owns
 # the canonical pending_approvals.json as root). The optimizer scans this dir too.
-APPROVALS_INBOX = ROOT / 'data' / 'approvals_inbox'
-STATE_DB_PATH = str(ROOT / 'optimizer_state.db')
-CAPITAL_BUCKETS_PATH = str(ROOT / 'data' / 'capital_buckets.json')
-EQUITY_SUMMARY_PATH = str(ROOT / 'data' / 'equity_summary.json')
-OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(ROOT / 'data' / 'operator-actions.json'))
+APPROVALS_INBOX = data_dir() / 'approvals_inbox'
+STATE_DB_PATH = str(state_db_path())
+CAPITAL_BUCKETS_PATH = str(data_dir() / 'capital_buckets.json')
+EQUITY_SUMMARY_PATH = str(data_dir() / 'equity_summary.json')
+OPERATOR_ACTIONS_PATH = os.environ.get('OPERATOR_ACTIONS_PATH', str(data_dir() / 'operator-actions.json'))
 OPERATOR_ACTIONS_URL = os.environ.get('OPERATOR_ACTIONS_URL', '').rstrip('/')
 PREDICTION_MARKETS_CACHE = {"ts": 0.0, "data": None}
 ARBITRAGE_CACHE = {"ts": 0.0, "data": None}
