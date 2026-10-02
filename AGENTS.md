@@ -403,8 +403,26 @@ sudo systemctl start portfolio-trader.service
 Recommended order for a code/UI redeploy:
 1. Run the relevant compile checks or tests.
 2. Update the dashboard/UI if new API fields were added.
-3. Restart the supervisor with `sudo systemctl restart portfolio-trader.service`.
-4. Confirm `python3 run_production.py status` exits 0 (see "Health & Readiness").
+3. **Preflight the revision** (no sudo, touches nothing):
+   ```bash
+   python3 scripts/preflight_restart.py
+   ```
+   It starts each service on scratch ports and asks it the questions that have
+   actually broken: does the dashboard come up and provision its operator token,
+   does it *refuse* to start when it cannot get one (run_production.py
+   restart-loops any child that exits, so a missing token is a restart loop
+   rather than a clear error), does every supervised child import, does `--help`
+   work, do the kill-switch paths agree, is the watcher's ledger lock free, and is
+   a safety gate blocking the start. Exit 0 means the revision should come up.
+4. Restart the supervisor with `sudo systemctl restart portfolio-trader.service`.
+5. Confirm `python3 run_production.py status` exits 0 (see "Health & Readiness").
+
+For a scripted cutover with automatic rollback, `python3 scripts/deploy_restart.py`
+does preflight -> restart -> wait -> roll back to the previous revision if the
+children do not reach RUNNING. It needs sudo for the restart.
+
+**A safety gate that blocks the start is not fixed by restarting.** `preflight` and
+`deploy_restart` both report `BLOCKED` separately from a failure for this reason.
 
 ## Health & Readiness
 
