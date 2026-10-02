@@ -577,3 +577,70 @@ class TestDashboardDataPathsAreOverridable(unittest.TestCase):
             else:
                 os.environ["TRADING_STATE_DB"] = previous
             importlib.reload(ds)
+
+
+class TestOptimizerStatePathsAreOverridable(unittest.TestCase):
+    """portfolio_optimizer.py had 29 "data/..." literals.
+
+    They resolved against the process working directory, so a test run from the
+    repository root read and wrote the operator's live state -- including
+    pending_approvals.json, which gates real trade execution. The forms varied
+    (os.open, os.replace for the atomic .tmp writes, os.remove, and `type: str`
+    defaults), so the seam returns str and every call site keeps its type.
+    """
+    def test_default_is_byte_identical_to_the_old_literals(self):
+        import portfolio_optimizer as po
+
+        previous = os.environ.pop("TRADING_DATA_DIR", None)
+        try:
+            self.assertEqual(po._state_path("pending_approvals.json"),
+                             "data/pending_approvals.json")
+            self.assertEqual(po._state_path("optimizer.lock"), "data/optimizer.lock")
+            self.assertEqual(po._state_path("meta_source_weights.json.tmp"),
+                             "data/meta_source_weights.json.tmp")
+        finally:
+            if previous is not None:
+                os.environ["TRADING_DATA_DIR"] = previous
+
+    def test_override_redirects_every_shape(self):
+        import portfolio_optimizer as po
+
+        previous = os.environ.get("TRADING_DATA_DIR")
+        os.environ["TRADING_DATA_DIR"] = "/tmp/po-probe"
+        try:
+            for name in ("pending_approvals.json", "optimizer.lock",
+                         "optimizer_brackets.json", "cross_asset_regime.json.tmp"):
+                with self.subTest(path=name):
+                    self.assertEqual(po._state_path(name), f"/tmp/po-probe/{name}")
+        finally:
+            if previous is None:
+                os.environ.pop("TRADING_DATA_DIR", None)
+            else:
+                os.environ["TRADING_DATA_DIR"] = previous
+
+    def test_no_data_literal_remains(self):
+        import ast
+
+        source = Path(__file__).resolve().parents[1] / "portfolio_optimizer.py"
+        # The seam's own default is the one legitimate "data" literal, and it
+        # sits a few lines into the function body, so skip the whole body
+        # rather than the single def line.
+        src_lines = source.read_text(encoding="utf-8").splitlines()
+        seam_start = next(i for i, line in enumerate(src_lines, 1)
+                          if line.strip().startswith("def _state_path"))
+        seam_end = next(
+            (i for i in range(seam_start + 1, len(src_lines) + 1)
+             if src_lines[i - 1] and not src_lines[i - 1][0].isspace()),
+            len(src_lines) + 1,
+        )
+        offenders = []
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if node.value == "data" or node.value.startswith("data/"):
+                # The literal inside _state_path() itself is the one legitimate
+                # occurrence; every other use must go through the seam.
+                if seam_start <= node.lineno < seam_end:
+                    continue
+                offenders.append(f"{source.name}:{node.lineno} {node.value!r}")
+        self.assertEqual(offenders, [], "route these through _state_path()")

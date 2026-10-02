@@ -63,6 +63,20 @@ except ImportError:
 # Notification (optional)
 from notification import TradeNotifier
 
+# Every _state_path("...") literal below was resolved against the process working
+# directory, so a test run from the repository root read and wrote the
+# operator's live state -- including the pending_approvals.json that gates real
+# trade execution. TRADING_DATA_DIR redirects them; without it the resolved path
+# is byte-identical to the literal it replaced, so production is unchanged.
+#
+# Returns str rather than Path so the existing call sites (os.open, os.replace,
+# os.remove, `type: str = ...` defaults) keep their current types.
+def _state_path(*parts: str) -> str:
+    import os as _os
+    override = _os.environ.get("TRADING_DATA_DIR")
+    base = _os.path.join(override, "") if override else "data"
+    return _os.path.join(base, *parts)
+
 # Event market connectors (optional)
 try:
     from event_markets.comparison_engine import ComparisonEngine as _CE, format_signal as _fs
@@ -937,16 +951,16 @@ class PortfolioOptimizer:
         from_addr: str = "",
         to_addr: str = "",
         approval_base_url: str = "http://localhost:8080",
-        pending_file: str = "data/pending_approvals.json",
+        pending_file: str = _state_path("pending_approvals.json"),
         enable_polymarket: bool = False,
         kalshi_email: str = "",
         kalshi_password: str = "",
     ):
         # Process exclusion lock — prevent duplicate optimizer instances
-        os.makedirs("data", exist_ok=True)
+        os.makedirs(_state_path(), exist_ok=True)
         self._lock_fd = None
         try:
-            self._lock_fd = os.open("data/optimizer.lock", os.O_CREAT | os.O_RDWR, 0o644)
+            self._lock_fd = os.open(_state_path("optimizer.lock"), os.O_CREAT | os.O_RDWR, 0o644)
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (IOError, BlockingIOError):
             logger.error("Another optimizer instance is running (data/optimizer.lock is held)")
@@ -1274,7 +1288,7 @@ class PortfolioOptimizer:
         # Execution engine — bracket order placement with stop-loss / take-profit
         self._exec_engine: Optional[Any] = None
         self._bracket_mgr: Optional[Any] = None
-        self._bracket_state_path: str = "data/optimizer_brackets.json"
+        self._bracket_state_path: str = _state_path("optimizer_brackets.json")
         self._init_execution_engine()
 
     def _load_from_store(self):
@@ -1355,7 +1369,7 @@ class PortfolioOptimizer:
         if not self._bracket_mgr:
             return
         try:
-            os.makedirs("data", exist_ok=True)
+            os.makedirs(_state_path(), exist_ok=True)
             with open(self._bracket_state_path, "w") as f:
                 json.dump(self._bracket_mgr._brackets, f, indent=2, default=str)
         except Exception as e:
@@ -2799,7 +2813,7 @@ class PortfolioOptimizer:
                 pass
             self._lock_fd = None
             try:
-                os.remove("data/optimizer.lock")
+                os.remove(_state_path("optimizer.lock"))
             except Exception:
                 pass
         if self._health_server:
@@ -5919,58 +5933,58 @@ class PortfolioOptimizer:
         try:
             # Meta-learning source weights
             if self._meta_source_weights:
-                with open("data/meta_source_weights.json.tmp", "w") as f:
+                with open(_state_path("meta_source_weights.json.tmp"), "w") as f:
                     json.dump({
                         "weights": dict(self._meta_source_weights),
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }, f, indent=2)
-                os.replace("data/meta_source_weights.json.tmp", "data/meta_source_weights.json")
+                os.replace(_state_path("meta_source_weights.json.tmp"), _state_path("meta_source_weights.json"))
 
             # Cross-asset regime
             if self._cross_asset_regime:
                 try:
                     regime_state = self._cross_asset_regime.get_state(refresh=False)
-                    with open("data/cross_asset_regime.json.tmp", "w") as f:
+                    with open(_state_path("cross_asset_regime.json.tmp"), "w") as f:
                         json.dump({
                             "regime": regime_state.to_dict(),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         }, f, indent=2, default=str)
-                    os.replace("data/cross_asset_regime.json.tmp", "data/cross_asset_regime.json")
+                    os.replace(_state_path("cross_asset_regime.json.tmp"), _state_path("cross_asset_regime.json"))
                 except Exception:
                     pass
 
             # Signal ensemble state
             if self._ensemble_blender:
                 try:
-                    with open("data/signal_ensemble.json.tmp", "w") as f:
+                    with open(_state_path("signal_ensemble.json.tmp"), "w") as f:
                         json.dump({
                             "posteriors": self._ensemble_blender.to_dict(),
                             "top_strategies": self._ensemble_blender.top_strategies(n=10),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         }, f, indent=2, default=str)
-                    os.replace("data/signal_ensemble.json.tmp", "data/signal_ensemble.json")
+                    os.replace(_state_path("signal_ensemble.json.tmp"), _state_path("signal_ensemble.json"))
                 except Exception:
                     pass
 
             # Parameter optimization results
             if self._param_opt_results:
-                with open("data/param_opt_results.json.tmp", "w") as f:
+                with open(_state_path("param_opt_results.json.tmp"), "w") as f:
                     json.dump({
                         "results": dict(self._param_opt_results),
                         "last_run": self._last_param_opt_ts,
                         "interval_days": self._param_opt_interval / 86400.0,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }, f, indent=2, default=str)
-                os.replace("data/param_opt_results.json.tmp", "data/param_opt_results.json")
+                os.replace(_state_path("param_opt_results.json.tmp"), _state_path("param_opt_results.json"))
 
             # Wash-sale cooldown state
             if self._wash_sale_cooldown:
-                with open("data/wash_sale_state.json.tmp", "w") as f:
+                with open(_state_path("wash_sale_state.json.tmp"), "w") as f:
                     json.dump({
                         "cooldowns": {k: v for k, v in self._wash_sale_cooldown.items()},
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     }, f, indent=2, default=str)
-                os.replace("data/wash_sale_state.json.tmp", "data/wash_sale_state.json")
+                os.replace(_state_path("wash_sale_state.json.tmp"), _state_path("wash_sale_state.json"))
 
             # Order flow signals
             if self._order_flow_engine:
@@ -5991,12 +6005,12 @@ class PortfolioOptimizer:
                                     "spread_tight": sig.spread_tight,
                                 }
                     if of_signals:
-                        with open("data/order_flow_signals.json.tmp", "w") as f:
+                        with open(_state_path("order_flow_signals.json.tmp"), "w") as f:
                             json.dump({
                                 "signals": of_signals,
                                 "updated_at": datetime.now(timezone.utc).isoformat(),
                             }, f, indent=2)
-                        os.replace("data/order_flow_signals.json.tmp", "data/order_flow_signals.json")
+                        os.replace(_state_path("order_flow_signals.json.tmp"), _state_path("order_flow_signals.json"))
                 except Exception:
                     pass
 
@@ -6030,12 +6044,12 @@ class PortfolioOptimizer:
                                 "current_price": closes[-1] if closes else 0,
                             }
                     if sr_data:
-                        with open("data/sr_levels.json.tmp", "w") as f:
+                        with open(_state_path("sr_levels.json.tmp"), "w") as f:
                             json.dump({
                                 "products": sr_data,
                                 "updated_at": datetime.now(timezone.utc).isoformat(),
                             }, f, indent=2, default=str)
-                        os.replace("data/sr_levels.json.tmp", "data/sr_levels.json")
+                        os.replace(_state_path("sr_levels.json.tmp"), _state_path("sr_levels.json"))
                 except Exception:
                     pass
 
@@ -6091,11 +6105,11 @@ class PortfolioOptimizer:
             "quality_score": round(sum(float(s.get("opportunity_score", 0) or 0) for s in queue[:5]) / len(queue[:5]) if queue[:5] else 0, 3),
         }
         try:
-            tmp_path = "data/.unified_signal_cache.json.tmp"
-            os.makedirs("data", exist_ok=True)
+            tmp_path = _state_path(".unified_signal_cache.json.tmp")
+            os.makedirs(_state_path(), exist_ok=True)
             with open(tmp_path, "w") as f:
                 json.dump(payload, f, indent=2, default=str)
-            os.replace(tmp_path, "data/.unified_signal_cache.json")
+            os.replace(tmp_path, _state_path(".unified_signal_cache.json"))
         except Exception as e:
             logger.debug("Failed to write unified_signal_cache.json: %s", e)
 
@@ -6787,7 +6801,7 @@ def main():
                         help="To email address (default: same as smtp-user)")
     parser.add_argument("--approval-base-url", default="http://localhost:8080",
                         help="Base URL for approve/deny links (default: http://localhost:8080)")
-    parser.add_argument("--pending-file", default="data/pending_approvals.json",
+    parser.add_argument("--pending-file", default=_state_path("pending_approvals.json"),
                         help="Path for pending approvals JSON (default: data/pending_approvals.json)")
     parser.add_argument("--polymarket", action="store_true",
                         help="Enable Polymarket event market monitoring (read-only)")
