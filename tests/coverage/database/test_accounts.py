@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from db_helpers import install_fakes, make_db, QueryStub, _Row
+from tests.coverage.database.db_helpers import install_fakes, make_db, QueryStub, _Row
 
 spm, _plaid_models, _plaid_db = install_fakes()
 
