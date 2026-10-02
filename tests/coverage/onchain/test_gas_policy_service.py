@@ -19,9 +19,18 @@ class TestGasPolicy(unittest.TestCase):
         self.assertEqual(e.get_policy("eth").max_gas_price_gwei, 50.0)
         self.assertEqual(e.get_policy("arb").max_gas_price_gwei, 100.0)
 
-    def test_clamp(self):
+    def test_clamp_is_a_ceiling(self):
+        """A suggestion above the policy cap is reduced, not raised to it.
+
+        This passed 200 wei and expected the policy maximum back, which is the
+        opposite of a clamp: it would have meant every low bid was raised to the
+        cap. clamp_gas_price is min(suggested, max), so a low suggestion passes
+        through and a high one is pulled down.
+        """
         e = GasPolicyEngine()
-        self.assertEqual(e.clamp_gas_price("eth", 200), 100_000_000_000)
+        cap = e.get_policy("eth").max_gas_price_wei
+        assert e.clamp_gas_price("eth", 200) == 200, "below the cap passes through"
+        assert e.clamp_gas_price("eth", cap * 10) == cap, "above the cap is clamped down"
 
     def test_adjusted_limit(self):
         e = GasPolicyEngine()

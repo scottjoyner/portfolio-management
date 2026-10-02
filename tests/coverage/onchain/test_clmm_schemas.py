@@ -102,7 +102,7 @@ class TestCLMMSchemas(unittest.TestCase):
         self.assertEqual(s.reason, "r")
 
     def test_action_sim_result(self):
-        s = ActionSimulationResult(action_type="add", contracts_touched=[], tokens_touched=[],
+        s = ActionSimulationResult(action_type="add", approvals_required=[], contracts_touched=[], tokens_touched=[],
                                    estimated_gas=0, gas_cost_usd=Decimal("0"), slippage_bps=Decimal("0"),
                                    price_impact_bps=Decimal("0"), route_fragility_score=Decimal("0"),
                                    pool_liquidity_quality=Decimal("0"), contract_trust_score=Decimal("0"),
@@ -113,7 +113,7 @@ class TestCLMMSchemas(unittest.TestCase):
         self.assertEqual(s.action_type, "add")
 
     def test_action_profit_report(self):
-        res = ActionSimulationResult(action_type="add", contracts_touched=[], tokens_touched=[],
+        res = ActionSimulationResult(action_type="add", approvals_required=[], contracts_touched=[], tokens_touched=[],
                                      estimated_gas=0, gas_cost_usd=Decimal("0"), slippage_bps=Decimal("0"),
                                      price_impact_bps=Decimal("0"), route_fragility_score=Decimal("0"),
                                      pool_liquidity_quality=Decimal("0"), contract_trust_score=Decimal("0"),
