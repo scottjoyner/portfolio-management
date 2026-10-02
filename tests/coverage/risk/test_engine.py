@@ -114,9 +114,21 @@ def test_risk_engine_custom_confidence_levels():
     assert eng.confidence_levels == (0.90, 0.95, 0.99)
 
 
-def test_risk_policy_empty():
-    p = RiskPolicy(())
-    assert tuple(p) == ()
+def test_risk_policy_empty_refuses():
+    """An empty confidence-level set is rejected, not accepted.
+
+    Policy() with no levels used to produce an object that could not gate
+    anything. It raises now, so the failure happens at construction where it is
+    visible rather than silently at trade time.
+    """
+    with pytest.raises(ValueError):
+        RiskPolicy(())
+
+
+def test_risk_policy_default_levels():
+    """The default level set is valid and iterable."""
+    p = RiskPolicy()
+    assert tuple(p)
     assert "RiskPolicy" in repr(p)
 
 
@@ -128,8 +140,10 @@ def test_risk_metrics_correlation_matrix_to_dict():
     )
     d = m.to_dict()
     assert d["has_correlation_matrix"] is True
-    # current_drawdown==0 is falsy -> serialized as None
-    assert d["current_drawdown_pct"] is None
+    # A drawdown of 0.0% is a real reading -- flat, not in drawdown -- and must
+    # not be conflated with "unknown". Serializing it as None on a falsy check
+    # made an at-peak portfolio indistinguishable from an unmeasured one.
+    assert d["current_drawdown_pct"] == 0.0
 
 
 def test_calculate_portfolio_risk_default_lookback():

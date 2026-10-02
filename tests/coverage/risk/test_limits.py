@@ -41,10 +41,16 @@ class TestLimitManager(unittest.TestCase):
         self.mgr.update_position("ETH-USD", Decimal("5"))
         self.assertEqual(self.mgr.current_positions["ETH-USD"], Decimal("5"))
 
-    def test_check_no_limit(self):
+    def test_check_no_limit_refuses(self):
+        """No configured limit must refuse, not allow.
+
+        "No limit configured" used to mean "no limit", so a product missing from
+        the limit table traded unconstrained. The guard now fails closed, which
+        is recoverable (configure the limit) whereas trading unlimited is not.
+        """
         ok, reason = self.mgr.check_order("ETH-USD", "buy", Decimal("1"), Decimal("100"))
-        self.assertTrue(ok)
-        self.assertEqual(reason, "no limit configured")
+        self.assertFalse(ok)
+        self.assertIn("no limit configured", reason)
 
     def test_check_side_not_allowed(self):
         self.mgr.set_limit(PositionLimit("ETH-USD", Decimal("10"), Decimal("1000"), "buy"))
