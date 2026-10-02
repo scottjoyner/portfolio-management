@@ -3,6 +3,9 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from event_markets import signal_adapter as sa
@@ -158,11 +161,11 @@ def test_make_signal_kelly_branches():
     a = _adapter()
     a._client.get_kalshi_order_book_depth.return_value = {"bids": [(0.99, 50)], "asks": [(1.01, 60)]}
     buy = a._market_to_signals(_pm(price=0.8, category="crypto"))[0]
-    assert "kelly_fraction" in buy
+    assert "kelly_fraction" in buy["market_data"]
     # SELL path
     sell = a._market_to_signals(_pm(price=0.2, category="crypto"))[0]
     assert sell["action"] == "SELL"
-    assert "kelly_fraction" in sell
+    assert "kelly_fraction" in sell["market_data"]
 
 
 def test_make_signal_kelly_sell_uses_no_probability():
@@ -176,10 +179,10 @@ def test_make_signal_kelly_sell_uses_no_probability():
     }
     sell = a._make_signal("BTC-USD", "SELL", 0.5, 0.25,
                           _pm(platform="kalshi", price=0.2, market_id="ksell"), "reason")
-    assert sell["kelly_fraction"] > 0
+    assert sell["market_data"]["kelly_fraction"] > 0
     buy = a._make_signal("BTC-USD", "BUY", 0.5, 0.25,
                          _pm(platform="kalshi", price=0.8, market_id="kbuy"), "reason")
-    assert buy["kelly_fraction"] > 0
+    assert buy["market_data"]["kelly_fraction"] > 0
 
 
 def test_get_signals_crypto_only():
@@ -325,3 +328,40 @@ def test_depth_price_and_size_helpers():
     # non-dict/non-tuple -> 0.0
     assert sa._depth_price(5) == 0.0
     assert sa._depth_size(5) == 0.0
+
+
+def test_top_level_keys_are_exactly_accumulated_signal_fields():
+    """The accumulator does AccumulatedSignal(**signal_dict).
+
+    So a platform-specific extra added at the top level raises TypeError at
+    runtime, on whichever platform's signal happened to be consumed first.
+    kelly_fraction was moved into market_data for exactly this reason and the
+    move silently broke callers reading it from the top level; pin both halves
+    so neither direction can regress unnoticed.
+    """
+    import dataclasses
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "graph-alpha-bot" / "app" / "strategies"))
+    from unified_signal_accumulator import AccumulatedSignal
+
+    sa._book_cache.clear()
+    a = _adapter()
+    a._client.get_kalshi_order_book_depth.return_value = {"bids": [(0.99, 50)], "asks": [(1.01, 50)]}
+    for price in (0.8, 0.2):
+        sig = a._market_to_signals(_pm(price=price, category="crypto"))[0]
+        expected = {f.name for f in dataclasses.fields(AccumulatedSignal)}
+        # Constructing is the failure that matters: an unknown top-level key
+        # raises TypeError here, at consumption time, on whichever platform's
+        # signal happens to arrive first.
+        AccumulatedSignal(**sig)
+        # And no top-level key may be outside the dataclass, except the ones the
+        # dataclass itself defaults (timestamp).
+        defaults = {f.name for f in dataclasses.fields(AccumulatedSignal)
+                    if f.default is not dataclasses.MISSING
+                    or f.default_factory is not dataclasses.MISSING}
+        unexpected = set(sig) - expected
+        assert unexpected <= defaults, (
+            f"platform-specific keys must live in market_data, not top level: "
+            f"{unexpected - defaults}"
+        )
+        assert "kelly_fraction" in sig["market_data"]

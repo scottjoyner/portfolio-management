@@ -97,9 +97,28 @@ class TestMathHelpers(TestCase):
         self.assertEqual(datetime.fromtimestamp(ts, tz=timezone.utc).month, 12)
 
     def test_parse_date_str_end_of_year_specific(self):
+        """A year spelled out in the phrase is honoured.
+
+        "end of 2027" resolved to the end of the current year, so a market
+        asking whether something happens by the end of 2027 was measured against
+        a date already in the past.
+        """
         ts = _parse_date_str("end of 2027")
         d = datetime.fromtimestamp(ts, tz=timezone.utc)
-        self.assertEqual((d.year, d.month, d.day), (2026, 12, 31))
+        self.assertEqual((d.year, d.month, d.day), (2027, 12, 31))
+
+    def test_parse_date_str_end_of_year_variants(self):
+        """Hyphenated and prefixed forms parse the same year."""
+        for phrase in ("end-of 2028", "by the end of 2029"):
+            with self.subTest(phrase=phrase):
+                d = datetime.fromtimestamp(_parse_date_str(phrase), tz=timezone.utc)
+                self.assertEqual((d.year, d.month, d.day),
+                                 (int(phrase[-4:]), 12, 31))
+
+    def test_parse_date_str_end_of_year_explicit_arg_wins(self):
+        ts = _parse_date_str("end of 2027", end_of_year_year=2030)
+        d = datetime.fromtimestamp(ts, tz=timezone.utc)
+        self.assertEqual((d.year, d.month, d.day), (2030, 12, 31))
 
     def test_parse_date_str_quarter(self):
         ts = _parse_date_str("by q2 2026")

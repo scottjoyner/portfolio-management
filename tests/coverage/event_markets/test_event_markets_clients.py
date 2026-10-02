@@ -297,9 +297,9 @@ def test_adapter_make_signal_kelly():
     a._client.get_polymarket_order_book.return_value = PolymarketBook(
         bids=[(0.83, 100)], asks=[(0.87, 100)], spread=0.04, mid_price=0.85)
     sig = a._make_signal("BTC-USD", "BUY", 0.5, 0.25, pm, "reason")
-    assert sig["kelly_fraction"] >= 0
+    assert sig["market_data"]["kelly_fraction"] >= 0
     sig2 = a._make_signal("BTC-USD", "SELL", 0.5, 0.25, pm, "reason")
-    assert sig2["kelly_fraction"] >= 0
+    assert sig2["market_data"]["kelly_fraction"] >= 0
 
 
 def test_adapter_exceptions():

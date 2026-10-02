@@ -168,11 +168,22 @@ def _parse_date_str(date_str: str, end_of_year_year: Optional[int] = None) -> Op
     cur_year = now.year
 
     if "end of" in ds or "end-of" in ds:
-        year = cur_year
+        # Read the year out of the phrase itself. It used to come only from the
+        # end_of_year_year argument, so "end of 2027" resolved to the end of the
+        # *current* year: a market asking "will this happen by the end of 2027?"
+        # was measured against end of 2026, a date already in the past.
+        # Precedence: explicit argument, then a year spelled out in the phrase,
+        # then end of the current year (rolling to next year after September,
+        # since "end of year" is no longer in the future by then).
+        spelled = re.search(r'(\d{4})', ds)
         if end_of_year_year:
-            year = end_of_year_year
+            year = int(end_of_year_year)
+        elif spelled:
+            year = int(spelled.group(1))
         elif now.month > 9:
             year = cur_year + 1
+        else:
+            year = cur_year
         target = datetime(year, 12, 31, tzinfo=timezone.utc)
         return target.timestamp()
 
