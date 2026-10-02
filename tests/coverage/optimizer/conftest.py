@@ -3,6 +3,7 @@
 import os
 import tempfile
 from unittest import mock
+import time
 
 import pytest
 
@@ -80,3 +81,17 @@ def _warm_feed(opt, symbol="BTC-USD", bars=100, close=30000.0):
     mgr.get_candles_batch.return_value = {symbol: candles}
     opt._feed_mgr = mgr
     return mgr
+
+
+def _fresh_approval(**fields):
+    """An approved entry that is actually fresh.
+
+    _approval_is_expired fails closed: a record whose timestamp is missing or
+    uninterpretable reads as expired, because the gate decides whether a human
+    approve click executes a trade. Approval fixtures written before that gate
+    existed carry no timestamp at all, so they were refused -- correctly.
+    """
+    now = time.time()
+    entry = {"status": "approved", "created_at": now, "expiry_ts": now + 3600}
+    entry.update(fields)
+    return entry

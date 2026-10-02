@@ -14,7 +14,9 @@ import pytest
 # Disable the SmartFeed background thread for clean process exit.
 import portfolio_optimizer as P
 P._HAS_SMART_FEED = False
-from tests.coverage.optimizer.conftest import make_state, holding, opt, _warm_feed  # noqa: F401
+from tests.coverage.optimizer.conftest import (  # noqa: F401
+    make_state, holding, opt, _warm_feed, _fresh_approval,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ def test_detect_strategy_signals_no_state(po):
 # ===========================================================================
 
 def test_detect_funding_and_onchain_buy(po):
-    _warm_feed(opt)
+    _warm_feed(po)
     po.last_execution.clear()
     po.state = make_state({"BTC": holding("BTC", 5000, "safe", price=30000)})
     po.cli.get_price.return_value = {"price": 30000.0}
@@ -438,11 +440,11 @@ def test_fetch_state_no_balances(po):
 def test_check_pending_approvals_executes(po, tmp_path):
     po.require_approval = True
     po.pending_file = str(tmp_path / "pending.json")
-    entry = {
-        "status": "approved", "side": "BUY", "currency": "SOL",
-        "size_usd": 100.0, "product_id": "SOL-USD", "reason": "r",
-        "type": "strategy", "priority": 0.5,
-    }
+    entry = _fresh_approval(
+        side="BUY", currency="SOL", size_usd=100.0,
+        product_id="SOL-USD", reason="r",
+        type="strategy", priority=0.5,
+    )
     with open(po.pending_file, "w") as f:
         json.dump({"tok": entry}, f)
     po.cli.preview_order.return_value = {"total_fee": 0.5}

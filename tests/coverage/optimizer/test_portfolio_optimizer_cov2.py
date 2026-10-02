@@ -14,7 +14,7 @@ import pytest
 # Disable the SmartFeed background thread for clean process exit.
 import portfolio_optimizer as P
 P._HAS_SMART_FEED = False
-from tests.coverage.optimizer.conftest import make_state, holding, opt  # noqa: F401
+from tests.coverage.optimizer.conftest import make_state, holding, opt  , _warm_feed# noqa: F401
 
 
 @pytest.fixture
@@ -261,6 +261,7 @@ def test_strategy_signals_pulse_invalid(po):
 # ===========================================================================
 
 def test_funding_sell(po):
+    _warm_feed(po)
     po.last_execution.clear()
     po.state = make_state({"BTC": holding("BTC", 5000, "safe", price=30000)})
     po.cli.get_price.return_value = {"price": 30000.0}

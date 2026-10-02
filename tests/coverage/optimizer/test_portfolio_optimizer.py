@@ -13,6 +13,7 @@ import os
 import tempfile
 import time
 from unittest import mock
+from tests.coverage.optimizer.conftest import _fresh_approval  # noqa: E402
 
 import pytest
 
@@ -420,8 +421,8 @@ def test_check_pending_approvals(opt):
     pending_file = os.path.join(tempfile.mkdtemp(), "pending.json")
     opt.pending_file = pending_file
     with open(pending_file, "w") as f:
-        json.dump({"tok1": {"status": "approved", "side": "BUY",
-                            "currency": "SOL", "size_usd": 100}}, f)
+        json.dump({"tok1": _fresh_approval( side= "BUY",
+                            currency= "SOL", size_usd= 100)}, f)
     with mock.patch.object(opt, "_execute_approved", return_value=True) as exe:
         opt._check_pending_approvals()
     assert exe.called

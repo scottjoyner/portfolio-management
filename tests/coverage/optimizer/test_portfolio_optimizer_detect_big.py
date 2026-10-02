@@ -287,7 +287,7 @@ def test_event_markets_full(of):
 def test_event_markets_engine_path(of):
     eng = mock.MagicMock()
     eng.find_opportunities.return_value = [SimpleNamespace(
-        opp_type="EVENT_MARKET", currency="?", side="NONE", size_usd=0,
+        opp_type="EVENT_MARKET", currency="?", side="BUY", size_usd=0,
         reason="r", priority=0.1, product_id="k:m", meta={})]
     of._pm_client = None
     of.event_engine = eng

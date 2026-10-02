@@ -12,7 +12,7 @@ from unittest import mock
 import pytest
 
 import portfolio_optimizer as P
-from tests.coverage.optimizer.conftest import make_state, holding
+from tests.coverage.optimizer.conftest import make_state, holding, _fresh_approval
 
 
 @pytest.fixture(autouse=True)
@@ -148,9 +148,9 @@ def test_check_pending_approvals_executes_approved(o, tmp_path):
     o.dry_run = True
     o.state = make_state({"BTC": holding("BTC", 5000, "safe")}, usdc=90000.0)
     pend = {
-        "tok1": {"status": "approved", "side": "BUY", "currency": "SOL", "size_usd": 100,
-                 "product_id": "SOL-USD", "reason": "ok", "capital_bucket": "opportunity",
-                 "type": "strategy", "priority": 0.5},
+        "tok1": _fresh_approval( side= "BUY", currency= "SOL", size_usd= 100,
+                 product_id= "SOL-USD", reason= "ok", capital_bucket= "opportunity",
+                 type= "strategy", priority= 0.5),
         "tok2": {"status": "pending", "side": "BUY", "currency": "ETH", "size_usd": 100},
     }
     o.pending_file = str(tmp_path / "pend.json")

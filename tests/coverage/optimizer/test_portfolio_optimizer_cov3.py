@@ -393,7 +393,7 @@ def test_process_static_skip(opt):
 def test_process_event_market_notification(opt):
     opt.state = make_state({}, total_value=100000.0, usdc=50000.0)
     opt.notifier = None
-    opp = P.Opportunity(P.OpportunityType.EVENT_MARKET, "?", "NONE", 0, "r",
+    opp = P.Opportunity(P.OpportunityType.EVENT_MARKET, "?", "BUY", 0, "r",
                         take_profit_pct=5.0, product_id="kalshi:1",
                         meta={"platform": "kalshi", "market_question": "Will BTC hit 100k?"})
     n0 = len(opt.trade_log)
@@ -426,7 +426,7 @@ def test_process_event_market_with_notifier_live(opt):
     opt.state = make_state({}, total_value=100000.0, usdc=50000.0)
     opt.dry_run = False
     opt.notifier = mock.MagicMock()
-    opp = P.Opportunity(P.OpportunityType.EVENT_MARKET, "?", "NONE", 0, "r",
+    opp = P.Opportunity(P.OpportunityType.EVENT_MARKET, "?", "BUY", 0, "r",
                         take_profit_pct=5.0, product_id="kalshi:1",
                         meta={"platform": "kalshi", "market_question": "q?",
                               "signal_type": "x"})

@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 
 import portfolio_optimizer as P
-from tests.coverage.optimizer.conftest import holding, make_state
+from tests.coverage.optimizer.conftest import holding, make_state, _fresh_approval
 
 
 def mkopp(opp_type, side, currency, size_usd=1000.0, **kw):
@@ -146,8 +146,8 @@ def test_check_pending_approvals_executes(opt):
     opt.require_approval = True
     path = os.path.join(tempfile.mkdtemp(), "pending.json")
     opt.pending_file = path
-    entry = {"status": "approved", "side": "BUY", "currency": "XRP", "size_usd": 100.0,
-             "product_id": "XRP-USD", "reason": "go"}
+    entry = _fresh_approval( side= "BUY", currency= "XRP", size_usd= 100.0,
+             product_id= "XRP-USD", reason= "go")
     json.dump({"tok": entry}, open(path, "w"))
     with mock.patch.object(opt, "_execute_approved") as ex:
         opt._check_pending_approvals()
