@@ -31,6 +31,12 @@ from tests.coverage.coinbase.test_run_trader_v4 import (  # noqa: E402
 )
 
 
+from tests.coverage.coinbase.test_run_trader_v4 import (  # noqa: E402
+    _refuse_live_data_dir,
+    _unlink_quietly,
+)
+
+
 class _LoopBreak(Exception):
     pass
 
@@ -53,14 +59,14 @@ def _run_one_iteration(loop_fn):
 
 class TestStart(unittest.TestCase):
     def test_start_paper(self):
+        _refuse_live_data_dir()
         t = _make_trader(["BTC-USD", "ETH-USD"], dry_run=True)
         t._feed_mgr = None  # avoid background refresh thread / network
         # Force a clean startup validation path: no paper state file present.
-        for p in t._paper_state_path.parent.glob("paper_trader_v4_state.json*"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
+        # Delete only the file itself. A glob here also matches .bak, .bak2,
+        # .bak3, .pre-repair.* and .reconcile-audit.*, which is how the sibling
+        # suite destroyed a paper-trading ledger and all four of its backups.
+        _unlink_quietly(t._paper_state_path)
         t._load_knobs = lambda: None
         t.start()
         self.assertEqual(t.mode, "paper")

@@ -250,3 +250,78 @@ class TestTraderTestSuiteCannotDeleteOperatorData(unittest.TestCase):
                         f"line {node.lineno}: glob({pattern!r}) also matches .bak, .bak2, .bak3, "
                         ".pre-repair.* and .reconcile-audit.* -- this is what destroyed the ledger"
                     )
+
+
+class TestNoCoverageSuiteDeletesByWildcard(unittest.TestCase):
+    """The trader-ledger loss was not confined to one file.
+
+    test_run_trader_v4_extra.py carried its own copy of the same
+    `glob("paper_trader_v4_state.json*")` cleanup. Fixing only the file the
+    incident was noticed in would have left the identical bug one file away, so
+    scan the whole coverage tree instead of trusting that one file stays fixed.
+    """
+    COVERAGE = REPO_ROOT / "tests" / "coverage"
+
+    def test_no_coverage_suite_globs_a_wildcard_over_state_files(self):
+        import ast
+
+        offenders = []
+        for path in sorted(self.COVERAGE.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr != "glob" or not node.args:
+                    continue
+                argument = node.args[0]
+                pattern = argument.value if isinstance(argument, ast.Constant) else None
+                if pattern and pattern.endswith("state.json*"):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno} {pattern}")
+        self.assertEqual(
+            offenders, [],
+            "a glob ending in state.json* also deletes .bak/.bak2/.bak3/"
+            ".pre-repair-*/.reconcile-audit-*",
+        )
+
+    def test_no_coverage_suite_unlinks_anything_it_found_by_globbing(self):
+        """Catch the dangerous shape directly: glob, then unlink the result.
+
+        Checking unlink() arguments statically turns out to be the wrong tool.
+        os.unlink(fd.name) on a NamedTemporaryFile(delete=False) is safe, and
+        rejecting it would be a false positive that trains people to ignore the
+        check. What actually destroyed the ledger was the *combination* -- a name
+        bound from glob(), then unlink() called on it -- and that is checkable
+        per function, so check that and nothing broader.
+        """
+        import ast
+
+        offenders = []
+        for path in sorted(self.COVERAGE.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            for func in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+                globbed = set()
+                for node in ast.walk(func):
+                    if (isinstance(node, ast.Assign)
+                            and isinstance(node.value, ast.Call)
+                            and isinstance(node.value.func, ast.Attribute)
+                            and node.value.func.attr == "glob"):
+                        for target in node.targets:
+                            if isinstance(target, ast.Name):
+                                globbed.add(target.id)
+                    if (isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "unlink"
+                            and node.args
+                            and isinstance(node.args[0], ast.Name)
+                            and node.args[0].id in globbed):
+                        offenders.append(
+                            f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
+                            f"unlinks {node.args[0].id!r}, which came from glob()"
+                        )
+        self.assertEqual(offenders, [])
