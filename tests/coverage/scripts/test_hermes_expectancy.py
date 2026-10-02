@@ -15,8 +15,16 @@ import scripts.hermes_expectancy as exp
 
 
 def _ledger_tmp(tmp_path: Path, trades):
-    led = {"positions": {}, "trades": trades, "realized_pnl": 0.0,
-           "created_at": "2026-01-01T00:00:00+00:00"}
+    """Build a real v2 ledger via the canonical constructor.
+
+    Hand-rolling the shape meant writing only the fields these tests touch, so
+    they failed with KeyError 'cash' on every field added since. Using
+    new_ledger() keeps the fixture honest as the schema evolves.
+    """
+    from scripts.hermes_agent_accounting import new_ledger
+
+    led = new_ledger()
+    led["trades"] = list(trades)
     p = tmp_path / "hermes_agent_ledger.json"
     p.write_text(json.dumps(led))
     return p

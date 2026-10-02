@@ -15,7 +15,7 @@ import scripts.hermes_meta as meta
 
 
 def _ledger_tmp(tmp_path: Path, trades):
-    led = {"positions": {}, "trades": trades, "realized_pnl": 0.0,
+    led = {"accounting_version": 2, "ranking_eligible": True, "positions": {}, "trades": trades, "realized_pnl": 0.0,
            "created_at": "2026-01-01T00:00:00+00:00"}
     p = tmp_path / "hermes_agent_ledger.json"
     p.write_text(json.dumps(led))
