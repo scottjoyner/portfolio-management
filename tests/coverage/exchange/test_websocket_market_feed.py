@@ -70,6 +70,11 @@ class FakeWSSendError:
 class FakeWSConnClosed:
     def __init__(self, client):
         self.client = client
+        # ConnectionClosed lives on the fake websockets module, which is built
+        # per test and patched in afterwards, so it is injected by fake_ws_module
+        # rather than referenced here (it used to reference a local `fwm` that
+        # does not exist at class scope).
+        self._closed_exc = Exception
 
     async def send(self, msg):
         pass
@@ -78,7 +83,7 @@ class FakeWSConnClosed:
         return self
 
     async def __anext__(self):
-        raise fwm.ConnectionClosed("closed")
+        raise self._closed_exc("closed")
 
     async def close(self):
         pass
@@ -86,7 +91,13 @@ class FakeWSConnClosed:
 
 def fake_ws_module(ws_factory):
     m = MagicMock()
-    m.connect = AsyncMock(side_effect=lambda *a, **k: ws_factory())
+
+    def _connect(*a, **k):
+        ws = ws_factory()
+        ws._closed_exc = m.ConnectionClosed
+        return ws
+
+    m.connect = AsyncMock(side_effect=_connect)
     m.ConnectionClosed = type("ConnectionClosed", (Exception,), {})
     return m
 
@@ -172,7 +183,15 @@ class TestMarketFeed(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(c._running)
 
     async def test_run_public_warning(self):
-        c = CoinbaseWebSocketMarketClient(api_key="k", api_secret=None)
+        """Genuinely public: no credentials at all.
+
+        This passed api_key="k" with api_secret=None, which is a misconfigured
+        key rather than public access. connect() then builds a JWT from an empty
+        secret and cryptography raises a PEM error -- the product failing safe,
+        which is correct, but it means the test never reached the public-channel
+        warning it is named for.
+        """
+        c = CoinbaseWebSocketMarketClient(api_key=None, api_secret=None)
         c.subscribe("BTC-USD", "ticker")
         fwm = fake_ws_module(lambda: FakeWS(c))
         with patch("trading_system.exchange.coinbase.websocket.market_feed.websockets", fwm):

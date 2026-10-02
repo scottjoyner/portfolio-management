@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import unittest
 from unittest import mock
 
@@ -51,8 +54,25 @@ class TestPlaidServices(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["status"], "success")
 
     async def test_verify_webhook_signature(self):
+        """A forged signature must fail; a real one must pass.
+
+        This asserted True for the literal signature "sig". That was the stub
+        behaviour before the HMAC verification landed -- a verify_* function
+        that always authenticated, which is worse than none because callers
+        trust it.
+        """
         s = svc.PlaidService("cid")
-        self.assertTrue(await s.verify_webhook_signature(b"x", "sig", "secret"))
+        payload, secret = b"x", "secret"
+        good = base64.b64encode(
+            hmac.new(secret.encode(), payload, hashlib.sha256).digest()
+        ).decode()
+        self.assertTrue(await s.verify_webhook_signature(payload, good, secret))
+        # Forged, wrong secret, wrong body, and missing inputs all refuse.
+        self.assertFalse(await s.verify_webhook_signature(payload, "sig", secret))
+        self.assertFalse(await s.verify_webhook_signature(payload, good, "other"))
+        self.assertFalse(await s.verify_webhook_signature(b"tampered", good, secret))
+        self.assertFalse(await s.verify_webhook_signature(payload, "", secret))
+        self.assertFalse(await s.verify_webhook_signature(payload, good, ""))
 
     # ---- CredentialVault ----
     def test_credential_vault_roundtrip(self):
