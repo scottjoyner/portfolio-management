@@ -436,3 +436,35 @@ class TestOrphanDetection(unittest.TestCase):
         self.assertIn("2394496", orphans[0].detail)
         # The young one is a --help probe or a manual start, not an orphan.
         self.assertNotIn("999999", orphans[0].detail)
+
+
+class TestDashboardReportsTruthToTheOperator(unittest.TestCase):
+    """Two dashboard responses that misreported what had happened.
+
+    A dangerous manual operation was queued for approval and the response still
+    said success=False, "Operation failed". An operator trusting that would
+    retry a request that had been accepted. Separately, an unrecognised action
+    name surfaced as a 500, reporting a server fault for a caller typo.
+    """
+    DANGEROUS = ("close_all", "emergency_hedge", "liquidate", "override_risk_limits")
+
+    def test_dangerous_operation_reports_pending_approval_not_failure(self):
+        import trading_system.ui.dashboard_server as m
+
+        for op in self.DANGEROUS:
+            with self.subTest(op=op):
+                result = m._execute_manual_operation(op, {"reason": "regression"})
+                self.assertEqual(result["status"], "pending_approval")
+                self.assertTrue(result["requires_approval"])
+                self.assertIn("operation_id", result)
+                self.assertNotIn(
+                    "failed", result["message"].lower(),
+                    "a queued-for-approval op must not report itself as failed",
+                )
+
+    def test_harmless_operation_still_reports_success(self):
+        import trading_system.ui.dashboard_server as m
+
+        result = m._execute_manual_operation("noop", {})
+        self.assertTrue(result["success"])
+        self.assertNotIn("status", result)

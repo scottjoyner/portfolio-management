@@ -7,6 +7,7 @@ store, and urllib network. Uses a fake HTTP handler to drive do_GET/do_POST.
 import io
 import json
 import os
+import sys
 import time
 import types
 from pathlib import Path
@@ -438,8 +439,29 @@ def test_api_execute_manual_operation_dangerous(env):
 
 
 def test_api_opportunities(env, monkeypatch):
+    """Assert the keys a consumer reads, not a key that never existed.
+
+    This asserted "opportunities" in the response. The response has never had
+    an "opportunities" key -- it reports buy_signals, sell_signals, signals,
+    total_signals, queue and status -- so the assertion was only ever testing
+    that some key existed, and would have passed just as well on an empty dict.
+    """
     monkeypatch.setattr(m, "_get_coinbase_cli", lambda: None)
-    assert "opportunities" in m.api_opportunities()
+    payload = m.api_opportunities()
+    for key in ("signals", "buy_signals", "sell_signals", "total_signals", "status", "source"):
+        assert key in payload, f"api_opportunities lost {key!r}"
+
+
+def test_api_opportunities_degrades_instead_of_raising(env, monkeypatch):
+    """With no price source available it reports unavailability, not an error.
+
+    The dashboard renders this directly, so an exception here takes out the
+    signals panel rather than showing it as empty.
+    """
+    monkeypatch.setattr(m, "_get_coinbase_cli", lambda: None)
+    payload = m.api_opportunities()
+    assert payload["status"] in ("unavailable", "ok", "live", "degraded")
+    assert payload["source"] in ("empty", "live", "cache", "degraded")
 
 
 def test_api_signal_feed(env):
@@ -455,7 +477,15 @@ def test_api_strategies_performance(env):
 
 
 def test_api_market_regime(env):
-    assert "regime" in m.api_market_regime()
+    """Same problem: asserted a "regime" key the response never had.
+
+    The payload reports current_regime (with state/confidence), sentiment and
+    symbols_tracked, so assert those.
+    """
+    payload = m.api_market_regime()
+    for key in ("current_regime", "sentiment", "symbols_tracked"):
+        assert key in payload, f"api_market_regime lost {key!r}"
+    assert "state" in payload["current_regime"]
 
 
 def test_api_market_intelligence(env):
@@ -686,17 +716,29 @@ def test_post_capital_buckets():
 
 
 def test_post_actions_run():
-    body = json.dumps({"type": "refresh_market_data"}).encode()
+    body = json.dumps({"action": "refresh_market_data"}).encode()
     h = make_handler("/actions/run", "POST", body)
     h.do_POST()
     assert h.status == 200
+
+
+def test_post_actions_run_rejects_unknown_action():
+    """An unknown action is refused, and refused as a client error.
+
+    queue_operator_action raises ValueError for an id that is not in
+    OPERATOR_ACTIONS, which the dispatcher turns into a 500. An unrecognised
+    action name is a bad request, not a server fault.
+    """
+    h = make_handler("/actions/run", "POST", json.dumps({"action": "not_a_real_action"}).encode())
+    h.do_POST()
+    assert h.status == 400
 
 
 def test_post_arbitrage_execute():
     body = json.dumps({"execution_plan": {}}).encode()
     h = make_handler("/arbitrage/execute", "POST", body)
     h.do_POST()
-    assert h.status in (200, 500)
+    assert h.status == 400
 
 
 def test_post_not_found():

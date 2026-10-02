@@ -1848,6 +1848,15 @@ def _execute_manual_operation(op_type: str, params: dict) -> dict:
         if op_type in ("close_all", "emergency_hedge", "liquidate", "override_risk_limits"):
             operation["status"] = "pending_approval"
             operation["requires_approval"] = True
+            # Say so in the response. This branch used to fall through to the
+            # initial result, which reports success=False and "Operation
+            # failed", so a caller that had correctly queued close_all for
+            # approval was told it had failed. An operator acting on that
+            # response would retry a request that had in fact been accepted.
+            result["status"] = "pending_approval"
+            result["requires_approval"] = True
+            result["operation_id"] = op_id
+            result["message"] = "Operation requires approval"
         else:
             operation["status"] = "executed"
             operation["execution_time"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -3434,7 +3443,21 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 saved = _save_capital_policy(payload)
                 self._json_response(json.dumps({"ok": True, "capital_policy": saved}, default=str))
             elif path == "/actions/run":
-                result = queue_operator_action(payload)
+                try:
+                    result = queue_operator_action(payload)
+                except ValueError as e:
+                    # An unrecognised action name is a bad request. Letting
+                    # ValueError reach the generic handler turned a caller typo
+                    # into a 500, which reports a server fault and buries the
+                    # reason. Return the valid ids so the caller can correct it.
+                    self._json_response(
+                        json.dumps({
+                            "error": str(e),
+                            "known_actions": sorted(_operator_action_ids()),
+                        }),
+                        status=400,
+                    )
+                    return
                 self._json_response(json.dumps(result, default=str))
             elif path == "/capital/buckets/preset":
                 preset_name = str(payload.get('preset') or payload.get('name') or '')
