@@ -45,6 +45,30 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+_SELL_SIDES = frozenset({"sell", "s", "sell_base", "sell_quote", "sell_base_advanced"})
+_BUY_SIDES = frozenset({"buy", "b", "buy_base", "buy_quote", "buy_base_advanced"})
+
+
+def _signed_size(fill) -> float:
+    """Signed contribution of one fill to the net position.
+
+    Fill.size is an unsigned Numeric with side in a separate column (see
+    storage/postgres/models.py), so the sign has to come from the side. The net
+    position used to be sum(f.size), which added sells to buys: two sells of 2
+    reported size 4 and position_type "long", making the "short" branch of
+    position_type unreachable from get_position().
+    """
+    size = abs(float(fill.size))
+    side = str(getattr(fill, "side", "") or "").strip().lower()
+    if side in _SELL_SIDES:
+        return -size
+    if side in _BUY_SIDES:
+        return size
+    # Unknown/absent side: fall back to the stored sign rather than guessing.
+    return float(fill.size)
+
+
+
 class PositionsRepository:
     """Repository for all position-related database operations."""
     
@@ -73,9 +97,16 @@ class PositionsRepository:
         if not fills:
             return None
         
-        # Aggregate position from fills
-        total_size = sum(f.size for f in fills)
-        weighted_avg_price = sum(f.size * f.price for f in fills) / total_size if total_size > 0 else 0
+        # Aggregate position from fills. Size is unsigned and direction lives in
+        # `side`, so the sign must be applied here or sells inflate the position.
+        total_size = sum(_signed_size(f) for f in fills)
+        gross_size = sum(abs(float(f.size)) for f in fills)
+        # Average over gross size, not net: dividing by a negative total would
+        # produce a negative entry price for a short.
+        weighted_avg_price = (
+            sum(abs(float(f.size)) * float(f.price) for f in fills) / gross_size
+            if gross_size > 0 else 0
+        )
         
         # Get latest fill date
         latest_fill = max(fills, key=lambda f: f.created_at)

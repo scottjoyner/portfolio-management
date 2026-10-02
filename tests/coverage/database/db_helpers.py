@@ -29,7 +29,27 @@ def _make_model(name, columns):
     return type(name, (), attrs)
 
 
+_INSTALLED = None
+
+
 def install_fakes():
+    """Install the fake storage/plaid modules once and reuse them.
+
+    Each call used to mint brand-new model classes and overwrite sys.modules.
+    Four suites call this at import time and each captured its own copy of
+    `storage.postgres.models`, but the queries layer imports the model *inside*
+    the function -- `from storage.postgres.models import Portfolio` -- so it got
+    whichever copy was installed last. The suites that lost the race then failed
+    with NoneType/first-is-None errors that had nothing to do with their own
+    code.
+
+    Idempotent: the first call installs, every later call returns the same
+    module objects, so class identity is stable for the whole session.
+    """
+    global _INSTALLED
+    if _INSTALLED is not None:
+        return _INSTALLED
+
     # storage / storage.postgres / storage.postgres.models chain
     storage_pkg = types.ModuleType("storage")
     storage_pkg.__path__ = []  # mark as package
@@ -80,7 +100,8 @@ def install_fakes():
     sys.modules["plaid"] = plaid_pkg
     sys.modules["plaid.models"] = plaid_models
     sys.modules["plaid.database_models"] = plaid_db
-    return mod, plaid_models, plaid_db
+    _INSTALLED = (mod, plaid_models, plaid_db)
+    return _INSTALLED
 
 
 install_fakes()
