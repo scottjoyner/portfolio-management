@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import time
+import pathlib
 import threading
 import unittest
 from types import SimpleNamespace
@@ -85,43 +86,67 @@ class _FakeStreaming:
 def _make_streaming(closes=None, volumes=None, highs=None, lows=None):
     return _FakeStreaming(_FakeBuf(closes, volumes, highs, lows))
 
+def _unlink_quietly(path):
+    try:
+        path.unlink()
+    except (OSError, FileNotFoundError):
+        pass
+
+
+def _state_paths_to_clear(repo_root):
+    """Exact paths this suite may delete. Never a bare wildcard.
+
+    The original setUp globbed ``data/<name>.json*`` for anything ending in
+    state.json. In a live checkout that matches not just the state file but every
+    sibling sharing the prefix: .bak, .bak2, .bak3, .pre-repair.*,
+    .reconcile-audit.*. Running this suite deleted a 98KB paper-trading ledger and
+    all four of its backups, irrecoverably.
+
+    The trailing ``*`` was presumably meant to catch stray temp files, but a
+    wildcard over a user's state directory is never the right way to express that.
+    This returns only the specific files the trader itself writes, plus temp files
+    that match the trader's own naming (".tmp" suffix), so nothing outside the
+    suite's own footprint can be destroyed by running it.
+    """
+    data = repo_root / "data"
+    paths = []
+    for name in _STATE_FILE_NAMES:
+        paths.append(data / name)
+    # The trader's own temp-write artefacts only -- an explicit suffix, not "*".
+    paths.extend(sorted(data.glob("paper_trader_v4_state.json.tmp*")))
+    return paths
+
+
+_STATE_FILE_NAMES = [
+    "paper_trader_v4_state.json",
+    "core_holdings.json",
+    "bt_cache_v4.json",
+    "hot_scores_v4.json",
+    "tuner_state_v4.json",
+    "strategy_analytics.json",
+    "equity_summary.json",
+    "experiment_proposals.json",
+]
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
 class BaseV4(unittest.TestCase):
     """Isolates each test by wiping persistent trader state files in ``data/``
     before construction so leftover paper/core/bt/hot state does not leak
     between tests (the trader loads these on __init__)."""
 
-    _STATE_FILES = [
-        "data/paper_trader_v4_state.json",
-        "data/core_holdings.json",
-        "data/bt_cache_v4.json",
-        "data/hot_scores_v4.json",
-        "data/tuner_state_v4.json",
-        "data/strategy_analytics.json",
-        "data/equity_summary.json",
-        "data/experiment_proposals.json",
-    ]
+    _STATE_FILES = [f"data/{name}" for name in _STATE_FILE_NAMES]
 
     def setUp(self):
-        for f in self._STATE_FILES:
-            for path in __import__("pathlib").Path("data").glob(
-                __import__("os").path.basename(f) + ("*" if f.endswith("state.json") else "")
-            ):
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
+        for path in self._state_files_to_clear():
+            _unlink_quietly(path)
         super().setUp()
 
     def tearDown(self):
         super().tearDown()
-        for f in self._STATE_FILES:
-            for path in __import__("pathlib").Path("data").glob(
-                __import__("os").path.basename(f) + ("*" if f.endswith("state.json") else "")
-            ):
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
+        for path in _state_paths_to_clear(_REPO_ROOT):
+            _unlink_quietly(path)
 
 
 # ───────────────────────── Dataclasses ─────────────────────────
@@ -667,11 +692,8 @@ class TestStatePersistence(BaseV4):
         self.assertAlmostEqual(new_t.paper_cash, 9000.0, delta=1)
         self.assertIn("BTC-USD", new_t.paper_positions)
         # cleanup
-        for p in list(new_t._paper_state_path.parent.glob("paper_trader_v4_state.json*")):
-            try:
-                p.unlink()
-            except Exception:
-                pass
+        for p in _state_paths_to_clear(_REPO_ROOT):
+            _unlink_quietly(p)
 
     def test_load_paper_state_corrupt(self):
         self.t._paper_state_path.write_text("{not valid json")
@@ -681,11 +703,8 @@ class TestStatePersistence(BaseV4):
         self.t._paper_state_path.write_text(json.dumps({"paper_cash": 5}))
         # missing paper_positions -> state None -> returns
         self.t._load_paper_state()
-        for p in list(self.t._paper_state_path.parent.glob("paper_trader_v4_state.json*")):
-            try:
-                p.unlink()
-            except Exception:
-                pass
+        for p in _state_paths_to_clear(_REPO_ROOT):
+            _unlink_quietly(p)
 
     def test_core_holdings_save_load(self):
         self.t._core_holdings["BTC-USD"] = CoreHolding(product_id="BTC-USD", qty=1.0,
@@ -1709,12 +1728,8 @@ class TestFromCli(BaseV4):
                 t = EventTraderV4.from_cli()
             self.assertIn("BTC-USD", t.products)
         finally:
-            import pathlib
-            for p in pathlib.Path("data").glob("paper_trader_v4_state.json*"):
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+            for p in _state_paths_to_clear(_REPO_ROOT):
+                _unlink_quietly(p)
 
 
 # ───────────────────────── HealthServer (HTTP endpoints) ─────────────────────────

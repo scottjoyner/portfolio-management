@@ -183,3 +183,70 @@ class TestSupervisedStartupPreconditions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestTraderTestSuiteCannotDeleteOperatorData(unittest.TestCase):
+    """tests/coverage/coinbase/test_run_trader_v4.py destroyed real state.
+
+    Its setUp and tearDown globbed `data/<name>.json*` for anything ending in
+    state.json. In a live checkout that matches every sibling sharing the prefix:
+    .bak, .bak2, .bak3, .pre-repair.*, .reconcile-audit.*. Running the suite
+    deleted a 98KB paper-trading ledger and all four of its backups, with no way
+    to recover them. The files were gitignored and nothing else referenced them.
+
+    Deleting a user's trading history is not an acceptable side effect of a unit
+    test, so the deletion set is now an explicit list and this pins it.
+    """
+    SUITE = REPO_ROOT / "tests" / "coverage" / "coinbase" / "test_run_trader_v4.py"
+
+    def _paths(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("v4suite", self.SUITE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, module._state_paths_to_clear(REPO_ROOT)
+
+    def test_deletion_set_never_contains_a_backup(self):
+        module, paths = self._paths()
+        forbidden = (".bak", "pre-repair", "reconcile-audit", ".tmp.")
+        offenders = [p.name for p in paths if any(t in p.name for t in forbidden)]
+        self.assertEqual(
+            offenders, [],
+            "the suite must not be able to delete backups or audit files",
+        )
+
+    def test_deletion_set_is_explicit_and_contained(self):
+        module, paths = self._paths()
+        for path in paths:
+            with self.subTest(path=path.name):
+                self.assertEqual(
+                    path.parent.resolve(), (REPO_ROOT / "data").resolve(),
+                    "the suite may only delete inside the repository's data dir",
+                )
+                self.assertFalse(
+                    path.is_dir(), "it must never delete a directory"
+                )
+
+    def test_no_glob_in_the_suite_can_match_a_backup(self):
+        """Checked against the AST, not the text.
+
+        A text search also matches the prose that documents this defect, which
+        makes the check report the explanation as the bug.
+        """
+        import ast
+
+        tree = ast.parse(self.SUITE.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr != "glob" or not node.args:
+                continue
+            argument = node.args[0]
+            pattern = argument.value if isinstance(argument, ast.Constant) else None
+            with self.subTest(line=node.lineno, pattern=pattern):
+                self.assertIsNotNone(pattern, "glob argument must be a literal so it can be audited")
+                if pattern and pattern.endswith("state.json*"):
+                    self.fail(
+                        f"line {node.lineno}: glob({pattern!r}) also matches .bak, .bak2, .bak3, "
+                        ".pre-repair.* and .reconcile-audit.* -- this is what destroyed the ledger"
+                    )
