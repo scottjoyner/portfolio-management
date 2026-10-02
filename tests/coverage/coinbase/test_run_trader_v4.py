@@ -131,6 +131,36 @@ _STATE_FILE_NAMES = [
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
+def _refuse_live_data_dir():
+    """This suite deletes files. Refuse to do that to a live deployment.
+
+    The four cleanup sites below were rewritten from a wildcard to an explicit
+    list after they destroyed a paper-trading ledger and its backups. An explicit
+    list is much safer, but the suite still runs against the repository's real
+    data/ directory, so any future cleanup mistake writes a file ahead of the
+    operator. Require an explicit opt-in whenever data/ looks like a live
+    deployment rather than a scratch checkout.
+    """
+    data = _REPO_ROOT / "data"
+    if os.environ.get("ALLOW_TESTS_TO_TOUCH_LIVE_DATA_DIR") == "1":
+        return
+    signals = [
+        p for p in (
+            "paper_trader_v4_state.json",
+            "core_holdings.json",
+            "trader_state_corrupt",
+        ) if (data / p).exists()
+    ]
+    if signals:
+        raise unittest.SkipTest(
+            "refusing to run against a live data/ directory "
+            f"(found {', '.join(signals)}). This suite deletes state files. "
+            "Run it in a scratch checkout, or set "
+            "ALLOW_TESTS_TO_TOUCH_LIVE_DATA_DIR=1 if you have a backup and "
+            "accept that it will overwrite operator state."
+        )
+
+
 class BaseV4(unittest.TestCase):
     """Isolates each test by wiping persistent trader state files in ``data/``
     before construction so leftover paper/core/bt/hot state does not leak
@@ -139,6 +169,7 @@ class BaseV4(unittest.TestCase):
     _STATE_FILES = [f"data/{name}" for name in _STATE_FILE_NAMES]
 
     def setUp(self):
+        _refuse_live_data_dir()
         for path in self._state_files_to_clear():
             _unlink_quietly(path)
         super().setUp()
