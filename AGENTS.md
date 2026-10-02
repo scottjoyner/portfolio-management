@@ -634,6 +634,26 @@ WebSocket (~1s ticker)
 - `strategy_engine.py`: `FundingRateContrarian`, `ExchangeFlowSignal`, `BTCDXYCorrelation` — 3 Python
   external-data strategies (funding rates, CoinGecko flows, Yahoo Finance macro)
 
+## Tests outside CI
+
+`tests/coverage/` is **not run by any CI job**: `broad-python-suite` passes
+`--ignore=tests/coverage`, and `python-critical` and `coverage-gate` name
+individual paths that do not include it. Tests there therefore rot without
+anything noticing.
+
+This is not hypothetical. The dashboard suites in that tree had drifted far enough
+that `FakeHandler` no longer implemented the response method the real dispatcher
+calls, so ~40 routing tests failed for a reason that had nothing to do with the
+product. Repaired 2026-10-01 (see the test(dashboard) commit); 25 failures remain
+and are individual per-test mechanisms, not product defects.
+
+Consequences to keep in mind:
+
+- A green `coverage-gate` job says nothing about `tests/coverage/`.
+- The per-module coverage numbers below come from `tests/coverage/`, so they are
+  measuring a suite that CI does not run.
+- Any gate built on that directory needs the directory wired in first.
+
 ## Coverage Campaign & Gate
 
 **This gate is not run in CI.** It is a local tool. Stating otherwise would buy

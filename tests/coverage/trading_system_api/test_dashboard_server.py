@@ -8,6 +8,7 @@ import io
 import json
 import os
 import time
+import types
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -59,6 +60,16 @@ class _ImmediateExecutor:
         return _F()
 
 
+class _BadValueState:
+    """State store stand-in whose stats() reports a hard-bad component value."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def stats(self):
+        return {"note": self._value}
+
+
 class FakeHandler:
     """Minimal stand-in for DashboardHandler without a real socket."""
 
@@ -75,6 +86,16 @@ class FakeHandler:
 
     def send_response(self, status):
         self.status = status
+
+    # Mirrors DashboardHandler._json_response. Every routing test below drives the
+    # real dispatcher, which ends in this call; without it they all failed with
+    # "FakeHandler has no attribute _json_response". The fake already had the
+    # primitives this uses.
+    def _json_response(self, data_str, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(data_str.encode())
 
     def send_header(self, k, v):
         self.headers_out[k] = v
@@ -151,7 +172,10 @@ def test_write_json(env):
 def test_write_json_fail(monkeypatch, env):
     def _boom(*a, **k):
         raise OSError("no")
-    monkeypatch.setattr(m, "open", _boom)
+    # _write_json resolves `open` as a module global, but the module never defines
+    # one, so monkeypatch's default raising=True refused the patch. This exercises
+    # the real error path in _write_json.
+    monkeypatch.setattr(m, "open", _boom, raising=False)
     assert m._write_json(str(env / "x.json"), {}) is False
 
 
@@ -275,12 +299,53 @@ def test_api_health(env):
 
 
 @pytest.mark.parametrize("component_value", ["unavailable", "unreadable", "error", "error: cache offline"])
-def test_api_health_recognizes_hard_bad_component_values(component_value):
-    assert m._component_is_hard_bad(component_value) is True
+def test_api_health_recognizes_hard_bad_component_values(env, monkeypatch, component_value):
+    """A real health key holding a bad value must degrade /health.
+
+    This used to assert against a `_component_is_hard_bad` helper that no longer
+    exists; the invariant is now expressed by _HEALTH_KEYS and the
+    `healthy_states` set. Driving api_health() tests the actual contract instead
+    of a predicate that has since been inlined.
+    """
+    # _BadValueState reports the bad value through stats(), which api_health
+    # surfaces as the state_store component.
+    monkeypatch.setattr(m, "_get_state_store", lambda: _BadValueState(component_value))
+    assert m.api_health()["status"] == "degraded", (
+        f"state_store={component_value!r} should read as degraded"
+    )
 
 
-def test_api_health_ignores_descriptive_component_values():
-    assert m._component_is_hard_bad("12 strategy, 4 pm, 2 arb") is False
+def test_api_health_ignores_descriptive_component_values(monkeypatch):
+    """Descriptive metadata must not count against health.
+
+    `signal_cache` renders as "12 strategy, 4 pm, 2 arb" -- informative, not a
+    fault. Only the keys in _HEALTH_KEYS decide the status, so a descriptive
+    string there must leave /health healthy.
+
+    Deliberately not using the `env` fixture: it redirects OPERATOR_STATE_PATH
+    into tmp, which makes the daemon heartbeat go missing and degrades /health for
+    an unrelated reason. An earlier version of this test did use it and failed for
+    exactly that reason.
+    """
+    state = {
+        "marketIntelligence": {
+            "coinbase": {"last_updates": {f"s{i}": {} for i in range(12)}},
+            "prediction_markets": {"markets": [{}] * 4},
+            "arbitrage": {"opportunities": [{}] * 2},
+        }
+    }
+    original = m._load_json
+    monkeypatch.setattr(
+        m, "_load_json",
+        lambda path, default=None: state if path == m.OPERATOR_STATE_PATH else original(path, default),
+    )
+    health = m.api_health()
+    # Assert the counts that matter, not the exact rendered string: the format
+    # also carries a coinbase-product tally that this test is not about.
+    assert health["components"]["signal_cache"].startswith("12 strategy, 4 pm, 2 arb")
+    assert health["status"] == "healthy", (
+        "a descriptive component value must not degrade health: " + repr(health["components"])
+    )
 
 
 def test_api_health_error_message_forces_degraded(env, monkeypatch):
