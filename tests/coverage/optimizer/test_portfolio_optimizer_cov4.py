@@ -363,7 +363,7 @@ def test_execute_with_bracket_dryrun_no_mgr(opt):
     opt.dry_run = True
     opt.require_approval = False
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, stop_loss_pct=5.0, product_id="SOL-USD")
+                        entry_price_est=100.0, stop_loss_pct=5.0, take_profit_pct=5.0, product_id="SOL-USD")
     opt._execute_with_bracket(opp, 10.0, True)
     assert opp.executed is True
 
@@ -378,7 +378,7 @@ def test_process_buy_dryrun_full(opt):
     opt.require_approval = False
     opt._best_route_decision_for_opportunity = mock.MagicMock(return_value=None)
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, product_id="SOL-USD")
+                        entry_price_est=100.0, take_profit_pct=5.0, product_id="SOL-USD")
     opt._process_opportunity(opp)
     assert opp.executed is True
     assert opp.order_id == "dry-run"
@@ -394,7 +394,7 @@ def test_process_approval_pending_route_write(opt):
     opt.pending_file = os.path.join("data", "pending_route2.json")
     opt.notifier = mock.MagicMock()
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, product_id="SOL-USD")
+                        entry_price_est=100.0, take_profit_pct=5.0, product_id="SOL-USD")
     step = SimpleNamespace(product_id="SOL-USD", from_currency="USDC",
                            to_currency="SOL", direction="BUY", price=100.0,
                            effective_rate=1.0)
@@ -419,7 +419,7 @@ def test_process_sell_dryrun(opt):
     opt.require_approval = False
     opt._best_route_decision_for_opportunity = mock.MagicMock(return_value=None)
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "SELL", 1000, "r",
-                        entry_price_est=100.0, product_id="SOL-USD")
+                        entry_price_est=100.0, take_profit_pct=5.0, product_id="SOL-USD")
     opt._process_opportunity(opp)
     assert opp.executed is True
     assert opp.order_id == "dry-run"
@@ -611,7 +611,7 @@ def test_process_event_market_dryrun_notify(opt):
     opt.dry_run = True
     opt.notifier = mock.MagicMock()
     opp = P.Opportunity(P.OpportunityType.EVENT_MARKET, "?", "NONE", 0, "r",
-                        product_id="kalshi:1",
+                        take_profit_pct=5.0, product_id="kalshi:1",
                         meta={"platform": "kalshi", "market_question": "q?",
                               "signal_type": "x"})
     n0 = len(opt.trade_log)
@@ -625,7 +625,7 @@ def test_process_stock_signal_notify(opt):
     opt.dry_run = False
     opt.notifier = mock.MagicMock()
     opp = P.Opportunity(P.OpportunityType.STOCK_SIGNAL, "NVDA", "BUY", 100, "r",
-                        product_id="NVDA")
+                        take_profit_pct=5.0, product_id="NVDA")
     opt._process_opportunity(opp)
     assert opt.notifier.send_trade_alert.called
 
@@ -640,7 +640,7 @@ def test_process_sell_preview_fail(opt):
     opt.require_approval = False
     opt._best_route_decision_for_opportunity = mock.MagicMock(return_value=None)
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "SELL", 1000, "r",
-                        entry_price_est=100.0, product_id="SOL-USD")
+                        entry_price_est=100.0, take_profit_pct=5.0, product_id="SOL-USD")
     with mock.patch.object(P.logger, "warning") as w:
         opt._process_opportunity(opp)
     assert any("Preview failed" in str(a) for a in w.call_args_list)
@@ -657,7 +657,7 @@ def test_process_execution_no_order(opt):
     opt.require_approval = False
     opt._best_route_decision_for_opportunity = mock.MagicMock(return_value=None)
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, product_id="SOL-USD")
+                        entry_price_est=100.0, take_profit_pct=5.0, product_id="SOL-USD")
     n0 = len(opt.trade_log)
     opt._process_opportunity(opp)
     assert len(opt.trade_log) == n0
@@ -675,7 +675,7 @@ def test_execute_with_bracket_preview_fail(opt):
     preview.error = "no liquidity"
     opt._exec_engine._preview.return_value = preview
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, stop_loss_pct=5.0, product_id="SOL-USD")
+                        entry_price_est=100.0, stop_loss_pct=5.0, take_profit_pct=5.0, product_id="SOL-USD")
     with mock.patch.object(P.logger, "warning") as w:
         opt._execute_with_bracket(opp, 10.0, True)
     assert any("preview failed" in str(a).lower() for a in w.call_args_list)
@@ -691,7 +691,7 @@ def test_execute_with_bracket_fee_too_high(opt):
     preview.raw = {"preview": {"total_fee": 500.0}}
     opt._exec_engine._preview.return_value = preview
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, stop_loss_pct=5.0, product_id="SOL-USD")
+                        entry_price_est=100.0, stop_loss_pct=5.0, take_profit_pct=5.0, product_id="SOL-USD")
     with mock.patch.object(P.logger, "warning") as w:
         opt._execute_with_bracket(opp, 10.0, True)
     assert any("fee too high" in str(a).lower() for a in w.call_args_list)
@@ -704,7 +704,7 @@ def test_execute_with_bracket_pending_live(opt):
     opt.require_approval = True
     opt.pending_file = os.path.join("data", "pending_bracket2.json")
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
-                        entry_price_est=100.0, stop_loss_pct=5.0, product_id="SOL-USD")
+                        entry_price_est=100.0, stop_loss_pct=5.0, take_profit_pct=5.0, product_id="SOL-USD")
     opt._execute_with_bracket(opp, 10.0, True)
     assert os.path.exists(opt.pending_file)
     with open(opt.pending_file) as f:
