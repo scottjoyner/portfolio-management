@@ -208,3 +208,6 @@ data/*.json
 data/*.jsonl
 data/approvals_inbox/
 !data/.gitkeep
+
+# Post-incident evidence: contains operator state + a database. Keep on disk, never in git.
+data/incident-*/
