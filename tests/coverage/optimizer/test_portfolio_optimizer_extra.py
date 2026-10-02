@@ -12,7 +12,7 @@ from unittest import mock
 import pytest
 
 import portfolio_optimizer as P
-from conftest import make_state, holding
+from tests.coverage.optimizer.conftest import make_state, holding
 
 
 @pytest.fixture(autouse=True)

@@ -14,7 +14,7 @@ import pytest
 # Disable the SmartFeed background thread for clean process exit.
 import portfolio_optimizer as P
 P._HAS_SMART_FEED = False
-from conftest import make_state, holding, opt  # noqa: F401
+from tests.coverage.optimizer.conftest import make_state, holding, opt  # noqa: F401
 
 
 # ---------------------------------------------------------------------------

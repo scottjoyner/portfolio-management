@@ -18,7 +18,7 @@ from unittest import mock
 import pytest
 
 import portfolio_optimizer as P
-from conftest import make_state, holding
+from tests.coverage.optimizer.conftest import make_state, holding
 
 
 def mk_state(holdings, total_value=100000.0, usdc=50000.0, fee_volume_30d=0.0, volume_to_next_tier=0.0):

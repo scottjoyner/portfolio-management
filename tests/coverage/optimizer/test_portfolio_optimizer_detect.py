@@ -8,7 +8,7 @@ import pytest
 import portfolio_optimizer as P
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import BacktestVerdict
-from conftest import make_state, holding
+from tests.coverage.optimizer.conftest import make_state, holding
 
 
 def _candles(n=120, start=100, step=1):
