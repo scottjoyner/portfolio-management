@@ -618,7 +618,32 @@ WebSocket (~1s ticker)
 
 ## Coverage Campaign & Gate
 
-Per-module **line + branch coverage gate (default 90%)** enforced by `scripts/coverage_gate.py` across every Python source module in the manifest (`scripts/gen_manifest.py` → `scripts/coverage/python_manifest.txt`). Node (runnable `.mjs` sources) and Rust (`rust_core`, via `cargo-llvm-cov`) are gated by the same tool with `--lang node` / `--lang rust`. A module passes only when BOTH its line% and branch% meet the threshold.
+**This gate is not run in CI.** It is a local tool. Stating otherwise would buy
+a false belief, so the position is explicit:
+
+- No job in `.github/workflows/ci.yml` invokes `coverage_gate.py`. The `coverage-gate`
+  job runs `coverage run` over four competition scripts and checks nothing against
+  the manifest.
+- The tool has no baseline or ratchet mode, so wiring it in as-is would fail
+  immediately: the modules that place trades are far below 90%
+  (`portfolio_optimizer.py` ~11%, `coinbase/src/run_trader_v4.py` ~19%).
+- Its input `scripts/coverage/python_coverage.json` is a **committed artifact from
+  July**. Nothing regenerates it in CI, so any gate built on it would police stale
+  numbers.
+
+A per-module 90% line+branch gate *is* available locally via `coverage_gate.py`
+across every Python source module in the manifest (`scripts/gen_manifest.py` →
+`scripts/coverage/python_manifest.txt`), with `--lang node` / `--lang rust` for
+Node (runnable `.mjs` sources) and Rust (`rust_core`, via `cargo-llvm-cov`). A
+module passes only when BOTH its line% and branch% meet the threshold. Making it
+real in CI needs a ratchet against recorded per-module numbers, because the
+absolute threshold is unreachable without first covering the execution paths.
+
+`tests/test_documented_controls.py` asserts the claims in this section stay honest:
+that every path named here resolves, and that controls described as enforced are
+actually referenced by `ci.yml`. It was added after three controls were found
+documented but inert — this gate, `deploy/health_monitor.sh`, and
+`deploy/portfolio-agent-watcher.service`.
 
 Tooling (under `scripts/coverage/`):
 - `coverage_gate.py` — loads the coverage JSON + manifest, prints per-module PASS/FAIL.
