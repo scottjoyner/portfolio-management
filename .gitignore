@@ -211,3 +211,7 @@ data/approvals_inbox/
 
 # Post-incident evidence: contains operator state + a database. Keep on disk, never in git.
 data/incident-*/
+# Test artifacts quarantined after the 2026-10-04 data/ leak. The README there
+# documents the incident; the JSON holds a *fabricated* book (a BTC-USD core
+# holding with trades 0) that must never be mistaken for operator state.
+data/quarantine_test_artifacts_*/

@@ -1,755 +1,284 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark light" />
 <title>PM Terminal</title>
-<style>
-  :root{
-    --bg:#0a0e14; --panel:#0f1620; --panel2:#131c28; --line:#1e2a38;
-    --txt:#c9d4e0; --dim:#6b7a8d; --accent:#4ea1ff; --green:#16c784;
-    --red:#ea3943; --amber:#f0b90b; --grid:#16202c;
-  }
-  *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
-  body{
-    background:var(--bg);color:var(--txt);
-    font:13px/1.4 "SF Mono",ui-monospace,Menlo,Consolas,monospace;
-    overflow:hidden;
-  }
-  .mono{font-variant-numeric:tabular-nums}
-  .up{color:var(--green)} .down{color:var(--red)} .dim{color:var(--dim)}
-  /* ── shell ── */
-  .topbar{
-    display:flex;align-items:center;gap:14px;padding:8px 14px;
-    background:linear-gradient(180deg,#101822,#0c121b);border-bottom:1px solid var(--line);
-    height:48px;
-  }
-  .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.5px}
-  .brand .mark{
-    width:26px;height:26px;border-radius:6px;display:grid;place-items:center;
-    background:linear-gradient(135deg,var(--accent),#2b6fd6);color:#04121f;font-weight:800;
-  }
-  .brand .sub{color:var(--dim);font-weight:400;font-size:11px}
-  .pill{
-    display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:20px;
-    background:var(--panel2);border:1px solid var(--line);color:var(--dim);font-size:11px;
-  }
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
-  .dot.live{background:var(--green);box-shadow:0 0 6px var(--green)}
-  .dot.bad{background:var(--red)}
-  .spacer{flex:1}
-  .stat{display:flex;flex-direction:column;line-height:1.15}
-  .stat .k{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
-  .stat .v{font-size:14px;font-weight:600}
-  .ks-btn{
-    display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:6px;cursor:pointer;
-    font:inherit;font-size:11px;font-weight:700;border:1px solid var(--line);
-    background:var(--panel2);color:var(--dim);
-  }
-  .ks-btn.armed{background:rgba(234,57,67,.18);color:var(--red);border-color:var(--red)}
-  .ks-btn.off{background:rgba(22,199,132,.15);color:var(--green);border-color:var(--green)}
-
-  .grid{
-    display:grid;height:calc(100vh - 48px);
-    grid-template-columns:230px 1fr 340px;
-    grid-template-rows:1fr;
-  }
-  .col{display:flex;flex-direction:column;min-height:0;min-width:0}
-  .col.left{border-right:1px solid var(--line);background:var(--panel)}
-  .col.right{border-left:1px solid var(--line);background:var(--panel)}
-  .col.center{background:var(--bg);overflow:hidden}
-
-  .panel-h{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:8px 12px;border-bottom:1px solid var(--line);
-    font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);
-    background:var(--panel2);
-  }
-  .panel-h .ttl{color:var(--txt);font-weight:600}
-
-  /* ── watchlist ── */
-  .wl{overflow-y:auto;flex:1}
-  .wl-row{
-    display:grid;grid-template-columns:1fr 64px 56px;gap:6px;align-items:center;
-    padding:7px 10px;border-bottom:1px solid var(--grid);cursor:pointer;
-  }
-  .wl-row:hover{background:var(--panel2)}
-  .wl-row.active{background:#16263a;border-left:2px solid var(--accent);padding-left:8px}
-  .wl-sym{font-weight:600}
-  .wl-sym small{display:block;color:var(--dim);font-weight:400;font-size:10px}
-  .wl-px{text-align:right;font-weight:600}
-  .wl-chg{text-align:right;font-size:11px}
-  .wl-spark{width:56px;height:22px;display:block}
-
-  /* ── chart ── */
-  .chart-h{
-    display:flex;align-items:center;gap:16px;padding:10px 14px;border-bottom:1px solid var(--line);
-  }
-  .chart-h .sym{font-size:18px;font-weight:700}
-  .chart-h .px{font-size:18px;font-weight:700}
-  .tf{display:flex;gap:4px;margin-left:auto}
-  .tf button{
-    background:var(--panel2);border:1px solid var(--line);color:var(--dim);
-    padding:4px 9px;border-radius:5px;cursor:pointer;font:inherit;font-size:11px;
-  }
-  .tf button.on{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
-  .chart-wrap{position:relative;flex:1;min-height:0}
-  #chart{width:100%;height:100%;display:block}
-  .xhair{
-    position:absolute;pointer-events:none;background:rgba(10,14,20,.92);
-    border:1px solid var(--line);border-radius:5px;padding:6px 9px;font-size:11px;
-    display:none;z-index:5;white-space:nowrap;
-  }
-  .xhair b{color:var(--accent)}
-
-  /* ── order entry ── */
-  .oe{padding:12px;border-bottom:1px solid var(--line)}
-  .oe label{display:block;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin:8px 0 3px}
-  .oe input,.oe select{
-    width:100%;background:var(--bg);border:1px solid var(--line);color:var(--txt);
-    padding:7px 9px;border-radius:6px;font:inherit;
-  }
-  .side-toggle{display:flex;gap:6px}
-  .side-toggle button{
-    flex:1;padding:9px;border-radius:6px;border:1px solid var(--line);
-    background:var(--panel2);color:var(--dim);font:inherit;font-weight:700;cursor:pointer;
-  }
-  .side-toggle button.buy.on{background:var(--green);color:#04121f;border-color:var(--green)}
-  .side-toggle button.sell.on{background:var(--red);color:#fff;border-color:var(--red)}
-  .row2{display:flex;gap:8px}
-  .row2>div{flex:1}
-  .btn{
-    width:100%;margin-top:12px;padding:10px;border:none;border-radius:6px;cursor:pointer;
-    background:var(--accent);color:#04121f;font:inherit;font-weight:700;letter-spacing:.4px;
-  }
-  .btn:hover{filter:brightness(1.08)}
-  .oe-msg{margin-top:9px;font-size:11px;min-height:14px}
-  .oe-msg.ok{color:var(--green)} .oe-msg.err{color:var(--red)}
-
-  /* ── blotter ── */
-  .bl{flex:1;overflow-y:auto}
-  table{width:100%;border-collapse:collapse;font-size:11px}
-  th,td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--grid)}
-  th{color:var(--dim);text-transform:uppercase;font-size:9px;letter-spacing:.4px;position:sticky;top:0;background:var(--panel2)}
-  td.l,th.l{text-align:left}
-  .tag{font-size:9px;padding:1px 6px;border-radius:10px;text-transform:uppercase}
-  .tag.long{background:rgba(22,199,132,.15);color:var(--green)}
-  .tag.pending{background:rgba(240,185,11,.15);color:var(--amber)}
-
-  .empty{padding:18px;color:var(--dim);text-align:center;font-size:11px}
-
-  /* ── opportunities ── */
-  .opp-toolbar{display:flex;align-items:center;gap:8px;padding:6px 12px;flex-wrap:wrap}
-  .seg{display:flex;gap:4px}
-  .seg button{
-    background:var(--panel2);border:1px solid var(--line);color:var(--dim);
-    padding:4px 10px;border-radius:5px;cursor:pointer;font:inherit;font-size:11px;
-  }
-  .seg button.on{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
-  .opp-sort{margin-left:auto;display:flex;gap:4px}
-  .opp-sort button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);
-    padding:3px 8px;border-radius:5px;cursor:pointer;font:inherit;font-size:10px}
-  .opp-sort button.on{color:var(--txt);border-color:var(--accent)}
-  #opportunities{overflow-y:auto;flex:1;padding:0 10px 10px}
-  .opp-group-h{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);
-    padding:8px 4px 4px;border-bottom:1px solid var(--grid);margin:4px 0}
-  .opp-card{
-    border:1px solid var(--line);border-radius:7px;padding:8px 10px;margin:6px 0;
-    background:var(--panel);cursor:pointer;transition:border-color .12s;
-  }
-  .opp-card:hover{border-color:var(--accent)}
-  .opp-card.buy{border-left:3px solid var(--green)}
-  .opp-card.sell{border-left:3px solid var(--red)}
-  .opp-top{display:flex;align-items:center;gap:8px}
-  .opp-sym{font-weight:700}
-  .opp-side{font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;text-transform:uppercase}
-  .opp-side.buy{background:rgba(22,199,132,.15);color:var(--green)}
-  .opp-side.sell{background:rgba(234,57,67,.15);color:var(--red)}
-  .opp-strat{color:var(--dim);font-size:11px;margin-left:auto}
-  .opp-meta{display:flex;gap:14px;margin-top:5px;font-size:11px}
-  .opp-meta b{color:var(--txt);font-weight:600}
-  .conf-bar{height:5px;border-radius:3px;background:var(--grid);margin-top:6px;overflow:hidden}
-  .conf-bar > i{display:block;height:100%;background:var(--accent)}
-  .opp-reason{color:var(--dim);font-size:10px;margin-top:5px;display:none}
-  .opp-card.exp .opp-reason{display:block}
-
-  /* ── backtest table ── */
-  #bt-body td.verdict-pass{color:var(--green)} #bt-body td.verdict-fail{color:var(--red)}
-  .bt-pill{font-size:9px;padding:1px 7px;border-radius:10px;font-weight:700}
-  .bt-pill.pass{background:rgba(22,199,132,.15);color:var(--green)}
-  .bt-pill.fail{background:rgba(234,57,67,.15);color:var(--red)}
-
-  /* ── skeletons / toasts ── */
-  @keyframes shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
-  .skel{background:linear-gradient(90deg,#16202c 25%,#1e2a38 37%,#16202c 63%);
-    background-size:400px 100%;animation:shimmer 1.3s infinite;border-radius:5px}
-  .skel-line{height:11px;margin:6px 0}
-  #toasts{position:fixed;right:14px;bottom:14px;display:flex;flex-direction:column;gap:8px;z-index:20;max-width:320px}
-  .toast{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);
-    border-radius:7px;padding:9px 12px;font-size:11px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
-  .toast .t-act{color:var(--accent);cursor:pointer;font-weight:600;margin-left:6px}
-  #err-banner{display:none;position:fixed;top:54px;left:50%;transform:translateX(-50%);
-    background:rgba(240,185,11,.15);border:1px solid var(--amber);color:var(--amber);
-    padding:6px 14px;border-radius:7px;font-size:11px;z-index:19}
-  #err-banner a{color:var(--amber);cursor:pointer;font-weight:600}
-  /* refresh progress */
-  #rc-bar{height:2px;background:var(--accent);width:0;transition:width .25s linear}
-  .topbar.degraded{box-shadow:inset 0 -2px 0 var(--red)}
-  .topbar.warn{box-shadow:inset 0 -2px 0 var(--amber)}
-
-  /* center scroll area below chart */
-  .center-scroll{display:flex;flex-direction:column;min-height:0}
-  .opp-section{flex:1;display:flex;flex-direction:column;min-height:0;border-top:1px solid var(--line)}
-
-  @media (max-width:980px){
-    .grid{grid-template-columns:1fr;grid-template-rows:auto auto auto}
-    .col.left,.col.right{border:none;border-bottom:1px solid var(--line)}
-    .stat{min-width:54px}
-  }
-</style>
+<link rel="stylesheet" href="/static/dashboard.css" />
 </head>
 <body>
-  <div class="topbar" id="topbar">
-    <div class="brand"><div class="mark">PM</div>
-      <div>Terminal <span class="sub" id="mode-sub">—</span></div>
-    </div>
-    <span class="pill"><span class="dot" id="live-dot"></span><span id="status-text">connecting…</span></span>
-    <span class="pill mono" id="refresh-age">just now</span>
-    <div class="spacer"></div>
-    <div class="stat"><span class="k">Equity</span><span class="v mono" id="h-equity">--</span></div>
-    <div class="stat"><span class="k">P&amp;L</span><span class="v mono" id="h-pnl">--</span></div>
-    <div class="stat"><span class="k">DD</span><span class="v mono" id="h-dd">--</span></div>
-    <div class="stat"><span class="k">Win%</span><span class="v mono" id="h-win">--</span></div>
-    <div class="stat"><span class="k">Pos</span><span class="v mono" id="h-pos">--</span></div>
-    <div class="stat"><span class="k">Tick</span><span class="v mono" id="h-tick">--</span></div>
-    <div class="stat"><span class="k">Lat p95</span><span class="v mono" id="h-lat">--</span></div>
-    <div class="stat"><span class="k">Regime</span><span class="v" id="h-regime">--</span></div>
-    <button class="ks-btn off" id="ks-btn" title="Toggle kill switch">KILL: OFF</button>
-    <div id="rc-bar"></div>
-  </div>
-  <div id="err-banner"></div>
+<a class="skip-link" href="#main">Skip to content</a>
 
-  <div class="grid">
-    <!-- LEFT: watchlist -->
-    <div class="col left">
-      <div class="panel-h"><span class="ttl">Markets</span><span id="wl-count">0</span></div>
-      <div class="wl" id="watchlist"></div>
-    </div>
+<div class="shell">
 
-    <!-- CENTER: chart + opportunities -->
-    <div class="col center center-scroll">
-      <div class="chart-h">
-        <span class="sym" id="chart-sym">BTC-USD</span>
-        <span class="px mono" id="chart-px">--</span>
-        <span class="mono" id="chart-chg">--</span>
-        <div class="tf" id="tf">
-          <button data-g="60">1m</button>
-          <button data-g="300">5m</button>
-          <button data-g="900">15m</button>
-          <button data-g="3600" class="on">1H</button>
-          <button data-g="21600">6H</button>
-          <button data-g="86400">1D</button>
-        </div>
-      </div>
-      <div class="chart-wrap">
-        <canvas id="chart"></canvas>
-        <div class="xhair" id="xhair"></div>
-      </div>
-      <div class="opp-section">
-        <div class="panel-h">
-          <span class="ttl">Opportunities</span>
-          <span id="opp-count" class="dim">0</span>
-        </div>
-        <div class="opp-toolbar">
-          <div class="seg" id="opp-filter">
-            <button data-f="ALL" class="on">All</button>
-            <button data-f="BUY">Buy</button>
-            <button data-f="SELL">Sell</button>
-          </div>
-          <div class="opp-sort" id="opp-sort">
-            <button data-s="confidence" class="on">Conf</button>
-            <button data-s="notional">Notional</button>
-            <button data-s="time">Time</button>
-          </div>
-        </div>
-        <div id="opportunities"></div>
-      </div>
-    </div>
-
-    <!-- RIGHT: order entry + positions + backtests -->
-    <div class="col right">
-      <div class="panel-h"><span class="ttl">Order Ticket</span></div>
-      <div class="oe">
-        <div class="side-toggle">
-          <button class="buy on" id="side-buy" data-side="BUY">BUY</button>
-          <button class="sell" id="side-sell" data-side="SELL">SELL</button>
-        </div>
-        <label>Symbol</label>
-        <input id="oe-symbol" value="BTC-USD" />
-        <label>Size (USD)</label>
-        <input id="oe-size" type="number" value="100" min="1" step="1" />
-        <div class="row2">
-          <div><label>Stop %</label><input id="oe-stop" type="number" value="3" step="0.5" /></div>
-          <div><label>Target %</label><input id="oe-target" type="number" value="6" step="0.5" /></div>
-        </div>
-        <button class="btn" id="oe-submit">SUBMIT FOR APPROVAL</button>
-        <div class="oe-msg" id="oe-msg"></div>
-      </div>
-      <div class="panel-h"><span class="ttl">Positions</span><span id="bl-count" class="dim">0</span></div>
-      <div class="bl">
-        <table>
-          <thead><tr>
-            <th class="l">Symbol</th><th class="l">Side</th><th>Qty</th>
-            <th>Entry</th><th>Mark</th><th>P&amp;L%</th>
-          </tr></thead>
-          <tbody id="bl-body"></tbody>
-        </table>
-        <div class="empty" id="bl-empty">No open positions</div>
-      </div>
-      <div class="panel-h"><span class="ttl">Backtest Experiments</span><span id="bt-count" class="dim">0</span></div>
-      <div class="bl">
-        <table>
-          <thead><tr>
-            <th class="l">Strategy</th><th class="l">Verdict</th><th>Win%</th><th>Sharpe</th><th>PF</th><th>Ret%</th>
-          </tr></thead>
-          <tbody id="bt-body"></tbody>
-        </table>
-        <div class="empty" id="bt-empty">No experiments</div>
-      </div>
-    </div>
+  <div class="brand">
+    <span class="mark" aria-hidden="true">PM</span>
+    <span>
+      <b>PM Terminal</b>
+      <span class="sub" id="mode-sub">portfolio management</span>
+    </span>
   </div>
 
-  <div id="toasts"></div>
+  <header class="topbar">
+    <span class="pill"><span class="dot" id="live-dot"></span><span id="status-text">connecting</span></span>
+    <span class="pill" title="Readiness is separate from liveness: the dashboard can be healthy while the trader is blocked.">
+      <span class="dot idle" id="ready-dot"></span><span id="ready-label">readiness</span>
+    </span>
 
-<script>
-const $ = s => document.querySelector(s);
-const $$ = s => Array.from(document.querySelectorAll(s));
-// resilient fetch: never throws; returns {ok,data,status,error}
-async function apiRaw(p, opts){
-  try{
-    const r = await fetch(p, opts);
-    let data = null;
-    try { data = await r.json(); } catch(_) {}
-    return { ok: r.ok, status: r.status, data };
-  }catch(e){ return { ok:false, status:0, data:null, error:String(e) }; }
-}
-const api = (p, opts) => apiRaw(p, opts).then(x => x.data || {});
-
-let state = { symbol:"BTC-USD", granularity:3600, side:"BUY", candles:[],
-  oppFilter:"ALL", oppSort:"confidence", lastOpps:[], backoffMs:0 };
-const GMAP = {60:"1m",300:"5m",900:"15m",3600:"1H",21600:"6H",86400:"1D"};
-
-// ── formatting ──
-function fmt(n){
-  if(n==null||isNaN(n)) return "--";
-  const a=Math.abs(n);
-  if(a>=1000) return n.toLocaleString(undefined,{maximumFractionDigits:0});
-  if(a>=1) return n.toFixed(2);
-  if(a>=0.01) return n.toFixed(4);
-  return n.toPrecision(3);
-}
-function money(n){ if(n==null) return "--"; return (n>=0?"$":"-$")+fmt(Math.abs(n)); }
-
-// ── error banner + backoff ──
-function showErr(msg){
-  const b=$("#err-banner"); b.style.display="block";
-  b.innerHTML = msg + ' <a id="err-retry">retry now</a>';
-  $("#err-retry").onclick = () => { state.backoffMs=0; tick(); };
-}
-function clearErr(){ $("#err-banner").style.display="none"; }
-
-// ── health / status bar ──
-async function loadHealth(){
-  // Primary: /portfolio/summary (one-call rollup). Fallback to legacy endpoints.
-  const s = await apiRaw("/portfolio/summary");
-  let eq=null, pos=null, acc=null, ks=false, tick=null, lat=null, regime=null, win=null, dd=null;
-  if(s.ok && s.data){
-    const d=s.data;
-    eq = d.equity ?? d.total_value ?? null;
-    dd = d.drawdown ?? null; win = d.win_rate ?? null;
-    tick = d.tick_count ?? null; lat = d.latency_p95 ?? null;
-    regime = d.regime ?? null; ks = !!d.kill_switch;
-    pos = { total_positions: d.open_positions, total_unrealized_pnl_usd: d.pnl };
-    if(Array.isArray(d.top_opportunities)) state.lastOpps = d.top_opportunities;
-  }
-  if(eq==null){ const e=await api("/equity-summary"); eq=e.total_value??e.equity??null; dd=e.drawdown??dd; }
-  if(win==null){ const p=await api("/positions"); pos=p; }
-  if(pos==null){ pos=await api("/positions"); }
-  if(acc==null){ acc=await api("/accounts"); }
-
-  const h = await apiRaw("/health");
-  const healthy = h.ok && h.data && h.data.status==="healthy";
-  if(h.ok && h.data && h.data.status_bar){
-    tick = tick ?? h.data.status_bar.tick_count;
-    lat = lat ?? h.data.status_bar.latency_p95;
-    regime = regime ?? h.data.status_bar.regime;
-    ks = ks || !!h.data.status_bar.kill_switch;
-  }
-  $("#live-dot").className = "dot " + (healthy ? "live" : "bad");
-  $("#status-text").textContent = healthy ? "live" : (h.data?.status || (s.ok?"live":"down"));
-
-  if(eq!=null) $("#h-equity").textContent = "$"+fmt(eq);
-  if(pos && pos.total_unrealized_pnl_usd!=null){
-    const e=$("#h-pnl"); const pnl=pos.total_unrealized_pnl_usd;
-    e.textContent=(pnl>=0?"+":"")+"$"+fmt(pnl); e.className="v mono "+(pnl>=0?"up":"down");
-  }
-  if(dd!=null){ const e=$("#h-dd"); e.textContent=(dd>=0?"":"")+dd.toFixed(2)+"%"; e.className="v mono "+(dd>0.05?"down":"up"); }
-  if(win!=null){ const e=$("#h-win"); e.textContent=(win*100).toFixed(0)+"%"; e.className="v mono "+(win>=0.5?"up":"down"); }
-  if(pos && pos.total_positions!=null) $("#h-pos").textContent = pos.total_positions;
-  if(tick!=null) $("#h-tick").textContent = tick;
-  if(lat!=null){ const e=$("#h-lat"); e.textContent=(lat>=1?lat.toFixed(0):(lat*1000).toFixed(0))+"ms";
-    const top=$("#topbar"); top.classList.toggle("degraded", lat>0.5); top.classList.toggle("warn", lat>0.2 && lat<=0.5); }
-  if(regime) $("#h-regime").textContent = regime;
-  setKill(ks);
-}
-
-function setKill(active){
-  const b=$("#ks-btn");
-  b.className = "ks-btn " + (active ? "armed" : "off");
-  b.textContent = "KILL: " + (active ? "ON" : "OFF");
-}
-$("#ks-btn").onclick = async () => {
-  const active = !$("#ks-btn").classList.contains("armed");
-  const r = await apiRaw("/kill-switch", {method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify({enabled:active})});
-  if(r.ok){ setKill(active); toast(active?"Kill switch ENGAGED":"Kill switch disengaged"); }
-  else toast("Kill switch toggle failed", true);
-};
-
-// ── watchlist ──
-async function loadWatchlist(){
-  const d = await api("/market/watchlist?limit=24");
-  const wl = d.watchlist || [];
-  $("#wl-count").textContent = wl.length;
-  const box = $("#watchlist"); box.innerHTML = "";
-  wl.forEach(r => {
-    const row = document.createElement("div");
-    row.className = "wl-row" + (r.symbol===state.symbol ? " active" : "");
-    const chg = r.change_pct==null ? "--" : (r.change_pct>=0?"+":"")+r.change_pct.toFixed(2)+"%";
-    const chgCls = r.change_pct==null ? "dim" : (r.change_pct>=0?"up":"down");
-    const reg = r.regime==="bull"?"🟢":r.regime==="bear"?"🔴":"⚪";
-    row.innerHTML = `<div class="wl-sym">${r.base}<small>${reg} ${r.regime}</small></div>
-      <div class="wl-px mono">${r.last?("$"+fmt(r.last)):"--"}</div>
-      <div class="wl-chg ${chgCls} mono">${chg}</div>`;
-    const cv = document.createElement("canvas");
-    cv.className="wl-spark"; cv.width=56; cv.height=22;
-    row.appendChild(cv);
-    box.appendChild(row);
-    drawSpark(cv, r.spark||[], r.change_pct>=0);
-    row.onclick = () => selectSymbol(r.symbol);
-  });
-}
-function drawSpark(cv, vals, up){
-  const x = cv.getContext("2d");
-  if(!vals.length) return;
-  const w=cv.width,h=cv.height,min=Math.min(...vals),max=Math.max(...vals),rng=(max-min)||1;
-  x.strokeStyle = up ? "#16c784" : "#ea3943"; x.lineWidth=1.2; x.beginPath();
-  vals.forEach((v,i)=>{ const px=i/(vals.length-1)*w, py=h-2-((v-min)/rng)*(h-4);
-    i?x.lineTo(px,py):x.moveTo(px,py); });
-  x.stroke();
-}
-
-// ── chart ──
-async function selectSymbol(sym){
-  state.symbol = sym;
-  $("#chart-sym").textContent = sym;
-  $("#oe-symbol").value = sym;
-  document.querySelectorAll(".wl-row").forEach(r=>r.classList.remove("active"));
-  await loadChart();
-  loadWatchlist();
-}
-async function loadChart(){
-  const d = await api(`/market/candles?symbol=${state.symbol}&granularity=${state.granularity}&limit=200`);
-  state.candles = d.candles || [];
-  if(state.candles.length){
-    const c = state.candles;
-    const last = c[c.length-1].c, first = c[0].c;
-    const chg = (last-first)/first*100;
-    $("#chart-px").textContent = "$"+fmt(last);
-    const e = $("#chart-chg"); e.textContent=(chg>=0?"+":"")+chg.toFixed(2)+"%";
-    e.className = "mono "+(chg>=0?"up":"down");
-  }
-  renderChart();
-}
-function renderChart(){
-  const cv = $("#chart"); const wrap = cv.parentElement;
-  const dpr = window.devicePixelRatio||1;
-  cv.width = wrap.clientWidth*dpr; cv.height = wrap.clientHeight*dpr;
-  const x = cv.getContext("2d"); x.scale(dpr,dpr);
-  const W = wrap.clientWidth, H = wrap.clientHeight;
-  x.clearRect(0,0,W,H);
-  const c = state.candles; if(!c.length){ x.fillStyle="#6b7a8d"; x.fillText("no data",14,24); return; }
-  const padR=58, padB=46, padT=8, padL=8;
-  const volH = H*0.18;
-  const plotW = W-padR-padL, plotH = H-padB-padT-volH;
-  let hi=-1e18, lo=1e18, vmax=0;
-  c.forEach(k=>{ hi=Math.max(hi,k.h); lo=Math.min(lo,k.l); vmax=Math.max(vmax,k.v); });
-  const rng=(hi-lo)||1;
-  const X = i => padL + (i+0.5)/c.length*plotW;
-  const Y = p => padT + (hi-p)/rng*plotH;
-  x.strokeStyle="#16202c"; x.fillStyle="#6b7a8d"; x.font="10px monospace"; x.lineWidth=1;
-  for(let g=0;g<=4;g++){ const p=hi-rng*g/4, yy=Y(p);
-    x.beginPath(); x.moveTo(padL,yy); x.lineTo(padL+plotW,yy); x.stroke();
-    x.fillText(fmt(p), padL+plotW+4, yy+3); }
-  const bw = Math.max(1.5, plotW/c.length*0.62);
-  c.forEach((k,i)=>{
-    const up = k.c>=k.o; const col = up?"#16c784":"#ea3943";
-    const cx=X(i);
-    x.strokeStyle=col; x.beginPath(); x.moveTo(cx,Y(k.h)); x.lineTo(cx,Y(k.l)); x.stroke();
-    x.fillStyle=col;
-    const yO=Y(k.o), yC=Y(k.c); const top=Math.min(yO,yC), hgt=Math.max(1,Math.abs(yC-yO));
-    x.fillRect(cx-bw/2, top, bw, hgt);
-    const vh = vmax? k.v/vmax*volH : 0;
-    x.globalAlpha=0.5; x.fillRect(cx-bw/2, H-padB+4, bw, vh); x.globalAlpha=1;
-  });
-  const ly=Y(c[c.length-1].c);
-  x.strokeStyle="#4ea1ff"; x.setLineDash([3,3]); x.beginPath();
-  x.moveTo(padL,ly); x.lineTo(padL+plotW,ly); x.stroke(); x.setLineDash([]);
-  cv._geo = {padL,padR,padT,plotW,plotH,hi,lo,rng,c,X,Y,volH,padB};
-}
-$("#chart").addEventListener("mousemove", e=>{
-  const cv=$("#chart"), g=cv._geo; if(!g) return;
-  const rect=cv.getBoundingClientRect(); const mx=e.clientX-rect.left;
-  let i=Math.floor((mx-g.padL)/g.plotW*g.c.length);
-  if(i<0||i>=g.c.length) return;
-  const k=g.c[i];
-  const xh=$("#xhair");
-  xh.style.display="block"; xh.style.left=Math.min(mx+12, rect.width-150)+"px"; xh.style.top="12px";
-  const t=new Date(k.t*1000).toISOString().slice(0,16).replace("T"," ");
-  xh.innerHTML=`<b>${t}</b>  O ${fmt(k.o)} H ${fmt(k.h)} L ${fmt(k.l)} C ${fmt(k.c)} V ${fmt(k.v)}`;
-});
-$("#chart").addEventListener("mouseleave", ()=>{ $("#xhair").style.display="none"; });
-$("#tf").addEventListener("click", e=>{
-  const b=e.target.closest("button"); if(!b) return;
-  document.querySelectorAll("#tf button").forEach(x=>x.classList.remove("on"));
-  b.classList.add("on"); state.granularity=+b.dataset.g; loadChart();
-});
-
-// ── order entry ──
-$("#side-buy").onclick=()=>setSide("BUY");
-$("#side-sell").onclick=()=>setSide("SELL");
-function setSide(s){ state.side=s;
-  $("#side-buy").classList.toggle("on",s==="BUY");
-  $("#side-sell").classList.toggle("on",s==="SELL");
-}
-$("#oe-submit").onclick=async()=>{
-  const msg=$("#oe-msg"); msg.className="oe-msg"; msg.textContent="submitting…";
-  const body={ symbol:$("#oe-symbol").value.trim().toUpperCase(), side:state.side,
-    size_usd:+$("#oe-size").value, stop_pct:+$("#oe-stop").value/100,
-    target_pct:+$("#oe-target").value/100 };
-  const r=await apiRaw("/orders/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  if(r.ok && r.data && r.data.ok){ msg.className="oe-msg ok"; msg.textContent="Pending approval ✓ token "+(r.data.token||"").slice(0,8); }
-  else { msg.className="oe-msg err"; msg.textContent="✗ "+((r.data&&r.data.error)||"failed"); }
-};
-
-// ── positions ──
-async function loadPositions(){
-  const d=await api("/positions"); const rows=d.positions||[];
-  $("#bl-count").textContent=rows.length;
-  const b=$("#bl-body"); b.innerHTML="";
-  $("#bl-empty").style.display=rows.length?"none":"block";
-  rows.forEach(p=>{
-    const tr=document.createElement("tr");
-    const pnl=p.unrealized_pnl_pct||0;
-    tr.innerHTML=`<td class="l">${p.symbol}</td>
-      <td class="l"><span class="tag ${p.side==='SELL'?'pending':'long'}">${p.side}</span></td>
-      <td class="mono">${fmt(p.quantity)}</td>
-      <td class="mono">${p.entry_price_usd?("$"+fmt(p.entry_price_usd)):"--"}</td>
-      <td class="mono">${p.current_price_usd?("$"+fmt(p.current_price_usd)):"--"}</td>
-      <td class="mono ${pnl>=0?'up':'down'}">${pnl>=0?'+':''}${pnl.toFixed(2)}%</td>`;
-    b.appendChild(tr);
-  });
-}
-
-// ── opportunities ──
-function normOpp(o){
-  return {
-    product: o.product || o.symbol || o.currency || "?",
-    direction: (o.direction || o.side || o.action || "").toUpperCase(),
-    strategy: o.strategy || o.strategy_name || "?",
-    confidence: o.confidence ?? o.conf_pct ?? o.opportunity_score ?? o.final_confidence ?? 0,
-    notional: o.notional ?? o.size_usd ?? 0,
-    price: o.price ?? null,
-    priority: o.priority ?? 0,
-    reason: o.reason || "",
-    timestamp: o.timestamp ?? 0,
-  };
-}
-async function loadOpportunities(){
-  const dir = state.oppFilter==="ALL" ? null : state.oppFilter;
-  const url = "/signals/opportunities" + (dir ? ("?direction="+dir) : "");
-  const r = await apiRaw(url);
-  if(!r.ok){ return; }
-  const data = r.data || {};
-  const list = (data.queue || data.signals || data.opportunities || state.lastOpps || []).map(normOpp);
-  renderOpportunities(list);
-}
-function renderOpportunities(list){
-  const box=$("#opportunities"); box.innerHTML="";
-  let arr = list.slice();
-  const f = state.oppFilter;
-  if(f!=="ALL") arr = arr.filter(o=>o.direction===f);
-  if(state.oppSort==="confidence") arr.sort((a,b)=>b.confidence-a.confidence);
-  else if(state.oppSort==="notional") arr.sort((a,b)=>b.notional-a.notional);
-  else if(state.oppSort==="time") arr.sort((a,b)=>b.timestamp-a.timestamp);
-  $("#opp-count").textContent = arr.length;
-
-  const buys = arr.filter(o=>o.direction==="BUY");
-  const sells = arr.filter(o=>o.direction==="SELL");
-  const addGroup = (label, items) => {
-    if(!items.length) return;
-    const h=document.createElement("div"); h.className="opp-group-h"; h.textContent=label+" ("+items.length+")";
-    box.appendChild(h);
-    items.forEach(o=>box.appendChild(oppCard(o)));
-  };
-  if(f==="ALL"){ addGroup("BUY", buys); addGroup("SELL", sells); }
-  else { arr.forEach(o=>box.appendChild(oppCard(o))); }
-
-  if(!arr.length){
-    const e=document.createElement("div"); e.className="empty"; e.textContent="No opportunities";
-    box.appendChild(e);
-  }
-}
-function oppCard(o){
-  const card=document.createElement("div");
-  card.className="opp-card "+(o.direction==="BUY"?"buy":"sell");
-  const conf=(o.confidence*100).toFixed(0);
-  card.innerHTML=`
-    <div class="opp-top">
-      <span class="opp-sym">${o.product}</span>
-      <span class="opp-side ${o.direction==="BUY"?"buy":"sell"}">${o.direction}</span>
-      <span class="opp-strat">${o.strategy}</span>
+    <div class="stat-strip">
+      <div class="stat"><span class="k">Equity</span><span class="v mono lg" id="h-equity">--</span></div>
+      <div class="stat"><span class="k">P&amp;L</span><span class="v mono" id="h-pnl">--</span></div>
+      <div class="stat"><span class="k">Drawdown</span><span class="v mono" id="h-dd">--</span></div>
+      <div class="stat"><span class="k">Positions</span><span class="v mono" id="h-pos">--</span></div>
     </div>
-    <div class="opp-meta">
-      <span>Conf <b>${conf}%</b></span>
-      <span>Notional <b>${money(o.notional)}</b></span>
-      ${o.price!=null?`<span>Px <b>$${fmt(o.price)}</b></span>`:""}
-      <span>Prio <b>${fmt(o.priority)}</b></span>
-    </div>
-    <div class="conf-bar"><i style="width:${conf}%"></i></div>
-    <div class="opp-reason">${o.reason}</div>`;
-  card.onclick = (ev) => {
-    if(ev.target.closest(".opp-reason")) return;
-    // toggle expand, or drill into symbol
-    if(card.classList.contains("exp")){ card.classList.remove("exp"); }
-    else { card.classList.add("exp"); }
-  };
-  card.querySelector(".opp-sym").onclick = (ev)=>{ ev.stopPropagation(); selectSymbol(o.product); };
-  return card;
-}
-$("#opp-filter").addEventListener("click", e=>{
-  const b=e.target.closest("button"); if(!b) return;
-  $$("#opp-filter button").forEach(x=>x.classList.remove("on"));
-  b.classList.add("on"); state.oppFilter=b.dataset.f; loadOpportunities();
-});
-$("#opp-sort").addEventListener("click", e=>{
-  const b=e.target.closest("button"); if(!b) return;
-  $$("#opp-sort button").forEach(x=>x.classList.remove("on"));
-  b.classList.add("on"); state.oppSort=b.dataset.s; loadOpportunities();
-});
 
-// ── backtests ──
-async function loadBacktests(){
-  const r = await apiRaw("/backtests/experiments");
-  if(!r.ok) return;
-  const data = r.data || {};
-  const rows = data.experiments || data.backtests || [];
-  $("#bt-count").textContent = rows.length;
-  const b=$("#bt-body"); b.innerHTML="";
-  $("#bt-empty").style.display=rows.length?"none":"block";
-  rows.slice(0,30).forEach(x=>{
-    const verdict = x.verdict || (x.passed?"PASS":"FAIL");
-    const pass = verdict==="PASS" || verdict===true;
-    const tr=document.createElement("tr");
-    tr.innerHTML=`<td class="l">${x.strategy||x.name||"?"}</td>
-      <td class="l verdict-${pass?'pass':'fail'}"><span class="bt-pill ${pass?'pass':'fail'}">${pass?'PASS':'FAIL'}</span></td>
-      <td class="mono">${((x.win_rate??0)*100).toFixed(0)}%</td>
-      <td class="mono">${fmt(x.sharpe??0)}</td>
-      <td class="mono">${fmt(x.profit_factor??0)}</td>
-      <td class="mono ${((x.total_return??0)>=0)?'up':'down'}">${((x.total_return??0)>=0?'+':'')}${fmt(x.total_return??0)}%</td>`;
-    b.appendChild(tr);
-  });
-}
+    <span class="spacer"></span>
+    <span class="pill mono" id="refresh-age">--</span>
+    <button class="btn sm ghost" id="refresh-btn" title="Refresh now (r)">Refresh</button>
+    <button class="btn sm ghost" id="theme-btn" title="Cycle theme (t)">Dark</button>
+    <button class="btn sm" id="ks-btn" data-needs-token aria-pressed="false" title="Requires the operator token">Kill switch off</button>
+  </header>
 
-// ── toasts ──
-function toast(msg, isErr){
-  const t=document.createElement("div"); t.className="toast";
-  if(isErr) t.style.borderLeftColor="var(--red)";
-  t.textContent=msg; $("#toasts").appendChild(t);
-  setTimeout(()=>{ t.style.opacity="0"; setTimeout(()=>t.remove(),400); }, 4500);
-}
-function oppToast(o){
-  const t=document.createElement("div"); t.className="toast";
-  t.innerHTML=`High-conf ${o.direction} ${o.product} (${(o.confidence*100).toFixed(0)}%)<span class="t-act">View</span>`;
-  t.querySelector(".t-act").onclick=()=>{ selectSymbol(o.product); t.remove(); };
-  $("#toasts").appendChild(t);
-  setTimeout(()=>t.remove(), 6000);
-}
+  <nav class="nav" id="nav" aria-label="Sections"></nav>
 
-// ── loop / refresh ──
-const REFRESH_MS = 15000;
-let lastRefresh=Date.now();
-let nextRefresh=Date.now()+REFRESH_MS;
-let paused=false;
-async function doTick(){
-  try{
-    await loadHealth();
-    await loadPositions();
-    await loadWatchlist();
-    await loadOpportunities();
-    await loadBacktests();
-    clearErr(); state.backoffMs=0;
-    lastRefresh=Date.now(); nextRefresh=lastRefresh+REFRESH_MS;
-  }catch(e){
-    state.backoffMs = Math.min(state.backoffMs*2+5000, 60000);
-    showErr("Live data unavailable — showing last-good data. Retry in "+(state.backoffMs/1000)+"s");
-  }
-}
-async function tick(){
-  if(paused){ return; }
-  await doTick();
-}
-function refreshLoop(){
-  const now=Date.now();
-  const remain = Math.max(0, nextRefresh-now);
-  const pct = 100 - (remain/REFRESH_MS)*100;
-  $("#rc-bar").style.width = pct.toFixed(1)+"%";
-  const s=Math.floor((now-lastRefresh)/1000);
-  $("#refresh-age").textContent = paused ? "paused (tab hidden)" : (s+"s ago");
-  if(!paused && now>=nextRefresh){ tick(); }
-  requestAnimationFrame(refreshLoop);
-}
-document.addEventListener("visibilitychange", ()=>{
-  paused = document.hidden;
-  if(!paused){ lastRefresh=Date.now(); nextRefresh=lastRefresh+REFRESH_MS; tick(); }
-});
-// manual refresh button (injected next to age)
-const rf=document.createElement("span"); rf.style.cursor="pointer"; rf.style.color="var(--accent)";
-rf.textContent=" ⟳"; rf.title="Refresh now"; rf.onclick=()=>tick();
-$("#refresh-age").appendChild(rf);
+  <main class="main" id="main">
 
-// keyboard shortcuts
-document.addEventListener("keydown", e=>{
-  if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT") return;
-  const k=e.key.toLowerCase();
-  if(k==="r"){ tick(); }
-  else if(k==="b"){ $("#opp-filter [data-f=BUY]").click(); }
-  else if(k==="s"){ $("#opp-filter [data-f=SELL]").click(); }
-  else if(k==="a"){ $("#opp-filter [data-f=ALL]").click(); }
-  else if(k==="e"){ exportOpps(); }
-  else if(k==="?"){ toast("Keys: r refresh · b buy · s sell · a all · e export · d dark"); }
-});
-function exportOpps(){
-  const data = state.lastOpps.length? state.lastOpps : [];
-  const blob = new Blob([JSON.stringify(data,null,2)], {type:"application/json"});
-  const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-  a.download="opportunities.json"; a.click();
-}
+    <!-- ── Overview ─────────────────────────────────────────────────── -->
+    <section class="view" id="view-overview" aria-label="Overview">
+      <div id="banner-slot"></div>
 
-window.addEventListener("resize", renderChart);
-selectSymbol("BTC-USD").then(tick);
-requestAnimationFrame(refreshLoop);
-</script>
+      <div class="grid split">
+        <div class="card">
+<header><h2>Equity curve</h2></header>
+        <div class="body">
+          <div id="equity-chart" data-panel="equity"><div class="skeleton"></div></div>
+        </div>
+        </div>
+        <div class="card">
+          <header><h2>Session</h2></header>
+          <div class="body flush">
+            <table><tbody id="equity-stats"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Service health</h2><span class="spacer"></span><span class="pill">/ready</span></header>
+          <div class="panel-body" data-panel="health"></div>
+        </div>
+        <div class="card">
+          <header><h2>Open positions</h2></header>
+          <div class="panel-body" data-panel="positions"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Positions ────────────────────────────────────────────────── -->
+    <section class="view" id="view-positions" aria-label="Positions" hidden>
+      <div class="card">
+        <header><h2>Open positions</h2></header>
+        <div class="panel-body" data-panel="positions"></div>
+      </div>
+      <div class="card" style="margin-top:var(--sp-4)">
+        <header>
+          <h2>Protective brackets</h2>
+          <span class="spacer"></span>
+          <button class="btn sm danger" id="cancel-all" data-needs-token
+                  title="Requires the operator token">Cancel all</button>
+        </header>
+        <div class="panel-body" data-panel="brackets"></div>
+      </div>
+    </section>
+
+    <!-- ── Approvals ────────────────────────────────────────────────── -->
+    <section class="view" id="view-approvals" aria-label="Approvals" hidden>
+      <div class="banner warning">
+        <span class="dot warn"></span>
+        <span>Approving releases a <strong>real order</strong> on the next optimizer tick.
+          Browsing is read-only; acting needs the operator token.</span>
+        <span class="spacer"></span>
+      </div>
+      <div class="card">
+        <header><h2>Pending approvals</h2></header>
+        <div class="panel-body" data-panel="approvals"></div>
+      </div>
+    </section>
+
+    <!-- ── Opportunities ────────────────────────────────────────────── -->
+    <section class="view" id="view-opportunities" aria-label="Opportunities" hidden>
+      <div class="grid split">
+        <div class="card">
+          <header><h2>Opportunities</h2></header>
+          <div class="panel-body" data-panel="opportunities"></div>
+        </div>
+
+        <div class="card">
+          <header><h2>Order ticket</h2></header>
+          <div class="body">
+            <form id="oe-form" autocomplete="off">
+              <div class="ticket">
+                <label class="field wide">
+                  <span>Product</span>
+                  <input id="oe-symbol" value="BTC-USD" spellcheck="false" required />
+                </label>
+                <label class="field">
+                  <span>Side</span>
+                  <span class="side-toggle">
+                    <button type="button" data-side="BUY" aria-pressed="true">Buy</button>
+                    <button type="button" data-side="SELL" aria-pressed="false">Sell</button>
+                  </span>
+                </label>
+                <label class="field">
+                  <span>Size (USD)</span>
+                  <input id="oe-size" placeholder="250" inputmode="decimal" required />
+                </label>
+                <label class="field">
+                  <span>Stop % <span class="dim">(default 3)</span></span>
+                  <input id="oe-stop" placeholder="3" inputmode="decimal" />
+                </label>
+                <label class="field">
+                  <span>Target % <span class="dim">(default 6)</span></span>
+                  <input id="oe-target" placeholder="6" inputmode="decimal" />
+                </label>
+                <div class="wide">
+                  <div class="token-bar" id="token-bar">
+                    <span class="dot idle"></span>
+                    <span id="token-state">Read-only</span>
+                    <span class="spacer"></span>
+                    <button type="button" class="btn sm primary" id="token-btn">Unlock actions</button>
+                  </div>
+                </div>
+                <div class="wide">
+                  <button type="submit" class="btn primary" data-needs-token style="width:100%">
+                    Submit for approval
+                  </button>
+                </div>
+              </div>
+              <p class="msg" id="oe-msg" role="status"></p>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Market ───────────────────────────────────────────────────── -->
+    <section class="view" id="view-market" aria-label="Market" hidden>
+      <div class="card">
+        <header>
+          <h2 id="candles-title">Chart</h2>
+          <span class="spacer"></span>
+          <label class="field" style="flex-direction:row;align-items:center;gap:var(--sp-2)">
+            <span>Granularity</span>
+            <select id="granularity" aria-label="Candle interval">
+              <option value="60">1m</option>
+              <option value="300">5m</option>
+              <option value="900">15m</option>
+              <option value="1800">30m</option>
+              <option value="3600" selected>1H</option>
+              <option value="21600">6H</option>
+              <option value="86400">1D</option>
+            </select>
+          </label>
+        </header>
+        <div class="body" id="candles-body" data-panel="candles"></div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Watchlist</h2></header>
+          <div class="panel-body" data-panel="watchlist"></div>
+        </div>
+        <div class="card">
+          <header><h2>Regime</h2></header>
+          <div class="panel-body" data-panel="regime"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Signals ──────────────────────────────────────────────────── -->
+    <section class="view" id="view-signals" aria-label="Signals" hidden>
+      <div class="card">
+        <header><h2>Signal feed</h2></header>
+        <div class="panel-body" data-panel="signal-feed"></div>
+      </div>
+    </section>
+
+    <!-- ── Strategies ───────────────────────────────────────────────── -->
+    <section class="view" id="view-strategies" aria-label="Strategies" hidden>
+      <div class="card">
+        <header><h2>Strategy performance</h2></header>
+        <div class="panel-body" data-panel="strategy-perf"></div>
+      </div>
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Wash-sale cooldown</h2></header>
+          <div class="panel-body" data-panel="wash-sale"></div>
+        </div>
+        <div class="card">
+          <header><h2>Accounts</h2></header>
+          <div class="panel-body" data-panel="accounts"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Capital ──────────────────────────────────────────────────── -->
+    <section class="view" id="view-capital" aria-label="Capital" hidden>
+      <div class="card">
+        <header><h2>Capital buckets</h2></header>
+        <div class="panel-body" data-panel="capital"></div>
+      </div>
+    </section>
+
+    <!-- ── Research ─────────────────────────────────────────────────── -->
+    <section class="view" id="view-research" aria-label="Research" hidden>
+      <div class="card">
+        <header><h2>Hypotheses</h2></header>
+        <div class="panel-body" data-panel="research"></div>
+      </div>
+      <div class="card" style="margin-top:var(--sp-4)">
+        <header><h2>Backtest experiments</h2></header>
+        <div class="panel-body" data-panel="backtests"></div>
+      </div>
+    </section>
+
+    <!-- ── System ───────────────────────────────────────────────────── -->
+    <section class="view" id="view-system" aria-label="System" hidden>
+      <div class="card">
+        <header><h2>Service health</h2></header>
+        <div class="panel-body" data-panel="health"></div>
+      </div>
+      <div class="card" style="margin-top:var(--sp-4)">
+        <header><h2>Backtest experiments</h2></header>
+        <div class="panel-body" data-panel="backtests"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<dialog id="shortcuts" aria-labelledby="shortcuts-title">
+  <div class="body">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt>1</dt><dd>Overview</dd>
+      <dt>2</dt><dd>Positions</dd>
+      <dt>3</dt><dd>Approvals</dd>
+      <dt>4</dt><dd>Opportunities</dd>
+      <dt>5</dt><dd>Market</dd>
+      <dt>6</dt><dd>Strategies</dd>
+      <dt>7</dt><dd>System</dd>
+      <dt>r</dt><dd>Refresh now</dd>
+      <dt>t</dt><dd>Cycle theme</dd>
+      <dt>?</dt><dd>This dialog</dd>
+      <dt>Esc</dt><dd>Close</dd>
+    </dl>
+  </div>
+</dialog>
+
+<script src="/static/dashboard.js"></script>
 </body>
 </html>

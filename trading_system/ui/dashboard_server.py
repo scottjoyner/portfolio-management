@@ -43,7 +43,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import unquote, urlparse, parse_qs
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -3419,6 +3419,9 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         elif path in ("/dashboard", "", "/"):
             self._serve_dashboard()
 
+        elif path.startswith("/static/"):
+            self._serve_static(path[len("/static/"):])
+
         else:
             self._json_response(json.dumps({"error": "not found", "path": path}), status=404)
 
@@ -3520,6 +3523,45 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             logger.error("capital config save error: %s", e)
             self._json_response(json.dumps({"error": str(e), "status": "error"}), status=500)
+
+    def _serve_static(self, relative):
+        """Serve a UI asset that lives beside dashboard.html.
+
+        The dashboard was split into dashboard.css / dashboard.js so neither file
+        grows past the point of being reviewable. Resolution is confined to the
+        UI directory: the requested name is reduced to a basename and the result
+        is checked to still be inside that directory, so neither an encoded
+        traversal ("..%2f") nor an absolute path can escape it.
+        """
+        name = os.path.basename(unquote(relative).strip())
+        if not name or name.startswith("."):
+            self._json_response(json.dumps({"error": "not found"}), status=404)
+            return
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        target = os.path.realpath(os.path.join(script_dir, name))
+        if os.path.dirname(target) != os.path.realpath(script_dir):
+            self._json_response(json.dumps({"error": "not found"}), status=404)
+            return
+        content_type = {
+            ".css": "text/css; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".svg": "image/svg+xml",
+        }.get(os.path.splitext(name)[1])
+        if content_type is None or not os.path.isfile(target):
+            self._json_response(json.dumps({"error": "not found"}), status=404)
+            return
+        try:
+            with open(target, "rb") as handle:
+                content = handle.read()
+        except OSError as exc:
+            self._json_response(json.dumps({"error": str(exc)}), status=500)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        # Assets are re-read on every load, so must not be cached stale either.
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _serve_dashboard(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
