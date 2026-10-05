@@ -50,7 +50,9 @@ class TestCLMMSchemas(unittest.TestCase):
 
     def test_position_snapshot(self):
         s = CLMMPositionSnapshot(position_id="p", pool=pool_ref(), owner_wallet="0xw",
-                                 range=CLMMRange(0, 10), amount0=Decimal("1"), amount1=Decimal("2"),
+                                 range=CLMMRange(lower_tick=0, upper_tick=10),
+                                   amount0=Decimal("1"), amount1=Decimal("2"),
+                                   liquidity=Decimal("1.5"),
                                  opened_at=datetime(2024, 1, 1), updated_at=datetime(2024, 1, 2),
                                  mark_price=Decimal("2000"))
         self.assertEqual(s.position_id, "p")

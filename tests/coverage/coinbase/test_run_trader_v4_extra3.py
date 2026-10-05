@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -100,19 +102,50 @@ def test_paper_open_cooldown():
     assert "BTC-USD" not in t.paper_positions
 
 
-def test_paper_open_low_confidence():
+def test_paper_open_low_confidence_unvetted():
+    """The confidence gate blocks only when no vetted floor applies.
+
+    The floor at run_trader_v4.py:3179 comes from the opportunity's own win_rate
+    and sharpe against paper_min_win_rate/paper_min_sharpe. _opp() defaults
+    (wr=0.65, sharpe=1.0) clear both, so this opportunity is vetted and its
+    confidence is raised to the floor -- reported 0.1 is not what gets compared to
+    paper_min_confidence. Drop win_rate and sharpe below the mins so the floor
+    stays 0.0 and the gate actually sees the reported 0.1.
+    """
     t = _make_trader()
     _wire(t)
-    t._paper_open_position("BTC-USD", 100.0, _opp(conf=0.1))
+    t._paper_open_position("BTC-USD", 100.0, _opp(conf=0.1, wr=0.10, sharpe=0.0))
     assert "BTC-USD" not in t.paper_positions
 
 
-def test_paper_open_kelly_negative():
+def test_vetted_floor_overrides_low_reported_confidence():
+    """A vetted opportunity trades despite a low self-reported confidence.
+
+    Deliberate: blocking it triggers the death spiral the guard documents --
+    loses, live win rate drops, reported confidence is shrunk, notional falls under
+    min_trade, and the bot can never re-enter. The floor is
+    0.30 + wr*0.4 + sharpe*0.05, capped at 0.95.
+    """
+    t = _make_trader()
+    _wire(t)
+    t._paper_open_position("BTC-USD", 100.0, _opp(conf=0.1))
+    assert "BTC-USD" in t.paper_positions
+    assert abs(min(0.95, 0.30 + 0.65 * 0.4 + 1.0 * 0.05) - 0.61) < 1e-9
+
+
+def test_paper_open_negative_kelly_falls_back_to_base_sizing():
+    """Negative Kelly reduces sizing to base; it does not block entry.
+
+    The kelly branch at run_trader_v4.py:3193 handles this on purpose: with sparse
+    samples a negative Kelly is not evidence of a negative edge, and refusing to
+    trade on it stalls the bot out entirely. Positive Kelly still sizes at
+    half-Kelly.
+    """
     t = _make_trader()
     _wire(t)
     t._perf_tracker.kelly.return_value = -0.1
     t._paper_open_position("BTC-USD", 100.0, _opp())
-    assert "BTC-USD" not in t.paper_positions
+    assert "BTC-USD" in t.paper_positions
 
 
 def test_paper_open_low_edge():
@@ -142,7 +175,17 @@ def test_paper_open_partial_fill_scales_qty():
     _wire(t)
     t._fill_model.estimate.return_value = _PartialFill()
     t._paper_open_position("BTC-USD", 100.0, _opp())
-    pos = t.paper_positions["BTC-USD"]
-    # partial_fill_pct=0.5 scales the filled qty to half of the full-fill case.
-    assert pos.entry_notional == 7000.0
-    assert pos.qty == 70.0
+    partial_pos = t.paper_positions["BTC-USD"]
+
+    # Compare against a full fill rather than hardcoding a number. Sizing is
+    # fee-aware, so entry_notional is the fee-grossed notional scaled by the fill
+    # fraction -- not the raw 0.5 * 14000 the old assertion expected. What matters
+    # is that a 50% fill yields exactly half the full-fill position.
+    full = _make_trader()
+    _wire(full)
+    full._fill_model.estimate.return_value = _Fill()
+    full._paper_open_position("BTC-USD", 100.0, _opp())
+    full_pos = full.paper_positions["BTC-USD"]
+
+    assert partial_pos.qty == pytest.approx(full_pos.qty * 0.5)
+    assert partial_pos.entry_notional == pytest.approx(full_pos.entry_notional * 0.5)

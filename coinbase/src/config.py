@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import trading_paths
+
 log = logging.getLogger(__name__)
 
 TRUE_VALUES = {"1", "true", "yes", "y", "on"}
@@ -79,7 +81,7 @@ def is_kill_switch_active() -> bool:
         return True
 
     kill_path = Path(
-        os.getenv(KILL_SWITCH_PATH_ENV, str(KillSwitch.KILL_PATH))
+        os.getenv(KILL_SWITCH_PATH_ENV) or str(KillSwitch.kill_path())
     )
     try:
         return kill_path.exists()
@@ -266,7 +268,22 @@ class LiveSafetyValidator:
 class KillSwitch:
     """File-backed execution halt shared by all execution paths."""
 
-    KILL_PATH = Path("data/trading_kill_switch")
+    # Default sentinel location, resolved through trading_paths so
+    # TRADING_DATA_DIR redirects it. This file is the one path where an
+    # unredirected literal was genuinely dangerous: the test suite's
+    # KillSwitch.disengage() calls deleted the *live* sentinel, disarming a real
+    # halt. Resolution is per-call rather than baked into a class attribute so a
+    # test that changes TRADING_DATA_DIR mid-session is honoured.
+    #
+    # KILL_PATH stays as an explicit override seam (tests pin it); None means
+    # "resolve normally".
+    KILL_PATH: Optional[Path] = None
+
+    @classmethod
+    def kill_path(cls) -> Path:
+        if cls.KILL_PATH is not None:
+            return Path(cls.KILL_PATH)
+        return trading_paths.resolve("data/trading_kill_switch")
 
     @classmethod
     def is_active(cls) -> bool:
@@ -274,12 +291,13 @@ class KillSwitch:
 
     @classmethod
     def engage(cls) -> None:
-        cls.KILL_PATH.parent.mkdir(parents=True, exist_ok=True)
-        cls.KILL_PATH.touch(exist_ok=True)
+        path = cls.kill_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
 
     @classmethod
     def disengage(cls) -> None:
-        cls.KILL_PATH.unlink(missing_ok=True)
+        cls.kill_path().unlink(missing_ok=True)
 
 
 def validate_opportunity_side(side: str) -> str:

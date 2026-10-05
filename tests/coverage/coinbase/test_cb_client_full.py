@@ -415,8 +415,24 @@ def test_cli_json_dry_run(monkeypatch):
 
     c = make_client(monkeypatch, handler)
     out = c._cli_json("orders", "create", "product_id=BTC-USD", dry_run=True)
-    assert out == {"ok": True}
-    assert any("--dry-run" in k for k in seen)
+
+    # dry_run must NOT reach the CLI at all. cb_client._cli_json short-circuits to
+    # _simulate_order_request, so the handler is never invoked -- which is the safety
+    # property worth pinning. The old assertion expected the handler's {"ok": True}
+    # to come back, which contradicts that short-circuit.
+    # The simulator may still read balances to size the simulated order, so assert
+    # on what matters: no order was ever placed.
+    assert not any(k[0] == "orders" for k in seen), \
+        f"dry-run placed an order: {[k for k in seen if k[0] == 'orders']}"
+    assert out["dry_run"] is True
+    assert out["product_id"] == "BTC-USD"
+    assert out["action"] == "orders.create"
+    assert out["order_id"].startswith("dry-order-")
+
+    # Non-dry-run is the path that actually shells out.
+    out2 = c._cli_json("orders", "create", "product_id=BTC-USD", dry_run=False)
+    assert out2 == {"ok": True}
+    assert seen
 
 
 def test_parse_cli_output_dry_run_invalid(monkeypatch):

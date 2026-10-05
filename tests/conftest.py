@@ -18,10 +18,40 @@ import functools
 import os
 import socket
 import sys
+import tempfile
 import types
 import urllib.request
 
 import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import data_guard  # noqa: E402
+
+# Every test in this tree must write state somewhere disposable. The trader
+# resolves its state through `_data_dir()`, which honours TRADING_DATA_DIR before
+# falling back to the CWD-relative `data/`, so pointing that at a temp dir for the
+# whole session is what actually keeps operator state out of reach.
+#
+# This is the coarse half of the protection and it is not sufficient on its own:
+# `tests/coverage/coinbase/conftest.py` additionally redirects per-test, but a
+# leaked background thread can outlive that fixture and write once the variable
+# is gone. `data_guard` is the fine half — it raises on any write that lands in
+# the repository's live `data/` no matter who initiated it.
+_SESSION_DATA_DIR = tempfile.mkdtemp(prefix="pytest-trading-data-")
+os.environ.setdefault("TRADING_DATA_DIR", _SESSION_DATA_DIR)
+
+
+def pytest_configure(config):
+    data_guard.install()
+    config.addinivalue_line(
+        "markers",
+        "network_block: activate the socket/requests/urllib network guard for this test",
+    )
+
+
+def pytest_unconfigure(config):
+    data_guard.uninstall()
 
 
 def _stub_event_markets():
@@ -125,10 +155,3 @@ def pytest_runtest_setup(item):
 def pytest_runtest_teardown(item):
     if item.get_closest_marker("network_block") is not None:
         _restore_network_block()
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "network_block: activate the socket/requests/urllib network guard for this test",
-    )

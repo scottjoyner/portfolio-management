@@ -93,8 +93,17 @@ def test_live_safety_validator_issues(monkeypatch):
     issues = config.LiveSafetyValidator.check(cfg)
     assert any("KILL_SWITCH" in i for i in issues)
     assert any("LIVE_TRADING_ENABLED" in i for i in issues)
+    # Credential checks apply to live/approval modes, and mode is "approval" here.
     assert any("API_KEY" in i for i in issues)
-    assert any("CLI" in i for i in issues)
+
+    # The missing-CLI check is deliberately suppressed while dry_run is set:
+    # preview-only mode uses the internal deterministic request assembler and does
+    # not need the executable. It only applies once real submission is possible.
+    assert not any("CLI" in i for i in issues), \
+        f"preview mode should not require the CLI: {issues}"
+    cfg.dry_run = False
+    live_issues = config.LiveSafetyValidator.check(cfg)
+    assert any("CLI" in i for i in live_issues)
 
     # out-of-range numeric issues
     cfg.kill_switch = False

@@ -20,7 +20,7 @@ class TestOpportunityRanker(unittest.TestCase):
         self.assertIsNone(r[0].reject_reason)
 
     def test_rank_not_executable_edge(self):
-        r = OpportunityRanker(min_net_edge=50.0).rank([make_opp(gross_edge=10.0)])
+        r = OpportunityRanker().rank([make_opp(gross_edge=10.0)], min_net_edge=50.0)
         self.assertFalse(r[0].executable)
         self.assertEqual(r[0].reject_reason, "insufficient_net_or_trust")
 

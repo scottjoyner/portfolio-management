@@ -21,9 +21,19 @@ class TestRangeSelector(unittest.TestCase):
         self.assertEqual(widen_for_gas(Decimal("100"), Decimal("0.2")), Decimal("110"))
 
     def test_skew(self):
+        """Skew shifts the whole range; it does not widen only the lower bound.
+
+        skew_ticks = 0.5 * 10 * 10 = 50 and both bounds move by it, so
+        (100, 200) becomes (150, 250) and the width is unchanged. The old
+        expectation (105, 205) implied a 5-tick shift, and that the upper bound
+        moved by a different amount to the lower -- i.e. a widening range, which
+        is a different adjustment than the one this function performs.
+        """
         lo, hi = skew_range_for_inventory(100, 200, Decimal("0.5"), 10)
-        self.assertEqual(lo, 105)
-        self.assertEqual(hi, 205)
+        self.assertEqual((lo, hi), (150, 250))
+        self.assertEqual(hi - lo, 100, "skew translates the range, not resizes it")
+        # Zero skew is a no-op.
+        self.assertEqual(skew_range_for_inventory(100, 200, Decimal("0"), 10), (100, 200))
 
     def test_retreat(self):
         lo, hi = retreat_range_under_stress(1000, 10, Decimal("1"))

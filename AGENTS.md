@@ -414,6 +414,15 @@ Recommended order for a code/UI redeploy:
    rather than a clear error), does every supervised child import, does `--help`
    work, do the kill-switch paths agree, is the watcher's ledger lock free, and is
    a safety gate blocking the start. Exit 0 means the revision should come up.
+
+   **The watcher check is `no duplicate watcher`, not "is the lock free".** The
+   ledger lock is an exclusive `flock` held for the supervised watcher's whole
+   lifetime, so a check that requires it to be *free* can never pass while the
+   system is up — it used to report the one legitimate watcher as a duplicate and
+   advise stopping it. It now reads the holder pid from the lock file and passes
+   when that pid is the supervisor's own `logs/agent-watcher.pid`, fails only on
+   a genuine second live watcher, and passes on a dead pid (the kernel releases
+   an flock when the holder exits).
 4. Restart the supervisor with `sudo systemctl restart portfolio-trader.service`.
 5. Confirm `python3 run_production.py status` exits 0 (see "Health & Readiness").
 
@@ -439,6 +448,48 @@ distinguishes a **safety block** from a crash:
 
 A `BLOCKED` child is the system working correctly: a gate refused to start trading
 on bad state. It is still a degraded system, because nothing is trading.
+
+### The paper cash invariant (`paper_ledger.py`)
+
+The one place the trader-v4 paper ledger is defined, imported by **both** the
+startup gate (`run_trader_v4._paper_startup_validate`) and the recovery tool
+(`scripts/reconcile_trader_ledger.py`) so the two cannot drift:
+
+```
+paper_cash == paper_starting_capital
+            + paper_realized_pnl            # closed leveraged positions
+            + paper_core_realized_pnl        # core-bucket trims
+            - Σ(open entry_notional / leverage)
+            - Σ(open fees_paid)
+            - Σ(open cum_funding)
+            - Σ(core_holdings[].total_cost)  # the DCA/rebalance bucket
+```
+
+Tolerance is `$1.00` (`paper_ledger.TOLERANCE`). Core `total_cost` is already
+fee-inclusive, so core fees need no separate term. `paper_core_realized_pnl` is
+deliberately **not** folded into `paper_realized_pnl`: that accumulator is
+cross-checked against the `paper_trades` ledger on load, and core trims have no
+`paper_trades` record.
+
+Both consumers previously carried their own copy and **both omitted the core
+bucket**, which blocked paper trading outright on 2026-10-04 (a book holding
+BTC/ETH/SOL read as short by the whole core bucket) and would have made
+`reconcile_trader_ledger.py --write` credit that shortfall as phantom cash —
+double-counted by `_paper_equity`, which adds `_core_holdings_value` on top of
+cash. `tests/test_reconcile_trader_ledger.py` now pins the formula, the shared
+identity, and the "no invented cash" property.
+
+Two things to know when a gate blocks you:
+
+- **The sentinel is not self-healing.** `data/trader_state_corrupt` is written by
+  a failed start and only removed by `reconcile_trader_ledger.py --write`. After
+  fixing whatever tripped the gate, the stale sentinel still blocks, and its
+  recorded numbers may be from the *old* formula — read them as evidence of when
+  it was written, not as a live verdict.
+- **`--write` rewrites `paper_cash` to the computed expected value.** Always run
+  it without `--write` first and read the `formula` block. If `core_cost` is
+  large and `difference` ≈ `-core_cost`, the book is fine and something is wrong
+  with the *check*, not the ledger — do not write.
 
 ```bash
 # exit 0 = healthy, 1 = degraded. Machine-readable copy written to:
@@ -611,14 +662,19 @@ WebSocket (~1s ticker)
 - `coinbase/src/sentiment/crypto_news_sentiment.py` — `CryptoNewsSentiment` fetches 6 crypto RSS feeds (CoinDesk, CoinTelegraph, CryptoSlate, The Block, Decrypt, Bitcoin Magazine), maps articles to product IDs via `KNOWN_CRYPTO_SYMBOLS`, scores sentiment with expanded keyword lists (+90 positive, +60 negative), generates BUY/SELL signals with confidence. Integrates as background thread in `run_trader_v4.py`, feeds opportunities via `_paper_execute()`, appears in `health_status["news_sentiment"]`. 5-min TTL in-memory cache.
 - `coinbase/src/run_trader_v4.py` — `EventTraderV4` using `rust_core.evaluate_all_py()` as primary path. Structured logging with per-strategy counters, best-opp summary, periodic stats dump every 50 ticks.
   - **Paper trader config** (all tunable via CLI):
-    - `paper_min_confidence=0.55` — minimum signal confidence (was 0.40)
-    - `paper_min_edge_bps=15.0` — minimum net edge in bps after fees (was 5.0)
+    - `paper_min_confidence=0.30` — minimum signal confidence (was 0.40, then 0.55)
+    - `paper_min_edge_bps=2.0` — minimum net edge in bps after fees (was 15.0; lowered for Tier-1 fees at ~44bps effective)
     - `paper_min_trade_usd=100` — minimum trade notional (was $25)
-    - `paper_min_win_rate=0.60` — minimum strategy backtest win rate (was 0.55)
-    - `paper_min_sharpe=0.8` — minimum Sharpe for strategy entry (was 0.5)
+    - `paper_min_win_rate=0.45` — minimum strategy backtest win rate (was 0.60)
+    - `paper_min_sharpe=0.30` — minimum Sharpe for strategy entry (was 0.8)
     - `paper_max_new_positions=12` — max concurrent open positions (was 30)
-    - `paper_product_cooldown_s=1800` — per-product cooldown in seconds (was 900)
-    - `paper_maker_pct=0.50` — fraction of orders simulated as maker (limit) vs taker
+    - `paper_product_cooldown_s` — **300 at runtime** (the `EventTraderV4.__init__` default), though the tunable table at `run_trader_v4.py:359` still lists 1800. The constructor wins, so 300 is the real cooldown. These two disagree; reconcile before trusting the table.
+    - `paper_maker_pct=0.50` in the tunable table, but `__init__` defaults to **0.80** — same table-vs-constructor split as the cooldown
+    - Values above are read from the tunable table (`run_trader_v4.py:351-359`) and the `__init__` signature; where they disagree the `__init__` value is what the trader actually runs with.
+  - **Entry gates are not independent** — two deliberate behaviours make low confidence and negative Kelly *non*-blocking:
+    - The **vetted floor** (`run_trader_v4.py:3179`) derives a floor straight from the opportunity's `win_rate`/`sharpe` vs `paper_min_win_rate`/`paper_min_sharpe` (`0.30 + wr*0.4 + sharpe*0.05`, capped 0.95). A vetted opportunity is raised to that floor, so its low self-reported confidence does not stop entry. Blocking it causes the death spiral the guard documents: loses → live win rate drops → confidence shrinks → notional falls under min_trade → the bot can never re-enter.
+    - **Negative Kelly does not block** (`run_trader_v4.py:3193`). With sparse samples it falls back to base sizing deliberately, so the bot keeps trading instead of stalling out. Positive Kelly still sizes at half-Kelly.
+  - **State isolation for the v4 test suite**: `tests/coverage/coinbase/test_run_trader_v4.py` sets `TRADING_DATA_DIR` to a per-test temp dir (`BaseV4.setUp`), so it cannot write to `data/`. Do **not** run it with `ALLOW_TESTS_TO_TOUCH_LIVE_DATA_DIR=1` — that override bypasses the guard and deletes operator state. Run it in a scratch checkout instead.
   - **Dynamic fee model**: Uses `FEE_TIERS` matching Coinbase Advanced fee schedule. `_fee_tier()` returns (tier, taker_bps, maker_bps) based on `paper_trailing_volume_30d`. Effective rate blended by `paper_maker_pct`. Persisted across restarts.
   - **Unknown-regime skip**: Products with `regime="unknown"` or `atr_14<=0` are skipped (insufficient data).
   - **Pulse-aware confidence gate**: Repeat signals on same product+strategy >3 pulses within 1800s get confidence halved.
@@ -691,8 +747,15 @@ Tooling (under `scripts/coverage/`):
 
 Workflow:
 ```bash
-# regenerate (exclude the 3 known hang-files: coinbase/test_config_manager.py,
-# coinbase/test_smart_feed.py, optimizer/test_portfolio_optimizer_full.py)
+# regenerate. coinbase/test_config_manager.py and coinbase/test_smart_feed.py no
+# longer hang (fixed 2026-10-02: smart_feed's _loop() was called with the shutdown
+# flag cleared, so it never returned; three tests also patched a module attribute for
+# a lazily-imported urllib3).
+#
+# tests/coverage/coinbase/ additionally needs one deselect:
+#   --deselect tests/coverage/coinbase/test_run_trader_v4_extra.py::TestStart::test_start_paper
+# That test calls EventTraderV4.start() and takes ~10 minutes on an internal
+# timeout; it passes, it is just slow. The other ~2360 tests finish in ~2 minutes.
 for d in tests/coverage/*/; do
   .venv/bin/python -m coverage run --append --source=. -m pytest "$d"
 done
@@ -700,8 +763,78 @@ done
 .venv/bin/python scripts/coverage_gate.py --lang python \
   --manifest scripts/coverage/python_manifest.txt --data scripts/coverage/python_coverage.json
 ```
+**Run this loop per directory, never `pytest tests/` in one process.** Two
+directories contain same-named test modules and most directories have no
+`__init__.py`, so a single-process whole-tree run dies during collection with
+~310 `import file mismatch` errors. Per-directory runs are independent processes,
+which is also what keeps the data-directory redirect below reliable.
+
+### Test isolation from operator state
+
+`tests/` must never write into the repository's live `data/`. Three layers
+enforce it, and all three are needed — the first one alone has already failed:
+
+1. **`TRADING_DATA_DIR`, set for the whole session** in `tests/conftest.py` to a
+   temp dir outside the repo. Production code resolves state through
+   `trading_paths.data_dir()`, so this is what actually redirects it.
+2. **`tests/data_guard.py`**, installed by `tests/conftest.py` for the whole
+   session, raises on any write that resolves inside `data/` — including nested
+   paths like `data/state_backups/`. Reads are never blocked. Opt out with
+   `PYTEST_ALLOW_LIVE_DATA_WRITES=1`, which only downgrades to a warning.
+3. **Per-test fixture** in `tests/coverage/coinbase/conftest.py` for fresh state
+   per test.
+
+Layer 2 exists because layer 3 leaks. `TestHealthServer` starts real
+`socketserver` handler threads, and the root `conftest.py` makes every thread a
+daemon so the process can exit — so a handler thread outlives its test, reaches
+`_save_paper_state` after the per-test override is gone, and writes real state.
+Measured on 2026-10-04 before the guard existed, one suite run wrote
+`live_performance.json` 332 times, `capital_buckets.json` 105 times and
+`paper_trader_v4_state.json` 56 times (plus its `.bak` rotation and `.tmp`),
+destroying a live paper ledger. It also **deleted `data/trading_kill_switch`** —
+on a live deployment that is the file that stops trading.
+
+`trading_paths.py` is the resolver that makes redirection possible. Before it,
+`KillSwitch.KILL_PATH` was a bare `Path("data/trading_kill_switch")` literal that
+no test could redirect, which is how that deletion happened. Any new module that
+touches operator state must resolve through it rather than embedding a literal:
+
+```python
+import trading_paths
+path = trading_paths.resolve("data/whatever.json")   # redirects
+path = trading_paths.state_path("whatever.json")     # equivalent, no literal
+```
+
+`tests/test_trading_paths.py` asserts behaviourally that each converted default
+actually lands under the override. `tests/test_data_guard.py` covers the guard.
+
 Measure a single module accurately with the dotted-module `--source` form (the file-path form is unsupported in coverage 7.15.1):
 `.venv/bin/python -m coverage run --source=portfolio_optimizer -m pytest tests/coverage/optimizer/ -q && .venv/bin/python -m coverage report`
+
+Known pre-existing failures. Each was verified identical at `HEAD` in a scratch
+worktree, so none is caused by current work:
+
+- `tests/test_production_health.py::TestReadinessEndpointLogic::test_health_stays_200_when_trader_blocked`
+- `tests/coverage/trading_system_api/test_dashboard_server.py::test_api_health_ignores_descriptive_component_values`
+- `tests/coverage/optimizer/test_backtester.py` fails collection with `No module named 'backtester'`
+
+Three more were fixed on 2026-10-04 by making the tests hermetic rather than by
+loosening them, because each asserted something about the *live deployment* and so
+passed or failed depending on whether the stack happened to be up:
+
+- `TestStatusCliExitCode` shelled out to the real supervisor and asserted it was
+  unhealthy. It now sets `PORTFOLIO_ROOT` to a scratch dir.
+- `TestArgparseConfigurationIsSound` shelled out to `run_trader_v4.py --help`,
+  which takes a single-writer lock *before* argparse runs and therefore failed
+  whenever a trader was actually running. `_clean_env()` now sets
+  `TRADING_DATA_DIR` and `TRADER_LOCK_PATH`.
+- `test_config_manager_full.py::test_watch_loop_reloads` started `_watch_loop`
+  without ever setting `_watching = True`, so the loop body never ran, and
+  monkeypatched `time.sleep` process-wide so the test's own poll cancelled the
+  reload. It now uses `start_watcher()` and synchronises on an `Event`.
+
+`PORTFOLIO_ROOT` is new and defaults to the script's own directory, so a
+deployment that never sets it behaves exactly as before.
 
 Status (this campaign): the rebalancer / portfolio-management execution cluster is at 100% (`rebalance_engine.py`, `brokers/*`, `risk/engine`, `risk/auto_approval/rules_engine`, `execution/hybrid/*`, `maker_engine/engine`). `portfolio_optimizer.py` is ~76% line / ~82% branch and `coinbase/src/run_trader_v4.py` ~75% line — both are large legacy files still below the 90% gate.
 

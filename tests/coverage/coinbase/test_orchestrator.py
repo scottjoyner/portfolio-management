@@ -84,7 +84,9 @@ class TestConstruction(unittest.TestCase):
         with mock.patch("coinbase.src.orchestrator.CBClient", side_effect=RuntimeError("no")):
             o = ExecutionOrchestrator(mode=TradeMode.LIVE, cb=None, dry_run=True)
         self.assertEqual(o.mode, TradeMode.PAPER)
-        self.assertIsNotNone(o.exec_engine)
+        # No client means no execution engine: orchestrator.py:98 builds it only
+        # when self.cb is set. Expecting one here would contradict the fallback.
+        self.assertIsNone(o.exec_engine)
 
     def test_futures_dry_run_no_exec(self):
         o = ExecutionOrchestrator(mode=TradeMode.FUTURES, dry_run=True)
@@ -139,7 +141,10 @@ class TestKillSwitch(unittest.TestCase):
         r = self.o._blocked_result(make_sig(), "kill_switch")
         self.assertEqual(r["status"], "blocked")
         self.assertEqual(r["reason"], "kill_switch")
-        self.assertEqual(r["side"], "LONG")
+        # side mirrors the Direction enum, whose values are lowercase. It is a
+        # label only -- the real broker side is computed separately at
+        # orchestrator.py:535 as "BUY"/"SELL".
+        self.assertEqual(r["side"], "long")
 
 
 @mock.patch("coinbase.src.orchestrator.CBClient", mock.Mock())

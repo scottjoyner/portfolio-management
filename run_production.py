@@ -37,11 +37,22 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(os.environ.get("PORTFOLIO_ROOT") or Path(__file__).resolve().parent)
 LOGDIR = ROOT / "logs"
 PYTHON = sys.executable
+# Relative to ROOT: _trader_start_blocked() and _child_state() both do
+# `ROOT / TRADER_CORRUPTION_SENTINEL`. Making this absolute would make pathlib
+# discard ROOT, and the gate would then consult an unrelated directory. Redirect
+# it with PORTFOLIO_ROOT, which is what ROOT itself is derived from.
 TRADER_CORRUPTION_SENTINEL = Path("data/trader_state_corrupt")
 
+# PORTFOLIO_ROOT exists so the supervisor's root (pidfiles, logs) can be pointed
+# at scratch storage. The default is byte-identical to the previous behaviour —
+# the script's own directory — so a deployment that never sets it is unaffected.
+# It is needed because `status` derives everything from pidfiles under LOGDIR: a
+# test that shells out to `run_production.py status` and asserts "not healthy"
+# could otherwise only pass on a host where the stack happens to be down, which
+# makes it pass in CI and fail on any running deployment.
 os.makedirs(LOGDIR, exist_ok=True)
 os.makedirs(ROOT / "data", exist_ok=True)
 
@@ -132,6 +143,11 @@ _HEALTH_PROBES: dict[str, dict] = {
                   "ok_values": ("running", "healthy")},
     "dashboard": {"url": "http://127.0.0.1:8002/health", "status_key": "status",
                   "ok_values": ("healthy", "ok", "running")},
+    # Supervisor state, relative to ROOT on purpose. Both consumers here do
+    # `ROOT / path`, so this must stay relative: an absolute value would make
+    # pathlib discard ROOT and the probe would read whatever the absolute path
+    # pointed at instead of this deployment's data dir. PORTFOLIO_ROOT is the
+    # seam that redirects it, not TRADING_DATA_DIR.
     "daemon": {"heartbeat": "data/.daemon_heartbeat"},
 }
 
@@ -499,11 +515,30 @@ def status() -> int:
         return 0
 
     blocked = [c["name"] for c in children if c["state"] == "BLOCKED"]
+    stale = [c["name"] for c in children if c["state"] == "STALE_PID"]
+    stopped = [c["name"] for c in children if c["state"] == "STOPPED"]
+    known = {"RUNNING", "BLOCKED", "STALE_PID", "STOPPED"}
+    other = [c["name"] for c in children
+             if c["state"] != "RUNNING" and c["state"] not in known]
     print("")
+    # Every non-RUNNING child gets a DEGRADED line naming its cause. This used to
+    # cover only BLOCKED, so a STALE_PID or STOPPED child exited non-zero with a
+    # bare "Not running: x" and no DEGRADED marker at all — an operator, or a
+    # monitor grepping for DEGRADED, could not tell a degraded system from a
+    # healthy one that merely prints child states.
     if blocked:
         print("DEGRADED: " + ", ".join(blocked) + " blocked by a safety gate. "
               "These will not restart until an operator resolves the cause; see "
               + str(TRADER_CORRUPTION_SENTINEL))
+    if stale:
+        print("DEGRADED: " + ", ".join(stale) + " has a pidfile but no process. "
+              "The supervisor should restart it; if it does not, inspect "
+              "logs/<name>.log")
+    if stopped:
+        print("DEGRADED: " + ", ".join(stopped)
+              + " never started or is not running. Inspect logs/<name>.log")
+    if other:
+        print("DEGRADED: " + ", ".join(other) + " is in an unexpected state.")
     print("Not running: " + ", ".join(degraded))
     return 1
 

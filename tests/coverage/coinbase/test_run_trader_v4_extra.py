@@ -281,10 +281,24 @@ class TestPaperExecuteBranches(BaseV4):
         self.t._paper_execute_impl("BTC-USD", 100.0, [self._opp()])
         self.assertNotIn("BTC-USD", self.t.paper_positions)
 
-    def test_global_strategy_disabled_gate(self):
+    def test_global_strategy_disabled_but_strong_product_trades(self):
+        """A globally disabled strategy still trades when the product is strong.
+
+        The veto at run_trader_v4.py:4316 fires only when the opportunity's win_rate
+        is below paper_min_win_rate. A blunt veto was parking edge-positive pairs
+        (chaikin_mf was 22% in aggregate but 100% backtest win on MET-USD), so
+        product-specific evidence now beats the aggregate.
+        """
         self.t._perf_tracker.is_disabled = lambda *a, **k: False
         self.t._perf_tracker.is_strategy_disabled = lambda *a, **k: True
-        self.t._paper_execute_impl("BTC-USD", 100.0, [self._opp()])
+        self.t._paper_execute_impl("BTC-USD", 100.0, [self._opp(win_rate=0.7)])
+        self.assertIn("BTC-USD", self.t.paper_positions)
+
+    def test_global_strategy_disabled_weak_product_skips(self):
+        """The veto does fire when the product evidence is weak too."""
+        self.t._perf_tracker.is_disabled = lambda *a, **k: False
+        self.t._perf_tracker.is_strategy_disabled = lambda *a, **k: True
+        self.t._paper_execute_impl("BTC-USD", 100.0, [self._opp(win_rate=0.10)])
         self.assertNotIn("BTC-USD", self.t.paper_positions)
 
     def test_pulse_penalty_branch(self):

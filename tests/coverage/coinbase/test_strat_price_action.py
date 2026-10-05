@@ -77,7 +77,10 @@ class TestBreakRetest(unittest.TestCase):
     def test_no_levels(self):
         s = make_strat()
         bars = bars_from([98, 99, 100, 99, 101])
-        self.assertIsNone(s._check_break_retest(bars, [], self._levels(100, "resistance"), 1.0))
+        # _check_break_retest gates on `not levels`, not on swings. Passing empty
+        # swings alongside a real level list does not short-circuit -- it goes on to
+        # use the levels -- so this case has to pass no levels at all.
+        self.assertIsNone(s._check_break_retest(bars, [], [], 1.0))
 
     def test_resistance_up(self):
         s = make_strat()
@@ -139,7 +142,11 @@ class TestBounce(unittest.TestCase):
         s = make_strat()
         s._rsi = lambda closes, p: 70.0
         hist = self._hist(15)
-        setup = s._check_bounce(bars_from([100.0])[0], hist, None, (110.0, 1.0), 1.0)
+        # Resistance must sit just above entry or the bracket cannot clear the RR
+        # gate: with atr=1.0 and entry=100, a level at 110 puts the stop 11.2 away
+        # against a 2.5 target, i.e. rr=0.22 and no setup at all. 100.4 gives
+        # stop=101.6, target=97.5, rr=1.5625.
+        setup = s._check_bounce(bars_from([100.0])[0], hist, None, (100.4, 1.0), 1.0)
         self.assertEqual(setup.direction, Direction.SHORT)
 
     def test_neutral(self):
@@ -199,8 +206,14 @@ class TestHelpers(unittest.TestCase):
         self.assertTrue(any(s.kind == "low" for s in swings))
 
     def test_build_sr_levels(self):
+        # Two swings at the same price must collapse into one level, but grouping
+        # uses a tolerance derived from the close range: (max-min)/max*0.02. A
+        # perfectly flat series makes that tolerance exactly 0, and then
+        # abs(price - sw.price)/max(price, 1e-9) < tolerance is 0 < 0 -- nothing
+        # groups, not even identical levels. Use a real range so the merge is
+        # actually exercised.
         swings = [SwingPoint(1, 100.0, "low"), SwingPoint(2, 100.0, "low")]
-        closes = [100.0] * 20
+        closes = [100.0 + (2.0 if i % 2 else 0.0) for i in range(20)]
         levels = PriceActionSRStrategy()._build_sr_levels(swings, closes)
         self.assertEqual(len(levels), 1)
         self.assertEqual(levels[0].kind, "support")

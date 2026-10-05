@@ -32,6 +32,7 @@ if _REPO not in _sys.path:
 
 from collections import defaultdict
 from scripts.hermes_agent_trader import load_ledger, recent_stats, drawdown_circuit
+import trading_paths  # noqa: E402  (_REPO is already on sys.path above)
 from scripts.hermes_meta import load_bot_edge, asset_edge
 
 # Minimum closed trades in a cell before we trust the sign of expectancy.
@@ -174,7 +175,11 @@ def write_unified_expectancy(path: str | None = None) -> dict:
     """
     tilt = unified_tilt()
     if path is None:
-        path = str(_REPO) + "/data/unified_expectancy.json"
+        # Anchored to the repo root so a cron run from another directory
+        # still writes where the trader reads, while TRADING_DATA_DIR can
+        # redirect it. The trader resolves the same name via
+        # trading_paths.state_path(), so the two must agree.
+        path = str(trading_paths.absolute("data/unified_expectancy.json", _REPO))
     try:
         with open(path, "w") as fh:
             json.dump({"generated_at": datetime.now().isoformat(),

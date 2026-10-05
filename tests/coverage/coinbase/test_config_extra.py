@@ -12,11 +12,16 @@ from coinbase.src.config import LiveSafetyValidator
 
 
 def test_config_dataclass_fallback(monkeypatch):
-    """Force pydantic import to fail to exercise the dataclass fallback."""
+    """Config must work with pydantic unavailable.
+
+    There is no _HAS_PYDANTIC flag any more: config.py does not import pydantic at
+    all (zero occurrences), it is a plain dataclass. So the fallback this test used
+    to exercise is now the only path, and the meaningful assertion is simply that
+    the dataclass still behaves with pydantic blocked.
+    """
     with pytest.MonkeyPatch().context() as mp:
         mp.setitem(sys.modules, "pydantic", None)
         importlib.reload(cfg)
-        assert cfg._HAS_PYDANTIC is False
         c = cfg.TradingConfig()
         assert c.mode == "paper"
         assert c.dry_run is True
@@ -30,9 +35,11 @@ def test_config_dataclass_fallback(monkeypatch):
         c2 = cfg.TradingConfig.from_env()
         assert c2.mode == "live"
         LiveSafetyValidator.check(c2)
-    # restore pydantic-backed module for other tests
+    # Restore the module for other tests. There is no pydantic-backed variant to
+    # return to -- config.py is a plain dataclass and never imports pydantic -- so
+    # assert the reload produced a working module rather than a removed flag.
     importlib.reload(cfg)
-    assert cfg._HAS_PYDANTIC is True
+    assert cfg.TradingConfig().mode == "paper"
 
 
 def test_live_safety_cli_not_found(monkeypatch):

@@ -83,7 +83,8 @@ class PriceActionSRStrategy(BaseStrategy):
     def _build_sr_levels(self, swings: List[SwingPoint],
                           closes: List[float]) -> List[SupportResistanceLevel]:
         levels = []
-        tolerance = (max(closes[-20:]) - min(closes[-20:])) / max(closes[-20:], 1e-9) * 0.02
+        tolerance = ((max(closes[-20:]) - min(closes[-20:]))
+                     / max(max(closes[-20:]), 1e-9) * 0.02)
 
         grouped: List[Tuple[float, str, List[SwingPoint]]] = []
         for sw in swings:

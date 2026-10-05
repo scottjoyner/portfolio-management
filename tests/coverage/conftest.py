@@ -281,11 +281,18 @@ def _install_stubs() -> None:
     _stub_real("trading_system.evaluation.pricing_models", PriceEstimationEngine=PriceEstimationEngine)
 
     # --- top-level aliases so `from core/evaluation/catalog/strategies import`
-    # resolves to the real trading_system.* packages (the 9 re-enabled test
+    # resolves to the real trading_system.* packages (the re-enabled test
     # modules import the real source modules directly) ---
     _alias("evaluation", "trading_system.evaluation")
     _alias("catalog", "trading_system.catalog")
     _alias("strategies", "trading_system.strategies")
+    # `onchain`, `risk` and `execution` are aliased in
+    # tests/coverage/onchain/conftest.py instead of here. The onchain package
+    # imports its siblings by bare top-level name (86 `from onchain...`
+    # statements), which only resolve when trading_system/ is on sys.path. That
+    # is scoped to the one suite that needs it because `risk` and `execution`
+    # collide with the names of sibling test directories, and a global alias
+    # would change what every other suite sees.
 
     # Local helper modules (strat_helpers, _env) live next to their test files.
     for _sub in ("strategies", "evaluation"):

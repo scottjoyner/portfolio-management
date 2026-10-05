@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -126,14 +127,29 @@ def check_argparse_help(result: Result) -> None:
     """`--help` must work; a bare % in a help string makes argparse raise.
 
     This is how run_trader_v4.py broke. The operator reaches for --help first.
+
+    The probe runs against scratch paths. ``run_trader_v4.py`` takes its
+    single-writer lock *before* argparse runs, so with the live paths inherited
+    the probe fails with ``HostGuardError: another trader process already holds
+    writer lock`` on every preflight taken while the trader is up -- which is
+    every preflight that matters, since the point is to restart a running
+    system. That reported a perfectly healthy deployment as un-preflightable.
     """
-    for script in ("coinbase/src/run_trader_v4.py",
-                   "trading_system/ui/dashboard_server.py",
-                   "trading_system/apps/worker/unified_market_daemon.py",
-                   "scripts/hermes_agent_watch.py"):
-        proc = _run([_venv_python(), str(REPO_ROOT / script), "--help"], timeout=90)
-        result.add(f"--help works: {Path(script).name}", proc.returncode == 0,
-                   "" if proc.returncode == 0 else proc.stderr.strip()[-140:])
+    scratch = Path(tempfile.mkdtemp(prefix="preflight-help-"))
+    env = _env()
+    env["TRADING_DATA_DIR"] = str(scratch / "data")
+    env["TRADER_LOCK_PATH"] = str(scratch / "trader-v4.lock")
+    try:
+        for script in ("coinbase/src/run_trader_v4.py",
+                       "trading_system/ui/dashboard_server.py",
+                       "trading_system/apps/worker/unified_market_daemon.py",
+                       "scripts/hermes_agent_watch.py"):
+            proc = _run([_venv_python(), str(REPO_ROOT / script), "--help"],
+                        timeout=90, env=env)
+            result.add(f"--help works: {Path(script).name}", proc.returncode == 0,
+                       "" if proc.returncode == 0 else proc.stderr.strip()[-140:])
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def check_dashboard_comes_up(result: Result) -> None:
@@ -306,9 +322,19 @@ def check_ledger_gate(result: Result) -> None:
 
 
 def check_watcher_lock_is_free(result: Result) -> None:
-    """The watcher must be able to take its single-writer lock.
+    """Exactly one watcher may hold the single-writer ledger lock.
 
-    An orphan already holding it means a restart will not get you a watcher.
+    The previous version of this check asked whether the lock was *free* and
+    failed when it was not. That is the wrong question: ``hermes_agent_watch.py``
+    takes an exclusive ``flock`` on the ledger and holds it for its entire
+    lifetime, so on any running system the one legitimate holder made this check
+    fail every time. It reported the supervised watcher as a duplicate and
+    advised stopping it, which would have taken the agent watcher down.
+
+    What actually matters is whether the holder is the *supervised* watcher — in
+    which case a restart is fine, because the supervisor stops it before starting
+    the new one — or some other live process, which is the genuine orphan this
+    check was written to catch.
     """
     code = (
         "import sys; sys.path.insert(0, 'scripts');"
@@ -318,12 +344,78 @@ def check_watcher_lock_is_free(result: Result) -> None:
         "h = m.acquire_single_instance_lock(); h.close(); print('FREE')"
     )
     proc = _run([_venv_python(), "-c", code])
-    if proc.returncode != 0:
-        result.add("watcher ledger lock available", False,
-                   proc.stdout.strip()[-160:] or proc.stderr.strip()[-160:])
-    else:
-        result.add("watcher ledger lock available", True,
-                   "" if proc.stdout.strip() == "FREE" else proc.stdout.strip()[-160:])
+    if proc.returncode == 0 and proc.stdout.strip() == "FREE":
+        result.add("no duplicate watcher", True, "ledger lock is unheld")
+        return
+
+    holder = _watcher_lock_holder_pid()
+    if holder is None:
+        result.add(
+            "no duplicate watcher", False,
+            (proc.stdout.strip() or proc.stderr.strip())[-160:] or "lock held, holder unknown",
+        )
+        return
+
+    if not _pid_alive(holder):
+        # flock is released by the kernel when the holder dies, so a lock file
+        # naming a dead pid is not a conflict.
+        result.add("no duplicate watcher", True,
+                   f"ledger lock names dead pid {holder}; flock already released")
+        return
+
+    supervised = _supervised_watcher_pid()
+    if supervised is not None and holder == supervised:
+        result.add("no duplicate watcher", True,
+                   f"ledger lock held by the supervised watcher (pid {holder}); "
+                   "a restart stops it before starting the new one")
+        return
+
+    result.add(
+        "no duplicate watcher", False,
+        f"pid {holder} holds the ledger lock but is not the supervised watcher "
+        f"(supervised={supervised}) cmdline={_pid_cmdline(holder)!r}. "
+        "Stop it before restarting.",
+    )
+
+
+def _watcher_lock_holder_pid() -> int | None:
+    """PID recorded in the watcher lock file, if it parses."""
+    lock_path = REPO_ROOT / "data" / "hermes_agent_ledger.lock"
+    try:
+        raw = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        return int(raw.split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:120]
+
+
+def _supervised_watcher_pid() -> int | None:
+    """PID the supervisor recorded for the agent-watcher child."""
+    pidfile = REPO_ROOT / "logs" / "agent-watcher.pid"
+    try:
+        return int(pidfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _run(cmd, timeout: int = 120, env: dict | None = None):

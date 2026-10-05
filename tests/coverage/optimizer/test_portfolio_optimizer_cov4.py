@@ -22,6 +22,7 @@ import pytest
 import portfolio_optimizer as P
 from strategy_engine import Signal as StrategySignal
 from strategy_engine import BacktestVerdict
+import trading_paths
 
 
 def make_state(holdings, total_value=100000.0, usdc=50000.0,
@@ -392,7 +393,8 @@ def test_process_approval_pending_route_write(opt):
     opt.cli.preview_order.return_value = {"total_fee": 1.0, "total_cost": 1000.0}
     opt.dry_run = False
     opt.require_approval = True
-    opt.pending_file = os.path.join("data", "pending_route2.json")
+    opt.pending_file = str(trading_paths.resolve(
+        os.path.join("data", "pending_route2.json")))
     opt.notifier = mock.MagicMock()
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
                         entry_price_est=100.0, take_profit_pct=5.0, product_id="SOL-USD")
@@ -703,7 +705,8 @@ def test_execute_with_bracket_pending_live(opt):
     opt._exec_engine = None
     opt.dry_run = False
     opt.require_approval = True
-    opt.pending_file = os.path.join("data", "pending_bracket2.json")
+    opt.pending_file = str(trading_paths.resolve(
+        os.path.join("data", "pending_bracket2.json")))
     opp = P.Opportunity(P.OpportunityType.STRATEGY_SIGNAL, "SOL", "BUY", 1000, "r",
                         entry_price_est=100.0, stop_loss_pct=5.0, take_profit_pct=5.0, product_id="SOL-USD")
     opt._execute_with_bracket(opp, 10.0, True)
@@ -815,8 +818,8 @@ def test_write_trade_plans_empty(opt):
 
 def test_write_signal_cache_empty(opt):
     opt._write_signal_cache([])
-    assert os.path.exists("data/.unified_signal_cache.json")
-    os.remove("data/.unified_signal_cache.json")
+    assert os.path.exists(trading_paths.resolve("data/.unified_signal_cache.json"))
+    os.remove(trading_paths.resolve("data/.unified_signal_cache.json"))
 
 
 def test_write_enhanced_state_minimal(opt):
@@ -830,9 +833,9 @@ def test_write_enhanced_state_minimal(opt):
     opt._order_flow_engine = None
     opt._meta_source_weights = {"x": 0.5}
     opt._write_enhanced_state()
-    assert os.path.exists("data/meta_source_weights.json")
-    for p in ("data/meta_source_weights.json", "data/cross_asset_regime.json",
-              "data/signal_ensemble.json", "data/param_opt_results.json",
-              "data/wash_sale_state.json", "data/order_flow_signals.json"):
+    assert os.path.exists(trading_paths.resolve("data/meta_source_weights.json"))
+    for p in (trading_paths.resolve("data/meta_source_weights.json"), trading_paths.resolve("data/cross_asset_regime.json"),
+              trading_paths.resolve("data/signal_ensemble.json"), trading_paths.resolve("data/param_opt_results.json"),
+              trading_paths.resolve("data/wash_sale_state.json"), trading_paths.resolve("data/order_flow_signals.json")):
         if os.path.exists(p):
             os.remove(p)

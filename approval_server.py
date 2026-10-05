@@ -26,6 +26,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, Optional
+import trading_paths
 
 logger = logging.getLogger("approval_server")
 
@@ -120,7 +121,10 @@ class ApprovalHandler(BaseHTTPRequestHandler):
     """HTTP handler serving approve/deny/status endpoints."""
 
     # Shared via class var set by the server factory
-    pending_file: str = "data/pending_approvals.json"
+    # Resolved at import so a handler built outside serve() still has a usable
+    # path; serve() overwrites this with the same resolution. Identical to the
+    # old literal when TRADING_DATA_DIR is unset.
+    pending_file: str = str(trading_paths.resolve("data/pending_approvals.json"))
     server_ref: Any = None
     _auth_token: str = ""
 
@@ -340,8 +344,13 @@ a {{ color:#1a1a2e; }}
             self._send_response(404, self._render_page("Not Found", f"Path not found: {path}", "#dc3545"))
 
 
-def serve(pending_file: str = "data/pending_approvals.json", port: int = 8080, host: str = "0.0.0.0"):
+def serve(pending_file: str = "", port: int = 8080, host: str = "0.0.0.0"):
     """Start the approval server (blocking)."""
+    # Resolved here rather than kept as a literal default so TRADING_DATA_DIR
+    # redirects it: the server creates this file on startup, so an unredirected
+    # literal means merely starting it in a test writes the operator's real
+    # approvals inbox.
+    pending_file = str(trading_paths.resolve(pending_file or "data/pending_approvals.json"))
     # Ensure the pending file exists
     if not os.path.exists(pending_file):
         with open(pending_file, "w") as f:

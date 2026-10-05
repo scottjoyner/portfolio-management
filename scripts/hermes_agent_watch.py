@@ -60,6 +60,7 @@ from scripts import hermes_agent_loop as L  # noqa: E402
 from scripts.hermes_agent_trader import (  # noqa: E402
     load_ledger, close_position, close_short, update_equity,
 )
+import trading_paths  # noqa: E402  (ROOT is already on sys.path above)
 
 KILL_SWITCH = os.getenv("KILL_SWITCH", "").lower() in ("1", "true", "yes")
 # Matches HOLD_ITERS in hermes_agent_loop.run_once (15m cadence * this = timeout).
@@ -174,10 +175,24 @@ def watch_once(client, verbose: bool = True) -> dict:
     return {"checked": checked, "closed": closed}
 
 
-WATCHER_LOCK_PATH = "data/hermes_agent_ledger.lock"
+_WATCHER_LOCK_NAME = "hermes_agent_ledger.lock"
 
 
-def acquire_single_instance_lock(path: str = WATCHER_LOCK_PATH):
+def watcher_lock_path() -> str:
+    """Where the single-writer ledger lock lives.
+
+    Resolved per call, not frozen at import, so TRADING_DATA_DIR redirects it
+    and TRADER_LOCK_PATH can pin it. As a bare module constant the lock could
+    not be redirected at all, which is why the preflight "is the lock free"
+    check could never pass while a watcher was running.
+    """
+    override = os.environ.get("TRADER_LOCK_PATH")
+    if override:
+        return override
+    return str(trading_paths.state_path(_WATCHER_LOCK_NAME))
+
+
+def acquire_single_instance_lock(path: str = ""):
     """Take an exclusive lock so only one watcher mutates the ledger at a time.
 
     Returns the held file object, which must stay referenced for the process
@@ -186,7 +201,7 @@ def acquire_single_instance_lock(path: str = WATCHER_LOCK_PATH):
     Raises SystemExit if another instance already holds it. Refusing is correct:
     two watchers racing on one ledger can silently lose a close.
     """
-    target = Path(path)
+    target = Path(path or watcher_lock_path())
     target.parent.mkdir(parents=True, exist_ok=True)
     handle = open(target, "a+")
     try:

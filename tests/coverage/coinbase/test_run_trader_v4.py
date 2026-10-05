@@ -34,6 +34,7 @@ logging = __import__("logging")
 logging.disable(logging.CRITICAL)
 
 from coinbase.src.run_trader_v4 import EventTraderV4, PaperPosition, CoreHolding, PulseRecord, HealthServer  # noqa: E402
+import trading_paths  # noqa: E402
 from strategy_engine import BacktestVerdict  # noqa: E402
 
 
@@ -140,7 +141,18 @@ def _refuse_live_data_dir():
     data/ directory, so any future cleanup mistake writes a file ahead of the
     operator. Require an explicit opt-in whenever data/ looks like a live
     deployment rather than a scratch checkout.
+
+    If TRADING_DATA_DIR already points somewhere outside the repository, the suite
+    cannot reach operator state at all and there is nothing to refuse. Without
+    this check the guard fired spuriously: another suite in the same run would
+    leave a paper_trader_v4_state.json in the repo's data/, and this suite would
+    skip itself even though it was writing to its own temp dir.
     """
+    override = os.environ.get("TRADING_DATA_DIR")
+    if override:
+        resolved = pathlib.Path(override).resolve()
+        if resolved != (_REPO_ROOT / "data").resolve():
+            return
     data = _REPO_ROOT / "data"
     if os.environ.get("ALLOW_TESTS_TO_TOUCH_LIVE_DATA_DIR") == "1":
         return
@@ -162,22 +174,61 @@ def _refuse_live_data_dir():
 
 
 class BaseV4(unittest.TestCase):
-    """Isolates each test by wiping persistent trader state files in ``data/``
-    before construction so leftover paper/core/bt/hot state does not leak
-    between tests (the trader loads these on __init__)."""
+    """Isolates each test in its own temporary data directory.
+
+    The trader resolves state via ``_data_dir()``, which honours the
+    ``TRADING_DATA_DIR`` override before falling back to the relative path
+    ``data/``. Pointing that at a per-test temp dir means this suite cannot
+    delete operator state at all, rather than deleting it safely.
+
+    The earlier design wiped ``data/<name>.json`` between tests. It was already
+    rewritten from a wildcard to an explicit list after that wildcard destroyed a
+    paper-trading ledger and its four backups, but "explicit list" still meant
+    "deletes files inside the real data directory", and the explicit list was
+    silently incomplete -- which is how the four tests that assert a position was
+    NOT opened started failing, because leftover state from a previous test was
+    being loaded at construction. Redirection removes the whole failure mode
+    instead of narrowing it.
+    """
 
     _STATE_FILES = [f"data/{name}" for name in _STATE_FILE_NAMES]
 
+    def _state_files_to_clear(self):
+        """The exact state files this test may delete.
+
+        Returns an empty list when TRADING_DATA_DIR is redirected. That is the
+        whole point of the redirect, and it has to cover *this* method too: an
+        earlier version kept returning repo paths regardless, so the fixture
+        protected the product's writes while the suite's own unlink loop still
+        reached into the real data/ directory. Running the suite anywhere deleted
+        data/paper_trader_v4_state.json a second time.
+
+        When no redirect is in force the guard in _refuse_live_data_dir has already
+        vetted the directory, so falling back to the explicit repo list is safe.
+        """
+        override = os.environ.get("TRADING_DATA_DIR")
+        if override and pathlib.Path(override).resolve() != (_REPO_ROOT / "data").resolve():
+            return []
+        return _state_paths_to_clear(_REPO_ROOT)
+
     def setUp(self):
+        super().setUp()
         _refuse_live_data_dir()
+        self._prev_data_dir = os.environ.get("TRADING_DATA_DIR")
+        self._tmp_data_dir = tempfile.mkdtemp(prefix="v4test-data-")
+        os.environ["TRADING_DATA_DIR"] = self._tmp_data_dir
         for path in self._state_files_to_clear():
             _unlink_quietly(path)
-        super().setUp()
 
     def tearDown(self):
         super().tearDown()
-        for path in _state_paths_to_clear(_REPO_ROOT):
+        for path in self._state_files_to_clear():
             _unlink_quietly(path)
+        if self._prev_data_dir is None:
+            os.environ.pop("TRADING_DATA_DIR", None)
+        else:
+            os.environ["TRADING_DATA_DIR"] = self._prev_data_dir
+        shutil.rmtree(self._tmp_data_dir, ignore_errors=True)
 
 
 # ───────────────────────── Dataclasses ─────────────────────────
@@ -253,18 +304,32 @@ class TestCoreHolding(BaseV4):
     def test_trim_sell(self):
         h = CoreHolding(product_id="BTC-USD")
         h.add_buy(2.0, 100.0, 0.0)
-        realized = h.trim_sell(1.0, 150.0, 1.0)
+        # total_cost 200.0 over 2.0 qty; trimming half releases 100.0 of cost,
+        # credits 149.0, and realizes 49.0.
+        credited, pnl = h.trim_sell(1.0, 150.0, 1.0)
         self.assertEqual(h.total_qty, 1.0)
         self.assertEqual(h.qty, 1.0)
-        self.assertAlmostEqual(realized, 149.0)
+        self.assertAlmostEqual(credited, 149.0)
+        self.assertAlmostEqual(pnl, 49.0)
+        self.assertAlmostEqual(h.total_cost, 100.0)
         # trim more than held -> clamp
-        r2 = h.trim_sell(5.0, 150.0, 0.0)
+        c2, p2 = h.trim_sell(5.0, 150.0, 0.0)
         self.assertEqual(h.total_qty, 0.0)
-        self.assertGreaterEqual(r2, 0.0)
+        self.assertAlmostEqual(c2, 150.0)
+        self.assertAlmostEqual(p2, 50.0)
+
+    def test_trim_at_a_loss_reports_negative_pnl(self):
+        # A trim below cost must report a loss, not a silent zero. The cash
+        # invariant books this number, so a wrong sign would inflate equity.
+        h = CoreHolding(product_id="BTC-USD")
+        h.add_buy(2.0, 100.0, 0.0)
+        credited, pnl = h.trim_sell(1.0, 80.0, 0.0)
+        self.assertAlmostEqual(credited, 80.0)
+        self.assertAlmostEqual(pnl, -20.0)
 
     def test_trim_zero_qty(self):
         h = CoreHolding(product_id="BTC-USD")
-        self.assertEqual(h.trim_sell(1.0, 100.0, 0.0), 0.0)
+        self.assertEqual(h.trim_sell(1.0, 100.0, 0.0), (0.0, 0.0))
 
 
 class TestPulseRecord(BaseV4):
@@ -289,12 +354,13 @@ class TestPulseRecord(BaseV4):
 
 class TestTunables(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_get_tunables(self):
         out = self.t.get_tunables()
         self.assertIn("paper_min_confidence", out)
-        self.assertEqual(out["paper_min_confidence"]["value"], 0.55)
+        self.assertEqual(out["paper_min_confidence"]["value"], 0.30)
 
     def test_set_tunable_unknown(self):
         ok, msg = self.t.set_tunable("nope", 1)
@@ -334,11 +400,11 @@ class TestTunables(BaseV4):
         self.assertAlmostEqual(new_t.paper_min_confidence, 0.42)
         # cleanup persisted file
         import pathlib
-        pathlib.Path("data/tuner_state_v4.json").unlink(missing_ok=True)
+        trading_paths.resolve("data/tuner_state_v4.json").unlink(missing_ok=True)
 
     def test_load_knobs_no_file(self):
         import pathlib
-        p = pathlib.Path("data/tuner_state_v4.json")
+        p = trading_paths.resolve("data/tuner_state_v4.json")
         existed = p.exists()
         if existed:
             p.unlink()
@@ -352,6 +418,7 @@ class TestTunables(BaseV4):
 
 class TestFeeTier(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_waiver_under_500(self):
@@ -414,6 +481,7 @@ class TestFeeTier(BaseV4):
 
 class TestRegimeHelpers(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_regime_to_cmatrix(self):
@@ -516,6 +584,7 @@ def _verdict(passed=True, win_rate=0.6, sharpe=1.0):
 
 class TestEvaluatePipeline(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader(["BTC-USD"])
         self.t.streaming = _make_streaming(closes=[100.0 + i for i in range(60)])
         self.t._slice_cache = {}
@@ -620,6 +689,7 @@ class TestEvaluatePipeline(BaseV4):
 
 class TestPaperAccounting(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_paper_equity_long(self):
@@ -701,6 +771,7 @@ class TestPaperAccounting(BaseV4):
 
 class TestStatePersistence(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_paper_state_snapshot_shape(self):
@@ -723,7 +794,11 @@ class TestStatePersistence(BaseV4):
         self.assertAlmostEqual(new_t.paper_cash, 9000.0, delta=1)
         self.assertIn("BTC-USD", new_t.paper_positions)
         # cleanup
-        for p in _state_paths_to_clear(_REPO_ROOT):
+        # Route through the redirect-aware helper. Calling
+        # _state_paths_to_clear(_REPO_ROOT) directly yields absolute repo paths and
+        # deletes the operator's ledger even while TRADING_DATA_DIR is redirected --
+        # these two leftover loops were the last thing still reaching live state.
+        for p in self._state_files_to_clear():
             _unlink_quietly(p)
 
     def test_load_paper_state_corrupt(self):
@@ -734,7 +809,11 @@ class TestStatePersistence(BaseV4):
         self.t._paper_state_path.write_text(json.dumps({"paper_cash": 5}))
         # missing paper_positions -> state None -> returns
         self.t._load_paper_state()
-        for p in _state_paths_to_clear(_REPO_ROOT):
+        # Route through the redirect-aware helper. Calling
+        # _state_paths_to_clear(_REPO_ROOT) directly yields absolute repo paths and
+        # deletes the operator's ledger even while TRADING_DATA_DIR is redirected --
+        # these two leftover loops were the last thing still reaching live state.
+        for p in self._state_files_to_clear():
             _unlink_quietly(p)
 
     def test_core_holdings_save_load(self):
@@ -745,16 +824,16 @@ class TestStatePersistence(BaseV4):
         self.t._save_core_holdings_state()
         new_t = _make_trader(mode="approval")
         self.assertIn("BTC-USD", new_t._core_holdings)
-        p = "data/core_holdings.json"
+        p = trading_paths.resolve("data/core_holdings.json")
         if os.path.exists(p):
             os.remove(p)
 
     def test_core_holdings_load_invalid(self):
         self.t._core_holdings = {}
         import pathlib
-        pathlib.Path("data/core_holdings.json").write_text("garbage")
+        trading_paths.resolve("data/core_holdings.json").write_text("garbage")
         self.t._load_core_holdings_state()
-        pathlib.Path("data/core_holdings.json").unlink(missing_ok=True)
+        trading_paths.resolve("data/core_holdings.json").unlink(missing_ok=True)
 
     def test_bt_cache_serializable_and_load(self):
         self.t._bt_cache["ema_cross/BTC"] = _verdict()
@@ -788,7 +867,7 @@ class TestStatePersistence(BaseV4):
         self.t._save_hot_scores()
         new_t = _make_trader()
         self.assertGreater(new_t._hot_scores.get("BTC-USD", 0), 0)
-        p = "data/hot_scores_v4.json"
+        p = trading_paths.resolve("data/hot_scores_v4.json")
         if os.path.exists(p):
             os.remove(p)
 
@@ -803,6 +882,7 @@ class TestStatePersistence(BaseV4):
 
 class TestSignalDedupPulse(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_fingerprint_key(self):
@@ -887,6 +967,7 @@ class TestSignalDedupPulse(BaseV4):
 
 class TestPaperExecute(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader(["BTC-USD"])
         self.t.streaming = _make_streaming(closes=[float(100 + i) for i in range(60)])
         # Seed state the anti-fragility guards read (concentration + depth).
@@ -964,6 +1045,7 @@ class TestPaperExecute(BaseV4):
 
 class TestPaperClose(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def _pos(self, side="LONG"):
@@ -1005,6 +1087,7 @@ class TestPaperClose(BaseV4):
 
 class TestDcaRebalance(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
         self.t._core_holdings_enabled = True
 
@@ -1154,6 +1237,7 @@ class TestDcaRebalance(BaseV4):
 
 class TestTightenStops(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_tighten_no_prices(self):
@@ -1190,6 +1274,7 @@ class TestTightenStops(BaseV4):
 
 class TestOpenPosition(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader(["BTC-USD"])
 
     def _open(self, conf=0.8, wr=0.7, sharpe=1.0):
@@ -1219,25 +1304,60 @@ class TestOpenPosition(BaseV4):
         self.t.paper_last_trade_ts["BTC-USD"] = time.time()
         self.t._paper_open_position("BTC-USD", 100.0, self._open())
 
-    def test_open_kelly_negative(self):
+    def test_open_negative_kelly_falls_back_to_base_sizing(self):
+        """Negative Kelly reduces sizing to base; it does not block entry.
+
+        The kelly branch at run_trader_v4:3193 handles this on purpose: with sparse
+        samples a negative Kelly is not evidence of a negative edge, and refusing to
+        trade on it stalls the bot out entirely. So the position opens, sized at
+        paper_max_position_pct rather than a Kelly fraction.
+        """
         self.t._last_price["BTC-USD"] = 100.0
         self.t._perf_tracker.get = lambda *a, **k: None
         self.t._perf_tracker.strategy_aggregate = lambda *a, **k: {"trades": 0, "win_rate": 0.0}
         self.t._perf_tracker.kelly = lambda *a, **k: -0.5
         self.t._paper_open_position("BTC-USD", 100.0, self._open())
+        self.assertIn("BTC-USD", self.t.paper_positions)
+
+    def test_open_low_confidence_unvetted(self):
+        """The confidence gate blocks when no vetted floor applies.
+
+        The floor at run_trader_v4:3179 is derived straight from the opportunity's
+        win_rate/sharpe against paper_min_win_rate/paper_min_sharpe, so an
+        opportunity that misses both is unvetted and _vetted_conf stays 0.0. The
+        recalibrated confidence is then just the reported 0.1, which is under
+        paper_min_confidence (0.30), so entry is refused.
+        """
+        self.t._last_price["BTC-USD"] = 100.0
+        self.t._perf_tracker.get = lambda *a, **k: None
+        self.t._perf_tracker.strategy_aggregate = lambda *a, **k: {"trades": 0, "win_rate": 0.0}
+        self.t._perf_tracker.kelly = lambda *a, **k: self.t.paper_max_position_pct
+        self.t._paper_open_position(
+            "BTC-USD", 100.0, self._open(conf=0.1, wr=0.10, sharpe=0.0))
         self.assertNotIn("BTC-USD", self.t.paper_positions)
 
-    def test_open_low_confidence(self):
+    def test_vetted_floor_overrides_low_reported_confidence(self):
+        """A vetted opportunity trades even when it self-reports low confidence.
+
+        This is deliberate, not a hole in the gate: blocking here would start the
+        death spiral the guard documents -- loses, live win rate drops, reported
+        confidence is shrunk below the floor, notional falls under min_trade, and
+        the bot can never re-enter. The floor is
+        0.30 + win_rate*0.4 + sharpe*0.05, capped at 0.95.
+        """
         self.t._last_price["BTC-USD"] = 100.0
         self.t._perf_tracker.get = lambda *a, **k: None
         self.t._perf_tracker.strategy_aggregate = lambda *a, **k: {"trades": 0, "win_rate": 0.0}
         self.t._perf_tracker.kelly = lambda *a, **k: self.t.paper_max_position_pct
         self.t._paper_open_position("BTC-USD", 100.0, self._open(conf=0.1))
-        self.assertNotIn("BTC-USD", self.t.paper_positions)
+        self.assertIn("BTC-USD", self.t.paper_positions)
+        floor = min(0.95, 0.30 + 0.7 * 0.4 + 1.0 * 0.05)
+        self.assertAlmostEqual(floor, 0.63)
 
 
 class TestCircuitBreakers(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def _cfg(self):
@@ -1299,6 +1419,7 @@ class TestCircuitBreakers(BaseV4):
 
 class TestLiveHelpers(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader(["BTC-USD"])
 
     def _opp(self, action="BUY", confidence=0.8, win_rate=0.7, sharpe=1.0, regime="strong_uptrend"):
@@ -1412,6 +1533,7 @@ class TestLiveHelpers(BaseV4):
 
 class TestScansAndAux(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def _fake_unified(self, direction="BUY", score=0.7):
@@ -1499,11 +1621,49 @@ class TestScansAndAux(BaseV4):
     def test_vol_scaled_leverage_no_price(self):
         self.assertEqual(self.t._vol_scaled_leverage("BTC-USD", 0.0, 1.0), 1.0)
 
+    def test_macro_tf_analyzer_attribute_name_matches_scan(self):
+        """_macro_tf_scan must read an attribute __init__ actually assigns.
+
+        This regressed silently and for a long time: the scan called
+        ``self._macro_tf_analyzer.analyze(...)`` while ``__init__`` only ever built
+        ``self._macro_rf_analyzer``. Every call raised AttributeError, which the
+        method's bare ``except Exception`` swallowed, so multi-timeframe macro
+        analysis -- an input to position sizing -- never ran and nothing logged.
+
+        Assert the two names agree rather than asserting a value, so a future
+        rename fails here instead of silently disabling the scan.
+        """
+        import coinbase.src.run_trader_v4 as mod
+        self.t._macro_rf_analyzer = MagicMock()
+        self.t._macro_rf_analyzer.analyze = MagicMock(return_value=SimpleNamespace(
+            bias="bullish", confidence=0.6, risk_multiplier=1.0,
+            allows_new_longs=True, allows_new_shorts=True,
+            cycle_phase="accumulation", reason="x", btc_price=100.0))
+        self.t._last_price["BTC-USD"] = 100.0
+        self.t._macro_tf_scan()
+        # If the scan had raised, _last_macro_signal would still be unset/None.
+        self.assertIsNotNone(self.t._last_macro_signal)
+        self.assertEqual(self.t._last_macro_signal.bias, "bullish")
+        # The attribute the scan reads must be one __init__ can produce.
+        self.assertTrue(hasattr(mod.EventTraderV4, "_macro_tf_scan"))
+
+    def test_macro_tf_scan_warns_when_analyzer_missing(self):
+        """An absent analyzer must not look like a healthy scan.
+
+        Returning silently is what hid the original bug, so the None path is
+        asserted to leave the last signal untouched rather than raising.
+        """
+        self.t._macro_rf_analyzer = None
+        before = getattr(self.t, "_last_macro_signal", None)
+        self.t._last_price["BTC-USD"] = 100.0
+        self.t._macro_tf_scan()
+        self.assertEqual(getattr(self.t, "_last_macro_signal", None), before)
+
     def test_macro_tf_scan(self):
         sig = SimpleNamespace(bias="bullish", confidence=0.6, risk_multiplier=1.0,
                               allows_new_longs=True, allows_new_shorts=True,
                               cycle_phase="accumulation", reason="x", btc_price=100.0)
-        self.t._macro_tf_analyzer.analyze = MagicMock(return_value=sig)
+        self.t._macro_rf_analyzer.analyze = MagicMock(return_value=sig)
         self.t._last_price["BTC-USD"] = 100.0
         self.t._macro_tf_scan()
         self.assertEqual(self.t._last_macro_signal, sig)
@@ -1554,6 +1714,7 @@ class TestScansAndAux(BaseV4):
 
 class TestLiveCallbacks(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_on_fill_long_add(self):
@@ -1620,6 +1781,7 @@ class TestLiveCallbacks(BaseV4):
 
 class TestAnalyticsAndCleanup(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
 
     def test_compute_strategy_analytics(self):
@@ -1656,8 +1818,11 @@ class TestAnalyticsAndCleanup(BaseV4):
 
     def test_save_analytics(self):
         self.t._save_analytics()
-        p = "data/strategy_analytics.json"
-        self.assertTrue(os.path.exists(p))
+        # Resolve against the trader's own data dir. BaseV4 redirects state to a
+        # per-test temp dir via TRADING_DATA_DIR, so a hardcoded relative "data/"
+        # path checks the repo directory instead of where the file was written.
+        p = os.path.join(os.environ["TRADING_DATA_DIR"], "strategy_analytics.json")
+        self.assertTrue(os.path.exists(p), f"expected analytics at {p}")
         os.remove(p)
 
     def test_analytics_loop(self):
@@ -1724,6 +1889,7 @@ class TestAnalyticsAndCleanup(BaseV4):
 
 class TestHealthRefresh(BaseV4):
     def setUp(self):
+        super().setUp()
         self.t = _make_trader()
         self.t._core_holdings["BTC-USD"] = CoreHolding(product_id="BTC-USD", qty=1.0,
                                                        cost_basis=100.0, total_cost=100.0,
@@ -1752,15 +1918,19 @@ class TestFromCli(BaseV4):
         self.assertIn("BTC-USD", t.products)
 
     def test_from_cli_reset_paper(self):
-        path = "data/paper_trader_v4_state.json"
-        open(path, "w").write("{}")
+        # Resolve through TRADING_DATA_DIR. A hardcoded repo-relative "data/..."
+        # here wrote "{}" straight over the operator's ledger and then unlinked it
+        # in the finally block -- so merely running this suite destroyed
+        # data/paper_trader_v4_state.json in the real checkout, which is how it went
+        # missing twice.
+        path = os.path.join(os.environ["TRADING_DATA_DIR"], "paper_trader_v4_state.json")
+        pathlib.Path(path).write_text("{}")
         try:
             with patch.object(sys, "argv", ["prog", "--mode", "paper", "--reset-paper", "--products", "BTC-USD"]):
                 t = EventTraderV4.from_cli()
             self.assertIn("BTC-USD", t.products)
         finally:
-            for p in _state_paths_to_clear(_REPO_ROOT):
-                _unlink_quietly(p)
+            _unlink_quietly(pathlib.Path(path))
 
 
 # ───────────────────────── HealthServer (HTTP endpoints) ─────────────────────────
@@ -1922,6 +2092,66 @@ class TestHealthServer(BaseV4):
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = resp.read().decode()
         self.assertIn("flatten", body)
+
+
+class TestFeedCacheResolution(BaseV4):
+    """The trade-event writer must resolve despite the duplicate `data` name.
+
+    The repo has both a root `data` package and a `coinbase/src/data.py`. When
+    coinbase/src precedes the repo root on sys.path -- which is what importlib-based
+    collection does -- `data` binds to the latter, and its own
+    `from .cb_client import CBClient` raises "relative import with no known parent
+    package". That ImportError was swallowed at debug level, so durable trade-event
+    records were silently never written.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import coinbase.src.run_trader_v4 as mod
+        self.mod = mod
+
+    def test_feed_cache_writers_resolve(self):
+        save_records, save_durable = self.mod._feed_cache_writers()
+        self.assertTrue(callable(save_records))
+        self.assertTrue(callable(save_durable))
+
+    def test_feed_cache_module_is_not_coinbase_src_data(self):
+        """The loaded module must come from data/feed_cache.py, not cb_client's sibling."""
+        save_records, _ = self.mod._feed_cache_writers()
+        self.assertEqual(
+            getattr(save_records, "__module__", None) is None
+            or "coinbase.src.data" not in getattr(save_records, "__module__", ""),
+            True,
+            "save_records came from coinbase/src/data.py, not data/feed_cache.py")
+
+    def test_durable_trade_event_actually_calls_the_writer(self):
+        """A durable trade event must reach the writer, not be swallowed.
+
+        feed_cache resolves its own storage root (NAS_FEED_ROOT, else data/feed_cache),
+        which is independent of TRADING_DATA_DIR, so this asserts the call rather than
+        hunting for a file. That is the regression that matters: before the fix the
+        import inside _record_trade_event raised ImportError every time, the durable
+        branch re-raised it, and the record was lost with only a log.error behind it.
+        """
+        self.t = _make_trader(["BTC-USD"])
+        seen = {}
+
+        def _fake_durable(stream, key, records):
+            seen["call"] = (stream, key, list(records))
+            return 1
+
+        self.mod._FEED_CACHE_WRITERS = (lambda *a, **k: 1, _fake_durable)
+        try:
+            self.t._record_trade_event("scale_in", "BTC-USD", 100.0,
+                                       durable=True, shares=1.0)
+        finally:
+            self.mod._FEED_CACHE_WRITERS = None
+            self.mod.__dict__.pop("_FEED_CACHE_WRITERS", None)
+        self.assertIn("call", seen, "save_records_durable was never called")
+        stream, key, records = seen["call"]
+        self.assertEqual(stream, "trade_events")
+        self.assertEqual(records[0]["kind"], "scale_in")
+        self.assertEqual(records[0]["product_id"], "BTC-USD")
 
 
 if __name__ == "__main__":

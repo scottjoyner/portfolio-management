@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -155,16 +156,27 @@ class TestStatusCliExitCode(unittest.TestCase):
 
     Asserting rp.status() returns 1 passes even if main() forgets to propagate it,
     which is exactly the wiring bug that let a blocked trader report success.
+
+    ``PORTFOLIO_ROOT`` is pointed at an empty scratch directory. Without it these
+    two tests shell out to the *real* supervisor and assert it is unhealthy, so
+    they pass only while the stack happens to be down — green in CI, red on any
+    running deployment, and inverted the moment the system recovered.
     """
 
     SCRIPT = REPO_ROOT / "run_production.py"
 
     def _run(self, *args):
-        return subprocess.run([sys.executable, str(self.SCRIPT), "status", *args],
-                              capture_output=True, text=True, timeout=180, cwd=REPO_ROOT)
+        env = dict(os.environ)
+        env["PORTFOLIO_ROOT"] = tempfile.mkdtemp(prefix="rp-status-")
+        try:
+            return subprocess.run([sys.executable, str(self.SCRIPT), "status", *args],
+                                  capture_output=True, text=True, timeout=180,
+                                  cwd=REPO_ROOT, env=env)
+        finally:
+            shutil.rmtree(env["PORTFOLIO_ROOT"], ignore_errors=True)
 
     def test_cli_exits_non_zero_without_a_supervisor(self):
-        # No supervisor pidfile in a test environment, so the honest answer is
+        # No supervisor pidfile in the scratch root, so the honest answer is
         # "not healthy" and the exit code must say so.
         result = self._run()
         self.assertEqual(
@@ -483,7 +495,16 @@ class TestDataDirIsOverridable(unittest.TestCase):
     """
     def test_default_is_the_repo_relative_data_dir(self):
         from coinbase.src.run_trader_v4 import _data_dir
-        self.assertEqual(str(_data_dir()), "data")
+        # The whole test session points TRADING_DATA_DIR at a temp dir (see
+        # tests/conftest.py) so a test run cannot reach the operator's live
+        # data/. Asserting the default therefore means arranging the default:
+        # clear the override for the duration rather than assuming it is unset.
+        previous = os.environ.pop("TRADING_DATA_DIR", None)
+        try:
+            self.assertEqual(str(_data_dir()), "data")
+        finally:
+            if previous is not None:
+                os.environ["TRADING_DATA_DIR"] = previous
 
     def test_override_redirects_every_state_path(self):
         from coinbase.src import run_trader_v4 as m

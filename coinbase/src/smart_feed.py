@@ -430,8 +430,16 @@ class SmartFeedRefreshManager:
         self._thread.start()
         log.info("SmartFeed: background refresh thread started (interval=%.1fs)", self._interval)
 
-    def stop(self):
+    def stop(self, timeout: float = 5.0):
         self._shutdown.set()
+        # Join so that `running` is False by the time stop() returns. Setting the
+        # event alone left the worker mid-iteration, so a caller that checked
+        # `running` straight after stop() could still see a live thread.
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                log.warning("SmartFeed: thread did not stop within %.1fs", timeout)
 
     @property
     def running(self) -> bool:

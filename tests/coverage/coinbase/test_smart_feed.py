@@ -261,11 +261,21 @@ def test_tick_and_loop(mgr):
     for pid in ("ETH-USD", "XRP-USD"):
         mgr._products[pid].last_fetch = 0.0
     mgr._tick()
-    # background loop runs without error
+    # Background loop runs without error. _loop() only exits once _shutdown is set,
+    # so arm the shutdown from inside the first _tick: that exercises exactly one
+    # iteration and returns. Calling it with a cleared flag loops forever -- which
+    # is why this file used to hang and was excluded from the suite.
     mgr._loop_count = 0
     mgr._shutdown.clear()
-    mgr._tick()
+    original_tick = mgr._tick
+
+    def _tick_then_stop():
+        mgr._shutdown.set()
+        return original_tick()
+
+    mgr._tick = _tick_then_stop
     mgr._loop()
+    assert mgr._shutdown.is_set()
 
 
 def test_fetch_fallback_success():
@@ -275,7 +285,7 @@ def test_fetch_fallback_success():
     fake_resp.data = b"[[1, 90, 110, 100, 105, 10]]"
     fake_http = MagicMock()
     fake_http.request.return_value = fake_resp
-    with patch.object(smart_feed.urllib3, "PoolManager", return_value=fake_http):
+    with patch("urllib3.PoolManager", return_value=fake_http):
         res = mgr._fetch_fallback("BTC-USD", 3600, 100)
     assert res == [[1, 90, 110, 100, 105, 10]]
 
@@ -284,7 +294,7 @@ def test_fetch_fallback_failure():
     mgr = SmartFeedRefreshManager()
     fake_http = MagicMock()
     fake_http.request.side_effect = Exception("boom")
-    with patch.object(smart_feed.urllib3, "PoolManager", return_value=fake_http):
+    with patch("urllib3.PoolManager", return_value=fake_http):
         res = mgr._fetch_fallback("BTC-USD", 3600, 100)
     assert res == []
 
@@ -292,7 +302,7 @@ def test_fetch_fallback_failure():
 def test_get_candles_fallback_used(mgr):
     mgr._fetch_fn = None
     mgr._batch_fn = None
-    with patch.object(smart_feed.urllib3, "PoolManager") as pm:
+    with patch("urllib3.PoolManager") as pm:
         fake_resp = MagicMock()
         fake_resp.status = 200
         fake_resp.data = b"[[1, 90, 110, 100, 105, 10]]"

@@ -129,25 +129,40 @@ def test_watcher_start_idempotent_and_stop(tmp_path):
     assert mgr._watching is False
 
 
-def test_watch_loop_reloads(tmp_path, monkeypatch):
+def test_watch_loop_reloads(tmp_path):
     mgr = _make_manager(tmp_path, "mode: paper\n")
 
-    def fake_sleep(s):
-        mgr._watching = False  # exit after one iteration
-
-    monkeypatch.setattr(time, "sleep", fake_sleep)
-    # make file appear changed
+    # Two defects in the original version of this test, both of which made it a
+    # coin flip rather than a test:
+    #
+    # 1. It started `mgr._watch_loop` on a thread without ever setting
+    #    `_watching = True`. That flag is initialised False and only set by
+    #    start_watcher(), so the loop body never executed at all — the reload this
+    #    test claims to cover was never being exercised.
+    # 2. It monkeypatched `time.sleep` process-wide with a fake that cleared
+    #    `_watching` to end the watcher's first iteration. This thread's own poll
+    #    called that same fake and could cancel the reload before it happened.
+    #
+    # Use the real entry point and synchronise on an event rather than on time.
     mgr._last_modified = 0.0
     (tmp_path / "app.yaml").write_text("mode: live\n")
-    t = threading.Thread(target=mgr._watch_loop, args=(5.0,))
-    t.start()
-    # Poll for the reload rather than relying on a fixed join timeout
-    for _ in range(50):
-        if mgr.get().mode == "live":
-            break
-        time.sleep(0.05)
-    assert mgr.get().mode == "live"
-    t.join(timeout=2)
+
+    reloaded = threading.Event()
+    original_load = mgr._load
+
+    def load_then_stop():
+        original_load()
+        mgr._watching = False  # end the loop from the watcher itself
+        reloaded.set()
+
+    mgr._load = load_then_stop
+
+    mgr.start_watcher(interval=0.01)
+    try:
+        assert reloaded.wait(timeout=10), "watcher never reloaded the changed config"
+        assert mgr.get().mode == "live"
+    finally:
+        mgr.stop_watcher()
 
 
 def test_empty_yaml_uses_defaults(tmp_path):

@@ -11,10 +11,13 @@ import threading
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Any
 from pathlib import Path
+import trading_paths
 
 log = logging.getLogger(__name__)
 
-_DB_PATH = Path("data/strategy_perf.db")
+# Resolved per access rather than frozen at import, so a test that sets
+# TRADING_DATA_DIR after import still redirects it.
+_DB_PATH = "data/strategy_perf.db"
 _DB_LOCK = threading.Lock()
 
 
@@ -72,8 +75,10 @@ class StrategyPerf:
 class StrategyRegistry:
     """Thread-safe strategy performance registry backed by SQLite."""
     
-    def __init__(self, db_path: Path = _DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Path = None):
+        # Resolved here, not at import, so TRADING_DATA_DIR set after import
+        # still redirects the default.
+        self.db_path = trading_paths.resolve(db_path or _DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
         self._cache: Dict[str, StrategyPerf] = {}

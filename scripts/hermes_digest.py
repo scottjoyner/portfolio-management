@@ -33,6 +33,7 @@ from scripts.hermes_expectancy import (
     expectancy_table, universe_tilt, live_ready, unified_tilt, write_unified_expectancy,
 )
 from scripts.hermes_agent_trader import load_ledger
+import trading_paths  # noqa: E402  (_REPO is already on sys.path above)
 
 KILL_SWITCH = __import__("os").getenv("KILL_SWITCH", "").lower() in ("1", "true", "yes")
 
@@ -103,7 +104,7 @@ def digest() -> str:
     out = "\n".join(lines)
     # Persist the digest so it is observable without manual invocation.
     try:
-        with open("data/learning_digest.md", "w") as fh:
+        with open(trading_paths.state_path("learning_digest.md"), "w") as fh:
             fh.write(out + "\n")
     except Exception:
         pass

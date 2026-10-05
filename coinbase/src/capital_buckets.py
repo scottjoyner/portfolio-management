@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any
+import trading_paths
 
 
 @dataclass
@@ -174,12 +175,15 @@ class CapitalBucket:
 class CapitalBucketLedger:
     def __init__(self, buckets: Optional[List[CapitalBucket]] = None,
                  state_path: str = "data/capital_buckets.json"):
-        self.state_path = state_path
+        # Resolved so TRADING_DATA_DIR redirects the default; an explicit
+        # non-data path passes through untouched.
+        self.state_path = trading_paths.resolve(state_path)
         self.buckets: Dict[str, CapitalBucket] = {b.bucket_id: b for b in (buckets or [])}
 
     @classmethod
     def from_env(cls) -> CapitalBucketLedger:
-        state_path = os.environ.get("TRADER_BUCKET_STATE_PATH", "data/capital_buckets.json")
+        state_path = os.environ.get("TRADER_BUCKET_STATE_PATH") or trading_paths.resolve(
+            "data/capital_buckets.json")
         raw = os.environ.get("TRADER_BUCKETS_JSON", "").strip()
         buckets: List[CapitalBucket] = []
         if raw:

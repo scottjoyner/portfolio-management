@@ -24,6 +24,7 @@ import ast
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -85,9 +86,27 @@ def _clean_env() -> dict:
     The unit sets only HOME and PATH, so nothing an operator exported in their
     shell -- including secrets -- is present. Anything a supervised child needs
     at startup must be provisionable without it.
+
+    Two extra variables are added purely for test isolation. Both entry points
+    below are spawned as subprocesses, which no in-process monkeypatching can
+    reach, so without these they operate on the live deployment:
+
+    * ``TRADING_DATA_DIR`` — otherwise the child resolves the repo's real
+      ``data/`` and can read or overwrite operator state.
+    * ``TRADER_LOCK_PATH`` — ``run_trader_v4.py`` takes a single-writer lock
+      before argparse runs, so ``--help`` fails with
+      ``HostGuardError: another trader process already holds writer lock`` any
+      time a trader is actually running. That is correct production behaviour
+      and a broken test, not a broken entry point.
+
+    These are test-only overrides and are deliberately not described as unit
+    variables; the docstring above still describes the real unit.
     """
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp")}
     env["PYTHONPATH"] = f"{REPO_ROOT}{os.pathsep}{REPO_ROOT / 'trading_system'}"
+    scratch = Path(tempfile.mkdtemp(prefix="supervisor-contract-"))
+    env["TRADING_DATA_DIR"] = str(scratch / "data")
+    env["TRADER_LOCK_PATH"] = str(scratch / "trader-v4.lock")
     return env
 
 

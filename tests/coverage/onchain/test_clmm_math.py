@@ -53,8 +53,19 @@ class TestCLMMMath(unittest.TestCase):
         self.assertEqual(l, liquidity_from_amount0(Decimal("1"), Decimal("1"), Decimal("2")))
 
     def test_liquidity_amounts_high(self):
-        l = liquidity_from_amounts(Decimal("1"), Decimal("1"), Decimal("4"), Decimal("1"), Decimal("4"))
-        self.assertEqual(l, liquidity_from_amount1(Decimal("1"), Decimal("2"), Decimal("2")))
+        """Both entry points agree, with pa < pb as liquidity_from_amount1 requires.
+
+        This passed a lower bound of 2 with an upper of ... and expected
+        liquidity_from_amount1(1, 2, ...) to succeed, but that function raises
+        "invalid range" when sqrt_pa >= sqrt_pb. Use an ordered range so the two
+        entry points are genuinely comparable.
+        """
+        # At price=4 the amount1 branch is the one taken, and it takes *sqrt*
+        # prices, so compare against the same sqrt values.
+        price, lo, hi = Decimal("4"), Decimal("1"), Decimal("4")
+        sa, sb = Decimal("1").sqrt(), Decimal("4").sqrt()
+        l = liquidity_from_amounts(Decimal("1"), Decimal("1"), price, lo, hi)
+        self.assertEqual(l, liquidity_from_amount1(Decimal("1"), sa, sb))
 
     def test_liquidity_amounts_mid(self):
         l = liquidity_from_amounts(Decimal("1"), Decimal("1"), Decimal("2"), Decimal("1"), Decimal("4"))

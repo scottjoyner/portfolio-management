@@ -26,6 +26,7 @@ from .news_risk import NewsRiskAdjuster
 from .market_condition import MarketConditionStrategySelector, MarketConditionProfile
 from .capital_buckets import CapitalBucketLedger
 from trading_system.core.performance_model import LatencyProfile, expected_fill_delay_ms
+import trading_paths
 log = logging.getLogger(__name__)
 
 
@@ -89,7 +90,9 @@ class ExecutionOrchestrator:
             pass
         self.mode = mode
         self.dry_run = dry_run
-        self.pending_file = pending_file
+        # Resolved so TRADING_DATA_DIR redirects the default; an explicit
+        # non-data path passes through untouched.
+        self.pending_file = trading_paths.resolve(pending_file)
         self.live_min_cash_reserve_usd = self._env_float("TRADER_LIVE_MIN_CASH_RESERVE_USD", 100.0)
         self.live_max_order_usd = self._env_float("TRADER_LIVE_MAX_ORDER_USD", 50.0)
         self.live_max_total_notional_usd = self._env_float("TRADER_LIVE_MAX_TOTAL_NOTIONAL_USD", 50.0)
@@ -253,7 +256,14 @@ class ExecutionOrchestrator:
             log.debug("Unable to fetch live balances: %s", exc)
             return None
 
-        items = accounts.get("accounts") or accounts.get("data") or accounts
+        # Coinbase returns an envelope ({"accounts": [...]}) but a bare list is also
+        # a plausible shape. Calling .get() unconditionally made the `or accounts`
+        # fallback unreachable for the bare-list case it was written to handle --
+        # a list raised AttributeError instead.
+        if isinstance(accounts, dict):
+            items = accounts.get("accounts") or accounts.get("data") or []
+        else:
+            items = accounts
         if not isinstance(items, list):
             return None
         for acct in items:

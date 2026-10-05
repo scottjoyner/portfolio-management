@@ -6,7 +6,10 @@ from unittest import mock
 
 import pytest
 
-import backtester as bt
+# The module moved from the repo root to trading_system/ in cd1c3d56; this
+# test kept the old top-level name, so its collection error silently killed
+# the whole optimizer directory (577 tests) rather than just this file.
+import trading_system.backtester as bt
 
 
 def _make_response(data, raise_status=None):
@@ -37,7 +40,7 @@ def test_download_historical_data_success():
         [1, 10, 12, 9, 11, 100],
         [2, 11, 13, 10, 12, 110],
     ]}
-    with mock.patch("backtester.requests.get", return_value=_make_response(payload)):
+    with mock.patch("trading_system.backtester.requests.get", return_value=_make_response(payload)):
         df = bt.CoinbaseBacktester().download_historical_data(
             "BTC-USD", "2024-01-01", "2024-01-02", "hourly"
         )
@@ -47,7 +50,7 @@ def test_download_historical_data_success():
 
 
 def test_download_historical_data_error():
-    with mock.patch("backtester.requests.get", side_effect=RuntimeError("net")):
+    with mock.patch("trading_system.backtester.requests.get", side_effect=RuntimeError("net")):
         with pytest.raises(Exception):
             bt.CoinbaseBacktester().download_historical_data("BTC-USD", "a", "b")
 
@@ -112,23 +115,23 @@ def test_export_results(tmp_path):
 
 def test_verify_coinbase_auth_success():
     res = mock.Mock(returncode=0, stderr="")
-    with mock.patch("backtester.subprocess.run", return_value=res):
+    with mock.patch("trading_system.backtester.subprocess.run", return_value=res):
         assert bt.verify_coinbase_auth() is True
 
 
 def test_verify_coinbase_auth_fail():
     res = mock.Mock(returncode=1, stderr="bad")
-    with mock.patch("backtester.subprocess.run", return_value=res):
+    with mock.patch("trading_system.backtester.subprocess.run", return_value=res):
         assert bt.verify_coinbase_auth() is False
 
 
 def test_verify_coinbase_auth_exception():
-    with mock.patch("backtester.subprocess.run", side_effect=OSError("x")):
+    with mock.patch("trading_system.backtester.subprocess.run", side_effect=OSError("x")):
         assert bt.verify_coinbase_auth() is False
 
 
 def test_main_auth_failure(capsys):
-    with mock.patch("backtester.verify_coinbase_auth", return_value=False):
+    with mock.patch("trading_system.backtester.verify_coinbase_auth", return_value=False):
         assert bt.main() is None
     out = capsys.readouterr().out
     assert "authentication failed" in out.lower()
@@ -139,8 +142,8 @@ def test_main_success():
     fake_instance.download_historical_data.return_value = mock.Mock()
     fake_instance.replay_trades.return_value = {"total_return": 0.1}
     fake_cls = mock.Mock(return_value=fake_instance)
-    with mock.patch("backtester.verify_coinbase_auth", return_value=True), \
-         mock.patch("backtester.CoinbaseBacktester", fake_cls):
+    with mock.patch("trading_system.backtester.verify_coinbase_auth", return_value=True), \
+         mock.patch("trading_system.backtester.CoinbaseBacktester", fake_cls):
         assert bt.main() is None
     fake_instance.download_historical_data.assert_called_once()
     fake_instance.replay_trades.assert_called_once()

@@ -63,6 +63,8 @@ except ImportError:
 # Notification (optional)
 from notification import TradeNotifier
 
+import trading_paths
+
 # Every _state_path("...") literal below was resolved against the process working
 # directory, so a test run from the repository root read and wrote the
 # operator's live state -- including the pending_approvals.json that gates real
@@ -72,10 +74,11 @@ from notification import TradeNotifier
 # Returns str rather than Path so the existing call sites (os.open, os.replace,
 # os.remove, `type: str = ...` defaults) keep their current types.
 def _state_path(*parts: str) -> str:
-    import os as _os
-    override = _os.environ.get("TRADING_DATA_DIR")
-    base = _os.path.join(override, "") if override else "data"
-    return _os.path.join(base, *parts)
+    # Delegates to trading_paths so there is one resolver, not four. This was the
+    # third independent copy of the TRADING_DATA_DIR rule (after run_trader_v4
+    # and the inline one in the trader). Returned as str because callers treat it
+    # as a string argument, and changing the type here broke os.path.join users.
+    return str(trading_paths.state_path(*parts))
 
 # Event market connectors (optional)
 try:
@@ -978,7 +981,9 @@ class PortfolioOptimizer:
             self._forced_max_deployable_usd = 0.0
         self.dry_run = dry_run
         self.require_approval = require_approval
-        self.pending_file = pending_file
+        # Resolved at the boundary so any caller's path is redirectable, not just
+        # the ones that happen to route through _state_path().
+        self.pending_file = str(trading_paths.resolve(pending_file))
 
         # State
         self.state: Optional[PortfolioState] = None

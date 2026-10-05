@@ -26,6 +26,15 @@ def _mktrader(**kw):
     pt.get.return_value = None
     pt.kelly.return_value = 0.0
     pt.strategy_aggregate.return_value = {"trades": 0, "win_rate": 0.0}
+    # Every numeric accessor has to return a real number. An unstubbed MagicMock
+    # attribute is not silently ignored -- comparing one to a float raises
+    # TypeError, which is how the strategy-PnL concentration gate at
+    # run_trader_v4.py:4338 took down 9 unrelated execute tests.
+    pt.strategy_total_pnl.return_value = 0.0
+    pt.strategy_regime_pnl.return_value = 0.0
+    pt.strategy_regime_trades.return_value = 0
+    pt.strategy_backtest_win_rate.return_value = 0.0
+    pt.asset_expectancy.return_value = 0.0
     t._perf_tracker = pt
     return t
 
@@ -191,12 +200,29 @@ def test_execute_impl_atr_zero_enough_streaming():
     assert "BTC-USD" in t.paper_positions
 
 
-def test_execute_impl_atr_zero_no_streaming():
+def test_execute_impl_atr_zero_known_regime_trades():
+    """A zero ATR alongside a known regime must NOT block.
+
+    The gate at run_trader_v4.py:4281 only skips when atr<=0 *and* the regime is
+    unknown or empty. Sub-cent alts report a numerically-zero ATR while regime
+    detection has already succeeded, and blocking on ATR alone was silently
+    parking every one of them.
+    """
     t = _mktrader()
     t._last_price = {"BTC-USD": 100.0}
     t.streaming = MagicMock()
     t.streaming.try_get.return_value = None
     t._paper_execute_impl("BTC-USD", 100.0, [_opp("BUY", regime="strong_uptrend", atr=0.0)])
+    assert "BTC-USD" in t.paper_positions
+
+
+def test_execute_impl_atr_zero_unknown_regime_skips():
+    """Zero ATR with no usable regime is genuinely insufficient data, so skip."""
+    t = _mktrader()
+    t._last_price = {"BTC-USD": 100.0}
+    t.streaming = MagicMock()
+    t.streaming.try_get.return_value = None
+    t._paper_execute_impl("BTC-USD", 100.0, [_opp("BUY", regime="", atr=0.0)])
     assert "BTC-USD" not in t.paper_positions
 
 
@@ -215,11 +241,27 @@ def test_execute_impl_disabled_strategy():
     assert "BTC-USD" not in t.paper_positions
 
 
-def test_execute_impl_global_disabled_strategy():
+def test_execute_impl_global_disabled_but_strong_product_trades():
+    """A globally disabled strategy still trades when the product itself is strong.
+
+    The veto at run_trader_v4.py:4316 only fires when the opportunity's win_rate is
+    below paper_min_win_rate. A blunt veto was parking edge-positive pairs (chaikin_mf
+    was 22% in aggregate but 100% backtest win on MET-USD), so product-specific
+    evidence now wins over the aggregate.
+    """
     t = _mktrader()
     t._last_price = {"BTC-USD": 100.0}
     t._perf_tracker.is_strategy_disabled.return_value = True
-    t._paper_execute_impl("BTC-USD", 100.0, [_opp("BUY")])
+    t._paper_execute_impl("BTC-USD", 100.0, [_opp("BUY", wr=0.65)])
+    assert "BTC-USD" in t.paper_positions
+
+
+def test_execute_impl_global_disabled_weak_product_skips():
+    """The veto does fire when the product evidence is also weak."""
+    t = _mktrader()
+    t._last_price = {"BTC-USD": 100.0}
+    t._perf_tracker.is_strategy_disabled.return_value = True
+    t._paper_execute_impl("BTC-USD", 100.0, [_opp("BUY", wr=0.10)])
     assert "BTC-USD" not in t.paper_positions
 
 
@@ -347,11 +389,23 @@ def test_trade_events_persisted_to_feed_cache():
 
     root = tempfile.mkdtemp(prefix="trade_event_test_")
     os.environ["NAS_FEED_ROOT"] = root
-    import data.feed_cache as fc
-    # Point feed_cache at the temp root for this test without disturbing imports.
+    # Redirect the module instance the trader actually uses. Two things matter here:
+    #   - A bare `import data.feed_cache` is ambiguous in this repo: the root `data`
+    #     package and coinbase/src/data.py compete for the name, and when
+    #     coinbase/src wins, its own relative import raises. That shadowing is what
+    #     made _record_trade_event silently stop persisting trade events.
+    #   - Loading feed_cache a second time by file path gives a *different* module
+    #     object than the one _feed_cache_writers() cached, so setting _RESOLVED_ROOT
+    #     on that copy would leave production pointed at the real feed cache.
+    # Reach the live instance through the writer's own globals instead.
+    from coinbase.src.run_trader_v4 import _feed_cache_writers
+    _save_records, _ = _feed_cache_writers()
+    import sys as _sys
+    fc = _sys.modules[_save_records.__module__]
+    _prev_root = fc._RESOLVED_ROOT
     fc._RESOLVED_ROOT = root
-    import data.feed_cache as _fc
-    _fc._RESOLVED_ROOT = root
+    import atexit as _atexit
+    _atexit.register(lambda: setattr(fc, "_RESOLVED_ROOT", _prev_root))
 
     t = _mktrader()
     t._last_price = {"BTC-USD": 100.0}
@@ -365,7 +419,10 @@ def test_trade_events_persisted_to_feed_cache():
     t._paper_execute_impl("BTC-USD", 100.0, [_opp("SELL", conf=0.3)])
     assert "BTC-USD" not in t.paper_positions
 
-    from data.feed_cache import load_records
+    # Read back through the same live module instance the writer used, for the
+    # same reason: a fresh `from data.feed_cache import load_records` would hit the
+    # shadowing again and resolve against a different root.
+    load_records = fc.load_records
     events = load_records("trade_events", "BTC-USD")
     kinds = [e["kind"] for e in events]
     assert "entry" in kinds

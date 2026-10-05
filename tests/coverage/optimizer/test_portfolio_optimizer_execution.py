@@ -18,6 +18,7 @@ import pytest
 
 import portfolio_optimizer as P
 from tests.coverage.optimizer.conftest import holding, make_state, _fresh_approval
+import trading_paths
 
 
 def mkopp(opp_type, side, currency, size_usd=1000.0, **kw):
@@ -58,7 +59,7 @@ def test_write_signal_cache(opt):
               meta={"final_confidence": 0.7, "opportunity_score": 0.6}),
     ]
     opt._write_signal_cache(ops)
-    data = json.load(open("data/.unified_signal_cache.json"))
+    data = json.load(open(trading_paths.resolve("data/.unified_signal_cache.json")))
     assert data["buy_signals"] == 1 and data["sell_signals"] == 1
     assert data["quality_score"] > 0
 

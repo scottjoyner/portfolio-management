@@ -33,7 +33,7 @@ from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("trader_v4")
 
@@ -42,6 +42,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from strategy_engine import batch_signals_rust as _batch_signals_rust
 from strategy_engine import batch_backtest_rust, _HAS_RUST
 from strategy_engine import _RUST_STRATEGIES
+from paper_ledger import (
+    PaperLedgerError as ledger_PaperLedgerError,
+    TOLERANCE as ledger_TOLERANCE,
+    describe as ledger_describe,
+    formula_components as ledger_formula_components,
+)
+import trading_paths
 
 from trading_system.core.signal_aggregator import SignalAggregator, UnifiedSignal
 from trading_system.core.performance_model import LatencyProfile, expected_fill_delay_ms
@@ -195,21 +202,29 @@ class CoreHolding:
         self.trades += 1
         self.last_buy_ts = time.time()
 
-    def trim_sell(self, qty: float, price: float, fee: float = 0.0) -> float:
-        """Reduce the core position by qty at price (realizing proportional cost).
+    def trim_sell(self, qty: float, price: float, fee: float = 0.0) -> Tuple[float, float]:
+        """Reduce the core position by qty at price, realizing proportional cost.
 
         Keeps the average cost basis unchanged (cost reduced proportionally).
-        Returns the realized notional (qty * price - fee) credited.
+        Returns ``(credited, realized_pnl)``: the cash to credit (qty * price -
+        fee) and the profit or loss actually realized (credited minus the
+        proportional cost released).
+
+        ``realized_pnl`` is returned rather than booked here because only the
+        caller knows the mode: in paper it belongs in the cash ledger, in live it
+        is the broker's number, not ours.
         """
         if qty <= 0 or self.total_qty <= 0:
-            return 0.0
+            return 0.0, 0.0
         qty = min(qty, self.total_qty)
         proportion = qty / self.total_qty if self.total_qty > 0 else 1.0
-        self.total_cost *= (1.0 - proportion)
+        cost_released = self.total_cost * proportion
+        self.total_cost -= cost_released
         self.total_qty -= qty
         self.qty = self.total_qty
         self.trades += 1
-        return qty * price - fee
+        credited = qty * price - fee
+        return credited, credited - cost_released
 
 
 @dataclass
@@ -251,11 +266,52 @@ class PulseRecord:
 #
 # Resolving through one function means a run can be pointed somewhere else, and
 # means the test suite can prove it is isolated instead of assuming it.
+def _feed_cache_writers():
+    """Return (save_records, save_records_durable) from data/feed_cache.py.
+
+    A plain ``from data.feed_cache import ...`` is ambiguous here: the repo has
+    both a ``data`` package at the root and a ``coinbase/src/data.py`` module. When
+    coinbase/src is ahead of the repo root on sys.path -- which is what happens
+    under importlib-based test collection and when the trader is launched with
+    coinbase/src on the path -- ``data`` resolves to coinbase/src/data.py, whose own
+    ``from .cb_client import CBClient`` then fails because a top-level module has no
+    parent package. That ImportError was swallowed, so durable trade-event records
+    (scale-ins included) were silently never written.
+
+    Loading the module from its explicit file path removes the ambiguity instead of
+    relying on sys.path ordering.
+    """
+    cached = globals().get("_FEED_CACHE_WRITERS")
+    if cached is not None:
+        return cached
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[2] / "data" / "feed_cache.py"
+    spec = importlib.util.spec_from_file_location("_feed_cache_direct", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load feed_cache from {path}")
+    module = importlib.util.module_from_spec(spec)
+    # Register under this name so the module is introspectable by name. Assign
+    # rather than setdefault: if a previous caller already registered a module here,
+    # setdefault would keep the stale one and sys.modules would no longer hold the
+    # module whose functions we return -- so anything reaching module state through
+    # sys.modules would be configuring a different instance than production uses.
+    sys.modules["_feed_cache_direct"] = module
+    spec.loader.exec_module(module)
+    writers = (module.save_records, module.save_records_durable)
+    globals()["_FEED_CACHE_WRITERS"] = writers
+    return writers
+
+
 def _data_dir() -> Path:
-    override = os.environ.get("TRADING_DATA_DIR")
-    if override:
-        return Path(override)
-    return Path("data")
+    """Delegate to trading_paths so there is exactly one resolver.
+
+    Kept as a module function because tests import it to assert the redirect
+    seam. Previously this was a second, independent implementation of the same
+    rule, which is how the rest of the tree ended up with literals no test could
+    redirect.
+    """
+    return trading_paths.data_dir()
 
 
 def _state_path(*parts: str) -> Path:
@@ -264,7 +320,8 @@ def _state_path(*parts: str) -> Path:
     Named _state_path rather than data_path to stay clear of the local
     `data_dir` variable used in the integrity check below.
     """
-    return _data_dir().joinpath(*parts)
+    return trading_paths.state_path(*parts)
+
 
 class EventTraderV4:
     """Event-driven trading daemon — all 25 strategies in Rust.
@@ -633,7 +690,7 @@ class EventTraderV4:
         self._killed_strats: Dict[str, Dict[str, float]] = {}
         try:
             import os as _os
-            _kp = "data/bot_killed_strategies.json"
+            _kp = str(_state_path("bot_killed_strategies.json"))
             if _os.path.exists(_kp):
                 with open(_kp) as _f:
                     _loaded = json.load(_f)
@@ -643,7 +700,9 @@ class EventTraderV4:
             self._killed_strats = {}
         self._last_macro_signal: Optional[CompositeMacroSignal] = None
         try:
-            self._perf_tracker = LivePerformanceTracker(path="data/live_performance.json")
+            self._perf_tracker = LivePerformanceTracker(
+                path=str(_state_path("live_performance.json"))
+            )
         except Exception as e:
             log.warning("LivePerformanceTracker init failed: %s", e)
             self._perf_tracker = None
@@ -702,6 +761,11 @@ class EventTraderV4:
         self.paper_positions: Dict[str, PaperPosition] = {}
         self.paper_trades: List[Dict[str, Any]] = []
         self.paper_realized_pnl: float = 0.0
+        # Realized P&L from the core (DCA/rebalance) bucket, tracked separately
+        # from paper_realized_pnl on purpose: that accumulator is cross-checked
+        # against the paper_trades ledger, which does not record core trims.
+        # The cash invariant needs both, plus core_holdings[].total_cost.
+        self.paper_core_realized_pnl: float = 0.0
         self.paper_fees_paid: float = 0.0
         self.paper_wins: int = 0
         self.paper_losses: int = 0
@@ -876,7 +940,7 @@ class EventTraderV4:
         try:
             import os as _os
             import tempfile as _tf
-            _kp = "data/bot_killed_strategies.json"
+            _kp = str(_state_path("bot_killed_strategies.json"))
             _dir = _os.path.dirname(_kp) or "."
             _fd, _tmp = _tf.mkstemp(dir=_dir, suffix=".tmp")
             try:
@@ -914,7 +978,7 @@ class EventTraderV4:
         Returns False on any read error (fail-open: never blocks trading)."""
         try:
             import os
-            p = "data/unified_expectancy.json"
+            p = str(_state_path("unified_expectancy.json"))
             if not os.path.exists(p):
                 return False
             mtime = os.path.getmtime(p)
@@ -1022,7 +1086,7 @@ class EventTraderV4:
             
             self._strategy_ranker = StrategyRanking(
                 StrategyRankingFilter(),
-                persist_path="data/strategy_ranking.json",
+                persist_path=str(_state_path("strategy_ranking.json")),
             )
             self._strategy_ranker.load()
             
@@ -1082,7 +1146,7 @@ class EventTraderV4:
             self._bracket_mgr = BracketManager(self._exec_engine)
             self._strategy_ranker = StrategyRanking(
                 StrategyRankingFilter(),
-                persist_path="data/strategy_ranking.json",
+                persist_path=str(_state_path("strategy_ranking.json")),
             )
             self._strategy_ranker.load()
             log.info("Approval mode: execution engine ready (approval gate required)")
@@ -1130,43 +1194,31 @@ class EventTraderV4:
                     validate_issues.append("Paper state file missing 'paper_cash' field — may be corrupt")
                 else:
                     # ── Ledger integrity assertion ──────────────────────────
-                    # Under the corrected accounting (fixed leverage 'loan'
-                    # double-count bug), the cash ledger MUST satisfy:
-                    #   paper_cash == start + realized_pnl
+                    # The invariant itself lives in paper_ledger.formula_components,
+                    # shared with scripts/reconcile_trader_ledger.py. It used to be
+                    # duplicated here, and this copy omitted the core (DCA) bucket:
+                    # core buys debit paper_cash in full and land in
+                    # core_holdings[].total_cost, so every run that had DCA'd
+                    # reported a shortfall equal to the whole core bucket and
+                    # hard-blocked the trader. See that module for the derivation.
+                    #
+                    #   paper_cash == start + realized_pnl + core_realized_pnl
                     #                   - Σ(open_margin)
                     #                   - Σ(open fees_paid + cum_funding)
-                    # where open_margin = entry_notional / leverage per open
-                    # position. The fees_paid + cum_funding terms are required
-                    # because entry debits (margin + fee) and the position carries
-                    # its paid fees / accrued funding — omitting them makes the
-                    # check wrong by exactly the open-position fee (~$1-2) during
-                    # live trading. If this fails, the book is corrupt and we
-                    # must NOT trade on it. Fail hard so the operator fixes it.
+                    #                   - Σ(core_holdings[].total_cost)
+                    #
+                    # If this fails, the book does not balance and we must NOT
+                    # trade on it. Fail hard so the operator fixes it.
                     try:
-                        _start = float(state.get("paper_starting_capital", 0.0) or 0.0)
-                        _rpnl = float(state.get("paper_realized_pnl", 0.0) or 0.0)
-                        _cash = float(state.get("paper_cash", 0.0) or 0.0)
-                        _open_margin = 0.0
-                        _open_fees = 0.0
-                        for _p in (state.get("paper_positions") or []):
-                            if not isinstance(_p, dict):
-                                continue
-                            _notional = float(_p.get("entry_notional") or 0.0)
-                            if _notional <= 0:
-                                _qty = float(_p.get("qty") or 0.0)
-                                _ep = float(_p.get("entry_price") or 0.0)
-                                _notional = _qty * _ep
-                            _lev = max(float(_p.get("leverage") or 1.0), 1.0)
-                            _open_margin += _notional / _lev
-                            _open_fees += float(_p.get("fees_paid") or 0.0)
-                            _open_fees += float(_p.get("cum_funding") or 0.0)
-                        _expected = _start + _rpnl - _open_margin - _open_fees
-                        if abs(_cash - _expected) > 1.0:
+                        _components = ledger_formula_components(state)
+                    except ledger_PaperLedgerError as _e:
+                        validate_issues.append(f"Paper ledger integrity check error: {_e}")
+                    else:
+                        _diff = _components["difference"]
+                        if abs(_diff) > ledger_TOLERANCE:
+                            _why = ledger_describe(_components)
                             validate_issues.append(
-                                f"Paper ledger INTEGRITY FAIL: cash={_cash:.2f} "
-                                f"but expected={_expected:.2f} (start={_start:.2f} "
-                                f"+realized={_rpnl:.2f} -open_margin={_open_margin:.2f} "
-                                f"-open_fees={_open_fees:.2f}). "
+                                f"Paper ledger INTEGRITY FAIL: {_why}. "
                                 f"State file is corrupt — fix before trading."
                             )
                             # Drop a sentinel so the autostart watchdog will NOT
@@ -1175,14 +1227,11 @@ class EventTraderV4:
                                 _state_path("trader_state_corrupt").write_text(
                                     f"{time.strftime('%Y-%m-%d %H:%M:%S')} mode={self.mode} "
                                     f"path={self._paper_state_path.name}\n"
-                                    f"cash ledger integrity fail: cash={_cash:.2f} "
-                                    f"expected={_expected:.2f}\n"
+                                    f"cash ledger integrity fail: {_why}\n"
                                 )
                                 log.error("Wrote corruption sentinel (cash ledger).")
                             except OSError as _se:
                                 log.warning("Could not write sentinel: %s", _se)
-                    except (TypeError, ValueError) as _e:
-                        validate_issues.append(f"Paper ledger integrity check error: {_e}")
             except (json.JSONDecodeError, OSError) as e:
                 validate_issues.append(f"Paper state file unreadable: {e}")
         data_dir = _data_dir()
@@ -1990,6 +2039,7 @@ class EventTraderV4:
             ],
             "paper_trades": self.paper_trades[-200:],
             "paper_realized_pnl": self.paper_realized_pnl,
+            "paper_core_realized_pnl": self.paper_core_realized_pnl,
             "paper_fees_paid": self.paper_fees_paid,
             "paper_wins": self.paper_wins,
             "paper_losses": self.paper_losses,
@@ -2259,6 +2309,11 @@ class EventTraderV4:
             }
             self.paper_trades = [item for item in state.get("paper_trades", []) if isinstance(item, dict)]
             self.paper_realized_pnl = float(state.get("paper_realized_pnl", self.paper_realized_pnl))
+            # Absent in states written before core trims were booked; 0.0 is the
+            # correct default because no trim P&L had been recorded yet.
+            self.paper_core_realized_pnl = float(
+                state.get("paper_core_realized_pnl", self.paper_core_realized_pnl) or 0.0
+            )
             # CROSS-CHECK the two realized-P&L views. paper_realized_pnl (the
             # accumulator, incremented on every real exit) is the source of
             # truth because it is what paper_cash is actually derived from. The
@@ -2950,8 +3005,9 @@ class EventTraderV4:
             fee = sell_notional * (self._effective_fee_bps() / 10_000.0)
             if self._paper_equity() <= 0:
                 return
-            realized = holding.trim_sell(qty, price, fee)
+            realized, core_pnl = holding.trim_sell(qty, price, fee)
             self.paper_cash += realized
+            self.paper_core_realized_pnl += core_pnl
             self.paper_fees_paid += fee
             self._update_trailing_volume(sell_notional)
         else:
@@ -2976,6 +3032,8 @@ class EventTraderV4:
                 fill_qty = float(result.get("filled_size", qty))
                 fill_price = float(result.get("avg_price", price))
                 fee = float(result.get("fees", 0.0))
+                # Live: the realized P&L is the broker's to report, so only the
+                # position is reduced here. The paper branch above books it.
                 holding.trim_sell(fill_qty, fill_price, fee)
             except Exception as e:
                 log.error("Core trim %s live execution error: %s", pid, e)
@@ -3092,7 +3150,7 @@ class EventTraderV4:
         events such as scale-ins cannot disappear silently.
         """
         try:
-            from data.feed_cache import save_records, save_records_durable
+            save_records, save_records_durable = _feed_cache_writers()
             rec = {"ts": time.time(), "kind": kind, "product_id": product_id, "price": price}
             rec.update(fields)
             if durable:
@@ -3117,7 +3175,12 @@ class EventTraderV4:
         # Hard cap (paper_max_assets) for NON-winners; a higher ceiling
         # (paper_max_assets_winner) that ONLY proven winners may reach, so a
         # book that is winning everywhere isn't artificially capped at 8.
-        _held_assets = {p.get("product_id") for p in self.paper_positions}
+        # paper_positions is a dict keyed by product_id, so iterating it yields
+        # string keys. p.get("product_id") therefore raised AttributeError as soon
+        # as the book was non-empty -- which means this concentration guard could
+        # never run, and the AttributeError propagated out of _paper_open_position
+        # for every entry attempt once any position existed.
+        _held_assets = set(self.paper_positions.keys())
         if len(_held_assets) >= self.paper_max_assets and product_id not in _held_assets:
             _is_winner = False
             try:
@@ -5250,8 +5313,15 @@ class EventTraderV4:
     def _macro_tf_scan(self) -> None:
         """Fetch multi-timeframe macro analysis and store for scoring."""
         try:
+            analyzer = self._macro_rf_analyzer
+            if analyzer is None:
+                # MacroTrendAnalyzer failed to construct. Say so at warning level:
+                # silently returning here previously masked a real outage behind a
+                # bare except, and macro bias is an input to position sizing.
+                log.warning("Macro TF scan skipped: MacroTrendAnalyzer unavailable")
+                return
             btc_price = self._last_price.get("BTC-USD", 0.0)
-            signal = self._macro_tf_analyzer.analyze(btc_price=btc_price)
+            signal = analyzer.analyze(btc_price=btc_price)
             self._last_macro_signal = signal
             self.health_status["macro_tf"] = {
                 "bias": signal.bias,

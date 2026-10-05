@@ -136,7 +136,7 @@ def test_save_paper_state_concurrent_no_corruption():
     assert "paper_cash" in data
 
 
-def test_save_core_holdings_atomic():
+def test_save_core_holdings_atomic(monkeypatch):
     tmp = Path(tempfile.mkdtemp())
     t = object.__new__(EventTraderV4)
     t._core_holdings = {}
@@ -155,23 +155,15 @@ def test_save_core_holdings_atomic():
         rebalance_action = "hold"
 
     t._core_holdings["BTC-USD"] = FakeHolding()
+    # Redirect via the supported override rather than swapping the module's Path
+    # class. _data_dir() now resolves through TRADING_DATA_DIR, so patching mod.Path
+    # no longer intercepts the write and the file landed in the fixture's temp dir
+    # instead of this test's.
+    monkeypatch.setenv("TRADING_DATA_DIR", str(tmp))
     path = tmp / "core_holdings.json"
 
-    import coinbase.src.run_trader_v4 as mod
-    orig_path_class = Path
-
-    class _P(Path):
-        def __new__(cls, *a, **k):
-            p = orig_path_class(*a, **k)
-            if p.name == "core_holdings.json":
-                return orig_path_class(str(path))
-            return p
-
-    mod.Path = _P
-    try:
-        t._save_core_holdings_state()
-    finally:
-        mod.Path = orig_path_class
+    t._save_core_holdings_state()
+    assert path.exists(), f"core_holdings.json not written under {tmp}"
     data = json.loads(path.read_text())
     assert isinstance(data, list) and data[0]["product_id"] == "BTC-USD"
 

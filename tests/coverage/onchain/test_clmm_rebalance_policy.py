@@ -7,7 +7,15 @@ from onchain.dex.clmm.schemas import LPRebalanceDecision
 
 class TestRebalancePolicy(unittest.TestCase):
     def test_should_rebalance(self):
-        d = should_rebalance_position(Decimal("3"), Decimal("2"), Decimal("4"), Decimal("100"), Decimal("10"), Decimal("20"))
+        """A distance breach with edge to spare does rebalance.
+
+        This used price=3 in a 2..4 range -- dead centre, 3333bps from either
+        boundary, so it could never breach a 100bps threshold and the assertion
+        was unreachable for the fixture that fed it. Price it just inside the
+        lower boundary (99bps away) to actually exercise the breach.
+        """
+        d = should_rebalance_position(Decimal("2.02"), Decimal("2"), Decimal("4"),
+                                      Decimal("100"), Decimal("10"), Decimal("20"))
         self.assertIsInstance(d, LPRebalanceDecision)
         self.assertTrue(d.should_rebalance)
         self.assertEqual(d.reason, "distance breach")

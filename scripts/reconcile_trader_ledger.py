@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
 import sys
 import tempfile
@@ -20,70 +19,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-class ReconciliationError(ValueError):
-    """The state cannot be safely reconciled or verified."""
+import trading_paths  # noqa: E402
+from paper_ledger import (  # noqa: E402
+    PaperLedgerError,
+    formula_components,
+)
 
-
-def _number(value: Any, field: str, *, positive: bool = False) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ReconciliationError(f"{field} must be a JSON number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ReconciliationError(f"{field} must be finite")
-    if positive and number <= 0:
-        raise ReconciliationError(f"{field} must be greater than zero")
-    return number
-
-
-def formula_components(state: Any) -> dict[str, float]:
-    """Validate *state* and return every component of the cash invariant."""
-    if not isinstance(state, dict):
-        raise ReconciliationError("state root must be an object")
-    starting = _number(state.get("paper_starting_capital"), "paper_starting_capital")
-    cash = _number(state.get("paper_cash"), "paper_cash")
-    realized = _number(state.get("paper_realized_pnl"), "paper_realized_pnl")
-    positions = state.get("paper_positions")
-    if not isinstance(positions, list):
-        raise ReconciliationError("paper_positions must be an array")
-
-    open_margin = 0.0
-    open_entry_fees = 0.0
-    open_funding = 0.0
-    for index, position in enumerate(positions):
-        prefix = f"paper_positions[{index}]"
-        if not isinstance(position, dict):
-            raise ReconciliationError(f"{prefix} must be an object")
-        product = position.get("product_id")
-        if not isinstance(product, str) or not product.strip():
-            raise ReconciliationError(f"{prefix}.product_id must be a non-empty string")
-        notional = _number(position.get("entry_notional"), f"{prefix}.entry_notional")
-        if notional < 0:
-            raise ReconciliationError(f"{prefix}.entry_notional must not be negative")
-        leverage = _number(position.get("leverage"), f"{prefix}.leverage", positive=True)
-        fees = _number(position.get("fees_paid"), f"{prefix}.fees_paid")
-        funding = _number(position.get("cum_funding"), f"{prefix}.cum_funding")
-        if fees < 0:
-            raise ReconciliationError(f"{prefix}.fees_paid must not be negative")
-        open_margin += notional / leverage
-        open_entry_fees += fees
-        open_funding += funding
-
-    expected = starting + realized - open_margin - open_entry_fees - open_funding
-    components = {
-        "paper_starting_capital": starting,
-        "paper_realized_pnl": realized,
-        "open_margin": open_margin,
-        "open_entry_fees": open_entry_fees,
-        "open_funding": open_funding,
-        "expected_cash": expected,
-        "input_cash": cash,
-        "difference": cash - expected,
-    }
-    for name, value in components.items():
-        if not math.isfinite(value):
-            raise ReconciliationError(f"computed {name} is non-finite")
-    return components
+# The recovery tool's historical public name for this failure.
+ReconciliationError = PaperLedgerError
 
 
 def _sha256(raw: bytes) -> str:
@@ -214,8 +159,10 @@ def reconcile(state_path: Path, sentinel_path: Path, *, write: bool = False) -> 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--state", type=Path, default=Path("data/paper_trader_v4_state.json"))
-    parser.add_argument("--sentinel", type=Path, default=Path("data/trader_state_corrupt"))
+    parser.add_argument("--state", type=Path,
+                        default=trading_paths.resolve("data/paper_trader_v4_state.json"))
+    parser.add_argument("--sentinel", type=Path,
+                        default=trading_paths.resolve("data/trader_state_corrupt"))
     parser.add_argument("--write", action="store_true", help="perform the audited repair (default: dry-run)")
     return parser
 

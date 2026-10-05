@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple
+import trading_paths
 
 log = logging.getLogger("live_perf")
 
@@ -142,7 +143,9 @@ class LivePerformanceTracker:
     """
 
     def __init__(self, path: str = "data/live_performance.json"):
-        self._path = Path(path)
+        # Resolved so TRADING_DATA_DIR redirects it; a caller-supplied
+        # non-data path is returned unchanged by resolve().
+        self._path = trading_paths.resolve(path)
         self._lock = Lock()
         self._records: Dict[str, StrategyProductRecord] = {}
         self._product_regime_cache: Dict[str, str] = {}
