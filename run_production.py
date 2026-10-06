@@ -463,6 +463,57 @@ def write_supervisor_state(children: list, supervisor_pid) -> None:
         pass
 
 
+def _is_supervisor_argv(raw: bytes) -> bool:
+    """True when a /proc cmdline is a run_production.py supervisor.
+
+    Matched on an *argument*, never a substring. A shell wrapper such as
+    ``/bin/bash -c "cd /tmp && python3 run_production.py status"`` contains the
+    name inside one long argument, and a substring test reported the invoking
+    shell as a supervisor -- which then appeared in the "running elsewhere" list
+    as if the worktree itself were a deployment.
+
+    Split out from :func:`_supervisors_elsewhere` so it is testable without
+    manufacturing processes: an inline re-implementation in a test would agree
+    with whatever the code does and prove nothing.
+    """
+    args = [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+    return any(os.path.basename(a) == "run_production.py" for a in args)
+
+
+def _supervisors_elsewhere() -> list[tuple[int, str]]:
+    """Other live run_production.py supervisors and the tree each one serves.
+
+    Read from /proc rather than a pidfile so it works without cooperation from the
+    process being inspected. Used only to make a confusing "everything STOPPED"
+    self-explanatory; never to decide health.
+    """
+    me = os.getpid()
+    found: list[tuple[int, str]] = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == me:
+            continue
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            continue
+        if not _is_supervisor_argv(raw):
+            continue
+        # The cwd is the deployment root: systemd sets WorkingDirectory to it.
+        try:
+            root = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            root = "unknown"
+        found.append((pid, root))
+    return found
+
+
 def status() -> int:
     """Print supervisor state and return a shell exit code.
 
@@ -481,10 +532,30 @@ def status() -> int:
         except (OSError, ValueError):
             sup_pid = None
 
+    # Always say which tree this describes. `status` derives everything from
+    # pidfiles and logs under ROOT, and ROOT defaults to the script's own
+    # directory -- so running it from a git worktree, a copy, or an unpacked
+    # tarball answers a question about *that* directory while looking exactly like
+    # an answer about the deployment.
+    print(f"Tree: {ROOT}")
+
     if sup_pid is not None:
         print(f"Supervisor: RUNNING (PID {sup_pid})")
     else:
         print("Supervisor: STOPPED")
+        elsewhere = _supervisors_elsewhere()
+        if elsewhere:
+            # This is the failure mode worth naming out loud: a secondary checkout
+            # reports every child STOPPED, which reads identically to a dead
+            # deployment. Someone acted on exactly that reading during development
+            # of this change.
+            roots = ", ".join(sorted({r for _, r in elsewhere}))
+            print()
+            print(f"  NOTE: this tree has no supervisor, but one is running elsewhere:")
+            for pid, root in sorted(elsewhere):
+                print(f"    pid {pid} from {root}")
+            print(f"  So the lines above describe {ROOT}, not the deployment at {roots}.")
+            print("  Set PORTFOLIO_ROOT to ask about a specific tree.")
 
     children = [_child_state(name) for name in PROCESSES]
     for child in children:
