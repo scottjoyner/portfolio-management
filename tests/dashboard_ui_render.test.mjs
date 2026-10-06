@@ -27,7 +27,7 @@ const source = readFileSync('trading_system/ui/dashboard.js', 'utf8');
  * helpers by the panel parameters, so the outer one is the thing under test. */
 const js = `${source}
 ;globalThis.__exports = {
-  panels, request, setCount, token, money, num, pct, ago, ageFrom, esc,
+  panels, panel, request, setCount, token, money, num, pct, ago, ageFrom, esc,
   signedClass, API, state, refreshHeader, refreshPanel, GRANULARITY_LABELS,
 };`;
 
@@ -629,6 +629,95 @@ test('hostile strings are escaped rather than injected', () => {
   }
 });
 
+test('panel options are all forwarded onto the spec', () => {
+  // The panel() signature went stale once: `slow` and `accept` were added at the
+  // call sites while the destructuring list kept the old shape, so both were
+  // dropped without error -- the watchlist lost its loading note and /ready's 503
+  // went back to being rendered as a failure. Destructuring a missing key is not
+  // an error, so only an explicit assertion catches it.
+  const { api } = loadDashboard();
+  const before = api.panels.length;
+  api.panel('opt-probe', {
+    title: 'probe',
+    endpoint: '/probe',
+    render: () => {},
+    poll: false,
+    auth: true,
+    method: 'POST',
+    body: { a: 1 },
+    timeout: 1234,
+    slow: true,
+    accept: [503],
+  });
+  assert.equal(api.panels.length, before + 1);
+  const spec = api.panels[api.panels.length - 1];
+  assert.equal(spec.id, 'opt-probe');
+  assert.equal(spec.title, 'probe');
+  assert.equal(spec.endpoint, '/probe');
+  assert.equal(spec.poll, false, 'poll must be forwarded');
+  assert.equal(spec.auth, true, 'auth must be forwarded');
+  assert.equal(spec.method, 'POST', 'method must be forwarded');
+  assert.deepEqual(spec.body, { a: 1 }, 'body must be forwarded');
+  assert.equal(spec.timeout, 1234, 'timeout must be forwarded');
+  assert.equal(spec.slow, true, 'slow must be forwarded');
+  assert.deepEqual(spec.accept, [503], 'accept must be forwarded');
+  assert.equal(typeof spec.render, 'function');
+  api.panels.pop();
+});
+
+test('defaults are what the renderers assume', () => {
+  const { api } = loadDashboard();
+  const before = api.panels.length;
+  api.panel('default-probe', { title: 't', endpoint: '/e', render: () => {} });
+  const spec = api.panels[api.panels.length - 1];
+  assert.equal(spec.poll, true);
+  assert.equal(spec.auth, false);
+  assert.equal(spec.slow, false);
+  assert.equal(spec.accept, null);
+  assert.equal(spec.timeout, undefined);
+  api.panels.pop();
+  assert.equal(api.panels.length, before);
+});
+
+test('a panel declared slow keeps its slow flag after registration', () => {
+  // The specific regression: the watchlist must actually be marked slow.
+  // panels is only populated by registerPanels(), so call it first.
+  const panels = panelsFrom(loadDashboard());
+  const watchlist = panels.find((p) => p.id === 'watchlist');
+  assert.ok(watchlist, 'watchlist panel not registered');
+  assert.equal(watchlist.slow, true,
+    'watchlist is a ~26s cold fetch and must be declared slow');
+  const health = panels.find((p) => p.id === 'health');
+  // Spread into a host array: `accept: [503]` was built inside the vm realm, so
+  // deepStrictEqual would fail on Array prototype identity rather than contents.
+  assert.deepEqual([...(health.accept || [])], [503],
+    '/ready answers 503 when not ready; that payload is the point of the panel');
+});
+
+test('request() treats an accepted non-2xx code as a real answer', async () => {
+  const { api, sandbox } = loadDashboard();
+  sandbox.fetch = async () => ({
+    ok: false, status: 503, json: async () => ({ ready: false, reason: 'supervisor is not running' }),
+  });
+
+  // Without opt-in, a 503 is a failure.
+  const strict = await api.request('/ready');
+  assert.equal(strict.ok, false, 'a 503 is a failure without an explicit opt-in');
+  assert.equal(strict.status, 503);
+
+  // With it, the same response is readable -- which is the difference between
+  // showing "not ready: blocked by a safety gate" and "could not load".
+  const accepted = await api.request('/ready', { accept: [503] });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.status, 503);
+  assert.equal(accepted.data.reason, 'supervisor is not running');
+
+  // The opt-in must not accept codes it was not asked about.
+  sandbox.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) });
+  const wrongCode = await api.request('/ready', { accept: [503] });
+  assert.equal(wrongCode.ok, false, '500 must not be accepted by a [503] opt-in');
+});
+
 test('a renderer that throws is contained, not fatal to the page', () => {
   const loaded = loadDashboard();
   const panels = panelsFrom(loaded);
@@ -711,7 +800,7 @@ test('request() degrades instead of throwing on every failure mode', async () =>
   {
     const { api } = await withFetch(async () => { throw new TypeError('Failed to fetch'); });
     const r = await api.request('/health');
-    assert.equal(r.ok, false);
+    assert.equal(r.ok, false, 'an unreachable server is a failure');
     assert.equal(r.status, 0, 'an unreachable server is status 0, not a 5xx');
     assert.ok(r.error);
   }

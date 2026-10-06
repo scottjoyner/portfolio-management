@@ -122,7 +122,9 @@ const token = {
  * stalls the whole sequential refresh loop and every other panel keeps showing
  * its previous contents with no indication that anything went wrong. A timeout
  * fails that one panel and lets the rest of the cycle proceed. */
-async function request(path, { method = 'GET', body, auth = false, timeout = REQUEST_TIMEOUT_MS } = {}) {
+async function request(path, {
+  method = 'GET', body, auth = false, timeout = REQUEST_TIMEOUT_MS, accept = null,
+} = {}) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (auth) {
@@ -156,7 +158,18 @@ async function request(path, { method = 'GET', body, auth = false, timeout = REQ
   }
   let data = null;
   try { data = await response.json(); } catch (_) { /* empty or non-JSON body */ }
-  return { ok: response.ok, status: response.status, data, error: data && data.error };
+  // `accept` lets a caller treat a specific non-2xx code as a real answer rather
+  // than a failure. /ready is the case that matters: it answers 503 precisely
+  // when the system is not ready, with a `reason` the operator needs. Treating
+  // that as an error replaced "not ready: blocked by a safety gate" with
+  // "Service health could not load", which is both useless and alarming.
+  // `Array.isArray`, not a truthiness test: with accept left as null,
+  // `false || (null && ...)` evaluates to null rather than false, so `ok` was not
+  // a boolean at all. Falsy, so nothing broke visibly -- but a caller comparing
+  // it strictly saw null.
+  const ok = response.ok
+    || (Array.isArray(accept) && accept.includes(response.status));
+  return { ok: Boolean(ok), status: response.status, data, error: data && data.error };
 }
 
 const get = (path) => request(path).then((r) => (r.ok ? r.data || {} : null));
@@ -271,16 +284,36 @@ function toast(message, kind = '') {
  * a single failing endpoint blank the whole page. */
 const panels = [];
 
-function panel(id, { title, endpoint, render, poll = true, auth = false, method, body, timeout }) {
-  panels.push({ id, title, endpoint, render, poll, auth, method, body });
+/* Every option is forwarded explicitly. This signature went stale once already:
+ * `slow` and `accept` were added at the call sites while this line kept the old
+ * destructuring list, so both were silently dropped -- the watchlist lost its
+ * "this takes a while" note and the health panel went back to rendering /ready's
+ * 503 as an error. Silently, because destructuring a missing key is not an error.
+ *
+ * test_options_are_all_forwarded asserts the forwarding, so the next option added
+ * at a call site cannot be dropped here without a test failing. */
+function panel(id, {
+  title, endpoint, render, poll = true, auth = false, method, body,
+  timeout = undefined, slow = false, accept = null,
+}) {
+  panels.push({
+    id, title, endpoint, render, poll, auth, method, body, timeout, slow, accept,
+  });
 }
 
 const bodiesFor = (id) => $$(`[data-panel="${id}"]`);
 
-function showSkeleton(el) {
-  if (!$('.skeleton', el)) {
-    el.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
-  }
+/* Panels show a skeleton until their first response. A slow panel says so: the
+ * watchlist does a live pair discovery that takes around half a minute cold, and
+ * three unlabelled grey bars for that long are indistinguishable from a broken
+ * dashboard. `slow` is declared per panel and only changes the copy. */
+function showSkeleton(el, { slow = false, label = '' } = {}) {
+  if ($('.skeleton', el)) return;
+  const note = slow
+    ? '<p class="dim loading-note" role="status">Loading\u2026 this reads live Coinbase data on the first request, which can take about half a minute.</p>'
+    : '';
+  el.innerHTML = `${note}<div class="skeleton" aria-hidden="true"></div>`.repeat(slow ? 3 : 1)
+    + `<span class="sr-only">Loading${label ? ` ${esc(label)}` : ''}</span>`;
 }
 
 function showPanelError(el, spec, res) {
@@ -296,6 +329,7 @@ function showPanelError(el, spec, res) {
 async function refreshPanel(spec) {
   const targets = bodiesFor(spec.id);
   if (!targets.length) return;
+  targets.forEach((el) => showSkeleton(el, { slow: spec.slow, label: spec.title }));
   // endpoint may be a thunk: the chart's URL depends on the selected symbol
   // and granularity, so it cannot be a constant captured at registration.
   const url = typeof spec.endpoint === 'function' ? spec.endpoint() : spec.endpoint;
@@ -304,6 +338,7 @@ async function refreshPanel(spec) {
     body: spec.body,
     auth: spec.auth,
     timeout: spec.timeout,
+    accept: spec.accept,
   });
   if (!res.ok) {
     targets.forEach((el) => showPanelError(el, spec, res));
@@ -312,6 +347,10 @@ async function refreshPanel(spec) {
   targets.forEach((el) => {
     try {
       spec.render(el, res.data || {});
+      // The renderer may have created token-gated buttons. Re-apply gating: a
+      // control that is enabled while locked misrepresents what will happen,
+      // even though the server would refuse it.
+      applyTokenGating(el);
     } catch (err) {
       // A render bug must not take the page down with it.
       showPanelError(el, spec, { status: 0, error: `render failed: ${err}` });
@@ -319,15 +358,39 @@ async function refreshPanel(spec) {
   });
 }
 
+/* Panels refresh concurrently, capped. Awaiting them one at a time made the
+ * poll period the sum of every panel's latency: /market/watchlist is 7th of 16
+ * and takes ~26s cold, so every panel after it sat on its loading skeleton
+ * until watchlist finished, and with a 60s ceiling on watchlist the effective
+ * poll period was over a minute instead of the configured 15s. A browser run
+ * caught this; no unit test could, because each renderer is independently
+ * correct.
+ *
+ * The cap keeps sixteen simultaneous requests off one threaded server without
+ * reintroducing the head-of-line blocking: five in flight means a slow panel
+ * costs one slot, not the whole cycle. */
+const MAX_CONCURRENT_PANELS = 5;
+
 async function refreshAll({ immediate = false } = {}) {
   if (!immediate && document.hidden) return;
   // The header carries liveness, readiness and the kill switch, so it has to
   // ride the same poll as the panels. Polling panels alone left the kill switch
-  // showing whatever it was at page load.
+  // showing whatever it was at page load. It is fast and stays sequential so
+  // the kill-switch state is settled before any panel renders its actions.
   await refreshHeader();
-  for (const spec of panels) {
-    if (spec.poll) await refreshPanel(spec);
-  }
+
+  const queue = panels.filter((spec) => spec.poll);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < queue.length) {
+      const spec = queue[cursor];
+      cursor += 1;
+      await refreshPanel(spec);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(MAX_CONCURRENT_PANELS, queue.length) }, worker),
+  );
   updateRefreshAge();
 }
 
@@ -406,6 +469,16 @@ function navigate(view) {
     else el.removeAttribute('aria-current');
   });
   if (location.hash.slice(1) !== view) history.replaceState(null, '', `#${view}`);
+
+  // The chart is excluded from the poll because it is a Coinbase CLI call, but
+  // that left it blank on arrival: entering the Market view fetched nothing, and
+  // it only appeared once you touched the granularity selector or clicked a
+  // watchlist row. Fetch it when its view is actually opened.
+  if (view === 'market') {
+    const chart = panels.find((p) => p.id === 'candles');
+    if (chart) refreshPanel(chart);
+  }
+
   refreshAll({ immediate: true });
 }
 
@@ -421,7 +494,11 @@ function renderNav() {
       <h3>${esc(label)}</h3>
       ${ids.map((id) => {
         const name = (VIEWS.find(([v]) => v === id) || [id, id])[1];
-        return `<a href="#${id}" data-view="${id}">${esc(name)}<span class="count" data-count="${id}" hidden></span></a>`;
+        // The badge is aria-hidden: it sits inside the anchor, so without this
+        // a screen reader announces the link as "Approvals1". The count is
+        // conveyed in the link's aria-label instead.
+        return `<a href="#${id}" data-view="${id}" aria-label="${esc(name)}">${esc(name)}`
+          + `<span class="count" data-count="${id}" aria-hidden="true" hidden></span></a>`;
       }).join('')}
     </div>`).join('');
   nav.addEventListener('click', (event) => {
@@ -432,13 +509,28 @@ function renderNav() {
   });
 }
 
-function setCount(view, value, alert = false) {
+/* Badge on a nav link. The number itself is aria-hidden so it does not run into
+ * the link's accessible name; the count is announced through the link's
+ * aria-label instead, so "Approvals" with 3 pending reads as "Approvals, 3
+ * pending" rather than "Approvals3". */
+function setCount(view, value, alert = false, noun = 'pending') {
   const el = $(`[data-count="${view}"]`);
   if (!el) return;
-  if (value === null || value === undefined || value === 0) { el.hidden = true; return; }
+  const link = el.closest('a[data-view]');
+  const base = link && VIEWS.find(([id]) => id === view);
+  const name = base ? base[1] : view;
+  if (value === null || value === undefined || value === 0) {
+    el.hidden = true;
+    if (link) link.setAttribute('aria-label', name);
+    return;
+  }
   el.hidden = false;
-  el.textContent = value > 99 ? '99+' : String(value);
+  const shown = value > 99 ? '99+' : String(value);
+  el.textContent = shown;
   el.classList.toggle('alert', Boolean(alert));
+  if (link) {
+    link.setAttribute('aria-label', `${name}, ${shown} ${noun}${value === 1 ? '' : 's'}`);
+  }
 }
 
 /* ── theme ──────────────────────────────────────────────────────────────── */
@@ -458,6 +550,24 @@ function cycleTheme() {
 
 /* ── token UI ───────────────────────────────────────────────────────────── */
 
+/* Applied to every [data-needs-token] control, whenever the DOM may have gained
+ * new ones.
+ *
+ * This has to be re-run after every panel render, not only when the token
+ * changes. Panels rebuild their tables each poll, so the Approve/Deny buttons
+ * are new elements every cycle: gating them only at unlock time left those
+ * buttons enabled and unexplained while locked. The server still refused them
+ * with 401, so no capital moved — but the page fail-opened and told the
+ * operator a control was available when it could not work. */
+function applyTokenGating(root = document) {
+  const present = token.present();
+  const why = 'Requires the operator token — use Unlock actions';
+  $$('[data-needs-token]', root).forEach((el) => {
+    el.disabled = !present;
+    el.title = present ? '' : why;
+  });
+}
+
 function renderTokenState() {
   const bar = $('#token-bar');
   if (!bar) return;
@@ -468,10 +578,7 @@ function renderTokenState() {
     : 'Read-only — actions need the operator token';
   $('#token-btn').textContent = present ? 'Lock actions' : 'Unlock actions';
   $('#token-btn').className = present ? 'btn sm' : 'btn sm primary';
-  $$('[data-needs-token]').forEach((el) => {
-    el.disabled = !present;
-    el.title = present ? '' : 'Requires the operator token — use Unlock actions';
-  });
+  applyTokenGating();
 }
 
 async function promptToken() {
@@ -598,6 +705,9 @@ function updateRefreshAge() {
 function registerPanels() {
   panel('health', {
     title: 'Service health', endpoint: API.ready,
+    // /ready answers 503 when the system should not be trading, and that payload
+    // is the whole point of the panel. A 503 here is information, not a fault.
+    accept: [503],
     render(el, data) {
       // RUNNING is the healthy state; BLOCKED means a safety gate refused to
       // start the child and it will NOT come back on its own. Styling BLOCKED as
@@ -844,6 +954,7 @@ function registerPanels() {
 
   panel('watchlist', {
     title: 'Watchlist', endpoint: API.watchlist,
+    slow: true,
     // This endpoint does a live pair discovery plus a batch candle fetch on a
     // cold cache, which takes far longer than the default deadline. The server
     // caches for 30s, so a longer client timeout costs nothing after the first
@@ -1342,13 +1453,18 @@ function boot() {
   try { theme = localStorage.getItem(THEME_KEY) || 'dark'; } catch (_) { /* ignore */ }
   applyTheme(theme);
 
-  // Static panels get a skeleton before the first poll resolves, so the page
-  // never renders as an empty shell.
-  $$('.panel-body').forEach((body) => {
-    body.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  registerPanels();
+
+  // Placeholder skeletons, so the page is never a blank shell. refreshPanel
+  // replaces these on its first pass, and a pre-rendered skeleton used to
+  // suppress the "this is slow, please wait" note a slow panel needs — the
+  // watchlist then sat on three unlabelled grey bars for half a minute.
+  // Only for panels that are not polling, since those have no other path to
+  // getting one; polling panels get theirs within a tick.
+  panels.filter((p) => !p.poll).forEach((spec) => {
+    bodiesFor(spec.id).forEach((el) => showSkeleton(el, { slow: spec.slow, label: spec.title }));
   });
 
-  registerPanels();
   renderNav();
   renderTokenState();
   bindActions();
