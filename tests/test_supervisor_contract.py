@@ -344,3 +344,102 @@ class TestNoCoverageSuiteDeletesByWildcard(unittest.TestCase):
                             f"unlinks {node.args[0].id!r}, which came from glob()"
                         )
         self.assertEqual(offenders, [])
+
+
+# ── status names the tree it is describing ──────────────────────────────────
+#
+# `status` derives everything from pidfiles and logs under ROOT, and ROOT
+# defaults to the script's own directory. Run from a git worktree or a copy, it
+# answers about *that* directory while looking exactly like an answer about the
+# deployment -- and "every child STOPPED" reads identically to a dead stack.
+# That misreading happened during development of the dashboard work and briefly
+# looked like a production outage.
+
+
+def test_status_prints_the_tree_it_describes(tmp_path, monkeypatch, capsys):
+    import run_production as rp
+
+    monkeypatch.setattr(rp, "ROOT", tmp_path)
+    monkeypatch.setattr(rp, "_pidfile_path", lambda: tmp_path / "absent.pid")
+    monkeypatch.setattr(rp, "PROCESSES", {})
+    monkeypatch.setattr(rp, "_supervisors_elsewhere", lambda: [])
+
+    rp.status()
+    out = capsys.readouterr().out
+    assert f"Tree: {tmp_path}" in out, (
+        "status must say which tree it is describing, or the answer is "
+        "ambiguous between this checkout and the deployment"
+    )
+
+
+def test_status_points_at_a_supervisor_running_elsewhere(tmp_path, monkeypatch, capsys):
+    import run_production as rp
+
+    monkeypatch.setattr(rp, "ROOT", tmp_path)
+    monkeypatch.setattr(rp, "_pidfile_path", lambda: tmp_path / "absent.pid")
+    monkeypatch.setattr(rp, "PROCESSES", {})
+    monkeypatch.setattr(rp, "_supervisors_elsewhere",
+                        lambda: [(4257, "/srv/portfolio-management")])
+
+    rp.status()
+    out = capsys.readouterr().out
+    assert "no supervisor, but one is running elsewhere" in out, out
+    assert "/srv/portfolio-management" in out, (
+        "it must name the tree that *is* supervised, not just that one exists"
+    )
+    assert str(tmp_path) in out
+
+
+def test_status_says_nothing_extra_when_this_tree_is_the_deployment(
+    tmp_path, monkeypatch, capsys
+):
+    import run_production as rp
+
+    monkeypatch.setattr(rp, "ROOT", tmp_path)
+    pidfile = tmp_path / "supervisor.pid"
+    pidfile.write_text(str(os.getpid()))
+    monkeypatch.setattr(rp, "_pidfile_path", lambda: pidfile)
+    monkeypatch.setattr(rp, "PROCESSES", {})
+
+    rp.status()
+    out = capsys.readouterr().out
+    assert "Tree:" in out
+    # The normal case must stay quiet: an operator reading a healthy deployment
+    # should not have to scroll past a warning about a problem that is not there.
+    assert "NOTE:" not in out, out
+
+
+def test_supervisor_scan_matches_an_argument_not_a_substring():
+    import run_production as rp
+
+    def argv(*args):
+        return b"\0".join(a.encode() for a in args) + b"\0"
+
+    # A shell wrapper contains the name inside one long argument. Matching a
+    # substring reported the invoking shell as a supervisor, and it then showed up
+    # in the "running elsewhere" list as if the worktree were a deployment.
+    assert not rp._is_supervisor_argv(
+        argv("/bin/bash", "-c", "cd /tmp && python3 run_production.py status")
+    ), "a bash -c wrapper must not be mistaken for a supervisor"
+
+    assert rp._is_supervisor_argv(
+        argv("/usr/bin/python3", "/srv/pm/run_production.py", "start")
+    ), "the real supervisor must be matched"
+
+    assert rp._is_supervisor_argv(argv("python3", "run_production.py"))
+    assert not rp._is_supervisor_argv(argv("/usr/bin/python3", "other.py"))
+    assert not rp._is_supervisor_argv(b"")
+
+
+def test_supervisor_scan_ignores_unrelated_processes():
+    import run_production as rp
+
+    # Nothing is running in this test environment that we control, so the only
+    # guarantee available is that it does not raise and returns a list.
+    found = rp._supervisors_elsewhere()
+    assert isinstance(found, list)
+    for entry in found:
+        assert len(entry) == 2
+        pid, root = entry
+        assert isinstance(pid, int) and pid > 0
+        assert isinstance(root, str) and root

@@ -58,6 +58,29 @@ const API = {
   competition: '/competition',
   killSwitch: '/kill-switch',
 
+  // ── execution & bot management ───────────────────────────────────────────
+  // Field names for every panel below were read off live responses rather than
+  // guessed; six renderers in the first pass read names the endpoints never
+  // return and rendered empty tables.
+  strategies: '/strategies',
+  actions: '/actions',
+  paperTrades: '/paper-trades',
+  tradePlans: '/trade-plans',
+  diversification: '/signals/diversification',
+  orderflow: '/signals/orderflow',
+  ensemble: '/signals/ensemble',
+  metaWeights: '/signals/meta-weights',
+  venueBalances: '/venue/balances',
+  priceEvaluation: (instrument) =>
+    `/evaluations/price/${encodeURIComponent(String(instrument).trim().toUpperCase())}`,
+  arbSettlement: '/arbitrage/settlement',
+  arbInternal: '/arbitrage/kalshi-internal',
+  predictionMarkets: '/prediction-markets',
+  rebalanceState: '/strategies/rebalance',
+
+  runAction: '/actions/run',
+  applyBucketPreset: '/capital/buckets/preset',
+
   // ── mutating: require the operator token ──
   orderSubmit: '/orders/submit',
   approve: (token) => `/approvals/approve/${token}`,
@@ -122,7 +145,9 @@ const token = {
  * stalls the whole sequential refresh loop and every other panel keeps showing
  * its previous contents with no indication that anything went wrong. A timeout
  * fails that one panel and lets the rest of the cycle proceed. */
-async function request(path, { method = 'GET', body, auth = false, timeout = REQUEST_TIMEOUT_MS } = {}) {
+async function request(path, {
+  method = 'GET', body, auth = false, timeout = REQUEST_TIMEOUT_MS, accept = null,
+} = {}) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (auth) {
@@ -156,7 +181,18 @@ async function request(path, { method = 'GET', body, auth = false, timeout = REQ
   }
   let data = null;
   try { data = await response.json(); } catch (_) { /* empty or non-JSON body */ }
-  return { ok: response.ok, status: response.status, data, error: data && data.error };
+  // `accept` lets a caller treat a specific non-2xx code as a real answer rather
+  // than a failure. /ready is the case that matters: it answers 503 precisely
+  // when the system is not ready, with a `reason` the operator needs. Treating
+  // that as an error replaced "not ready: blocked by a safety gate" with
+  // "Service health could not load", which is both useless and alarming.
+  // `Array.isArray`, not a truthiness test: with accept left as null,
+  // `false || (null && ...)` evaluates to null rather than false, so `ok` was not
+  // a boolean at all. Falsy, so nothing broke visibly -- but a caller comparing
+  // it strictly saw null.
+  const ok = response.ok
+    || (Array.isArray(accept) && accept.includes(response.status));
+  return { ok: Boolean(ok), status: response.status, data, error: data && data.error };
 }
 
 const get = (path) => request(path).then((r) => (r.ok ? r.data || {} : null));
@@ -271,16 +307,36 @@ function toast(message, kind = '') {
  * a single failing endpoint blank the whole page. */
 const panels = [];
 
-function panel(id, { title, endpoint, render, poll = true, auth = false, method, body, timeout }) {
-  panels.push({ id, title, endpoint, render, poll, auth, method, body });
+/* Every option is forwarded explicitly. This signature went stale once already:
+ * `slow` and `accept` were added at the call sites while this line kept the old
+ * destructuring list, so both were silently dropped -- the watchlist lost its
+ * "this takes a while" note and the health panel went back to rendering /ready's
+ * 503 as an error. Silently, because destructuring a missing key is not an error.
+ *
+ * test_options_are_all_forwarded asserts the forwarding, so the next option added
+ * at a call site cannot be dropped here without a test failing. */
+function panel(id, {
+  title, endpoint, render, poll = true, auth = false, method, body,
+  timeout = undefined, slow = false, accept = null,
+}) {
+  panels.push({
+    id, title, endpoint, render, poll, auth, method, body, timeout, slow, accept,
+  });
 }
 
 const bodiesFor = (id) => $$(`[data-panel="${id}"]`);
 
-function showSkeleton(el) {
-  if (!$('.skeleton', el)) {
-    el.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
-  }
+/* Panels show a skeleton until their first response. A slow panel says so: the
+ * watchlist does a live pair discovery that takes around half a minute cold, and
+ * three unlabelled grey bars for that long are indistinguishable from a broken
+ * dashboard. `slow` is declared per panel and only changes the copy. */
+function showSkeleton(el, { slow = false, label = '' } = {}) {
+  if ($('.skeleton', el)) return;
+  const note = slow
+    ? '<p class="dim loading-note" role="status">Loading\u2026 this reads live Coinbase data on the first request, which can take about half a minute.</p>'
+    : '';
+  el.innerHTML = `${note}<div class="skeleton" aria-hidden="true"></div>`.repeat(slow ? 3 : 1)
+    + `<span class="sr-only">Loading${label ? ` ${esc(label)}` : ''}</span>`;
 }
 
 function showPanelError(el, spec, res) {
@@ -296,6 +352,7 @@ function showPanelError(el, spec, res) {
 async function refreshPanel(spec) {
   const targets = bodiesFor(spec.id);
   if (!targets.length) return;
+  targets.forEach((el) => showSkeleton(el, { slow: spec.slow, label: spec.title }));
   // endpoint may be a thunk: the chart's URL depends on the selected symbol
   // and granularity, so it cannot be a constant captured at registration.
   const url = typeof spec.endpoint === 'function' ? spec.endpoint() : spec.endpoint;
@@ -304,6 +361,7 @@ async function refreshPanel(spec) {
     body: spec.body,
     auth: spec.auth,
     timeout: spec.timeout,
+    accept: spec.accept,
   });
   if (!res.ok) {
     targets.forEach((el) => showPanelError(el, spec, res));
@@ -312,6 +370,10 @@ async function refreshPanel(spec) {
   targets.forEach((el) => {
     try {
       spec.render(el, res.data || {});
+      // The renderer may have created token-gated buttons. Re-apply gating: a
+      // control that is enabled while locked misrepresents what will happen,
+      // even though the server would refuse it.
+      applyTokenGating(el);
     } catch (err) {
       // A render bug must not take the page down with it.
       showPanelError(el, spec, { status: 0, error: `render failed: ${err}` });
@@ -319,15 +381,39 @@ async function refreshPanel(spec) {
   });
 }
 
+/* Panels refresh concurrently, capped. Awaiting them one at a time made the
+ * poll period the sum of every panel's latency: /market/watchlist is 7th of 16
+ * and takes ~26s cold, so every panel after it sat on its loading skeleton
+ * until watchlist finished, and with a 60s ceiling on watchlist the effective
+ * poll period was over a minute instead of the configured 15s. A browser run
+ * caught this; no unit test could, because each renderer is independently
+ * correct.
+ *
+ * The cap keeps sixteen simultaneous requests off one threaded server without
+ * reintroducing the head-of-line blocking: five in flight means a slow panel
+ * costs one slot, not the whole cycle. */
+const MAX_CONCURRENT_PANELS = 5;
+
 async function refreshAll({ immediate = false } = {}) {
   if (!immediate && document.hidden) return;
   // The header carries liveness, readiness and the kill switch, so it has to
   // ride the same poll as the panels. Polling panels alone left the kill switch
-  // showing whatever it was at page load.
+  // showing whatever it was at page load. It is fast and stays sequential so
+  // the kill-switch state is settled before any panel renders its actions.
   await refreshHeader();
-  for (const spec of panels) {
-    if (spec.poll) await refreshPanel(spec);
-  }
+
+  const queue = panels.filter((spec) => spec.poll);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < queue.length) {
+      const spec = queue[cursor];
+      cursor += 1;
+      await refreshPanel(spec);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(MAX_CONCURRENT_PANELS, queue.length) }, worker),
+  );
   updateRefreshAge();
 }
 
@@ -384,17 +470,17 @@ function drawEquity(container, points) {
 
 /* ── views ──────────────────────────────────────────────────────────────── */
 
+/* Five views, organised by the job rather than by the table that happens to
+ * back it. Execution, analysis and bot management were previously eleven views
+ * that each held one kind of row, which meant sizing an order required visiting
+ * four of them to find buying power, the book, the pending queue and the bot's
+ * own proposals. */
 const VIEWS = [
   ['overview', 'Overview'],
-  ['positions', 'Positions'],
-  ['approvals', 'Approvals'],
-  ['opportunities', 'Opportunities'],
-  ['market', 'Market'],
-  ['signals', 'Signals'],
-  ['strategies', 'Strategies'],
+  ['execute', 'Execute'],
+  ['analyse', 'Analyse'],
+  ['bot', 'Bot'],
   ['capital', 'Capital'],
-  ['research', 'Research'],
-  ['system', 'System'],
 ];
 
 function navigate(view) {
@@ -406,14 +492,23 @@ function navigate(view) {
     else el.removeAttribute('aria-current');
   });
   if (location.hash.slice(1) !== view) history.replaceState(null, '', `#${view}`);
+
+  // The chart is excluded from the poll because it is a Coinbase CLI call, but
+  // that left it blank on arrival: entering the Market view fetched nothing, and
+  // it only appeared once you touched the granularity selector or clicked a
+  // watchlist row. Fetch it when its view is actually opened.
+  if (view === 'analyse') {
+    const chart = panels.find((p) => p.id === 'candles');
+    if (chart) refreshPanel(chart);
+  }
+
   refreshAll({ immediate: true });
 }
 
 function renderNav() {
   const groups = [
-    ['Trade', ['overview', 'positions', 'approvals', 'opportunities']],
-    ['Analyse', ['market', 'signals', 'strategies']],
-    ['Operate', ['capital', 'research', 'system']],
+    ['Operate', ['overview', 'execute']],
+    ['Understand', ['analyse', 'bot', 'capital']],
   ];
   const nav = $('#nav');
   nav.innerHTML = groups.map(([label, ids]) => `
@@ -421,7 +516,11 @@ function renderNav() {
       <h3>${esc(label)}</h3>
       ${ids.map((id) => {
         const name = (VIEWS.find(([v]) => v === id) || [id, id])[1];
-        return `<a href="#${id}" data-view="${id}">${esc(name)}<span class="count" data-count="${id}" hidden></span></a>`;
+        // The badge is aria-hidden: it sits inside the anchor, so without this
+        // a screen reader announces the link as "Approvals1". The count is
+        // conveyed in the link's aria-label instead.
+        return `<a href="#${id}" data-view="${id}" aria-label="${esc(name)}">${esc(name)}`
+          + `<span class="count" data-count="${id}" aria-hidden="true" hidden></span></a>`;
       }).join('')}
     </div>`).join('');
   nav.addEventListener('click', (event) => {
@@ -432,13 +531,28 @@ function renderNav() {
   });
 }
 
-function setCount(view, value, alert = false) {
+/* Badge on a nav link. The number itself is aria-hidden so it does not run into
+ * the link's accessible name; the count is announced through the link's
+ * aria-label instead, so "Approvals" with 3 pending reads as "Approvals, 3
+ * pending" rather than "Approvals3". */
+function setCount(view, value, alert = false, noun = 'pending') {
   const el = $(`[data-count="${view}"]`);
   if (!el) return;
-  if (value === null || value === undefined || value === 0) { el.hidden = true; return; }
+  const link = el.closest('a[data-view]');
+  const base = link && VIEWS.find(([id]) => id === view);
+  const name = base ? base[1] : view;
+  if (value === null || value === undefined || value === 0) {
+    el.hidden = true;
+    if (link) link.setAttribute('aria-label', name);
+    return;
+  }
   el.hidden = false;
-  el.textContent = value > 99 ? '99+' : String(value);
+  const shown = value > 99 ? '99+' : String(value);
+  el.textContent = shown;
   el.classList.toggle('alert', Boolean(alert));
+  if (link) {
+    link.setAttribute('aria-label', `${name}, ${shown} ${noun}${value === 1 ? '' : 's'}`);
+  }
 }
 
 /* ── theme ──────────────────────────────────────────────────────────────── */
@@ -456,7 +570,97 @@ function cycleTheme() {
   applyTheme(order[(order.indexOf(current) + 1) % order.length]);
 }
 
+
+/* ── action audit ──────────────────────────────────────────────────────────
+ *
+ * Every mutating action the UI attempts is recorded in sessionStorage: what was
+ * called, when, and how it ended. A toast disappears after four seconds and the
+ * panel re-renders on the next poll, so "did my approval go through?" has no
+ * answer a few seconds after clicking.
+ *
+ * Deliberately not persisted across sessions and deliberately never records the
+ * token or any request body -- only the path, the outcome and a timestamp. It
+ * lives in sessionStorage for the same reason the token does.
+ */
+
+const AUDIT_KEY = 'pm.action.audit';
+const AUDIT_LIMIT = 25;
+
+function recordAction(entry) {
+  try {
+    const raw = sessionStorage.getItem(AUDIT_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(list)) return;
+    list.unshift({ ...entry, at: new Date().toISOString() });
+    sessionStorage.setItem(AUDIT_KEY, JSON.stringify(list.slice(0, AUDIT_LIMIT)));
+    renderAudit();
+  } catch (_) {
+    // A full or unavailable sessionStorage must not break the action itself.
+  }
+}
+
+function auditEntries() {
+  try {
+    const raw = sessionStorage.getItem(AUDIT_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function renderAudit() {
+  const host = $('#oe-audit');
+  if (!host) return;
+  const rows = auditEntries();
+  if (!rows.length) {
+    host.innerHTML = '<p class="empty">No actions taken from this tab yet.</p>';
+    return;
+  }
+  const label = (path) => {
+    const action = ACTOR_LABELS[path] || path;
+    const verb = action.startsWith('/') ? action : action;
+    return verb;
+  };
+  host.innerHTML = `
+    <div class="table-scroll"><table>
+      <thead><tr><th class="num">When</th><th>Action</th><th>Outcome</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td class="num dim">${when(r.at)}</td>
+        <td class="mono">${esc(label(r.path))}</td>
+        <td><span class="pill ${r.ok ? 'positive' : 'negative'}">${esc(r.outcome)}</span></td>
+      </tr>`).join('')}</tbody></table></div>
+    <p class="dim" style="text-align:left">This tab only, and cleared when it closes.</p>`;
+}
+
+const ACTOR_LABELS = {
+  '/orders/submit': 'order submit',
+  '/kill-switch': 'kill switch',
+  '/execution/brackets/cancel': 'bracket cancel',
+  '/execution/brackets/cancel-all': 'cancel all brackets',
+  '/actions/run': 'operator action',
+  '/capital/buckets/preset': 'capital preset',
+};
+
 /* ── token UI ───────────────────────────────────────────────────────────── */
+
+/* Applied to every [data-needs-token] control, whenever the DOM may have gained
+ * new ones.
+ *
+ * This has to be re-run after every panel render, not only when the token
+ * changes. Panels rebuild their tables each poll, so the Approve/Deny buttons
+ * are new elements every cycle: gating them only at unlock time left those
+ * buttons enabled and unexplained while locked. The server still refused them
+ * with 401, so no capital moved — but the page fail-opened and told the
+ * operator a control was available when it could not work. */
+function applyTokenGating(root = document) {
+  const present = token.present();
+  const why = 'Requires the operator token — use Unlock actions';
+  $$('[data-needs-token]', root).forEach((el) => {
+    el.disabled = !present;
+    el.title = present ? '' : why;
+  });
+}
 
 function renderTokenState() {
   const bar = $('#token-bar');
@@ -468,10 +672,7 @@ function renderTokenState() {
     : 'Read-only — actions need the operator token';
   $('#token-btn').textContent = present ? 'Lock actions' : 'Unlock actions';
   $('#token-btn').className = present ? 'btn sm' : 'btn sm primary';
-  $$('[data-needs-token]').forEach((el) => {
-    el.disabled = !present;
-    el.title = present ? '' : 'Requires the operator token — use Unlock actions';
-  });
+  applyTokenGating();
 }
 
 async function promptToken() {
@@ -598,6 +799,9 @@ function updateRefreshAge() {
 function registerPanels() {
   panel('health', {
     title: 'Service health', endpoint: API.ready,
+    // /ready answers 503 when the system should not be trading, and that payload
+    // is the whole point of the panel. A 503 here is information, not a fault.
+    accept: [503],
     render(el, data) {
       // RUNNING is the healthy state; BLOCKED means a safety gate refused to
       // start the child and it will NOT come back on its own. Styling BLOCKED as
@@ -695,7 +899,7 @@ function registerPanels() {
         <div class="table-scroll"><table>
           <thead><tr><th>Instrument</th><th>Side</th><th class="num">Qty</th>
             <th class="num">Entry</th><th class="num">Mark</th><th class="num">P&amp;L</th>
-            <th class="num">%</th><th>Venue</th></tr></thead>
+            <th class="num">%</th><th>Venue</th><th></th></tr></thead>
           <tbody>${rows.map((p) => `<tr>
             <td class="mono">${esc(p.instrument || p.symbol || '--')}</td>
             <td><span class="pill positive">${esc(p.side || p.classification || '--')}</span></td>
@@ -705,6 +909,12 @@ function registerPanels() {
             <td class="num ${signedClass(p.unrealized_pnl_usd)}">${money(p.unrealized_pnl_usd, { signed: true })}</td>
             <td class="num ${signedClass(p.unrealized_pnl_pct)}">${num(p.unrealized_pnl_pct, 2)}%</td>
             <td class="dim">${esc(p.venue || '--')}</td>
+            <td class="num"><button class="btn sm ghost"
+              data-prefill="${esc(p.instrument || p.symbol || '')}"
+              data-prefill-side="SELL"
+              data-prefill-size="${esc(String(p.quantity_usd ?? p.value ?? ''))}"
+              data-prefill-reason="Close ${esc(p.instrument || p.symbol || '')}"
+              title="Load a closing order into the ticket">Close</button></td>
           </tr>`).join('')}</tbody></table></div>${totals}`;
     },
   });
@@ -785,8 +995,14 @@ function registerPanels() {
               <td class="num">${money(a.quantity_usd)}</td>
               <td class="num dim">${money(a.expected_fee)}</td>
               <td class="num">${num(a.risk_score, 2)}</td>
-              <td><span class="pill ${pendingRow ? 'warn' : a.status === 'approved' ? 'positive' : 'dim'}">
-                ${esc(a.auto_approved ? 'auto' : (a.status || 'pending'))}</span></td>
+              <td>${pendingRow
+              ? '<span class="pill warn">awaiting approval</span>'
+              : `<span class="pill ${a.status === 'approved' ? 'positive' : 'dim'}">${esc(a.status || 'resolved')}</span>`
+                + (a.resolved_by
+                  ? `<br><span class="dim">by ${esc(a.resolved_by)}`
+                    + (a.resolved_at ? ` ${esc(String(a.resolved_at).replace('T', ' ').slice(0, 19))}` : '')
+                    + '</span>'
+                  : '')}</td>
               <td class="num dim">${ageFrom(a.created_at)}</td>
               <td class="num">${pendingRow
                 ? `<button class="btn sm" data-approve="${esc(id)}" data-needs-token>Approve</button>
@@ -795,7 +1011,8 @@ function registerPanels() {
             </tr>`;
           }).join('')}</tbody></table></div>
         <p class="dim" style="text-align:left">Approving releases a real order on the next
-        optimizer tick. Use <kbd>Unlock actions</kbd> first.</p>`;
+        optimizer tick, and the approval is recorded against you. Use
+        <kbd>Unlock actions</kbd> first.</p>`;
     },
   });
 
@@ -844,6 +1061,7 @@ function registerPanels() {
 
   panel('watchlist', {
     title: 'Watchlist', endpoint: API.watchlist,
+    slow: true,
     // This endpoint does a live pair discovery plus a batch candle fetch on a
     // cold cache, which takes far longer than the default deadline. The server
     // caches for 30s, so a longer client timeout costs nothing after the first
@@ -1139,6 +1357,397 @@ function registerPanels() {
     },
   });
 
+  /* ── execution: what can be spent, and what has been ─────────────────── */
+
+  panel('buy-power', {
+    title: 'Buying power', endpoint: API.executionStatus,
+    render(el, data) {
+      // /execution/status reports three different numbers and the difference
+      // matters: raw cash ignores the reserve floor, deployable is what may
+      // actually be committed, and the hard cap is the per-trade ceiling. An
+      // operator sizing an order needs the middle one.
+      const rows = [
+        ['Deployable', money(data.deployable_buy_power_usd)],
+        ['Raw cash', money(data.raw_cash_buy_power_usd)],
+        ['Reserve floor', money(data.usdc_reserve_usd)],
+        ['USDC balance', money(data.usdc_balance_usd)],
+        ['Portfolio value', money(data.portfolio_value_usd)],
+        ['Hard cap', money(data.hard_cap_usd)],
+        ['Risk in play', money(data.risk_capital_in_play_usd)],
+        ['Remaining vs cap', money(data.remaining_hard_cap_usd)],
+      ];
+      const pending = Number(data.pending_count) || 0;
+      el.innerHTML = `
+        <table><tbody>
+          ${rows.map(([k, v]) => `<tr><td class="dim">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}
+          <tr><td class="dim">Pending approvals</td>
+            <td class="num">${pending || '--'}</td></tr>
+        </tbody></table>
+        ${pending ? `<p class="dim" style="text-align:left">${pending} order${pending === 1 ? '' : 's'}
+          awaiting approval; each releases real capital on the next optimizer tick.</p>` : ''}`;
+    },
+  });
+
+  panel('recent-trades', {
+    title: 'Recent trades', endpoint: API.executionStatus,
+    render(el, data) {
+      const rows = Array.isArray(data.recent_trades) ? data.recent_trades : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No trades recorded.</p>';
+        return;
+      }
+      el.innerHTML = `
+        <div class="table-scroll"><table>
+          <thead><tr><th class="num">When</th><th>Symbol</th><th>Side</th>
+            <th class="num">Size</th><th class="num">Fee</th>
+            <th class="num">P&amp;L</th><th>Reason</th></tr></thead>
+          <tbody>${rows.map((t) => `<tr>
+            <td class="num dim">${when(t.timestamp)}</td>
+            <td class="mono">${esc(t.symbol || t.currency || '--')}</td>
+            <td><span class="pill ${t.side === 'BUY' ? 'positive' : 'negative'}">${esc(t.side || '--')}</span></td>
+            <td class="num">${money(t.size_usd)}</td>
+            <td class="num dim">${money(t.fee)}</td>
+            <td class="num ${signedClass(t.pnl_usd)}">${money(t.pnl_usd, { signed: true })}</td>
+            <td class="dim">${esc(t.reason || t.type || '')}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  panel('trade-plans', {
+    title: 'Proposed trade plans', endpoint: API.tradePlans,
+    render(el, data) {
+      // The bot's own proposals -- the seam between analysis and execution.
+      // preview_passed is the field that says whether the plan survived the
+      // optimizer's cost preview, so it is shown as a pill rather than buried.
+      const rows = Array.isArray(data.plans) ? data.plans : [];
+      setCount('execute', rows.length, rows.length > 0);
+      if (!rows.length) {
+        el.innerHTML = `<p class="empty">No trade plans.</p>${
+          data.updated_at ? `<p class="dim" style="text-align:left">updated ${esc(String(data.updated_at))}
+            from ${esc(String(data.source || 'unknown'))}</p>` : ''}`;
+        return;
+      }
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">${rows.length} plan${rows.length === 1 ? '' : 's'}
+          ${data.updated_at ? `&middot; updated ${esc(String(data.updated_at))}` : ''}
+          ${data.source ? `&middot; source ${esc(String(data.source))}` : ''}</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Type</th><th>Symbol</th><th>Side</th><th class="num">Size</th>
+            <th class="num">Entry</th><th class="num">Stop %</th><th class="num">Target %</th>
+            <th class="num">Hold h</th><th>Preview</th><th></th></tr></thead>
+          <tbody>${rows.map((plan) => {
+            const symbol = plan.product_id || plan.currency || '--';
+            const side = String(plan.side || '').toUpperCase();
+            return `<tr>
+              <td><span class="pill accent">${esc(plan.opp_type || plan.trade_style || '--')}</span></td>
+              <td class="mono">${esc(symbol)}</td>
+              <td><span class="pill ${side === 'BUY' ? 'positive' : 'negative'}">${esc(side || '--')}</span></td>
+              <td class="num">${money(plan.size_usd)}</td>
+              <td class="num">${money(plan.entry_price_est)}</td>
+              <td class="num">${num(plan.stop_loss_pct)}</td>
+              <td class="num">${num(plan.take_profit_pct)}</td>
+              <td class="num">${num(plan.holding_period_hours)}</td>
+              <td>${plan.preview_passed
+                ? '<span class="pill positive">passed</span>'
+                : '<span class="pill warn">not cleared</span>'}</td>
+              <td class="num"><button class="btn sm ghost" data-prefill="${esc(symbol)}"
+                title="Load this symbol into the order ticket">Ticket</button></td>
+            </tr>`;
+          }).join('')}</tbody></table></div>
+        <p class="dim" style="text-align:left">Plans are proposals, not orders.
+        Use <kbd>Unlock actions</kbd> to submit one for approval.</p>`;
+    },
+  });
+
+  panel('paper-trades', {
+    title: 'Paper trade ledger', endpoint: API.paperTrades,
+    render(el, data) {
+      const rows = Array.isArray(data.trades) ? data.trades : [];
+      const summary = data.settlement_summary || {};
+      const head = Object.keys(summary).length
+        ? `<p class="dim" style="margin:0 0 var(--sp-3)">${Object.entries(summary)
+            .map(([k, v]) => `${esc(k)} <strong class="mono">${esc(String(v))}</strong>`).join(' &middot; ')}</p>`
+        : '';
+      if (!rows.length) {
+        el.innerHTML = head + '<p class="empty">No paper trades recorded.</p>';
+        return;
+      }
+      el.innerHTML = `${head}
+        <div class="table-scroll"><table>
+          <thead><tr><th class="num">When</th><th>Symbol</th><th>Side</th>
+            <th class="num">Size</th><th class="num">Fee</th>
+            <th class="num">P&amp;L</th><th>Reason</th></tr></thead>
+          <tbody>${rows.map((t) => `<tr>
+            <td class="num dim">${when(t.timestamp)}</td>
+            <td class="mono">${esc(t.symbol || t.currency || '--')}</td>
+            <td><span class="pill ${t.side === 'BUY' ? 'positive' : 'negative'}">${esc(t.side || '--')}</span></td>
+            <td class="num">${money(t.size_usd)}</td>
+            <td class="num dim">${money(t.fee)}</td>
+            <td class="num ${signedClass(t.pnl_usd)}">${money(t.pnl_usd, { signed: true })}</td>
+            <td class="dim">${esc(t.reason || t.type || '')}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  /* ── bot management ──────────────────────────────────────────────────── */
+
+  panel('actions', {
+    title: 'Operator actions', endpoint: API.actions,
+    render(el, data) {
+      // Each action carries its own risk label, so the confirmation has to
+      // quote it rather than treating every button the same.
+      const rows = Array.isArray(data.actions) ? data.actions : [];
+      const queue = Array.isArray(data.queue) ? data.queue : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No operator actions exposed.</p>';
+        return;
+      }
+      const riskPill = (risk) => {
+        const r = String(risk || 'safe').toLowerCase();
+        const cls = r === 'safe' ? 'positive' : r === 'guarded' ? 'warn' : 'negative';
+        return `<span class="pill ${cls}">${esc(r)}</span>`;
+      };
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">backend
+          <strong>${esc(data.backend || 'unknown')}</strong>${queue.length
+            ? ` &middot; ${queue.length} queued` : ''}</p>
+        <table><thead><tr><th>Action</th><th>Risk</th><th>What it does</th><th></th></tr></thead>
+        <tbody>${rows.map((a) => `<tr>
+          <td><strong>${esc(a.label || a.id)}</strong></td>
+          <td>${riskPill(a.risk)}</td>
+          <td class="dim">${esc(a.description || '')}</td>
+          <td class="num"><button class="btn sm" data-run-action="${esc(a.id)}"
+            data-needs-token data-risk="${esc(a.risk || 'safe')}">Run</button></td>
+        </tr>`).join('')}</tbody></table>
+        ${queue.length ? `
+          <h3 style="margin:var(--sp-4) 0 var(--sp-2);font-size:var(--fs-sm)">Queue</h3>
+          <div class="table-scroll"><table>
+            <thead><tr><th class="num">When</th><th>Action</th><th>Status</th><th>Note</th></tr></thead>
+            <tbody>${queue.map((q) => `<tr>
+              <td class="num dim">${when(q.created_at)}</td>
+              <td class="mono">${esc(q.action || '--')}</td>
+              <td><span class="pill">${esc(q.status || '--')}</span></td>
+              <td class="dim">${esc(q.note || '')}</td>
+            </tr>`).join('')}</tbody></table></div>` : ''}`;
+    },
+  });
+
+  panel('strategies', {
+    title: 'Strategies', endpoint: API.strategies,
+    render(el, data) {
+      // status/sharpe_ratio/win_rate_pct/total_trades. There is no endpoint to
+      // toggle a strategy, so nothing here pretends to offer a control it does
+      // not have.
+      const rows = Array.isArray(data.active_strategies) ? data.active_strategies : [];
+      setCount('bot', Number(data.total_strategies) || rows.length);
+      if (!rows.length) {
+        el.innerHTML = `<p class="empty">No strategies registered.</p>`;
+        return;
+      }
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">${rows.length} active of
+          ${esc(String(data.total_strategies ?? rows.length))}</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Strategy</th><th>Status</th><th class="num">Sharpe</th>
+            <th class="num">Win rate</th><th class="num">Trades</th><th></th></tr></thead>
+          <tbody>${rows.map((s) => `<tr>
+            <td class="mono">${esc(s.name || s.strategy_id || '--')}</td>
+            <td><span class="pill ${s.status === 'active' ? 'positive' : 'dim'}">${esc(s.status || '--')}</span></td>
+            <td class="num">${num(s.sharpe_ratio, 2)}</td>
+            <td class="num">${num(s.win_rate_pct, 1)}%</td>
+            <td class="num">${num(s.total_trades, 0)}</td>
+            <td class="num"><button class="btn sm ghost" data-symbol="${esc(s.name || '')}"
+              title="Chart this pair where a symbol is given">Chart</button></td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  panel('rebalance', {
+    title: 'Rebalance', endpoint: API.rebalanceState,
+    render(el, data) {
+      const presets = Array.isArray(data.presets) ? data.presets : [];
+      const active = data.active_preset;
+      const rows = [
+        ['Available', data.available ? 'yes' : 'no'],
+        ['Active preset', active || '--'],
+        ['Current drift', data.current_drift === null || data.current_drift === undefined
+          ? '--' : pct(data.current_drift)],
+        ['Recommendation', data.recommendation || '--'],
+      ];
+      el.innerHTML = `
+        <table><tbody>${rows.map(([k, v]) =>
+          `<tr><td class="dim">${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join('')}
+        </tbody></table>
+        ${presets.length ? `
+          <h3 style="margin:var(--sp-4) 0 var(--sp-2);font-size:var(--fs-sm)">Presets</h3>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Preset</th><th>State</th><th></th></tr></thead>
+            <tbody>${presets.map((p) => {
+              const name = typeof p === 'string' ? p : (p.name || p.preset || '');
+              const label = (p && p.label) || name;
+              const isActive = name && name === active;
+              return `<tr>
+                <td>${esc(label)}<br><span class="dim mono">${esc(name)}</span></td>
+                <td>${isActive ? '<span class="pill positive">active</span>' : '<span class="dim">&mdash;</span>'}</td>
+                <td class="num">${isActive ? '' : `<button class="btn sm" data-bucket-preset="${esc(name)}"
+                  data-needs-token data-risk="guarded"
+                  title="Rewrites the capital bucket allocation">Apply</button>`}</td>
+              </tr>`;
+            }).join('')}</tbody></table></div>` : ''}
+        <p class="dim" style="text-align:left">Applying a preset rewrites the capital
+        allocation the optimizer sizes positions against.</p>`;
+    },
+  });
+
+  panel('stairstep', {
+    title: 'Stair-step taker', endpoint: API.stairstep,
+    render(el, data) {
+      if (!data.available) {
+        el.innerHTML = '<p class="empty">Stair-step profit taking is not available.</p>';
+        return;
+      }
+      const rows = Array.isArray(data.symbols) ? data.symbols : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No stair-step ladders configured.</p>';
+        return;
+      }
+      el.innerHTML = `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Symbol</th><th class="num">Steps</th><th class="num">Filled</th><th>State</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td class="mono">${esc(r.symbol || r.product_id || '--')}</td>
+            <td class="num">${num(r.steps ?? r.total_steps, 0)}</td>
+            <td class="num">${num(r.filled ?? r.filled_steps, 0)}</td>
+            <td><span class="pill">${esc(r.enabled === false ? 'paused' : 'active')}</span></td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  /* ── analysis breadth ────────────────────────────────────────────────── */
+
+  panel('diversification', {
+    title: 'Signal diversification', endpoint: API.diversification,
+    render(el, data) {
+      // name, label, source, group, asset_class, type, description, active,
+      // total_signals, latest_signal. `group` is the independence family the
+      // ConfidenceMatrix uses, so it is the column worth reading.
+      const rows = Array.isArray(data.strategies) ? data.strategies : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No diversification data.</p>';
+        return;
+      }
+      const contributing = rows.filter((r) => Number(r.total_signals) > 0).length;
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">${contributing} of ${rows.length} strategies
+          have produced a signal &middot; ${esc((data.source_groups || []).join(', ') || 'no groups')}</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Strategy</th><th>Group</th><th>Asset class</th>
+            <th class="num">Signals</th><th>Latest</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td><strong>${esc(r.label || r.name || '--')}</strong><br>
+              <span class="dim">${esc(r.description || '')}</span></td>
+            <td><span class="pill accent">${esc(r.group || '--')}</span></td>
+            <td class="dim">${esc(r.asset_class || '--')}</td>
+            <td class="num">${num(r.total_signals, 0)}</td>
+            <td class="dim">${esc(r.latest_signal ? String(r.latest_signal) : '--')}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  panel('performance', {
+    title: 'Performance', endpoint: API.performance,
+    render(el, data) {
+      const m = data.summary_metrics || {};
+      const rows = [
+        ['Total trades', num(m.total_trades, 0)],
+        ['Volume', money(m.total_volume_usd)],
+        ['Fees', money(m.total_fees_usd)],
+        ['Return', `${num(m.total_return_pct, 2)}%`],
+        ['Annualised', `${num(m.annualized_return_pct, 2)}%`],
+        ['Sharpe', num(m.sharpe_ratio, 2)],
+        ['Max drawdown', `${num(m.max_drawdown_pct, 2)}%`],
+        ['Buy / sell', `${num(m.buy_trades, 0)} / ${num(m.sell_trades ?? m.total_trades - (m.buy_trades || 0), 0)}`],
+      ];
+      el.innerHTML = `<table><tbody>${rows.map(([k, v]) =>
+        `<tr><td class="dim">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}</tbody></table>`;
+    },
+  });
+
+  panel('orderflow', {
+    title: 'Order flow', endpoint: API.orderflow,
+    render(el, data) {
+      // /signals/orderflow reads order_flow_signals.json, which is empty until
+      // the daemon has written it. Say that rather than showing an empty table
+      // that looks like "no flow".
+      const entries = Object.entries(data || {})
+        .filter(([, v]) => v !== null && v !== undefined);
+      if (!entries.length) {
+        el.innerHTML = `<p class="empty">No order-flow signals recorded yet.</p>
+          <p class="dim" style="text-align:left">Populated by the market daemon;
+          until it has run once this stays empty.</p>`;
+        return;
+      }
+      el.innerHTML = `<table><tbody>${entries.map(([k, v]) => {
+        const value = (v && typeof v === 'object') ? (v.signal ?? v.value ?? v.bias ?? JSON.stringify(v)) : v;
+        const signed = Number(value);
+        return `<tr><td class="mono dim">${esc(k)}</td>
+          <td class="num ${Number.isFinite(signed) ? signedClass(signed) : 'dim'}">${esc(String(value))}</td></tr>`;
+      }).join('')}</tbody></table>`;
+    },
+  });
+
+  panel('venues', {
+    title: 'Venue balances', endpoint: API.venueBalances,
+    render(el, data) {
+      // {kalshi:{configured,balance_usd,portfolio_value_usd,positions,error},
+      //  polymarket:{configured,balance_usd,positions,note}, ts}
+      const one = (name, v) => {
+        if (!v) return `<tr><td>${esc(name)}</td><td colspan="3" class="dim">not reported</td></tr>`;
+        const pos = Array.isArray(v.positions) ? v.positions.length : 0;
+        const bal = v.balance_usd === null || v.balance_usd === undefined
+          ? '--' : money(v.balance_usd);
+        const why = v.error ? ` <span class="dim">(${esc(String(v.error))})</span>` : '';
+        const cls = v.configured ? 'positive' : 'dim';
+        return `<tr>
+          <td>${esc(name)} <span class="pill ${cls}">${v.configured ? 'configured' : 'not configured'}</span></td>
+          <td class="num">${bal}${why}</td>
+          <td class="num">${pos}</td>
+          <td class="dim">${esc(v.note || '')}</td>
+        </tr>`;
+      };
+      el.innerHTML = `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Venue</th><th class="num">Balance</th>
+            <th class="num">Positions</th><th>Note</th></tr></thead>
+          <tbody>${one('Kalshi', data.kalshi)}${one('Polymarket', data.polymarket)}</tbody>
+        </table></div>`;
+    },
+  });
+
+  panel('arb-settlement', {
+    title: 'Arbitrage settlement', endpoint: API.arbSettlement,
+    render(el, data) {
+      const now = data.settled_now || {};
+      const sum = data.summary || {};
+      const rows = [
+        ['Settled this pass', num(now.settled, 0)],
+        ['Expired', num(now.expired, 0)],
+        ['Still open', num(now.still_open, 0)],
+        ['Realised P&L', money(now.realized_pnl, { signed: true })],
+        ['Total trades', num(sum.total_trades, 0)],
+        ['Open expected P&L', money(sum.open_expected_pnl, { signed: true })],
+        ['Diverged pairs', num(sum.diverged_pairs, 0)],
+      ];
+      const diverged = Number(sum.diverged_pairs) || 0;
+      el.innerHTML = `
+        ${diverged ? `<p class="banner danger" style="margin:0 0 var(--sp-3)"><span class="dot bad"></span>
+          <span>${diverged} pair${diverged === 1 ? '' : 's'} diverged between venues. That is a real
+          discrepancy, not a rounding difference.</span></p>` : ''}
+        <table><tbody>${rows.map(([k, v]) =>
+          `<tr><td class="dim">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}</tbody></table>`;
+    },
+  });
+
   panel('accounts', {
     title: 'Accounts', endpoint: API.accounts,
     render(el, data) {
@@ -1175,6 +1784,159 @@ function registerPanels() {
 API.candles = () => `/market/candles?symbol=${encodeURIComponent(state.symbol)}`
   + `&granularity=${state.granularity}&limit=200`;
 
+
+
+/* Move a proposal into the ticket. Shared by the trade-plan link and the
+ * position close button so both behave identically -- an operator who learns one
+ * gets the other for free. */
+function loadTicket({ symbol, side, size, reason }) {
+  const value = String(symbol || '').trim().toUpperCase();
+  if (!value) return;
+  const input = $('#oe-symbol');
+  input.value = value;
+  if (side) {
+    state.side = String(side).toUpperCase();
+    $$('.side-toggle button').forEach((b) => b.setAttribute(
+      'aria-pressed', String(b.dataset.side === state.side),
+    ));
+  }
+  if (size !== undefined && size !== null && size !== '') $('#oe-size').value = size;
+  navigate('execute');
+  refreshPreview();
+  toast(reason ? `${reason} — ${value} loaded into the ticket` : `${value} loaded into the ticket`, '');
+}
+
+/* ── order preview ────────────────────────────────────────────────────────
+ *
+ * The server's api_order_submit resolves its own price, then derives quantity,
+ * stop, target and fee from it. None of that is visible before submitting, so an
+ * operator commits to an order without knowing what bracket it will carry -- and
+ * if the price cannot be fetched the submit fails with "could not fetch price",
+ * which is only discovered after the fact.
+ *
+ * This mirrors that arithmetic exactly (see api_order_submit) and shows it
+ * first. One honest caveat, stated in the UI rather than hidden: the preview
+ * reads /evaluations/price, while the submit reads a 1m candle close, so the
+ * entry here is indicative and the server re-derives at execution. Showing a
+ * number the server will not use as if it were authoritative would be worse than
+ * showing none.
+ */
+
+const PREVIEW_DEFAULTS = { stopPct: 3, targetPct: 6, feeRate: 0.001 };
+
+function previewInputs() {
+  const size = Number($('#oe-size').value.trim());
+  const stopPct = $('#oe-stop').value.trim() === ''
+    ? PREVIEW_DEFAULTS.stopPct / 100
+    : Number($('#oe-stop').value) / 100;
+  const targetPct = $('#oe-target').value.trim() === ''
+    ? PREVIEW_DEFAULTS.targetPct / 100
+    : Number($('#oe-target').value) / 100;
+  return {
+    symbol: $('#oe-symbol').value.trim().toUpperCase(),
+    side: state.side,
+    size,
+    stopPct,
+    targetPct,
+  };
+}
+
+function renderPreview(res, input) {
+  const host = $('#oe-preview');
+  if (!host) return;
+
+  if (!input.symbol) { host.innerHTML = ''; return; }
+  if (!Number.isFinite(input.size) || input.size <= 0) {
+    host.innerHTML = '<p class="dim">Enter a size in USD to preview the bracket.</p>';
+    return;
+  }
+
+  if (!res.ok) {
+    host.innerHTML = `<div class="panel-error" role="status"><div>
+      <strong>Cannot price ${esc(input.symbol)}</strong>
+      ${res.status === 0
+        ? 'The dashboard server is unreachable, so the order cannot be priced either.'
+        : esc(res.error ? `Price lookup failed: ${res.error}` : `Price lookup failed (HTTP ${res.status}).`)}
+      The submit would fail the same way.</div></div>`;
+    return;
+  }
+
+  const data = res.data || {};
+  const price = Number(data.current_price_usd);
+  if (!Number.isFinite(price) || price <= 0) {
+    host.innerHTML = `<div class="panel-error" role="status"><div>
+      <strong>No price for ${esc(input.symbol)}</strong>
+      The server would reject this order with &ldquo;could not fetch price&rdquo;.</div></div>`;
+    return;
+  }
+
+  const buy = input.side === 'BUY';
+  const stop = round2(price * (buy ? 1 - input.stopPct : 1 + input.stopPct));
+  const target = round2(price * (buy ? 1 + input.targetPct : 1 - input.targetPct));
+  const qty = input.size / price;
+  const fee = input.size * PREVIEW_DEFAULTS.feeRate;
+  const risk = Math.abs(price - stop);
+  const reward = Math.abs(target - price);
+  const rr = risk > 0 ? reward / risk : null;
+  // Inverted bracket: the stop is on the wrong side of entry. The server accepts
+  // it and creates it, so the order would be live with a stop above a long's
+  // entry -- it fills immediately.
+  const inverted = buy ? stop >= price : stop <= price;
+
+  const m = data.market_data || {};
+  host.innerHTML = `
+    <table class="preview">
+      <tbody>
+        <tr><td class="dim">Indicative entry</td><td class="num">${money(price)}</td></tr>
+        <tr><td class="dim">Quantity</td><td class="num">${num(qty, 6)}</td></tr>
+        <tr><td class="dim">Stop (${num(input.stopPct * 100, 2)}%)</td>
+          <td class="num ${inverted ? 'down' : ''}">${money(stop)}</td></tr>
+        <tr><td class="dim">Target (${num(input.targetPct * 100, 2)}%)</td>
+          <td class="num">${money(target)}</td></tr>
+        <tr><td class="dim">Est. fee</td><td class="num dim">${money(fee)}</td></tr>
+        <tr><td class="dim">Reward : risk</td>
+          <td class="num">${rr === null ? '--' : `${num(rr, 2)} : 1`}</td></tr>
+      </tbody>
+    </table>
+    ${inverted ? `<p class="banner danger" style="margin:var(--sp-3) 0 0"><span class="dot bad"></span>
+      <span>The stop is on the wrong side of entry for a ${esc(input.side)}. The server will
+      create it and it will fill immediately.</span></p>` : ''}
+    <p class="dim" style="margin:var(--sp-3) 0 0">
+      Capital bucket <strong>growth</strong> &middot;
+      spread ${num(m.spread_bps, 1)} bps &middot;
+      liquidity ${num(m.liquidity_score, 0)}
+      ${Number.isFinite(Number(data.summary && data.summary.weighted_avg_target_usd))
+        ? `&middot; consensus target ${money(Number(data.summary.weighted_avg_target_usd))}` : ''}
+    </p>
+    <p class="dim" style="margin:var(--sp-2) 0 0">Indicative. The server re-fetches the price
+    when you submit and derives the bracket from that.</p>`;
+}
+
+function round2(value) { return Math.round(value * 100) / 100; }
+
+let previewTimer = null;
+let previewToken = 0;
+
+async function refreshPreview() {
+  const input = previewInputs();
+  const token = ++previewToken;
+  renderPreview({ ok: false, status: 0, error: 'pending' }, input);
+  if (!input.symbol || !Number.isFinite(input.size) || input.size <= 0) {
+    renderPreview({ ok: false, status: 0 }, input);
+    return;
+  }
+  const res = await request(API.priceEvaluation(input.symbol), { timeout: 15000 });
+  // A slower lookup for a symbol the operator has already typed over must not
+  // overwrite the newer one.
+  if (token !== previewToken) return;
+  renderPreview(res, input);
+}
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshPreview, 350);
+}
+
 /* ── actions ────────────────────────────────────────────────────────────── */
 
 async function submitOrder(event) {
@@ -1209,30 +1971,50 @@ async function submitOrder(event) {
   msg.textContent = 'Submitting…';
   const res = await request(API.orderSubmit, { method: 'POST', body, auth: true });
   if (res.ok && res.data && res.data.ok) {
+    recordAction({ path: '/orders/submit', ok: true, outcome: 'submitted' });
     msg.className = 'msg ok';
     msg.textContent = `Submitted. Pending approval${res.data.token ? ` · ref ${String(res.data.token).slice(0, 8)}` : ''}.`;
     toast('Order submitted for approval', 'ok');
   } else if (res.status === 401) {
+    recordAction({ path: '/orders/submit', ok: false, outcome: 'needs token' });
     msg.className = 'msg bad';
     msg.textContent = 'Operator token required — use Unlock actions.';
   } else {
+    recordAction({
+      path: '/orders/submit', ok: false, outcome: String(res.error || res.status).slice(0, 40),
+    });
     msg.className = 'msg bad';
     msg.textContent = `Rejected: ${res.error || res.status}`;
   }
 }
 
+/* `confirm` is destructured to `message` because `confirm` is also a global here,
+ * and then the *global* was being passed to window.confirm() -- so every
+ * confirmation dialog in the dashboard opened showing the source of the native
+ * function instead of what it was about to do. Approving a real order asked for
+ * confirmation with "(msg) => { seen.push(String(msg)); return false; }" in the
+ * dialog. The prompt still blocked, so nothing had gone wrong by accident, but
+ * the one line standing between an operator and a capital move was stating
+ * nothing. Assert on the dialog's contents, not merely that a dialog appeared. */
 async function act(path, { method = 'POST', confirm: message, done, body } = {}) {
-  if (confirm && !window.confirm(confirm)) return;
+  if (message && !window.confirm(message)) {
+    recordAction({ path, ok: false, outcome: 'cancelled' });
+    return;
+  }
   const res = await request(path, { method, body, auth: true });
   if (res.status === 401) {
+    recordAction({ path, ok: false, outcome: 'needs token' });
     toast('Operator token required — use Unlock actions', 'bad');
     return;
   }
   if (res.ok && (!res.data || res.data.ok !== false)) {
+    recordAction({ path, ok: true, outcome: done || 'ok' });
     toast(done || 'Done', 'ok');
     refreshAll({ immediate: true });
   } else {
-    toast(`Failed: ${res.error || res.status}`, 'bad');
+    const why = res.error || `HTTP ${res.status}`;
+    recordAction({ path, ok: false, outcome: String(why).slice(0, 40) });
+    toast(`Failed: ${why}`, 'bad');
   }
 }
 
@@ -1255,6 +2037,10 @@ function bindActions() {
     },
   ));
   $('#refresh-btn').addEventListener('click', () => refreshAll({ immediate: true }));
+  $('#audit-clear').addEventListener('click', () => {
+    try { sessionStorage.removeItem(AUDIT_KEY); } catch (_) { /* ignore */ }
+    renderAudit();
+  });
   $('#cancel-all').addEventListener('click', () => act(API.cancelAllBrackets, {
     method: 'POST',
     confirm: 'Cancel every protective bracket? Open positions lose their stops and targets.',
@@ -1287,10 +2073,52 @@ function bindActions() {
       return;
     }
     const symbol = event.target.closest('[data-symbol]');
-    if (symbol) {
+    if (symbol && symbol.dataset.symbol) {
       state.symbol = symbol.dataset.symbol;
-      navigate('market');
+      navigate('analyse');
       refreshPanel(panels.find((p) => p.id === 'candles'));
+      return;
+    }
+
+    // Analysis -> execution in one click: load the symbol into the ticket and
+    // take the operator to it. This is the seam that made the old eleven-view
+    // layout tedious -- sizing an order started from a signal five views away.
+    const prefill = event.target.closest('[data-prefill]');
+    if (prefill) {
+      loadTicket({
+        symbol: prefill.dataset.prefill,
+        side: prefill.dataset.prefillSide,
+        size: prefill.dataset.prefillSize,
+        reason: prefill.dataset.prefillReason,
+      });
+      return;
+    }
+
+    const runAction = event.target.closest('[data-run-action]');
+    if (runAction) {
+      const risk = String(runAction.dataset.risk || 'safe').toLowerCase();
+      const verb = risk === 'safe' ? 'Run' : 'Run this guarded action';
+      act(API.runAction, {
+        body: { action: runAction.dataset.runAction },
+        // A guarded action gets a confirmation that says more than "are you
+        // sure", because it is the only thing standing between a queued
+        // rebalance and a live one.
+        confirm: `${verb}: ${runAction.dataset.runAction}?`
+          + (risk === 'safe' ? '' : ' This is marked guarded and may change trading behaviour.'),
+        done: 'Action queued',
+      });
+      return;
+    }
+
+    const bucket = event.target.closest('[data-bucket-preset]');
+    if (bucket) {
+      act(API.applyBucketPreset, {
+        body: { preset: bucket.dataset.bucketPreset },
+        confirm: `Rewrite the capital allocation to "${bucket.dataset.bucketPreset}"? `
+          + 'Every position size the optimizer calculates afterwards is measured against it.',
+        done: 'Allocation applied',
+      });
+      return;
     }
   });
 
@@ -1298,6 +2126,13 @@ function bindActions() {
     state.granularity = Number(event.target.value);
     refreshPanel(panels.find((p) => p.id === 'candles'));
   });
+
+  // Debounced: typing a symbol fires per keystroke, and each preview is a price
+  // lookup. 350ms is long enough to coalesce a symbol, short enough to feel live.
+  ['#oe-symbol', '#oe-size', '#oe-stop', '#oe-target'].forEach((sel) => {
+    $(sel).addEventListener('input', schedulePreview);
+  });
+  $$('.side-toggle button').forEach((btn) => btn.addEventListener('click', schedulePreview));
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) refreshAll({ immediate: true });
@@ -1308,7 +2143,7 @@ function bindActions() {
   document.addEventListener('keydown', (event) => {
     if (event.target.matches('input, select, textarea')) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const map = { 1: 'overview', 2: 'positions', 3: 'approvals', 4: 'opportunities', 5: 'market', 6: 'strategies', 7: 'system' };
+    const map = { 1: 'overview', 2: 'execute', 3: 'analyse', 4: 'bot', 5: 'capital' };
     if (map[event.key]) { event.preventDefault(); navigate(map[event.key]); }
     else if (event.key === 'r') { event.preventDefault(); refreshAll({ immediate: true }); }
     else if (event.key === 't') { event.preventDefault(); cycleTheme(); }
@@ -1342,13 +2177,19 @@ function boot() {
   try { theme = localStorage.getItem(THEME_KEY) || 'dark'; } catch (_) { /* ignore */ }
   applyTheme(theme);
 
-  // Static panels get a skeleton before the first poll resolves, so the page
-  // never renders as an empty shell.
-  $$('.panel-body').forEach((body) => {
-    body.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  registerPanels();
+  renderAudit();
+
+  // Placeholder skeletons, so the page is never a blank shell. refreshPanel
+  // replaces these on its first pass, and a pre-rendered skeleton used to
+  // suppress the "this is slow, please wait" note a slow panel needs — the
+  // watchlist then sat on three unlabelled grey bars for half a minute.
+  // Only for panels that are not polling, since those have no other path to
+  // getting one; polling panels get theirs within a tick.
+  panels.filter((p) => !p.poll).forEach((spec) => {
+    bodiesFor(spec.id).forEach((el) => showSkeleton(el, { slow: spec.slow, label: spec.title }));
   });
 
-  registerPanels();
   renderNav();
   renderTokenState();
   bindActions();

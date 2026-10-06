@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark light" />
 <title>PM Terminal</title>
+<!-- Inline SVG favicon. A missing one makes the browser request /favicon.ico on
+     every load, which 404s and puts a console error on a page whose whole job is
+     to be trustworthy at a glance. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c111a'/%3E%3Cpath d='M7 22V10h4.2l3 6.4 3-6.4H21v12h-3v-6.6l-2.6 5.4h-2.8L10 15.4V22z' fill='%235aa9ff'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/static/dashboard.css" />
 </head>
 <body>
@@ -44,16 +48,17 @@
 
   <main class="main" id="main">
 
-    <!-- ── Overview ─────────────────────────────────────────────────── -->
+    <!-- ── Overview: the one-screen answer ─────────────────────────────── -->
     <section class="view" id="view-overview" aria-label="Overview">
       <div id="banner-slot"></div>
 
       <div class="grid split">
         <div class="card">
-<header><h2>Equity curve</h2></header>
-        <div class="body">
-          <div id="equity-chart" data-panel="equity"><div class="skeleton"></div></div>
-        </div>
+          <header><h2>Equity curve</h2><span class="spacer"></span>
+            <a class="btn sm ghost" href="#analyse">Analyse</a></header>
+          <div class="body">
+            <div id="equity-chart" data-panel="equity"><div class="skeleton"></div></div>
+          </div>
         </div>
         <div class="card">
           <header><h2>Session</h2></header>
@@ -65,156 +70,256 @@
 
       <div class="grid cols-2" style="margin-top:var(--sp-4)">
         <div class="card">
+          <header><h2>Buying power</h2><span class="spacer"></span>
+            <a class="btn sm ghost" href="#execute">Execute</a></header>
+          <div class="panel-body" data-panel="buy-power"></div>
+        </div>
+        <div class="card">
           <header><h2>Service health</h2><span class="spacer"></span><span class="pill">/ready</span></header>
           <div class="panel-body" data-panel="health"></div>
         </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
         <div class="card">
-          <header><h2>Open positions</h2></header>
+          <header><h2>Open positions</h2><span class="spacer"></span>
+            <a class="btn sm ghost" href="#execute">Execute</a></header>
           <div class="panel-body" data-panel="positions"></div>
+        </div>
+        <div class="card">
+          <header><h2>Proposed trade plans</h2></header>
+          <div class="panel-body" data-panel="trade-plans"></div>
         </div>
       </div>
     </section>
 
-    <!-- ── Positions ────────────────────────────────────────────────── -->
-    <section class="view" id="view-positions" aria-label="Positions" hidden>
-      <div class="card">
-        <header><h2>Open positions</h2></header>
-        <div class="panel-body" data-panel="positions"></div>
-      </div>
-      <div class="card" style="margin-top:var(--sp-4)">
-        <header>
-          <h2>Protective brackets</h2>
-          <span class="spacer"></span>
-          <button class="btn sm danger" id="cancel-all" data-needs-token
-                  title="Requires the operator token">Cancel all</button>
-        </header>
-        <div class="panel-body" data-panel="brackets"></div>
-      </div>
-    </section>
-
-    <!-- ── Approvals ────────────────────────────────────────────────── -->
-    <section class="view" id="view-approvals" aria-label="Approvals" hidden>
+    <!-- ── Execute: everything that moves money, in one place ───────────── -->
+    <section class="view" id="view-execute" aria-label="Execute" hidden>
       <div class="banner warning">
         <span class="dot warn"></span>
-        <span>Approving releases a <strong>real order</strong> on the next optimizer tick.
+        <span>Everything on this view can move real capital.
           Browsing is read-only; acting needs the operator token.</span>
         <span class="spacer"></span>
       </div>
-      <div class="card">
-        <header><h2>Pending approvals</h2></header>
-        <div class="panel-body" data-panel="approvals"></div>
-      </div>
-    </section>
 
-    <!-- ── Opportunities ────────────────────────────────────────────── -->
-    <section class="view" id="view-opportunities" aria-label="Opportunities" hidden>
       <div class="grid split">
-        <div class="card">
-          <header><h2>Opportunities</h2></header>
-          <div class="panel-body" data-panel="opportunities"></div>
-        </div>
+        <div>
+          <div class="card">
+            <header><h2>Buying power</h2></header>
+            <div class="panel-body" data-panel="buy-power"></div>
+          </div>
 
-        <div class="card">
-          <header><h2>Order ticket</h2></header>
-          <div class="body">
-            <form id="oe-form" autocomplete="off">
-              <div class="ticket">
-                <label class="field wide">
-                  <span>Product</span>
-                  <input id="oe-symbol" value="BTC-USD" spellcheck="false" required />
-                </label>
-                <label class="field">
-                  <span>Side</span>
-                  <span class="side-toggle">
-                    <button type="button" data-side="BUY" aria-pressed="true">Buy</button>
-                    <button type="button" data-side="SELL" aria-pressed="false">Sell</button>
-                  </span>
-                </label>
-                <label class="field">
-                  <span>Size (USD)</span>
-                  <input id="oe-size" placeholder="250" inputmode="decimal" required />
-                </label>
-                <label class="field">
-                  <span>Stop % <span class="dim">(default 3)</span></span>
-                  <input id="oe-stop" placeholder="3" inputmode="decimal" />
-                </label>
-                <label class="field">
-                  <span>Target % <span class="dim">(default 6)</span></span>
-                  <input id="oe-target" placeholder="6" inputmode="decimal" />
-                </label>
-                <div class="wide">
-                  <div class="token-bar" id="token-bar">
-                    <span class="dot idle"></span>
-                    <span id="token-state">Read-only</span>
-                    <span class="spacer"></span>
-                    <button type="button" class="btn sm primary" id="token-btn">Unlock actions</button>
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Order ticket</h2></header>
+            <div class="body">
+              <form id="oe-form" autocomplete="off">
+                <div class="ticket">
+                  <label class="field wide">
+                    <span>Product</span>
+                    <input id="oe-symbol" value="BTC-USD" spellcheck="false" required />
+                  </label>
+                  <label class="field">
+                    <span>Side</span>
+                    <span class="side-toggle">
+                      <button type="button" data-side="BUY" aria-pressed="true">Buy</button>
+                      <button type="button" data-side="SELL" aria-pressed="false">Sell</button>
+                    </span>
+                  </label>
+                  <label class="field">
+                    <span>Size (USD)</span>
+                    <input id="oe-size" placeholder="250" inputmode="decimal" required />
+                  </label>
+                  <label class="field">
+                    <span>Stop % <span class="dim">(default 3)</span></span>
+                    <input id="oe-stop" placeholder="3" inputmode="decimal" />
+                  </label>
+                  <label class="field">
+                    <span>Target % <span class="dim">(default 6)</span></span>
+                    <input id="oe-target" placeholder="6" inputmode="decimal" />
+                  </label>
+                  <div class="wide">
+                    <div class="token-bar" id="token-bar">
+                      <span class="dot idle"></span>
+                      <span id="token-state">Read-only</span>
+                      <span class="spacer"></span>
+                      <button type="button" class="btn sm primary" id="token-btn">Unlock actions</button>
+                    </div>
+                  </div>
+                  <div class="wide">
+                    <button type="submit" class="btn primary" data-needs-token style="width:100%">
+                      Submit for approval
+                    </button>
                   </div>
                 </div>
-                <div class="wide">
-                  <button type="submit" class="btn primary" data-needs-token style="width:100%">
-                    Submit for approval
-                  </button>
-                </div>
-              </div>
-              <p class="msg" id="oe-msg" role="status"></p>
-            </form>
+                <div id="oe-preview" aria-live="polite"></div>
+                <p class="msg" id="oe-msg" role="status"></p>
+              </form>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Pending approvals</h2></header>
+            <div class="panel-body" data-panel="approvals"></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <header><h2>Open positions</h2></header>
+            <div class="panel-body" data-panel="positions"></div>
+          </div>
+
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header>
+              <h2>Protective brackets</h2>
+              <span class="spacer"></span>
+              <button class="btn sm danger" id="cancel-all" data-needs-token
+                      title="Requires the operator token">Cancel all</button>
+            </header>
+            <div class="panel-body" data-panel="brackets"></div>
+          </div>
+
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Recent trades</h2></header>
+            <div class="panel-body" data-panel="recent-trades"></div>
+          </div>
+
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Actions from this tab</h2><span class="spacer"></span>
+              <button class="btn sm ghost" id="audit-clear">Clear</button></header>
+            <div class="body">
+              <div id="oe-audit" aria-live="polite"></div>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ── Market ───────────────────────────────────────────────────── -->
-    <section class="view" id="view-market" aria-label="Market" hidden>
-      <div class="card">
-        <header>
-          <h2 id="candles-title">Chart</h2>
-          <span class="spacer"></span>
-          <label class="field" style="flex-direction:row;align-items:center;gap:var(--sp-2)">
-            <span>Granularity</span>
-            <select id="granularity" aria-label="Candle interval">
-              <option value="60">1m</option>
-              <option value="300">5m</option>
-              <option value="900">15m</option>
-              <option value="1800">30m</option>
-              <option value="3600" selected>1H</option>
-              <option value="21600">6H</option>
-              <option value="86400">1D</option>
-            </select>
-          </label>
-        </header>
-        <div class="body" id="candles-body" data-panel="candles"></div>
+    <!-- ── Analyse: why the system thinks what it thinks ────────────────── -->
+    <section class="view" id="view-analyse" aria-label="Analyse" hidden>
+      <div class="grid split">
+        <div class="card">
+          <header>
+            <h2 id="candles-title">Chart</h2>
+            <span class="spacer"></span>
+            <label class="field" style="flex-direction:row;align-items:center;gap:var(--sp-2)">
+              <span>Granularity</span>
+              <select id="granularity" aria-label="Candle interval">
+                <option value="60">1m</option>
+                <option value="300">5m</option>
+                <option value="900">15m</option>
+                <option value="1800">30m</option>
+                <option value="3600" selected>1H</option>
+                <option value="21600">6H</option>
+                <option value="86400">1D</option>
+              </select>
+            </label>
+          </header>
+          <div class="body" id="candles-body" data-panel="candles"></div>
+        </div>
+
+        <div>
+          <div class="card">
+            <header><h2>Market regime</h2></header>
+            <div class="panel-body" data-panel="regime"></div>
+          </div>
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Watchlist</h2></header>
+            <div class="panel-body" data-panel="watchlist"></div>
+          </div>
+        </div>
       </div>
 
       <div class="grid cols-2" style="margin-top:var(--sp-4)">
         <div class="card">
-          <header><h2>Watchlist</h2></header>
-          <div class="panel-body" data-panel="watchlist"></div>
+          <header><h2>Opportunities</h2></header>
+          <div class="panel-body" data-panel="opportunities"></div>
         </div>
         <div class="card">
-          <header><h2>Regime</h2></header>
-          <div class="panel-body" data-panel="regime"></div>
+          <header><h2>Signal feed</h2></header>
+          <div class="panel-body" data-panel="signal-feed"></div>
         </div>
       </div>
-    </section>
 
-    <!-- ── Signals ──────────────────────────────────────────────────── -->
-    <section class="view" id="view-signals" aria-label="Signals" hidden>
-      <div class="card">
-        <header><h2>Signal feed</h2></header>
-        <div class="panel-body" data-panel="signal-feed"></div>
-      </div>
-    </section>
-
-    <!-- ── Strategies ───────────────────────────────────────────────── -->
-    <section class="view" id="view-strategies" aria-label="Strategies" hidden>
-      <div class="card">
-        <header><h2>Strategy performance</h2></header>
-        <div class="panel-body" data-panel="strategy-perf"></div>
-      </div>
       <div class="grid cols-2" style="margin-top:var(--sp-4)">
         <div class="card">
-          <header><h2>Wash-sale cooldown</h2></header>
-          <div class="panel-body" data-panel="wash-sale"></div>
+          <header><h2>Signal diversification</h2></header>
+          <div class="panel-body" data-panel="diversification"></div>
+        </div>
+        <div class="card">
+          <header><h2>Order flow</h2></header>
+          <div class="panel-body" data-panel="orderflow"></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Venue balances</h2></header>
+          <div class="panel-body" data-panel="venues"></div>
+        </div>
+        <div class="card">
+          <header><h2>Arbitrage settlement</h2></header>
+          <div class="panel-body" data-panel="arb-settlement"></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Strategy performance</h2></header>
+          <div class="panel-body" data-panel="strategy-perf"></div>
+        </div>
+        <div class="card">
+          <header><h2>Performance</h2></header>
+          <div class="panel-body" data-panel="performance"></div>
+        </div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Hypotheses</h2></header>
+          <div class="panel-body" data-panel="research"></div>
+        </div>
+        <div class="card">
+          <header><h2>Backtest experiments</h2></header>
+          <div class="panel-body" data-panel="backtests"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Bot: what the system is, and what it wants to do ─────────────── -->
+    <section class="view" id="view-bot" aria-label="Bot" hidden>
+      <div class="grid split">
+        <div class="card">
+          <header><h2>Operator actions</h2></header>
+          <div class="panel-body" data-panel="actions"></div>
+        </div>
+
+        <div>
+          <div class="card">
+            <header><h2>Service health</h2><span class="spacer"></span>
+              <span class="pill">/ready</span></header>
+            <div class="panel-body" data-panel="health"></div>
+          </div>
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Rebalance</h2></header>
+            <div class="panel-body" data-panel="rebalance"></div>
+          </div>
+          <div class="card" style="margin-top:var(--sp-4)">
+            <header><h2>Stair-step taker</h2></header>
+            <div class="panel-body" data-panel="stairstep"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:var(--sp-4)">
+        <header><h2>Strategies</h2></header>
+        <div class="panel-body" data-panel="strategies"></div>
+      </div>
+
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Paper trade ledger</h2></header>
+          <div class="panel-body" data-panel="paper-trades"></div>
         </div>
         <div class="card">
           <header><h2>Accounts</h2></header>
@@ -223,35 +328,29 @@
       </div>
     </section>
 
-    <!-- ── Capital ──────────────────────────────────────────────────── -->
+    <!-- ── Capital: allocation ───────────────────────────────────────────── -->
     <section class="view" id="view-capital" aria-label="Capital" hidden>
+      <div class="banner warning">
+        <span class="dot warn"></span>
+        <span>Applying a preset <strong>rewrites the capital allocation</strong> the optimizer
+          sizes every position against. It needs the operator token.</span>
+        <span class="spacer"></span>
+      </div>
+
       <div class="card">
         <header><h2>Capital buckets</h2></header>
         <div class="panel-body" data-panel="capital"></div>
       </div>
-    </section>
 
-    <!-- ── Research ─────────────────────────────────────────────────── -->
-    <section class="view" id="view-research" aria-label="Research" hidden>
-      <div class="card">
-        <header><h2>Hypotheses</h2></header>
-        <div class="panel-body" data-panel="research"></div>
-      </div>
-      <div class="card" style="margin-top:var(--sp-4)">
-        <header><h2>Backtest experiments</h2></header>
-        <div class="panel-body" data-panel="backtests"></div>
-      </div>
-    </section>
-
-    <!-- ── System ───────────────────────────────────────────────────── -->
-    <section class="view" id="view-system" aria-label="System" hidden>
-      <div class="card">
-        <header><h2>Service health</h2></header>
-        <div class="panel-body" data-panel="health"></div>
-      </div>
-      <div class="card" style="margin-top:var(--sp-4)">
-        <header><h2>Backtest experiments</h2></header>
-        <div class="panel-body" data-panel="backtests"></div>
+      <div class="grid cols-2" style="margin-top:var(--sp-4)">
+        <div class="card">
+          <header><h2>Rebalance presets</h2></header>
+          <div class="panel-body" data-panel="rebalance"></div>
+        </div>
+        <div class="card">
+          <header><h2>Wash-sale cooldown</h2></header>
+          <div class="panel-body" data-panel="wash-sale"></div>
+        </div>
       </div>
     </section>
 
@@ -265,12 +364,10 @@
     <h2 id="shortcuts-title">Keyboard shortcuts</h2>
     <dl>
       <dt>1</dt><dd>Overview</dd>
-      <dt>2</dt><dd>Positions</dd>
-      <dt>3</dt><dd>Approvals</dd>
-      <dt>4</dt><dd>Opportunities</dd>
-      <dt>5</dt><dd>Market</dd>
-      <dt>6</dt><dd>Strategies</dd>
-      <dt>7</dt><dd>System</dd>
+      <dt>2</dt><dd>Execute</dd>
+      <dt>3</dt><dd>Analyse</dd>
+      <dt>4</dt><dd>Bot</dd>
+      <dt>5</dt><dd>Capital</dd>
       <dt>r</dt><dd>Refresh now</dd>
       <dt>t</dt><dd>Cycle theme</dd>
       <dt>?</dt><dd>This dialog</dd>

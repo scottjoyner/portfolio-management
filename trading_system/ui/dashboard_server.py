@@ -54,6 +54,20 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
 
+# This process observes the feed; it does not maintain it.
+#
+# Every candle endpoint below calls into rest_feed, which persists what it fetched
+# to the Arrow-backed parquet cache. Doing that from more than one request thread
+# segfaults the entire server -- /market/watchlist followed by /market/candles
+# killed it reproducibly, and not only when the two requests overlapped, because
+# ThreadingHTTPServer serves each on a different thread. The feed daemon and the
+# trader still write the cache; a reader that does not write cannot break the
+# writer, and the cache regenerates from any live fetch.
+#
+# Set explicitly rather than left inherited, so an operator's environment cannot
+# silently re-enable the crash path.
+os.environ["FEED_CACHE_PERSIST"] = "0"
+
 # These paths were bound to ROOT/'data' at import, so nothing could redirect
 # them and a test run from the repository root operated on the operator's live
 # files. TRADING_DATA_DIR moves them; the default is the same path as before, so
@@ -475,12 +489,34 @@ def _get_coinbase_cli():
         return None
 
 
-def _update_approval(token: str, status: str) -> bool:
+def _update_approval(token: str, status: str, source: str = "dashboard") -> bool:
+    """Resolve a pending approval, recording *who* resolved it.
+
+    The provenance fields are not decoration. api_approvals infers
+    ``auto_approved`` from the status when the key is absent::
+
+        auto = entry.get("auto_approved", status == "approved")
+
+    So an approval an operator clicked in the browser was reported as
+    ``auto_approved: true`` and the dashboard labelled it "auto" -- telling an
+    operator the system had released a trade they had personally reviewed. In an
+    audit that is worse than a cosmetic bug: it is the difference between "a human
+    looked at this" and "nobody did".
+
+    Writing ``auto_approved`` explicitly stops the inference from firing, and
+    ``resolved_by``/``resolved_at`` make the audit trail answerable. Nothing in
+    the execution path reads either field -- the optimizer branches on ``status``
+    -- so this is additive.
+    """
     updated = False
+    resolved_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     approvals_file = _load_json(APPROVALS_PATH, {})
     if token in approvals_file:
         approvals_file[token]['status'] = status
-        approvals_file[token]['resolved_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        approvals_file[token]['resolved_at'] = resolved_at
+        approvals_file[token]['resolved_by'] = source
+        # Explicit, so api_approvals does not infer "auto" from the status.
+        approvals_file[token]['auto_approved'] = False
         updated = _write_json(APPROVALS_PATH, approvals_file) or updated
 
     operator_state = _load_json(OPERATOR_STATE_PATH, {})
@@ -488,7 +524,9 @@ def _update_approval(token: str, status: str) -> bool:
     for approval in approvals:
         if token in {str(approval.get('id', '')), str(approval.get('token', ''))}:
             approval['status'] = status
-            approval['resolved_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            approval['resolved_at'] = resolved_at
+            approval['resolved_by'] = source
+            approval['auto_approved'] = False
             updated = True
     if updated:
         operator_state['approvals'] = approvals
@@ -668,7 +706,7 @@ def _refresh_cache():
 # ── API Handlers ────────────────────────────────────────────────
 
 def _load_trader_health():
-    path = ROOT / "data" / ".trader_health.json"
+    path = data_dir() / ".trader_health.json"
     return _load_json(str(path), None)
 
 
@@ -683,7 +721,7 @@ def _read_kill_switch(op_state):
     if env_ks.strip().lower() in ("1", "true", "yes", "on"):
         return True
     # File flag (set via POST /kill-switch) halts non-env-locked traders.
-    if (ROOT / "data" / "trading_kill_switch").exists():
+    if (data_dir() / "trading_kill_switch").exists():
         return True
     return False
 
@@ -1276,7 +1314,7 @@ def api_order_submit(payload):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": "dashboard_order_entry",
     }
-    pending_file = ROOT / "data" / "pending_approvals.json"
+    pending_file = data_dir() / "pending_approvals.json"
     inbox_dir = APPROVALS_INBOX
     try:
         os.makedirs(str(inbox_dir), exist_ok=True)
@@ -1396,6 +1434,8 @@ def api_approvals():
             "risk_score": entry.get("priority", 0.5),
             "status": status,
             "auto_approved": auto,
+            "resolved_at": entry.get("resolved_at"),
+            "resolved_by": entry.get("resolved_by"),
             "created_at": entry.get("created_at", ""),
         })
 
@@ -2578,7 +2618,7 @@ def api_crypto_divergence():
 
 
 def api_paper_trades():
-    PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
+    PAPER_TRADES_PATH = data_dir() / "paper-trades.json"
     if not PAPER_TRADES_PATH.exists():
         return {"trades": [], "total": 0, "settlement_summary": {}}
     try:
@@ -2601,7 +2641,7 @@ _LAST_SETTLE_TS = 0.0
 def api_settlement():
     """Actively settle resolved arbitrage paper trades (throttled to every 5 min)."""
     global _LAST_SETTLE_TS
-    PAPER_TRADES_PATH = ROOT / "data" / "paper-trades.json"
+    PAPER_TRADES_PATH = data_dir() / "paper-trades.json"
     now = time.time()
     result = None
     try:
@@ -3049,8 +3089,8 @@ def api_stairstep():
 # Both books start at a flat $10,000 paper balance. Inline computation
 # mirrors scripts/hermes_race_digest.py so the dashboard needs no subprocess.
 
-_AGENT_LEDGER = ROOT / "data" / "hermes_agent_ledger.json"
-_BOT_STATE = ROOT / "data" / "paper_trader_v4_state.json"
+_AGENT_LEDGER = data_dir() / "hermes_agent_ledger.json"
+_BOT_STATE = data_dir() / "paper_trader_v4_state.json"
 
 
 def _competition_agent() -> dict:
@@ -3326,10 +3366,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/strategies/rebalance": lambda: api_rebalance(),
             "/strategies/rebalance/presets": lambda: api_rebalance_presets(),
             "/strategies/stairstep": lambda: api_stairstep(),
-            "/signals/meta-weights": lambda: _load_json(ROOT / "data" / "meta_source_weights.json", {}),
-            "/signals/ensemble": lambda: _load_json(ROOT / "data" / "signal_ensemble.json", {}),
-            "/market/cross-asset-regime": lambda: _load_json(ROOT / "data" / "cross_asset_regime.json", {}),
-            "/signals/orderflow": lambda: _load_json(ROOT / "data" / "order_flow_signals.json", {}),
+            "/signals/meta-weights": lambda: _load_json(data_dir() / "meta_source_weights.json", {}),
+            "/signals/ensemble": lambda: _load_json(data_dir() / "signal_ensemble.json", {}),
+            "/market/cross-asset-regime": lambda: _load_json(data_dir() / "cross_asset_regime.json", {}),
+            "/signals/orderflow": lambda: _load_json(data_dir() / "order_flow_signals.json", {}),
             "/market/candles": lambda: api_market_candles(
                 symbol=_qs(parsed.query, "symbol", "BTC-USD"),
                 granularity=int(_qs(parsed.query, "granularity", 3600)),
@@ -3338,9 +3378,9 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "/market/watchlist": lambda: api_market_watchlist(
                 limit_pairs=int(_qs(parsed.query, "limit", 24)),
             ),
-            "/optimizer/param-opt": lambda: _load_json(ROOT / "data" / "param_opt_results.json", {}),
-            "/optimizer/wash-sale": lambda: _load_json(ROOT / "data" / "wash_sale_state.json", {}),
-            "/optimizer/sr-levels": lambda: _load_json(ROOT / "data" / "sr_levels.json", {}),
+            "/optimizer/param-opt": lambda: _load_json(data_dir() / "param_opt_results.json", {}),
+            "/optimizer/wash-sale": lambda: _load_json(data_dir() / "wash_sale_state.json", {}),
+            "/optimizer/sr-levels": lambda: _load_json(data_dir() / "sr_levels.json", {}),
             "/backtests/experiments": lambda: api_backtest_experiments(),
             "/competition": lambda: api_competition(),
             "/api/competition": lambda: api_competition(),
@@ -3404,7 +3444,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
 
         elif path == "/execution/brackets":
             try:
-                brackets = _load_json(ROOT / "data" / "optimizer_brackets.json", {})
+                brackets = _load_json(data_dir() / "optimizer_brackets.json", {})
                 self._json_response(json.dumps({"brackets": brackets}, default=str))
             except Exception as e:
                 self._json_response(json.dumps({"error": str(e), "brackets": {}}, default=str), status=500)
@@ -3485,15 +3525,15 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 if not bracket_id:
                     self._json_response(json.dumps({"error": "bracket_id required"}), status=400)
                     return
-                brackets = _load_json(ROOT / "data" / "optimizer_brackets.json", {})
+                brackets = _load_json(data_dir() / "optimizer_brackets.json", {})
                 if bracket_id not in brackets:
                     self._json_response(json.dumps({"error": "bracket not found"}), status=404)
                     return
                 del brackets[bracket_id]
-                _write_json(ROOT / "data" / "optimizer_brackets.json", brackets)
+                _write_json(data_dir() / "optimizer_brackets.json", brackets)
                 self._json_response(json.dumps({"ok": True, "cancelled": bracket_id}, default=str))
             elif path == "/execution/brackets/cancel-all":
-                _write_json(ROOT / "data" / "optimizer_brackets.json", {})
+                _write_json(data_dir() / "optimizer_brackets.json", {})
                 self._json_response(json.dumps({"ok": True, "cancelled": "all"}, default=str))
             elif path == "/arbitrage/execute":
                 result = api_execute_arbitrage(payload)
@@ -3508,7 +3548,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                 # KILL_SWITCH=true is set in the environment the trader ignores
                 # this flag; it only halts traders not env-locked.
                 enabled = bool(payload.get("enabled", False))
-                flag = ROOT / "data" / "trading_kill_switch"
+                flag = data_dir() / "trading_kill_switch"
                 try:
                     if enabled:
                         flag.touch()

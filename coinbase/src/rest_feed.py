@@ -118,7 +118,11 @@ def _granularity_to_cb_str(granularity: int) -> str:
 
 def _persist_nas(product_id: str, granularity: int,
                  candles: List[Tuple[int, float, float, float, float, float]]) -> None:
-    """Best-effort durable write of fetched candles to the NAS feed cache."""
+    """Best-effort durable write of fetched candles to the NAS feed cache.
+
+    Opting out is FEED_CACHE_PERSIST=0, honoured inside save_candles so every
+    caller is covered by one gate rather than one per call site.
+    """
     if not candles:
         return
     try:

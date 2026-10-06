@@ -271,10 +271,25 @@ def _mem_key(kind: str, symbol: str, granularity: object) -> str:
 
 # ── public API ────────────────────────────────────────────────────────────
 
+def writes_enabled() -> bool:
+    """Whether this process may write the durable cache.
+
+    Enabled by default. A read-only process sets FEED_CACHE_PERSIST=0 to opt out.
+
+    The guard lives here, at the single choke point every caller goes through,
+    rather than in each caller: ``rest_feed._persist_nas``, ``api_market_candles``
+    and ``api_market_watchlist`` each write directly, and guarding only one of
+    them left the dashboard still crashing.
+    """
+    return (os.environ.get("FEED_CACHE_PERSIST") or "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 def save_candles(kind: str, symbol: str, granularity: object,
                  candles: Sequence[Sequence[float]]) -> int:
     """Append + de-duplicate candles to durable storage. Returns bars written."""
-    if not candles:
+    if not candles or not writes_enabled():
         return 0
     candles = _dedup(_norm(candles))
     path = _path(kind, symbol, f"{granularity}.parquet")

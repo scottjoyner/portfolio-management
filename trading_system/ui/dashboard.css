@@ -500,3 +500,38 @@ kbd {
   .shell { grid-template-columns: 1fr; grid-template-areas: "main"; grid-template-rows: 1fr; }
   body { background: #fff; color: #000; }
 }
+
+/* ── loading & screen-reader-only text ───────────────────────────────────── */
+
+/* Visible to assistive tech, not to the eye. Used for the state of controls
+ * whose visual label already conveys it (e.g. "Loading" beside a skeleton). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* A panel that is genuinely slow to load says so. Silence here is worse than a
+ * pause: three unlabelled grey bars read as a broken dashboard, and an operator
+ * cannot tell whether to wait or reload. */
+.loading-note {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  font-size: var(--fs-xs);
+}
+
+/* ── order preview ───────────────────────────────────────────────────────── */
+
+/* The bracket the server will create, shown before the operator commits. Dense
+ * by design: this is read immediately before a capital move, not studied. */
+.preview {
+  margin-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
+}
+.preview td { padding: 2px 0; font-size: var(--fs-sm); }
+.preview td.num { font-weight: 600; }
