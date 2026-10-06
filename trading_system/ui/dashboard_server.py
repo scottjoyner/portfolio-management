@@ -54,6 +54,20 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'graph-alpha-bot' / 'app' / 'strategies'))
 
+# This process observes the feed; it does not maintain it.
+#
+# Every candle endpoint below calls into rest_feed, which persists what it fetched
+# to the Arrow-backed parquet cache. Doing that from more than one request thread
+# segfaults the entire server -- /market/watchlist followed by /market/candles
+# killed it reproducibly, and not only when the two requests overlapped, because
+# ThreadingHTTPServer serves each on a different thread. The feed daemon and the
+# trader still write the cache; a reader that does not write cannot break the
+# writer, and the cache regenerates from any live fetch.
+#
+# Set explicitly rather than left inherited, so an operator's environment cannot
+# silently re-enable the crash path.
+os.environ["FEED_CACHE_PERSIST"] = "0"
+
 # These paths were bound to ROOT/'data' at import, so nothing could redirect
 # them and a test run from the repository root operated on the operator's live
 # files. TRADING_DATA_DIR moves them; the default is the same path as before, so
