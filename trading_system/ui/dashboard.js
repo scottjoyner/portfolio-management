@@ -71,6 +71,8 @@ const API = {
   ensemble: '/signals/ensemble',
   metaWeights: '/signals/meta-weights',
   venueBalances: '/venue/balances',
+  priceEvaluation: (instrument) =>
+    `/evaluations/price/${encodeURIComponent(String(instrument).trim().toUpperCase())}`,
   arbSettlement: '/arbitrage/settlement',
   arbInternal: '/arbitrage/kalshi-internal',
   predictionMarkets: '/prediction-markets',
@@ -568,6 +570,78 @@ function cycleTheme() {
   applyTheme(order[(order.indexOf(current) + 1) % order.length]);
 }
 
+
+/* ── action audit ──────────────────────────────────────────────────────────
+ *
+ * Every mutating action the UI attempts is recorded in sessionStorage: what was
+ * called, when, and how it ended. A toast disappears after four seconds and the
+ * panel re-renders on the next poll, so "did my approval go through?" has no
+ * answer a few seconds after clicking.
+ *
+ * Deliberately not persisted across sessions and deliberately never records the
+ * token or any request body -- only the path, the outcome and a timestamp. It
+ * lives in sessionStorage for the same reason the token does.
+ */
+
+const AUDIT_KEY = 'pm.action.audit';
+const AUDIT_LIMIT = 25;
+
+function recordAction(entry) {
+  try {
+    const raw = sessionStorage.getItem(AUDIT_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(list)) return;
+    list.unshift({ ...entry, at: new Date().toISOString() });
+    sessionStorage.setItem(AUDIT_KEY, JSON.stringify(list.slice(0, AUDIT_LIMIT)));
+    renderAudit();
+  } catch (_) {
+    // A full or unavailable sessionStorage must not break the action itself.
+  }
+}
+
+function auditEntries() {
+  try {
+    const raw = sessionStorage.getItem(AUDIT_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function renderAudit() {
+  const host = $('#oe-audit');
+  if (!host) return;
+  const rows = auditEntries();
+  if (!rows.length) {
+    host.innerHTML = '<p class="empty">No actions taken from this tab yet.</p>';
+    return;
+  }
+  const label = (path) => {
+    const action = ACTOR_LABELS[path] || path;
+    const verb = action.startsWith('/') ? action : action;
+    return verb;
+  };
+  host.innerHTML = `
+    <div class="table-scroll"><table>
+      <thead><tr><th class="num">When</th><th>Action</th><th>Outcome</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr>
+        <td class="num dim">${when(r.at)}</td>
+        <td class="mono">${esc(label(r.path))}</td>
+        <td><span class="pill ${r.ok ? 'positive' : 'negative'}">${esc(r.outcome)}</span></td>
+      </tr>`).join('')}</tbody></table></div>
+    <p class="dim" style="text-align:left">This tab only, and cleared when it closes.</p>`;
+}
+
+const ACTOR_LABELS = {
+  '/orders/submit': 'order submit',
+  '/kill-switch': 'kill switch',
+  '/execution/brackets/cancel': 'bracket cancel',
+  '/execution/brackets/cancel-all': 'cancel all brackets',
+  '/actions/run': 'operator action',
+  '/capital/buckets/preset': 'capital preset',
+};
+
 /* ── token UI ───────────────────────────────────────────────────────────── */
 
 /* Applied to every [data-needs-token] control, whenever the DOM may have gained
@@ -825,7 +899,7 @@ function registerPanels() {
         <div class="table-scroll"><table>
           <thead><tr><th>Instrument</th><th>Side</th><th class="num">Qty</th>
             <th class="num">Entry</th><th class="num">Mark</th><th class="num">P&amp;L</th>
-            <th class="num">%</th><th>Venue</th></tr></thead>
+            <th class="num">%</th><th>Venue</th><th></th></tr></thead>
           <tbody>${rows.map((p) => `<tr>
             <td class="mono">${esc(p.instrument || p.symbol || '--')}</td>
             <td><span class="pill positive">${esc(p.side || p.classification || '--')}</span></td>
@@ -835,6 +909,12 @@ function registerPanels() {
             <td class="num ${signedClass(p.unrealized_pnl_usd)}">${money(p.unrealized_pnl_usd, { signed: true })}</td>
             <td class="num ${signedClass(p.unrealized_pnl_pct)}">${num(p.unrealized_pnl_pct, 2)}%</td>
             <td class="dim">${esc(p.venue || '--')}</td>
+            <td class="num"><button class="btn sm ghost"
+              data-prefill="${esc(p.instrument || p.symbol || '')}"
+              data-prefill-side="SELL"
+              data-prefill-size="${esc(String(p.quantity_usd ?? p.value ?? ''))}"
+              data-prefill-reason="Close ${esc(p.instrument || p.symbol || '')}"
+              title="Load a closing order into the ticket">Close</button></td>
           </tr>`).join('')}</tbody></table></div>${totals}`;
     },
   });
@@ -1697,6 +1777,159 @@ function registerPanels() {
 API.candles = () => `/market/candles?symbol=${encodeURIComponent(state.symbol)}`
   + `&granularity=${state.granularity}&limit=200`;
 
+
+
+/* Move a proposal into the ticket. Shared by the trade-plan link and the
+ * position close button so both behave identically -- an operator who learns one
+ * gets the other for free. */
+function loadTicket({ symbol, side, size, reason }) {
+  const value = String(symbol || '').trim().toUpperCase();
+  if (!value) return;
+  const input = $('#oe-symbol');
+  input.value = value;
+  if (side) {
+    state.side = String(side).toUpperCase();
+    $$('.side-toggle button').forEach((b) => b.setAttribute(
+      'aria-pressed', String(b.dataset.side === state.side),
+    ));
+  }
+  if (size !== undefined && size !== null && size !== '') $('#oe-size').value = size;
+  navigate('execute');
+  refreshPreview();
+  toast(reason ? `${reason} — ${value} loaded into the ticket` : `${value} loaded into the ticket`, '');
+}
+
+/* ── order preview ────────────────────────────────────────────────────────
+ *
+ * The server's api_order_submit resolves its own price, then derives quantity,
+ * stop, target and fee from it. None of that is visible before submitting, so an
+ * operator commits to an order without knowing what bracket it will carry -- and
+ * if the price cannot be fetched the submit fails with "could not fetch price",
+ * which is only discovered after the fact.
+ *
+ * This mirrors that arithmetic exactly (see api_order_submit) and shows it
+ * first. One honest caveat, stated in the UI rather than hidden: the preview
+ * reads /evaluations/price, while the submit reads a 1m candle close, so the
+ * entry here is indicative and the server re-derives at execution. Showing a
+ * number the server will not use as if it were authoritative would be worse than
+ * showing none.
+ */
+
+const PREVIEW_DEFAULTS = { stopPct: 3, targetPct: 6, feeRate: 0.001 };
+
+function previewInputs() {
+  const size = Number($('#oe-size').value.trim());
+  const stopPct = $('#oe-stop').value.trim() === ''
+    ? PREVIEW_DEFAULTS.stopPct / 100
+    : Number($('#oe-stop').value) / 100;
+  const targetPct = $('#oe-target').value.trim() === ''
+    ? PREVIEW_DEFAULTS.targetPct / 100
+    : Number($('#oe-target').value) / 100;
+  return {
+    symbol: $('#oe-symbol').value.trim().toUpperCase(),
+    side: state.side,
+    size,
+    stopPct,
+    targetPct,
+  };
+}
+
+function renderPreview(res, input) {
+  const host = $('#oe-preview');
+  if (!host) return;
+
+  if (!input.symbol) { host.innerHTML = ''; return; }
+  if (!Number.isFinite(input.size) || input.size <= 0) {
+    host.innerHTML = '<p class="dim">Enter a size in USD to preview the bracket.</p>';
+    return;
+  }
+
+  if (!res.ok) {
+    host.innerHTML = `<div class="panel-error" role="status"><div>
+      <strong>Cannot price ${esc(input.symbol)}</strong>
+      ${res.status === 0
+        ? 'The dashboard server is unreachable, so the order cannot be priced either.'
+        : esc(res.error ? `Price lookup failed: ${res.error}` : `Price lookup failed (HTTP ${res.status}).`)}
+      The submit would fail the same way.</div></div>`;
+    return;
+  }
+
+  const data = res.data || {};
+  const price = Number(data.current_price_usd);
+  if (!Number.isFinite(price) || price <= 0) {
+    host.innerHTML = `<div class="panel-error" role="status"><div>
+      <strong>No price for ${esc(input.symbol)}</strong>
+      The server would reject this order with &ldquo;could not fetch price&rdquo;.</div></div>`;
+    return;
+  }
+
+  const buy = input.side === 'BUY';
+  const stop = round2(price * (buy ? 1 - input.stopPct : 1 + input.stopPct));
+  const target = round2(price * (buy ? 1 + input.targetPct : 1 - input.targetPct));
+  const qty = input.size / price;
+  const fee = input.size * PREVIEW_DEFAULTS.feeRate;
+  const risk = Math.abs(price - stop);
+  const reward = Math.abs(target - price);
+  const rr = risk > 0 ? reward / risk : null;
+  // Inverted bracket: the stop is on the wrong side of entry. The server accepts
+  // it and creates it, so the order would be live with a stop above a long's
+  // entry -- it fills immediately.
+  const inverted = buy ? stop >= price : stop <= price;
+
+  const m = data.market_data || {};
+  host.innerHTML = `
+    <table class="preview">
+      <tbody>
+        <tr><td class="dim">Indicative entry</td><td class="num">${money(price)}</td></tr>
+        <tr><td class="dim">Quantity</td><td class="num">${num(qty, 6)}</td></tr>
+        <tr><td class="dim">Stop (${num(input.stopPct * 100, 2)}%)</td>
+          <td class="num ${inverted ? 'down' : ''}">${money(stop)}</td></tr>
+        <tr><td class="dim">Target (${num(input.targetPct * 100, 2)}%)</td>
+          <td class="num">${money(target)}</td></tr>
+        <tr><td class="dim">Est. fee</td><td class="num dim">${money(fee)}</td></tr>
+        <tr><td class="dim">Reward : risk</td>
+          <td class="num">${rr === null ? '--' : `${num(rr, 2)} : 1`}</td></tr>
+      </tbody>
+    </table>
+    ${inverted ? `<p class="banner danger" style="margin:var(--sp-3) 0 0"><span class="dot bad"></span>
+      <span>The stop is on the wrong side of entry for a ${esc(input.side)}. The server will
+      create it and it will fill immediately.</span></p>` : ''}
+    <p class="dim" style="margin:var(--sp-3) 0 0">
+      Capital bucket <strong>growth</strong> &middot;
+      spread ${num(m.spread_bps, 1)} bps &middot;
+      liquidity ${num(m.liquidity_score, 0)}
+      ${Number.isFinite(Number(data.summary && data.summary.weighted_avg_target_usd))
+        ? `&middot; consensus target ${money(Number(data.summary.weighted_avg_target_usd))}` : ''}
+    </p>
+    <p class="dim" style="margin:var(--sp-2) 0 0">Indicative. The server re-fetches the price
+    when you submit and derives the bracket from that.</p>`;
+}
+
+function round2(value) { return Math.round(value * 100) / 100; }
+
+let previewTimer = null;
+let previewToken = 0;
+
+async function refreshPreview() {
+  const input = previewInputs();
+  const token = ++previewToken;
+  renderPreview({ ok: false, status: 0, error: 'pending' }, input);
+  if (!input.symbol || !Number.isFinite(input.size) || input.size <= 0) {
+    renderPreview({ ok: false, status: 0 }, input);
+    return;
+  }
+  const res = await request(API.priceEvaluation(input.symbol), { timeout: 15000 });
+  // A slower lookup for a symbol the operator has already typed over must not
+  // overwrite the newer one.
+  if (token !== previewToken) return;
+  renderPreview(res, input);
+}
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshPreview, 350);
+}
+
 /* ── actions ────────────────────────────────────────────────────────────── */
 
 async function submitOrder(event) {
@@ -1731,13 +1964,18 @@ async function submitOrder(event) {
   msg.textContent = 'Submitting…';
   const res = await request(API.orderSubmit, { method: 'POST', body, auth: true });
   if (res.ok && res.data && res.data.ok) {
+    recordAction({ path: '/orders/submit', ok: true, outcome: 'submitted' });
     msg.className = 'msg ok';
     msg.textContent = `Submitted. Pending approval${res.data.token ? ` · ref ${String(res.data.token).slice(0, 8)}` : ''}.`;
     toast('Order submitted for approval', 'ok');
   } else if (res.status === 401) {
+    recordAction({ path: '/orders/submit', ok: false, outcome: 'needs token' });
     msg.className = 'msg bad';
     msg.textContent = 'Operator token required — use Unlock actions.';
   } else {
+    recordAction({
+      path: '/orders/submit', ok: false, outcome: String(res.error || res.status).slice(0, 40),
+    });
     msg.className = 'msg bad';
     msg.textContent = `Rejected: ${res.error || res.status}`;
   }
@@ -1752,17 +1990,24 @@ async function submitOrder(event) {
  * the one line standing between an operator and a capital move was stating
  * nothing. Assert on the dialog's contents, not merely that a dialog appeared. */
 async function act(path, { method = 'POST', confirm: message, done, body } = {}) {
-  if (message && !window.confirm(message)) return;
+  if (message && !window.confirm(message)) {
+    recordAction({ path, ok: false, outcome: 'cancelled' });
+    return;
+  }
   const res = await request(path, { method, body, auth: true });
   if (res.status === 401) {
+    recordAction({ path, ok: false, outcome: 'needs token' });
     toast('Operator token required — use Unlock actions', 'bad');
     return;
   }
   if (res.ok && (!res.data || res.data.ok !== false)) {
+    recordAction({ path, ok: true, outcome: done || 'ok' });
     toast(done || 'Done', 'ok');
     refreshAll({ immediate: true });
   } else {
-    toast(`Failed: ${res.error || res.status}`, 'bad');
+    const why = res.error || `HTTP ${res.status}`;
+    recordAction({ path, ok: false, outcome: String(why).slice(0, 40) });
+    toast(`Failed: ${why}`, 'bad');
   }
 }
 
@@ -1785,6 +2030,10 @@ function bindActions() {
     },
   ));
   $('#refresh-btn').addEventListener('click', () => refreshAll({ immediate: true }));
+  $('#audit-clear').addEventListener('click', () => {
+    try { sessionStorage.removeItem(AUDIT_KEY); } catch (_) { /* ignore */ }
+    renderAudit();
+  });
   $('#cancel-all').addEventListener('click', () => act(API.cancelAllBrackets, {
     method: 'POST',
     confirm: 'Cancel every protective bracket? Open positions lose their stops and targets.',
@@ -1829,15 +2078,12 @@ function bindActions() {
     // layout tedious -- sizing an order started from a signal five views away.
     const prefill = event.target.closest('[data-prefill]');
     if (prefill) {
-      const value = String(prefill.dataset.prefill || '').trim().toUpperCase();
-      if (value) {
-        const input = $('#oe-symbol');
-        input.value = value;
-        input.focus();
-        input.select();
-      }
-      navigate('execute');
-      toast(`Loaded ${value} into the order ticket`, '');
+      loadTicket({
+        symbol: prefill.dataset.prefill,
+        side: prefill.dataset.prefillSide,
+        size: prefill.dataset.prefillSize,
+        reason: prefill.dataset.prefillReason,
+      });
       return;
     }
 
@@ -1873,6 +2119,13 @@ function bindActions() {
     state.granularity = Number(event.target.value);
     refreshPanel(panels.find((p) => p.id === 'candles'));
   });
+
+  // Debounced: typing a symbol fires per keystroke, and each preview is a price
+  // lookup. 350ms is long enough to coalesce a symbol, short enough to feel live.
+  ['#oe-symbol', '#oe-size', '#oe-stop', '#oe-target'].forEach((sel) => {
+    $(sel).addEventListener('input', schedulePreview);
+  });
+  $$('.side-toggle button').forEach((btn) => btn.addEventListener('click', schedulePreview));
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) refreshAll({ immediate: true });
@@ -1918,6 +2171,7 @@ function boot() {
   applyTheme(theme);
 
   registerPanels();
+  renderAudit();
 
   // Placeholder skeletons, so the page is never a blank shell. refreshPanel
   // replaces these on its first pass, and a pre-rendered skeleton used to

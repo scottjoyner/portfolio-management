@@ -523,3 +523,15 @@ kbd {
   background: var(--surface-1);
   font-size: var(--fs-xs);
 }
+
+/* ── order preview ───────────────────────────────────────────────────────── */
+
+/* The bracket the server will create, shown before the operator commits. Dense
+ * by design: this is read immediately before a capital move, not studied. */
+.preview {
+  margin-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
+}
+.preview td { padding: 2px 0; font-size: var(--fs-sm); }
+.preview td.num { font-weight: 600; }
