@@ -732,7 +732,13 @@ def main() -> int:
     result.report()
 
     blocked = [c for c in result.failures if "safety gate" in c[0]]
-    real = [c for c in result.failures if c not in blocked]
+    # A running server older than the page it serves is the one failure a restart
+    # *fixes*, so it must not be pooled with the ones that argue against
+    # restarting. Pooling them made the summary say "DO NOT RESTART YET" directly
+    # beneath a detail line saying "restart the dashboard" -- which is the exact
+    # moment the tool has to be unambiguous, because that is the deploy flow.
+    stale = [c for c in result.failures if "live dashboard serves its own assets" in c[0]]
+    real = [c for c in result.failures if c not in blocked and c not in stale]
 
     if args.json:
         print(json.dumps({
@@ -744,6 +750,11 @@ def main() -> int:
             "checks": [{"check": c[0], "ok": c[1], "detail": c[2]} for c in result.checks],
         }, indent=2))
     else:
+        if stale:
+            print("\n  RESTART REQUIRED (the running dashboard is older than the page it serves;")
+            print("  the revision itself is fine and a restart is what fixes this):")
+            for check in stale:
+                print(f"    - {check[0]}: {check[2]}")
         if blocked:
             print("\n  BLOCKED (a safety gate refuses the start; restarting will not fix it):")
             for check in blocked:
