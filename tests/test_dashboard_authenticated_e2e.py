@@ -194,29 +194,6 @@ def sandbox(request):
     return SANDBOX
 
 
-@pytest.fixture(scope="session")
-def real_data_fingerprint():
-    """Hashes of the operator's data dir, taken before anything runs.
-
-    Which directory that is depends on where the tests run, and getting it wrong
-    makes the assertion worthless rather than merely imprecise. Run from a git
-    worktree and ``REPO_ROOT`` is that worktree, whose ``data/`` holds only
-    git-tracked files -- an order of magnitude smaller than a deployment's, and
-    missing every file this test exists to protect: trading_kill_switch,
-    pending_approvals.json and optimizer_brackets.json are all untracked and
-    gitignored, so a worktree does not have them at all.
-
-    Fingerprinting that proves nothing about the deployment. So the target is
-    explicit -- DEPLOYMENT_ROOT when set, otherwise this checkout -- and the
-    fixture prints which one it used. Read the reported path before believing
-    the result.
-    """
-    root = Path(os.environ.get("DEPLOYMENT_ROOT", REPO_ROOT)) / "data"
-    assert root.exists(), f"nothing to fingerprint at {root}"
-    print(f"\n[data-dir guard] fingerprinting {root} ({len(_fingerprint(root))} files)")
-    return _fingerprint(root)
-
-
 class Api:
     def __init__(self, base: str, token: str | None):
         self.base = base
@@ -529,6 +506,45 @@ def test_capital_buckets_round_trip(authed, live):
 
 # ── the isolation guarantee ────────────────────────────────────────────────
 
+# The operator's own writers, measured rather than guessed: two idle samples of
+# the watched data dir 75s apart, with nothing of this suite running, showed
+#   added/removed : state_backups/paper_trader_v4_<stamp>.json  (archive + prune to 10)
+#   changed       : .daemon_heartbeat, operator-state.json,
+#                   paper_trader_v4_state.json{,.bak,.bak2,.bak3}
+# A ~6.5s suite straddling a 60s timer therefore reported churn roughly one run in
+# nine -- a flake that says nothing about isolation.
+#
+# The names are a measurement, not a contract, so anything unexpected that still
+# moves is attributed empirically below rather than being hardcoded in here.
+_OPERATOR_CHURN_DIRS = ("state_backups",)
+_OPERATOR_CHURN_FILES = (
+    ".daemon_heartbeat",
+    "operator-state.json",
+    "paper_trader_v4_state.json",
+    "paper_trader_v4_state.json.bak",
+    "paper_trader_v4_state.json.bak2",
+    "paper_trader_v4_state.json.bak3",
+)
+
+# Only paid on runs where there is something unexpected to explain.
+_CHURN_SETTLE_SEC = 65
+
+
+def _is_operator_churn(rel: str) -> bool:
+    tail = rel.rsplit("/", 1)[-1]
+    if tail in _OPERATOR_CHURN_FILES:
+        return True
+    parts = rel.split("/")
+    return any(seg in _OPERATOR_CHURN_DIRS for seg in parts[:-1])
+
+
+def _diff(before: dict, after: dict) -> tuple[set, set, set]:
+    added = set(after) - set(before)
+    removed = set(before) - set(after)
+    changed = {k for k in set(after) & set(before) if after[k] != before[k]}
+    return added, removed, changed
+
+
 def test_nothing_touched_the_operators_data_directory(real_data_fingerprint, live):
     """The assertion the whole sandbox exists to make possible.
 
@@ -537,15 +553,30 @@ def test_nothing_touched_the_operators_data_directory(real_data_fingerprint, liv
     """
     assert live["proc"].poll() is None, "the sandbox server died mid-run"
     after = _fingerprint(WATCHED_DATA_ROOT)
-    added = sorted(set(after) - set(real_data_fingerprint))
-    removed = sorted(set(real_data_fingerprint) - set(after))
-    changed = sorted(
-        k for k in set(after) & set(real_data_fingerprint)
-        if after[k] != real_data_fingerprint[k]
-    )
-    assert not added, f"files created in the operator's data dir: {added}"
-    assert not removed, f"files removed from the operator's data dir: {removed}"
-    assert not changed, f"files modified in the operator's data dir: {changed}"
+    added, removed, changed = _diff(real_data_fingerprint, after)
+
+    known = {k for k in added | removed | changed if _is_operator_churn(k)}
+    added, removed, changed = added - known, removed - known, changed - known
+
+    if added or removed or changed:
+        # Something moved that is not a known operator writer. Sample once more
+        # with no request of ours in flight: if it keeps moving, the operator is
+        # doing it and this suite is not.
+        time.sleep(_CHURN_SETTLE_SEC)
+        op = set().union(*_diff(after, _fingerprint(WATCHED_DATA_ROOT)))
+        unexplained = {k for k in added | removed | changed if k not in op}
+        if op:
+            print(f"\n[data-dir guard] unexpected churn attributed to the operator: "
+                  f"{sorted(op)[:3]}{' ...' if len(op) > 3 else ''}")
+        added, removed, changed = (
+            {k for k in added if k in unexplained},
+            {k for k in removed if k in unexplained},
+            {k for k in changed if k in unexplained},
+        )
+
+    assert not added, f"files created in the operator's data dir: {sorted(added)}"
+    assert not removed, f"files removed from the operator's data dir: {sorted(removed)}"
+    assert not changed, f"files modified in the operator's data dir: {sorted(changed)}"
 
 
 def test_the_sandbox_root_is_not_the_operator_repo(sandbox):
@@ -578,7 +609,26 @@ def test_a_submitted_approval_is_only_in_the_sandbox(live, authed, real_data_fin
 
 @pytest.fixture(scope="module")
 def real_data_fingerprint():
-    """Hashes of the watched data dir, taken before anything runs."""
+    """Hashes of the watched data dir, taken before anything runs.
+
+    Which directory that is depends on where the tests run, and getting it wrong
+    makes the assertion worthless rather than merely imprecise. Run from a git
+    worktree and ``REPO_ROOT`` is that worktree, whose ``data/`` holds only
+    git-tracked files -- an order of magnitude smaller than a deployment's, and
+    missing every file this test exists to protect: trading_kill_switch,
+    pending_approvals.json and optimizer_brackets.json are all untracked and
+    gitignored, so a worktree does not have them at all.
+
+    Fingerprinting that proves nothing about the deployment. So the target is
+    explicit -- DEPLOYMENT_ROOT when set, otherwise this checkout -- and the
+    fixture prints which one it used. Read the reported path before believing
+    the result.
+
+    This replaced a session-scoped fixture of the same name earlier in the file.
+    Python rebinds the name, so the session-scoped version was unreachable dead
+    code carrying all of the above documentation: the guard read as if it did more
+    than it did.
+    """
     assert WATCHED_DATA_ROOT.exists(), f"nothing to fingerprint at {WATCHED_DATA_ROOT}"
     print(f"\n[data-dir guard] watching {WATCHED_DATA_ROOT} "
           f"({len(_fingerprint(WATCHED_DATA_ROOT))} files)")
