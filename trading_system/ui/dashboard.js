@@ -58,6 +58,27 @@ const API = {
   competition: '/competition',
   killSwitch: '/kill-switch',
 
+  // ── execution & bot management ───────────────────────────────────────────
+  // Field names for every panel below were read off live responses rather than
+  // guessed; six renderers in the first pass read names the endpoints never
+  // return and rendered empty tables.
+  strategies: '/strategies',
+  actions: '/actions',
+  paperTrades: '/paper-trades',
+  tradePlans: '/trade-plans',
+  diversification: '/signals/diversification',
+  orderflow: '/signals/orderflow',
+  ensemble: '/signals/ensemble',
+  metaWeights: '/signals/meta-weights',
+  venueBalances: '/venue/balances',
+  arbSettlement: '/arbitrage/settlement',
+  arbInternal: '/arbitrage/kalshi-internal',
+  predictionMarkets: '/prediction-markets',
+  rebalanceState: '/strategies/rebalance',
+
+  runAction: '/actions/run',
+  applyBucketPreset: '/capital/buckets/preset',
+
   // ── mutating: require the operator token ──
   orderSubmit: '/orders/submit',
   approve: (token) => `/approvals/approve/${token}`,
@@ -447,17 +468,17 @@ function drawEquity(container, points) {
 
 /* ── views ──────────────────────────────────────────────────────────────── */
 
+/* Five views, organised by the job rather than by the table that happens to
+ * back it. Execution, analysis and bot management were previously eleven views
+ * that each held one kind of row, which meant sizing an order required visiting
+ * four of them to find buying power, the book, the pending queue and the bot's
+ * own proposals. */
 const VIEWS = [
   ['overview', 'Overview'],
-  ['positions', 'Positions'],
-  ['approvals', 'Approvals'],
-  ['opportunities', 'Opportunities'],
-  ['market', 'Market'],
-  ['signals', 'Signals'],
-  ['strategies', 'Strategies'],
+  ['execute', 'Execute'],
+  ['analyse', 'Analyse'],
+  ['bot', 'Bot'],
   ['capital', 'Capital'],
-  ['research', 'Research'],
-  ['system', 'System'],
 ];
 
 function navigate(view) {
@@ -474,7 +495,7 @@ function navigate(view) {
   // that left it blank on arrival: entering the Market view fetched nothing, and
   // it only appeared once you touched the granularity selector or clicked a
   // watchlist row. Fetch it when its view is actually opened.
-  if (view === 'market') {
+  if (view === 'analyse') {
     const chart = panels.find((p) => p.id === 'candles');
     if (chart) refreshPanel(chart);
   }
@@ -484,9 +505,8 @@ function navigate(view) {
 
 function renderNav() {
   const groups = [
-    ['Trade', ['overview', 'positions', 'approvals', 'opportunities']],
-    ['Analyse', ['market', 'signals', 'strategies']],
-    ['Operate', ['capital', 'research', 'system']],
+    ['Operate', ['overview', 'execute']],
+    ['Understand', ['analyse', 'bot', 'capital']],
   ];
   const nav = $('#nav');
   nav.innerHTML = groups.map(([label, ids]) => `
@@ -1250,6 +1270,397 @@ function registerPanels() {
     },
   });
 
+  /* ── execution: what can be spent, and what has been ─────────────────── */
+
+  panel('buy-power', {
+    title: 'Buying power', endpoint: API.executionStatus,
+    render(el, data) {
+      // /execution/status reports three different numbers and the difference
+      // matters: raw cash ignores the reserve floor, deployable is what may
+      // actually be committed, and the hard cap is the per-trade ceiling. An
+      // operator sizing an order needs the middle one.
+      const rows = [
+        ['Deployable', money(data.deployable_buy_power_usd)],
+        ['Raw cash', money(data.raw_cash_buy_power_usd)],
+        ['Reserve floor', money(data.usdc_reserve_usd)],
+        ['USDC balance', money(data.usdc_balance_usd)],
+        ['Portfolio value', money(data.portfolio_value_usd)],
+        ['Hard cap', money(data.hard_cap_usd)],
+        ['Risk in play', money(data.risk_capital_in_play_usd)],
+        ['Remaining vs cap', money(data.remaining_hard_cap_usd)],
+      ];
+      const pending = Number(data.pending_count) || 0;
+      el.innerHTML = `
+        <table><tbody>
+          ${rows.map(([k, v]) => `<tr><td class="dim">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}
+          <tr><td class="dim">Pending approvals</td>
+            <td class="num">${pending || '--'}</td></tr>
+        </tbody></table>
+        ${pending ? `<p class="dim" style="text-align:left">${pending} order${pending === 1 ? '' : 's'}
+          awaiting approval; each releases real capital on the next optimizer tick.</p>` : ''}`;
+    },
+  });
+
+  panel('recent-trades', {
+    title: 'Recent trades', endpoint: API.executionStatus,
+    render(el, data) {
+      const rows = Array.isArray(data.recent_trades) ? data.recent_trades : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No trades recorded.</p>';
+        return;
+      }
+      el.innerHTML = `
+        <div class="table-scroll"><table>
+          <thead><tr><th class="num">When</th><th>Symbol</th><th>Side</th>
+            <th class="num">Size</th><th class="num">Fee</th>
+            <th class="num">P&amp;L</th><th>Reason</th></tr></thead>
+          <tbody>${rows.map((t) => `<tr>
+            <td class="num dim">${when(t.timestamp)}</td>
+            <td class="mono">${esc(t.symbol || t.currency || '--')}</td>
+            <td><span class="pill ${t.side === 'BUY' ? 'positive' : 'negative'}">${esc(t.side || '--')}</span></td>
+            <td class="num">${money(t.size_usd)}</td>
+            <td class="num dim">${money(t.fee)}</td>
+            <td class="num ${signedClass(t.pnl_usd)}">${money(t.pnl_usd, { signed: true })}</td>
+            <td class="dim">${esc(t.reason || t.type || '')}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  panel('trade-plans', {
+    title: 'Proposed trade plans', endpoint: API.tradePlans,
+    render(el, data) {
+      // The bot's own proposals -- the seam between analysis and execution.
+      // preview_passed is the field that says whether the plan survived the
+      // optimizer's cost preview, so it is shown as a pill rather than buried.
+      const rows = Array.isArray(data.plans) ? data.plans : [];
+      setCount('execute', rows.length, rows.length > 0);
+      if (!rows.length) {
+        el.innerHTML = `<p class="empty">No trade plans.</p>${
+          data.updated_at ? `<p class="dim" style="text-align:left">updated ${esc(String(data.updated_at))}
+            from ${esc(String(data.source || 'unknown'))}</p>` : ''}`;
+        return;
+      }
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">${rows.length} plan${rows.length === 1 ? '' : 's'}
+          ${data.updated_at ? `&middot; updated ${esc(String(data.updated_at))}` : ''}
+          ${data.source ? `&middot; source ${esc(String(data.source))}` : ''}</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Type</th><th>Symbol</th><th>Side</th><th class="num">Size</th>
+            <th class="num">Entry</th><th class="num">Stop %</th><th class="num">Target %</th>
+            <th class="num">Hold h</th><th>Preview</th><th></th></tr></thead>
+          <tbody>${rows.map((plan) => {
+            const symbol = plan.product_id || plan.currency || '--';
+            const side = String(plan.side || '').toUpperCase();
+            return `<tr>
+              <td><span class="pill accent">${esc(plan.opp_type || plan.trade_style || '--')}</span></td>
+              <td class="mono">${esc(symbol)}</td>
+              <td><span class="pill ${side === 'BUY' ? 'positive' : 'negative'}">${esc(side || '--')}</span></td>
+              <td class="num">${money(plan.size_usd)}</td>
+              <td class="num">${money(plan.entry_price_est)}</td>
+              <td class="num">${num(plan.stop_loss_pct)}</td>
+              <td class="num">${num(plan.take_profit_pct)}</td>
+              <td class="num">${num(plan.holding_period_hours)}</td>
+              <td>${plan.preview_passed
+                ? '<span class="pill positive">passed</span>'
+                : '<span class="pill warn">not cleared</span>'}</td>
+              <td class="num"><button class="btn sm ghost" data-prefill="${esc(symbol)}"
+                title="Load this symbol into the order ticket">Ticket</button></td>
+            </tr>`;
+          }).join('')}</tbody></table></div>
+        <p class="dim" style="text-align:left">Plans are proposals, not orders.
+        Use <kbd>Unlock actions</kbd> to submit one for approval.</p>`;
+    },
+  });
+
+  panel('paper-trades', {
+    title: 'Paper trade ledger', endpoint: API.paperTrades,
+    render(el, data) {
+      const rows = Array.isArray(data.trades) ? data.trades : [];
+      const summary = data.settlement_summary || {};
+      const head = Object.keys(summary).length
+        ? `<p class="dim" style="margin:0 0 var(--sp-3)">${Object.entries(summary)
+            .map(([k, v]) => `${esc(k)} <strong class="mono">${esc(String(v))}</strong>`).join(' &middot; ')}</p>`
+        : '';
+      if (!rows.length) {
+        el.innerHTML = head + '<p class="empty">No paper trades recorded.</p>';
+        return;
+      }
+      el.innerHTML = `${head}
+        <div class="table-scroll"><table>
+          <thead><tr><th class="num">When</th><th>Symbol</th><th>Side</th>
+            <th class="num">Size</th><th class="num">Fee</th>
+            <th class="num">P&amp;L</th><th>Reason</th></tr></thead>
+          <tbody>${rows.map((t) => `<tr>
+            <td class="num dim">${when(t.timestamp)}</td>
+            <td class="mono">${esc(t.symbol || t.currency || '--')}</td>
+            <td><span class="pill ${t.side === 'BUY' ? 'positive' : 'negative'}">${esc(t.side || '--')}</span></td>
+            <td class="num">${money(t.size_usd)}</td>
+            <td class="num dim">${money(t.fee)}</td>
+            <td class="num ${signedClass(t.pnl_usd)}">${money(t.pnl_usd, { signed: true })}</td>
+            <td class="dim">${esc(t.reason || t.type || '')}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  /* ── bot management ──────────────────────────────────────────────────── */
+
+  panel('actions', {
+    title: 'Operator actions', endpoint: API.actions,
+    render(el, data) {
+      // Each action carries its own risk label, so the confirmation has to
+      // quote it rather than treating every button the same.
+      const rows = Array.isArray(data.actions) ? data.actions : [];
+      const queue = Array.isArray(data.queue) ? data.queue : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No operator actions exposed.</p>';
+        return;
+      }
+      const riskPill = (risk) => {
+        const r = String(risk || 'safe').toLowerCase();
+        const cls = r === 'safe' ? 'positive' : r === 'guarded' ? 'warn' : 'negative';
+        return `<span class="pill ${cls}">${esc(r)}</span>`;
+      };
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">backend
+          <strong>${esc(data.backend || 'unknown')}</strong>${queue.length
+            ? ` &middot; ${queue.length} queued` : ''}</p>
+        <table><thead><tr><th>Action</th><th>Risk</th><th>What it does</th><th></th></tr></thead>
+        <tbody>${rows.map((a) => `<tr>
+          <td><strong>${esc(a.label || a.id)}</strong></td>
+          <td>${riskPill(a.risk)}</td>
+          <td class="dim">${esc(a.description || '')}</td>
+          <td class="num"><button class="btn sm" data-run-action="${esc(a.id)}"
+            data-needs-token data-risk="${esc(a.risk || 'safe')}">Run</button></td>
+        </tr>`).join('')}</tbody></table>
+        ${queue.length ? `
+          <h3 style="margin:var(--sp-4) 0 var(--sp-2);font-size:var(--fs-sm)">Queue</h3>
+          <div class="table-scroll"><table>
+            <thead><tr><th class="num">When</th><th>Action</th><th>Status</th><th>Note</th></tr></thead>
+            <tbody>${queue.map((q) => `<tr>
+              <td class="num dim">${when(q.created_at)}</td>
+              <td class="mono">${esc(q.action || '--')}</td>
+              <td><span class="pill">${esc(q.status || '--')}</span></td>
+              <td class="dim">${esc(q.note || '')}</td>
+            </tr>`).join('')}</tbody></table></div>` : ''}`;
+    },
+  });
+
+  panel('strategies', {
+    title: 'Strategies', endpoint: API.strategies,
+    render(el, data) {
+      // status/sharpe_ratio/win_rate_pct/total_trades. There is no endpoint to
+      // toggle a strategy, so nothing here pretends to offer a control it does
+      // not have.
+      const rows = Array.isArray(data.active_strategies) ? data.active_strategies : [];
+      setCount('bot', Number(data.total_strategies) || rows.length);
+      if (!rows.length) {
+        el.innerHTML = `<p class="empty">No strategies registered.</p>`;
+        return;
+      }
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">${rows.length} active of
+          ${esc(String(data.total_strategies ?? rows.length))}</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Strategy</th><th>Status</th><th class="num">Sharpe</th>
+            <th class="num">Win rate</th><th class="num">Trades</th><th></th></tr></thead>
+          <tbody>${rows.map((s) => `<tr>
+            <td class="mono">${esc(s.name || s.strategy_id || '--')}</td>
+            <td><span class="pill ${s.status === 'active' ? 'positive' : 'dim'}">${esc(s.status || '--')}</span></td>
+            <td class="num">${num(s.sharpe_ratio, 2)}</td>
+            <td class="num">${num(s.win_rate_pct, 1)}%</td>
+            <td class="num">${num(s.total_trades, 0)}</td>
+            <td class="num"><button class="btn sm ghost" data-symbol="${esc(s.name || '')}"
+              title="Chart this pair where a symbol is given">Chart</button></td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  panel('rebalance', {
+    title: 'Rebalance', endpoint: API.rebalanceState,
+    render(el, data) {
+      const presets = Array.isArray(data.presets) ? data.presets : [];
+      const active = data.active_preset;
+      const rows = [
+        ['Available', data.available ? 'yes' : 'no'],
+        ['Active preset', active || '--'],
+        ['Current drift', data.current_drift === null || data.current_drift === undefined
+          ? '--' : pct(data.current_drift)],
+        ['Recommendation', data.recommendation || '--'],
+      ];
+      el.innerHTML = `
+        <table><tbody>${rows.map(([k, v]) =>
+          `<tr><td class="dim">${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join('')}
+        </tbody></table>
+        ${presets.length ? `
+          <h3 style="margin:var(--sp-4) 0 var(--sp-2);font-size:var(--fs-sm)">Presets</h3>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Preset</th><th>State</th><th></th></tr></thead>
+            <tbody>${presets.map((p) => {
+              const name = typeof p === 'string' ? p : (p.name || p.preset || '');
+              const label = (p && p.label) || name;
+              const isActive = name && name === active;
+              return `<tr>
+                <td>${esc(label)}<br><span class="dim mono">${esc(name)}</span></td>
+                <td>${isActive ? '<span class="pill positive">active</span>' : '<span class="dim">&mdash;</span>'}</td>
+                <td class="num">${isActive ? '' : `<button class="btn sm" data-bucket-preset="${esc(name)}"
+                  data-needs-token data-risk="guarded"
+                  title="Rewrites the capital bucket allocation">Apply</button>`}</td>
+              </tr>`;
+            }).join('')}</tbody></table></div>` : ''}
+        <p class="dim" style="text-align:left">Applying a preset rewrites the capital
+        allocation the optimizer sizes positions against.</p>`;
+    },
+  });
+
+  panel('stairstep', {
+    title: 'Stair-step taker', endpoint: API.stairstep,
+    render(el, data) {
+      if (!data.available) {
+        el.innerHTML = '<p class="empty">Stair-step profit taking is not available.</p>';
+        return;
+      }
+      const rows = Array.isArray(data.symbols) ? data.symbols : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No stair-step ladders configured.</p>';
+        return;
+      }
+      el.innerHTML = `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Symbol</th><th class="num">Steps</th><th class="num">Filled</th><th>State</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td class="mono">${esc(r.symbol || r.product_id || '--')}</td>
+            <td class="num">${num(r.steps ?? r.total_steps, 0)}</td>
+            <td class="num">${num(r.filled ?? r.filled_steps, 0)}</td>
+            <td><span class="pill">${esc(r.enabled === false ? 'paused' : 'active')}</span></td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  /* ── analysis breadth ────────────────────────────────────────────────── */
+
+  panel('diversification', {
+    title: 'Signal diversification', endpoint: API.diversification,
+    render(el, data) {
+      // name, label, source, group, asset_class, type, description, active,
+      // total_signals, latest_signal. `group` is the independence family the
+      // ConfidenceMatrix uses, so it is the column worth reading.
+      const rows = Array.isArray(data.strategies) ? data.strategies : [];
+      if (!rows.length) {
+        el.innerHTML = '<p class="empty">No diversification data.</p>';
+        return;
+      }
+      const contributing = rows.filter((r) => Number(r.total_signals) > 0).length;
+      el.innerHTML = `
+        <p class="dim" style="margin:0 0 var(--sp-3)">${contributing} of ${rows.length} strategies
+          have produced a signal &middot; ${esc((data.source_groups || []).join(', ') || 'no groups')}</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Strategy</th><th>Group</th><th>Asset class</th>
+            <th class="num">Signals</th><th>Latest</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td><strong>${esc(r.label || r.name || '--')}</strong><br>
+              <span class="dim">${esc(r.description || '')}</span></td>
+            <td><span class="pill accent">${esc(r.group || '--')}</span></td>
+            <td class="dim">${esc(r.asset_class || '--')}</td>
+            <td class="num">${num(r.total_signals, 0)}</td>
+            <td class="dim">${esc(r.latest_signal ? String(r.latest_signal) : '--')}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+    },
+  });
+
+  panel('performance', {
+    title: 'Performance', endpoint: API.performance,
+    render(el, data) {
+      const m = data.summary_metrics || {};
+      const rows = [
+        ['Total trades', num(m.total_trades, 0)],
+        ['Volume', money(m.total_volume_usd)],
+        ['Fees', money(m.total_fees_usd)],
+        ['Return', `${num(m.total_return_pct, 2)}%`],
+        ['Annualised', `${num(m.annualized_return_pct, 2)}%`],
+        ['Sharpe', num(m.sharpe_ratio, 2)],
+        ['Max drawdown', `${num(m.max_drawdown_pct, 2)}%`],
+        ['Buy / sell', `${num(m.buy_trades, 0)} / ${num(m.sell_trades ?? m.total_trades - (m.buy_trades || 0), 0)}`],
+      ];
+      el.innerHTML = `<table><tbody>${rows.map(([k, v]) =>
+        `<tr><td class="dim">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}</tbody></table>`;
+    },
+  });
+
+  panel('orderflow', {
+    title: 'Order flow', endpoint: API.orderflow,
+    render(el, data) {
+      // /signals/orderflow reads order_flow_signals.json, which is empty until
+      // the daemon has written it. Say that rather than showing an empty table
+      // that looks like "no flow".
+      const entries = Object.entries(data || {})
+        .filter(([, v]) => v !== null && v !== undefined);
+      if (!entries.length) {
+        el.innerHTML = `<p class="empty">No order-flow signals recorded yet.</p>
+          <p class="dim" style="text-align:left">Populated by the market daemon;
+          until it has run once this stays empty.</p>`;
+        return;
+      }
+      el.innerHTML = `<table><tbody>${entries.map(([k, v]) => {
+        const value = (v && typeof v === 'object') ? (v.signal ?? v.value ?? v.bias ?? JSON.stringify(v)) : v;
+        const signed = Number(value);
+        return `<tr><td class="mono dim">${esc(k)}</td>
+          <td class="num ${Number.isFinite(signed) ? signedClass(signed) : 'dim'}">${esc(String(value))}</td></tr>`;
+      }).join('')}</tbody></table>`;
+    },
+  });
+
+  panel('venues', {
+    title: 'Venue balances', endpoint: API.venueBalances,
+    render(el, data) {
+      // {kalshi:{configured,balance_usd,portfolio_value_usd,positions,error},
+      //  polymarket:{configured,balance_usd,positions,note}, ts}
+      const one = (name, v) => {
+        if (!v) return `<tr><td>${esc(name)}</td><td colspan="3" class="dim">not reported</td></tr>`;
+        const pos = Array.isArray(v.positions) ? v.positions.length : 0;
+        const bal = v.balance_usd === null || v.balance_usd === undefined
+          ? '--' : money(v.balance_usd);
+        const why = v.error ? ` <span class="dim">(${esc(String(v.error))})</span>` : '';
+        const cls = v.configured ? 'positive' : 'dim';
+        return `<tr>
+          <td>${esc(name)} <span class="pill ${cls}">${v.configured ? 'configured' : 'not configured'}</span></td>
+          <td class="num">${bal}${why}</td>
+          <td class="num">${pos}</td>
+          <td class="dim">${esc(v.note || '')}</td>
+        </tr>`;
+      };
+      el.innerHTML = `
+        <div class="table-scroll"><table>
+          <thead><tr><th>Venue</th><th class="num">Balance</th>
+            <th class="num">Positions</th><th>Note</th></tr></thead>
+          <tbody>${one('Kalshi', data.kalshi)}${one('Polymarket', data.polymarket)}</tbody>
+        </table></div>`;
+    },
+  });
+
+  panel('arb-settlement', {
+    title: 'Arbitrage settlement', endpoint: API.arbSettlement,
+    render(el, data) {
+      const now = data.settled_now || {};
+      const sum = data.summary || {};
+      const rows = [
+        ['Settled this pass', num(now.settled, 0)],
+        ['Expired', num(now.expired, 0)],
+        ['Still open', num(now.still_open, 0)],
+        ['Realised P&L', money(now.realized_pnl, { signed: true })],
+        ['Total trades', num(sum.total_trades, 0)],
+        ['Open expected P&L', money(sum.open_expected_pnl, { signed: true })],
+        ['Diverged pairs', num(sum.diverged_pairs, 0)],
+      ];
+      const diverged = Number(sum.diverged_pairs) || 0;
+      el.innerHTML = `
+        ${diverged ? `<p class="banner danger" style="margin:0 0 var(--sp-3)"><span class="dot bad"></span>
+          <span>${diverged} pair${diverged === 1 ? '' : 's'} diverged between venues. That is a real
+          discrepancy, not a rounding difference.</span></p>` : ''}
+        <table><tbody>${rows.map(([k, v]) =>
+          `<tr><td class="dim">${esc(k)}</td><td class="num">${v}</td></tr>`).join('')}</tbody></table>`;
+    },
+  });
+
   panel('accounts', {
     title: 'Accounts', endpoint: API.accounts,
     render(el, data) {
@@ -1332,8 +1743,16 @@ async function submitOrder(event) {
   }
 }
 
+/* `confirm` is destructured to `message` because `confirm` is also a global here,
+ * and then the *global* was being passed to window.confirm() -- so every
+ * confirmation dialog in the dashboard opened showing the source of the native
+ * function instead of what it was about to do. Approving a real order asked for
+ * confirmation with "(msg) => { seen.push(String(msg)); return false; }" in the
+ * dialog. The prompt still blocked, so nothing had gone wrong by accident, but
+ * the one line standing between an operator and a capital move was stating
+ * nothing. Assert on the dialog's contents, not merely that a dialog appeared. */
 async function act(path, { method = 'POST', confirm: message, done, body } = {}) {
-  if (confirm && !window.confirm(confirm)) return;
+  if (message && !window.confirm(message)) return;
   const res = await request(path, { method, body, auth: true });
   if (res.status === 401) {
     toast('Operator token required — use Unlock actions', 'bad');
@@ -1398,10 +1817,55 @@ function bindActions() {
       return;
     }
     const symbol = event.target.closest('[data-symbol]');
-    if (symbol) {
+    if (symbol && symbol.dataset.symbol) {
       state.symbol = symbol.dataset.symbol;
-      navigate('market');
+      navigate('analyse');
       refreshPanel(panels.find((p) => p.id === 'candles'));
+      return;
+    }
+
+    // Analysis -> execution in one click: load the symbol into the ticket and
+    // take the operator to it. This is the seam that made the old eleven-view
+    // layout tedious -- sizing an order started from a signal five views away.
+    const prefill = event.target.closest('[data-prefill]');
+    if (prefill) {
+      const value = String(prefill.dataset.prefill || '').trim().toUpperCase();
+      if (value) {
+        const input = $('#oe-symbol');
+        input.value = value;
+        input.focus();
+        input.select();
+      }
+      navigate('execute');
+      toast(`Loaded ${value} into the order ticket`, '');
+      return;
+    }
+
+    const runAction = event.target.closest('[data-run-action]');
+    if (runAction) {
+      const risk = String(runAction.dataset.risk || 'safe').toLowerCase();
+      const verb = risk === 'safe' ? 'Run' : 'Run this guarded action';
+      act(API.runAction, {
+        body: { action: runAction.dataset.runAction },
+        // A guarded action gets a confirmation that says more than "are you
+        // sure", because it is the only thing standing between a queued
+        // rebalance and a live one.
+        confirm: `${verb}: ${runAction.dataset.runAction}?`
+          + (risk === 'safe' ? '' : ' This is marked guarded and may change trading behaviour.'),
+        done: 'Action queued',
+      });
+      return;
+    }
+
+    const bucket = event.target.closest('[data-bucket-preset]');
+    if (bucket) {
+      act(API.applyBucketPreset, {
+        body: { preset: bucket.dataset.bucketPreset },
+        confirm: `Rewrite the capital allocation to "${bucket.dataset.bucketPreset}"? `
+          + 'Every position size the optimizer calculates afterwards is measured against it.',
+        done: 'Allocation applied',
+      });
+      return;
     }
   });
 
@@ -1419,7 +1883,7 @@ function bindActions() {
   document.addEventListener('keydown', (event) => {
     if (event.target.matches('input, select, textarea')) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    const map = { 1: 'overview', 2: 'positions', 3: 'approvals', 4: 'opportunities', 5: 'market', 6: 'strategies', 7: 'system' };
+    const map = { 1: 'overview', 2: 'execute', 3: 'analyse', 4: 'bot', 5: 'capital' };
     if (map[event.key]) { event.preventDefault(); navigate(map[event.key]); }
     else if (event.key === 'r') { event.preventDefault(); refreshAll({ immediate: true }); }
     else if (event.key === 't') { event.preventDefault(); cycleTheme(); }
