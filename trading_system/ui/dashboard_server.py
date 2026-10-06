@@ -489,12 +489,34 @@ def _get_coinbase_cli():
         return None
 
 
-def _update_approval(token: str, status: str) -> bool:
+def _update_approval(token: str, status: str, source: str = "dashboard") -> bool:
+    """Resolve a pending approval, recording *who* resolved it.
+
+    The provenance fields are not decoration. api_approvals infers
+    ``auto_approved`` from the status when the key is absent::
+
+        auto = entry.get("auto_approved", status == "approved")
+
+    So an approval an operator clicked in the browser was reported as
+    ``auto_approved: true`` and the dashboard labelled it "auto" -- telling an
+    operator the system had released a trade they had personally reviewed. In an
+    audit that is worse than a cosmetic bug: it is the difference between "a human
+    looked at this" and "nobody did".
+
+    Writing ``auto_approved`` explicitly stops the inference from firing, and
+    ``resolved_by``/``resolved_at`` make the audit trail answerable. Nothing in
+    the execution path reads either field -- the optimizer branches on ``status``
+    -- so this is additive.
+    """
     updated = False
+    resolved_at = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     approvals_file = _load_json(APPROVALS_PATH, {})
     if token in approvals_file:
         approvals_file[token]['status'] = status
-        approvals_file[token]['resolved_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        approvals_file[token]['resolved_at'] = resolved_at
+        approvals_file[token]['resolved_by'] = source
+        # Explicit, so api_approvals does not infer "auto" from the status.
+        approvals_file[token]['auto_approved'] = False
         updated = _write_json(APPROVALS_PATH, approvals_file) or updated
 
     operator_state = _load_json(OPERATOR_STATE_PATH, {})
@@ -502,7 +524,9 @@ def _update_approval(token: str, status: str) -> bool:
     for approval in approvals:
         if token in {str(approval.get('id', '')), str(approval.get('token', ''))}:
             approval['status'] = status
-            approval['resolved_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            approval['resolved_at'] = resolved_at
+            approval['resolved_by'] = source
+            approval['auto_approved'] = False
             updated = True
     if updated:
         operator_state['approvals'] = approvals
@@ -1410,6 +1434,8 @@ def api_approvals():
             "risk_score": entry.get("priority", 0.5),
             "status": status,
             "auto_approved": auto,
+            "resolved_at": entry.get("resolved_at"),
+            "resolved_by": entry.get("resolved_by"),
             "created_at": entry.get("created_at", ""),
         })
 

@@ -995,8 +995,14 @@ function registerPanels() {
               <td class="num">${money(a.quantity_usd)}</td>
               <td class="num dim">${money(a.expected_fee)}</td>
               <td class="num">${num(a.risk_score, 2)}</td>
-              <td><span class="pill ${pendingRow ? 'warn' : a.status === 'approved' ? 'positive' : 'dim'}">
-                ${esc(a.auto_approved ? 'auto' : (a.status || 'pending'))}</span></td>
+              <td>${pendingRow
+              ? '<span class="pill warn">awaiting approval</span>'
+              : `<span class="pill ${a.status === 'approved' ? 'positive' : 'dim'}">${esc(a.status || 'resolved')}</span>`
+                + (a.resolved_by
+                  ? `<br><span class="dim">by ${esc(a.resolved_by)}`
+                    + (a.resolved_at ? ` ${esc(String(a.resolved_at).replace('T', ' ').slice(0, 19))}` : '')
+                    + '</span>'
+                  : '')}</td>
               <td class="num dim">${ageFrom(a.created_at)}</td>
               <td class="num">${pendingRow
                 ? `<button class="btn sm" data-approve="${esc(id)}" data-needs-token>Approve</button>
@@ -1005,7 +1011,8 @@ function registerPanels() {
             </tr>`;
           }).join('')}</tbody></table></div>
         <p class="dim" style="text-align:left">Approving releases a real order on the next
-        optimizer tick. Use <kbd>Unlock actions</kbd> first.</p>`;
+        optimizer tick, and the approval is recorded against you. Use
+        <kbd>Unlock actions</kbd> first.</p>`;
     },
   });
 
