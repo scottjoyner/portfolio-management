@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -216,12 +217,64 @@ def check_dashboard_comes_up(result: Result) -> None:
         token_path = Path(scratch_xdg()) / "portfolio-management" / "dashboard_token"
         result.add("operator token provisioned", token_path.exists(),
                    "" if token_path.exists() else "no token file created under scratch XDG")
+
+        check_fresh_dashboard_serves_the_page(result, base)
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def check_fresh_dashboard_serves_the_page(result: Result, base: str) -> None:
+    """A freshly started dashboard must be able to serve the page on disk.
+
+    The complement to the live-process check. That one catches a running server
+    older than the HTML; this one catches the reverse, where the HTML asks for
+    something the server does not implement -- a renamed file, a route added in
+    one commit and referenced in the next, an asset path that is simply wrong.
+    Neither failure shows up in /health, and neither is visible from the API.
+
+    This is the check that would have caught the split-asset dashboard at commit
+    time rather than four and a half hours later.
+    """
+    try:
+        with urllib.request.urlopen(base + "/", timeout=10) as resp:
+            page = resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        result.add("fresh dashboard serves the page's assets", False,
+                   f"/ did not answer -- {exc}")
+        return
+
+    refs: list[str] = []
+    for attr in re.finditer(r'(?:href|src)="(/[^"]+)"', page):
+        url = attr.group(1)
+        if url not in refs:
+            refs.append(url)
+    if not refs:
+        result.add("fresh dashboard serves the page's assets", True,
+                   "page is self-contained (no same-origin assets)")
+        return
+
+    broken: list[str] = []
+    for url in refs:
+        try:
+            with urllib.request.urlopen(base + url, timeout=10) as resp:
+                if resp.status != 200:
+                    broken.append(f"{url} -> HTTP {resp.status}")
+        except urllib.error.HTTPError as exc:
+            broken.append(f"{url} -> HTTP {exc.code}")
+        except Exception as exc:
+            broken.append(f"{url} -> {exc}")
+
+    result.add(
+        "fresh dashboard serves the page's assets", not broken,
+        ("; ".join(broken) + ". The page on disk references assets this server "
+         "does not serve, so the operator UI would be broken immediately after a "
+         "restart even though /health is 200.")
+        if broken else f"page and its {len(refs)} asset(s) all return 200",
+    )
 
 
 def check_dashboard_refuses_without_a_token(result: Result) -> None:
@@ -321,6 +374,211 @@ def check_ledger_gate(result: Result) -> None:
         result.add("no blocking safety gate", True, "no corruption sentinel")
 
 
+def _supervised_child(name: str) -> dict | None:
+    state = _load_supervisor_state()
+    for child in (state or {}).get("children", []):
+        if child.get("name") == name:
+            return child
+    return None
+
+
+def _is_dashboard_server_cmdline(cmdline: str) -> bool:
+    """True only for something that is actually this dashboard server.
+
+    Guarded on the script name rather than just "a supervised child named
+    dashboard": the pid has to be trusted before it is dereferenced, and a stale
+    or recycled pid could otherwise send this check at an unrelated process.
+    """
+    if not cmdline:
+        return False
+    return "dashboard_server.py" in cmdline
+
+
+def _supervised_child_pid(name: str) -> int | None:
+    child = _supervised_child(name)
+    if not child or child.get("state") != "RUNNING":
+        return None
+    pid = child.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    if not _pid_alive(pid):
+        return None
+    if not _is_dashboard_server_cmdline(_pid_cmdline(pid)):
+        return None
+    return pid
+
+
+def _port_from_argv(cmdline: str, *flags: str) -> int | None:
+    """Port from a `--flag N` or `--flag=N` style argument."""
+    for flag in flags:
+        match = re.search(re.escape(flag) + r"(?:=|\s+)(\d{4,5})(?:\s|$)", cmdline)
+        if match:
+            port = int(match.group(1))
+            if 1024 < port < 65536:
+                return port
+    return None
+
+
+def _listening_port(pid: int) -> int | None:
+    """Port the process is actually listening on, from its own socket inode.
+
+    The fallback when the command line does not say. /proc/<pid>/net/tcp and
+    friends are per-namespace rather than per-process, so the owning process is
+    resolved by matching each listening socket's inode against the process's own
+    /proc/<pid>/fd/* symlinks. Falls back to None if /proc is unavailable.
+    """
+    listen_inodes: set[str] = set()
+    for table in ("tcp", "tcp6"):
+        try:
+            rows = Path(f"/proc/{pid}/net/{table}").read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            parts = row.split()
+            # parts[1] is local_address, parts[3] is st (0A == LISTEN), parts[9] is inode
+            if len(parts) > 9 and parts[3] == "0A":
+                listen_inodes.add(parts[9])
+    if not listen_inodes:
+        return None
+    try:
+        fds = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        return None
+    for fd in fds:
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("socket:["):
+            inode = target[len("socket:["):-1]
+            if inode in listen_inodes:
+                # Now map that socket's local port back out of /proc/net/tcp.
+                port = _port_for_inode(inode)
+                if port:
+                    return port
+    return None
+
+
+def _port_for_inode(inode: str) -> int | None:
+    for table in ("tcp", "tcp6"):
+        try:
+            rows = Path(f"/proc/net/{table}").read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            parts = row.split()
+            if len(parts) > 9 and parts[3] == "0A" and parts[9] == inode:
+                local = parts[1].rsplit(":", 1)[-1]
+                try:
+                    return int(local, 16)
+                except ValueError:
+                    continue
+    return None
+
+
+def _live_dashboard_port() -> int | None:
+    """Port the *running* dashboard answers on, or None if it is not up.
+
+    Read from the supervised process rather than a config default, so this checks
+    the server an operator is actually looking at. Prefers an explicit --port and
+    falls back to the socket the process is actually listening on.
+    """
+    pid = _supervised_child_pid("dashboard")
+    if pid is None:
+        return None
+    cmdline = _pid_cmdline(pid)
+    return _port_from_argv(cmdline, "--port", "-p") or _listening_port(pid)
+
+
+def _load_supervisor_state() -> dict | None:
+    path = REPO_ROOT / "logs" / "supervisor_state.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def check_live_dashboard_serves_its_own_assets(result: Result) -> None:
+    """The *running* dashboard must be able to serve what the page on disk asks for.
+
+    This exists because of a 4.5-hour outage. The dashboard was rebuilt as three
+    files (dashboard.html + /static/dashboard.css + /static/dashboard.js), and the
+    new HTML was committed while a dashboard process from before that change was
+    still running. Every other check here starts a *fresh* server, so none of them
+    could see it: the new HTML was served happily, its stylesheet and script both
+    404'd, and the operator got an unstyled page with every panel frozen on its
+    loading skeleton. Trading was unaffected, which is exactly why nothing
+    noticed.
+
+    The failure mode is a live process being older than the HTML it serves. That is
+    only detectable by asking the running process, so this check does exactly that:
+    fetch / from the live port, extract every asset it references, and require each
+    one to return 200.
+
+    Read-only. GETs to the dashboard only; starts nothing and touches no state.
+    A dashboard that is not running is reported as skipped, not as a failure --
+    there is nothing stale to catch before the first start.
+    """
+    port = _live_dashboard_port()
+    if port is None:
+        result.add(
+            "live dashboard serves its own assets", True,
+            "no running dashboard to check (nothing can be stale before a start)",
+        )
+        return
+
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with urllib.request.urlopen(base + "/", timeout=10) as resp:
+            page = resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        result.add(
+            "live dashboard serves its own assets", False,
+            f"the running dashboard on :{port} did not answer / -- {exc}",
+        )
+        return
+
+    # Only same-origin, path-absolute assets. Fragments and absolute URLs to other
+    # hosts are not this server's problem.
+    refs: list[str] = []
+    for attr in re.finditer(r'(?:href|src)="(/[^"]+)"', page):
+        url = attr.group(1)
+        if url not in refs:
+            refs.append(url)
+    if not refs:
+        result.add(
+            "live dashboard serves its own assets", True,
+            f"page on :{port} references no same-origin assets (self-contained)",
+        )
+        return
+
+    broken: list[str] = []
+    for url in refs:
+        try:
+            with urllib.request.urlopen(base + url, timeout=10) as resp:
+                if resp.status != 200:
+                    broken.append(f"{url} -> HTTP {resp.status}")
+        except urllib.error.HTTPError as exc:
+            broken.append(f"{url} -> HTTP {exc.code}")
+        except Exception as exc:
+            broken.append(f"{url} -> {exc}")
+
+    if broken:
+        result.add(
+            "live dashboard serves its own assets", False,
+            "; ".join(broken)
+            + f". The process on :{port} is older than the page it is serving, so "
+            "restart the dashboard before trusting this revision. Until then the "
+            "operator UI is degraded even though /health is 200.",
+        )
+        return
+
+    result.add(
+        "live dashboard serves its own assets", True,
+        f"page on :{port} and its {len(refs)} asset(s) all return 200",
+    )
+
+
 def check_watcher_lock_is_free(result: Result) -> None:
     """Exactly one watcher may hold the single-writer ledger lock.
 
@@ -402,11 +660,30 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _pid_cmdline(pid: int) -> str:
+    """Full command line for a pid, without truncating the arguments that matter.
+
+    /proc/<pid>/cmdline is NUL-separated, and this used to be truncated to 120
+    characters. The running dashboard's command line is longer than that, so the
+    truncation cut off both ``dashboard_server.py`` and ``--port 8002`` -- which
+    made the new stale-asset check skip itself with "no running dashboard" on a
+    system where the dashboard was plainly running.
+
+    Reads the whole thing, and falls back to ps for the case where even the full
+    read is truncated by the kernel.
+    """
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
     except OSError:
         return ""
-    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:120]
+    joined = " ".join(
+        part.decode("utf-8", "replace") for part in raw.split(b"\0") if part
+    )
+    if "dashboard_server.py" in joined and "--port" in joined:
+        return joined
+    proc = _run(["ps", "-p", str(pid), "-o", "args="], timeout=10)
+    if proc.returncode == 0 and proc.stdout.strip():
+        return f"{joined} {proc.stdout.strip()}".strip()
+    return joined
 
 
 def _supervised_watcher_pid() -> int | None:
@@ -443,6 +720,11 @@ def main() -> int:
     check_argparse_help(result)
     check_kill_switch_resolves(result)
     check_watcher_lock_is_free(result)
+    # Before the fresh-server checks, because this one can tell you the *running*
+    # stack is already serving something stale -- in which case a restart is the
+    # fix and the other results describe a revision that is not yet what the
+    # operator is looking at.
+    check_live_dashboard_serves_its_own_assets(result)
     check_dashboard_comes_up(result)
     check_dashboard_refuses_without_a_token(result)
     check_ledger_gate(result)
