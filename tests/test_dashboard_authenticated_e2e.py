@@ -90,6 +90,43 @@ def _fingerprint(root: Path) -> dict[str, str]:
 
 # ── sandbox construction ───────────────────────────────────────────────────
 
+def _refuse_if_sandbox_shares_the_deployment() -> None:
+    """Hard stop: the sandbox must never share the deployment's data directory.
+
+    Added after this suite was deliberately mis-pointed at the deployment to prove
+    its leak assertions worked. The assertions did work -- seven tests failed --
+    and in the process it engaged the live kill switch, put five test approvals
+    into the live queue (three of them executable), cleared the bracket file and
+    overwrote the capital bucket config.
+
+    Verifying a detector by removing the thing it detects is only safe when the
+    blast radius is zero. Here it was the trading system, so the safety property is
+    now asserted rather than assumed: any future edit that repoints the sandbox at
+    the deployment stops the run before a single request is issued.
+    """
+    watched = WATCHED_DATA_ROOT.resolve()
+    candidates = {
+        "sandbox root": SANDBOX.resolve(),
+        "sandbox data dir": (SANDBOX / "data").resolve(),
+    }
+    for label, path in candidates.items():
+        if path == watched:
+            raise AssertionError(
+                f"refusing to run: the {label} {path} IS the watched data dir. "
+                "This suite writes to it, and the endpoints under test include "
+                "POST /kill-switch."
+            )
+        if watched in path.parents:
+            raise AssertionError(
+                f"refusing to run: the {label} {path} sits inside the watched "
+                f"data dir {watched}."
+            )
+    if SANDBOX.resolve() == REPO_ROOT.resolve():
+        raise AssertionError(
+            "refusing to run: the sandbox would be the deployment checkout itself"
+        )
+
+
 @pytest.fixture(scope="session")
 def sandbox():
     """A copy of the tree whose ROOT is not the operator's checkout.
@@ -99,6 +136,7 @@ def sandbox():
     endpoints below ignore it. Copying the tree is the only thing that moves
     ROOT, and therefore the only thing that reliably contains them.
     """
+    _refuse_if_sandbox_shares_the_deployment()
     if SANDBOX.exists():
         shutil.rmtree(SANDBOX)
     SANDBOX.mkdir(parents=True)
@@ -302,12 +340,19 @@ def test_order_submission_reaches_the_approval_queue(authed, sandbox):
 
 
 def test_submitted_order_is_persisted_to_the_sandbox_not_the_repo(live, authed):
-    authed.call("POST", "/orders/submit",
-                {"symbol": "ETH-USD", "side": "SELL", "size_usd": 100})
+    _, submitted = authed.call("POST", "/orders/submit",
+                               {"symbol": "ETH-USD", "side": "SELL", "size_usd": 100})
     sandbox_file = live["sandbox"] / "data" / "pending_approvals.json"
     assert sandbox_file.exists(), "the ROOT-relative write did not land in the sandbox"
-    assert not (REPO_ROOT / "data" / "pending_approvals.json").exists(), \
-        "the ROOT-relative write leaked into the operator's data directory"
+
+    # Not "the operator has no approvals file": a real deployment has one, and that
+    # assertion only ever held for a fresh checkout -- so it failed on the very
+    # machine it exists to protect. The claim that matters is that *this* order is
+    # not in it.
+    real_file = REPO_ROOT / "data" / "pending_approvals.json"
+    if real_file.exists():
+        assert submitted["token"] not in json.loads(real_file.read_text()), \
+            "the ROOT-relative write leaked into the operator's data directory"
 
 
 def test_approving_flips_the_status(authed):
@@ -405,7 +450,7 @@ def test_kill_switch_creates_the_file_in_the_sandbox_only(authed, live):
     assert not flag.exists(), "the kill switch flag was not cleared"
 
 
-def test_cancel_all_brackets_empties_the_sandbox_file_only(authed, live):
+def test_cancel_all_brackets_empties_the_sandbox_file_only(authed, live, real_data_fingerprint):
     brackets = live["sandbox"] / "data" / "optimizer_brackets.json"
     brackets.write_text(json.dumps({
         "brk-1": {"product_id": "BTC-USD", "stop_price": 1, "target_price": 2},
@@ -415,10 +460,14 @@ def test_cancel_all_brackets_empties_the_sandbox_file_only(authed, live):
     assert code == 200, payload
     assert json.loads(brackets.read_text()) == {}, "brackets were not cleared"
 
-    # And the operator's own brackets, if any, are untouched.
+    # And the operator's own bracket file is byte-identical to before. Not "it is
+    # non-empty" -- that only held for a fresh checkout, and it failed on the
+    # machine this exists to protect.
     real = REPO_ROOT / "data" / "optimizer_brackets.json"
-    if real.exists():
-        assert json.loads(real.read_text()) != {}, "the operator's brackets were emptied"
+    if real.exists() and str(real) in real_data_fingerprint:
+        digest = hashlib.sha256(real.read_bytes()).hexdigest()[:16]
+        assert digest == real_data_fingerprint[str(real)], \
+            "the operator's bracket file changed"
 
 
 def test_cancelling_one_bracket_leaves_the_others(authed, live):
@@ -498,8 +547,9 @@ def test_a_submitted_approval_is_only_in_the_sandbox(live, authed, real_data_fin
     assert submitted["token"] in on_disk, "not persisted where the audit expects"
 
     real_file = REPO_ROOT / "data" / "pending_approvals.json"
-    assert not real_file.exists(), "an approval leaked into the operator's data dir"
-    assert "data/pending_approvals.json" not in real_data_fingerprint
+    if real_file.exists():
+        assert submitted["token"] not in json.loads(real_file.read_text()), \
+            "an approval leaked into the operator's data dir"
 
 
 @pytest.fixture(scope="module")
