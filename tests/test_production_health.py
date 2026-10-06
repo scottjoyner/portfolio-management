@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -247,6 +248,23 @@ class TestReadinessEndpointLogic(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload))
 
+    def _seed_healthy_operational_state(self):
+        """Establish every condition /health depends on, so the trader is the only
+        variable left.
+
+        Without this the test fails for a reason that has nothing to do with the
+        trader. tests/conftest.py points TRADING_DATA_DIR at an empty temp dir for
+        the whole session, so `daemon_heartbeat` reads "missing" -- not in
+        healthy_states -- and /health degrades whether or not the trader is
+        blocked. The assertion was therefore reporting on the sandbox, not on the
+        liveness/restart-loop property it is named for, and it only passed when
+        run outside the suite.
+        """
+        op = Path(self.ds.OPERATOR_STATE_PATH)
+        op.parent.mkdir(parents=True, exist_ok=True)
+        op.write_text(json.dumps({"marketIntelligence": {}}))
+        (op.parent / ".daemon_heartbeat").write_text(str(time.time()))
+
     def test_ready_503_when_child_blocked(self):
         self._write_state(_state([_child("daemon", "RUNNING"), _child("trader-v4", "BLOCKED")]))
         payload, status = self.ds.api_ready_with_status()
@@ -286,10 +304,34 @@ class TestReadinessEndpointLogic(unittest.TestCase):
 
     def test_health_stays_200_when_trader_blocked(self):
         """Liveness must not depend on the trader, or the dashboard restart-loops."""
+        self._seed_healthy_operational_state()
         self._write_state(_state([_child("trader-v4", "BLOCKED")]))
         health = self.ds.api_health()
-        self.assertEqual(health["status"], "healthy")
+        self.assertEqual(health["status"], "healthy", health["components"])
         self.assertEqual(health["supervisor"]["blocked"], ["trader-v4"])
+
+    def test_health_is_identical_whether_the_trader_is_blocked_or_not(self):
+        """The control for the test above, so it proves a contrast rather than a value.
+
+        If someone folds supervisor state back into the overall status, both halves
+        of this pair change and the regression is caught here rather than by
+        production noticing its own dashboard restart-looping.
+        """
+        self._seed_healthy_operational_state()
+        self._write_state(_state([_child("trader-v4", "RUNNING")]))
+        running = self.ds.api_health()
+        self._write_state(_state([_child("trader-v4", "BLOCKED")]))
+        blocked = self.ds.api_health()
+
+        self.assertEqual(running["status"], "healthy", running["components"])
+        self.assertEqual(blocked["status"], "healthy", blocked["components"])
+        self.assertEqual(running["supervisor"]["blocked"], [])
+        self.assertEqual(blocked["supervisor"]["blocked"], ["trader-v4"])
+
+        # Readiness, unlike liveness, must still see the block -- otherwise
+        # nothing would ever gate traffic on the trader.
+        _, status = self.ds.api_ready_with_status()
+        self.assertEqual(status, 503)
 
 
 class TestHealthCheckExitCodes(unittest.TestCase):

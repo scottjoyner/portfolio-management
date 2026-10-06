@@ -326,8 +326,34 @@ def test_bucket_preset_payloads(monkeypatch):
 # --------------------------------------------------------------------------
 # API endpoint functions (called directly)
 # --------------------------------------------------------------------------
+def _seed_fresh_heartbeat():
+    """Make /health's only environmental precondition true.
+
+    api_health() reads `.daemon_heartbeat` from the directory holding
+    OPERATOR_STATE_PATH, and "missing" is not in healthy_states -- so the status
+    degrades before any component under test is even examined.
+
+    Both isolation routes hit this. The `env` fixture repoints OPERATOR_STATE_PATH
+    into tmp_path, and tests/conftest.py points TRADING_DATA_DIR at an empty
+    session temp dir, so *not* using `env` does not avoid it either. That is why
+    this module's own test below asserts on the counts rather than the status: its
+    stated reason for skipping `env` did not actually work.
+
+    Seeding a fresh heartbeat makes a health assertion about the component under
+    test rather than about which temp dir happened to be active.
+    """
+    hb = Path(os.path.dirname(m.OPERATOR_STATE_PATH)) / ".daemon_heartbeat"
+    hb.parent.mkdir(parents=True, exist_ok=True)
+    hb.write_text(str(time.time()))
+    return hb
+
+
 def test_api_health(env):
-    assert m.api_health()["status"] in ("healthy", "degraded")
+    _seed_fresh_heartbeat()
+    # Was `assert m.api_health()["status"] in ("healthy", "degraded")`, which is
+    # true for every possible status bar and so could never fail. With the
+    # heartbeat seeded there is a single correct answer.
+    assert m.api_health()["status"] == "healthy"
 
 
 @pytest.mark.parametrize("component_value", ["unavailable", "unreadable", "error", "error: cache offline"])
@@ -354,11 +380,14 @@ def test_api_health_ignores_descriptive_component_values(monkeypatch):
     fault. Only the keys in _HEALTH_KEYS decide the status, so a descriptive
     string there must leave /health healthy.
 
-    Deliberately not using the `env` fixture: it redirects OPERATOR_STATE_PATH
-    into tmp, which makes the daemon heartbeat go missing and degrades /health for
-    an unrelated reason. An earlier version of this test did use it and failed for
-    exactly that reason.
+    The original version asserted only on the rendered counts, because using the
+    `env` fixture made the daemon heartbeat go missing and degraded /health for an
+    unrelated reason. Skipping `env` did not actually fix that -- the session-wide
+    TRADING_DATA_DIR is an empty temp dir too -- so the test never actually
+    checked the status, and only passed or failed on the environment. Seeding the
+    heartbeat lets it assert the thing it is named for.
     """
+    _seed_fresh_heartbeat()
     state = {
         "marketIntelligence": {
             "coinbase": {"last_updates": {f"s{i}": {} for i in range(12)}},
