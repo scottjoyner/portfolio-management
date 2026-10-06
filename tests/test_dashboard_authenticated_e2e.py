@@ -127,8 +127,31 @@ def _refuse_if_sandbox_shares_the_deployment() -> None:
         )
 
 
+def _register_sandbox_teardown(request, path: Path, keep_var: str) -> None:
+    """Remove the copied tree at session end so /tmp does not grow without bound.
+
+    Each run rsyncs a whole checkout, and nothing reclaimed it: /tmp/opencode/sbx
+    and sbx-paths had reached ~764MB of abandoned trees.
+
+    The tree is kept when the run failed, because that is exactly when it is worth
+    inspecting, or when the operator asks for it. Failures are counted by reading
+    the session's own report at teardown time, since a yield-fixture cannot know
+    whether later tests passed.
+    """
+    def _cleanup() -> None:
+        if os.environ.get(keep_var):
+            print(f"\n[{keep_var} set] sandbox kept at {path}")
+            return
+        failed = getattr(request.session, "testsfailed", None)
+        if failed:
+            print(f"\n[{failed} test(s) failed] sandbox kept for inspection: {path}")
+            return
+        shutil.rmtree(path, ignore_errors=True)
+
+    request.addfinalizer(_cleanup)
+
 @pytest.fixture(scope="session")
-def sandbox():
+def sandbox(request):
     """A copy of the tree whose ROOT is not the operator's checkout.
 
     ROOT is derived from the server script's own resolved path, so pointing
@@ -167,6 +190,7 @@ def sandbox():
     assert server.exists(), "sandbox is missing the dashboard server"
     # The whole point: ROOT must not be the operator's checkout.
     assert server.resolve().parents[2] == SANDBOX, "sandbox ROOT resolved to the real repo"
+    _register_sandbox_teardown(request, SANDBOX, "AUTH_E2E_KEEP_SANDBOX")
     return SANDBOX
 
 

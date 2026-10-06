@@ -88,8 +88,32 @@ def _fingerprint(root: Path) -> dict[str, str]:
     return out
 
 
+def _register_sandbox_teardown(request, path: Path, keep_var: str) -> None:
+    """Remove the copied tree at session end so /tmp does not grow without bound.
+
+    Each run rsyncs a whole checkout, and nothing reclaimed it: /tmp/opencode/sbx
+    and sbx-paths had reached ~764MB of abandoned trees.
+
+    The tree is kept when the run failed, because that is exactly when it is worth
+    inspecting, or when the operator asks for it. Failures are counted by reading
+    the session's own report at teardown time, since a yield-fixture cannot know
+    whether later tests passed.
+    """
+    def _cleanup() -> None:
+        if os.environ.get(keep_var):
+            print(f"\n[{keep_var} set] sandbox kept at {path}")
+            return
+        failed = getattr(request.session, "testsfailed", None)
+        if failed:
+            print(f"\n[{failed} test(s) failed] sandbox kept for inspection: {path}")
+            return
+        shutil.rmtree(path, ignore_errors=True)
+
+    request.addfinalizer(_cleanup)
+
+
 @pytest.fixture(scope="module")
-def sandbox():
+def sandbox(request):
     if SANDBOX.exists():
         shutil.rmtree(SANDBOX)
     SANDBOX.mkdir(parents=True)
@@ -108,6 +132,7 @@ def sandbox():
         target.symlink_to(so)
     (SANDBOX / "data").mkdir(exist_ok=True)
     (SANDBOX / "logs").mkdir(exist_ok=True)
+    _register_sandbox_teardown(request, SANDBOX, "STATE_PATHS_KEEP_SANDBOX")
     return SANDBOX
 
 

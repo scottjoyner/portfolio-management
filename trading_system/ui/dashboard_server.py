@@ -201,6 +201,40 @@ def _load_json(path, default=None):
         return default if default is not None else {}
 
 
+def _backup_before_overwrite(path, keep=10):
+    """Keep a bounded, timestamped copy of `path` before it is replaced.
+
+    Operator state is otherwise unrecoverable once overwritten. On 2026-10-06 a
+    test suite pointed its sandbox at the deployment and overwrote
+    data/capital_buckets.json; only data/incident-2026-10-02/ still held a
+    genuine copy, three days stale, so the live cash balance could not be
+    recovered exactly. The trader's own paper state has had archival since it
+    is the ledger that matters most, but nothing protected the files this server
+    owns.
+
+    Best effort by design: a failure to archive must never block the write.
+    """
+    try:
+        p = Path(path)
+        if not p.exists() or p.stat().st_size == 0:
+            return
+        bdir = p.parent / "state_backups"
+        bdir.mkdir(exist_ok=True)
+        # Microseconds: a burst of writes inside one second would otherwise
+        # collide on a single filename and collapse the archive to one copy,
+        # which is exactly the guarantee being added here.
+        stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime()) + f"_{time.time_ns() % 1000000:06d}"
+        bdir.joinpath(f"{p.stem}_{stamp}.json").write_text(p.read_text())
+        for old in sorted(bdir.glob(f"{p.stem}_*.json"),
+                          key=lambda q: q.stat().st_mtime, reverse=True)[keep:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def _write_json(path, data) -> bool:
     try:
         with open(path, 'w') as f:
@@ -462,6 +496,7 @@ def _save_capital_buckets(payload: dict | list) -> dict:
             'updated_at': item.get('updated_at') or time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         })
     data = {'buckets': normalized}
+    _backup_before_overwrite(CAPITAL_BUCKETS_PATH)
     _write_json(CAPITAL_BUCKETS_PATH, data)
     return _load_capital_buckets()
 

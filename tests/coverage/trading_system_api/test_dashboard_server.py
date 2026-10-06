@@ -254,6 +254,73 @@ def test_save_capital_buckets_list(env):
     assert r["buckets"][0]["bucket_id"] == "x"
 
 
+def test_saving_capital_buckets_archives_the_previous_version(env, tmp_path):
+    """Operator state must be recoverable after being overwritten.
+
+    On 2026-10-06 a test suite pointed its sandbox at the deployment and
+    overwrote data/capital_buckets.json. Only a three-day-old incident copy
+    survived, so the live cash balance could not be recovered exactly. The
+    trader's paper ledger has had archival for this reason; the files this server
+    owns had none.
+    """
+    target = tmp_path / "capital_buckets.json"
+    target.write_text(json.dumps({"buckets": [{"bucket_id": "challenge", "cash_usd": 98.0}]}))
+    m._backup_before_overwrite(str(target))
+
+    archives = sorted((tmp_path / "state_backups").glob("capital_buckets_*.json"))
+    assert len(archives) == 1
+    assert json.loads(archives[0].read_text())["buckets"][0]["cash_usd"] == 98.0
+    # The archive is a copy, not a move.
+    assert json.loads(target.read_text())["buckets"][0]["cash_usd"] == 98.0
+
+
+def test_capital_bucket_archives_survive_a_burst_and_stay_bounded(env, tmp_path):
+    """Sub-second writes must not collide into one archive, and the set must not grow."""
+    target = tmp_path / "capital_buckets.json"
+    for i in range(13):
+        target.write_text(json.dumps({"n": i}))
+        m._backup_before_overwrite(str(target), keep=10)
+
+    archives = sorted((tmp_path / "state_backups").glob("capital_buckets_*.json"),
+                      key=lambda q: q.stat().st_mtime)
+    assert len(archives) == 10, "archive must stay bounded at 10"
+    # 13 writes in well under a second: second-resolution names would collapse
+    # these into a single file and silently destroy the history.
+    assert len({a.name for a in archives}) == 10
+    assert [json.loads(a.read_text())["n"] for a in archives] == list(range(3, 13))
+
+
+def test_save_capital_buckets_actually_wires_the_archive(env):
+    """The wiring, not just the helper.
+
+    Without this, deleting the `_backup_before_overwrite` call from
+    _save_capital_buckets leaves every other test here green while silently
+    restoring the unrecoverable-overwrite behaviour.
+    """
+    m._save_capital_buckets({"buckets": [{"bucket_id": "challenge", "cash_usd": 98.0}]})
+    target = Path(m.CAPITAL_BUCKETS_PATH)
+    m._save_capital_buckets({"buckets": [{"bucket_id": "challenge", "cash_usd": 42.0}]})
+
+    # Stem from the path, not a literal: the `env` fixture renames this file to
+    # CAPITAL_BUCKETS_PATH.json, and a hardcoded glob silently finds nothing.
+    archives = sorted(target.parent.joinpath("state_backups").glob(f"{target.stem}_*.json"))
+    assert archives, "saving must archive the version it replaced"
+    assert json.loads(archives[-1].read_text())["buckets"][0]["cash_usd"] == 98.0
+    assert json.loads(target.read_text())["buckets"][0]["cash_usd"] == 42.0
+
+
+def test_backup_skips_missing_and_empty_files(env, tmp_path):
+    """No archive directory for a file that does not exist, and none for an empty
+    one -- an empty file is the signature of a truncated write, not real state."""
+    target = tmp_path / "capital_buckets.json"
+    m._backup_before_overwrite(str(target))
+    assert not (tmp_path / "state_backups").exists()
+
+    target.write_text("")
+    m._backup_before_overwrite(str(target))
+    assert not (tmp_path / "state_backups").exists(), "empty file should not be archived"
+
+
 def test_update_approval_found(env):
     p = Path(m.APPROVALS_PATH)
     p.write_text(json.dumps({"tok1": {"status": "pending", "created_at": "t"}}))
