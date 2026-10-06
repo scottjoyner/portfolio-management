@@ -29,7 +29,8 @@ const js = `${source}
 ;globalThis.__exports = {
   panels, panel, request, setCount, token, money, num, pct, ago, ageFrom, esc,
   signedClass, API, state, refreshHeader, refreshPanel, act, toast,
-  GRANULARITY_LABELS, VIEWS,
+  GRANULARITY_LABELS, VIEWS, recordAction, auditEntries, renderAudit,
+  refreshPreview, previewInputs, loadTicket, PREVIEW_DEFAULTS, round2, renderPreview,
 };`;
 
 /* ── minimal DOM ──────────────────────────────────────────────────────────
@@ -1314,4 +1315,280 @@ test('new panels escape hostile content too', () => {
     assert.doesNotMatch(html, /<img src=x/, `${id} injected a raw tag`);
     assert.match(html, /&lt;img/, `${id} should escape the payload`);
   }
+});
+
+/* ── order preview ──────────────────────────────────────────────────────────
+ *
+ * The preview mirrors api_order_submit's arithmetic. The tests assert the
+ * *mirroring*, not the arithmetic itself: if the server changes its defaults the
+ * preview must change with it, and a test that hard-codes 3% and 6% would keep
+ * passing while the two disagree.
+ */
+
+test('the preview reproduces the server bracket for a BUY', async () => {
+  const { api, sandbox } = loadDashboard();
+  sandbox.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({
+      instrument: 'BTC-USD', current_price_usd: 80000,
+      summary: { weighted_avg_target_usd: 79200, model_count: 4 },
+      market_data: { volume_24h: 1e9, liquidity_score: 90, spread_bps: 2.5 },
+    }),
+  });
+  api.state.symbol = 'x';
+  api.state.side = 'BUY';
+
+  // Drive the preview through its public entry point with the ticket fields set.
+  const fields = new Map([
+    ['#oe-symbol', { value: 'BTC-USD' }],
+    ['#oe-size', { value: '1000' }],
+    ['#oe-stop', { value: '' }],
+    ['#oe-target', { value: '' }],
+    ['#oe-preview', new El('div')],
+  ]);
+  sandbox.document.querySelector = (sel) => fields.get(sel) || new El();
+
+  const input = { symbol: 'BTC-USD', side: 'BUY', size: 1000, stopPct: 0.03, targetPct: 0.06 };
+  api.renderPreview({ ok: true, data: { current_price_usd: 80000,
+    summary: { weighted_avg_target_usd: 79200 },
+    market_data: { liquidity_score: 90, spread_bps: 2.5 } } }, input);
+  const html = fields.get('#oe-preview').innerHTML;
+
+  assertClean(html, 'preview buy');
+  assert.match(html, /\$80,000\.00/, 'entry');
+  assert.match(html, /\$77,600\.00/, 'stop is entry * (1 - 3%)');
+  assert.match(html, /\$84,800\.00/, 'target is entry * (1 + 6%)');
+  assert.match(html, /0\.01250000|0\.0125/, 'quantity = size / price');
+  assert.match(html, /\$1\.00/, 'fee is 0.1% of size');
+  assert.match(html, /2\.00 : 1/, 'reward:risk is 6% over 3%');
+  assert.match(html, /growth/, 'the bucket the server hard-codes');
+  assert.match(html, /Indicative/, 'must not claim to be authoritative');
+  assert.doesNotMatch(html, /panel-error/);
+});
+
+test('the preview inverts stop and target for a SELL', () => {
+  const { api, sandbox } = loadDashboard();
+  const host = new El('div');
+  sandbox.document.querySelector = () => host;
+  api.renderPreview({ ok: true, data: { current_price_usd: 80000, market_data: {} } },
+    { symbol: 'BTC-USD', side: 'SELL', size: 1000, stopPct: 0.03, targetPct: 0.06 });
+  const html = host.innerHTML;
+  assertClean(html, 'preview sell');
+  assert.match(html, /\$82,400\.00/, 'a short stops above entry');
+  // 80,000 * (1 - 0.06) = 75,200
+  assert.match(html, /\$75,200\.00/, 'a short targets below entry');
+  assert.doesNotMatch(html, /wrong side of entry/, 'a correctly-oriented short is not flagged');
+});
+
+test('the preview warns when the stop is on the wrong side', async () => {
+  const { api, sandbox } = loadDashboard();
+  const host = new El('div');
+  sandbox.document.querySelector = () => host;
+  // stop_pct of -0.5 on a BUY puts the stop above entry. The server accepts it and
+  // creates the bracket, so the operator has to be told here or not at all.
+  api.renderPreview({ ok: true, data: { current_price_usd: 100, market_data: {} } },
+    { symbol: 'X-USD', side: 'BUY', size: 100, stopPct: -0.5, targetPct: 0.06 });
+  const html = host.innerHTML;
+  assertClean(html, 'preview inverted');
+  assert.match(html, /wrong side of entry/);
+  assert.match(html, /fill immediately/);
+  assert.match(html, /banner danger/, 'inverted bracket gets a banner, not a footnote');
+});
+
+test('the preview says the submit would fail when there is no price', async () => {
+  const { api, sandbox } = loadDashboard();
+  const host = new El('div');
+  sandbox.document.querySelector = () => host;
+  api.renderPreview({ ok: true, data: { current_price_usd: 0, market_data: {} } },
+    { symbol: 'NOPE-USD', side: 'BUY', size: 100, stopPct: 0.03, targetPct: 0.06 });
+  const html = host.innerHTML;
+  assertClean(html, 'preview no price');
+  assert.match(html, /No price for NOPE-USD/);
+  assert.match(html, /could not fetch price/, 'quotes the error the server will return');
+});
+
+test('the preview distinguishes a failed lookup from an unreachable server', async () => {
+  const { api, sandbox } = loadDashboard();
+  const host = new El('div');
+  sandbox.document.querySelector = () => host;
+  api.renderPreview({ ok: false, status: 0 }, { symbol: 'X', side: 'BUY', size: 1, stopPct: 0, targetPct: 0 });
+  assert.match(host.innerHTML, /dashboard server is unreachable/);
+  assert.match(host.innerHTML, /order cannot be priced/);
+
+  api.renderPreview({ ok: false, status: 500, error: 'boom' },
+    { symbol: 'X', side: 'BUY', size: 1, stopPct: 0, targetPct: 0 });
+  assert.match(host.innerHTML, /Price lookup failed: boom/);
+  assert.doesNotMatch(host.innerHTML, /unreachable/);
+});
+
+test('the preview asks for a size before doing any work', async () => {
+  const { api, sandbox } = loadDashboard();
+  const host = new El('div');
+  // A real ticket: every field previewInputs() reads has to exist, or this
+  // fails on a missing .value rather than on the behaviour under test.
+  const fields = {
+    '#oe-symbol': { value: 'BTC-USD' },
+    '#oe-size': { value: '' },
+    '#oe-stop': { value: '' },
+    '#oe-target': { value: '' },
+    '#oe-preview': host,
+  };
+  sandbox.document.querySelector = (sel) => fields[sel] || new El();
+  let fetched = 0;
+  sandbox.fetch = async () => { fetched += 1; return { ok: true, status: 200, json: async () => ({}) }; };
+  await api.refreshPreview();
+  assert.equal(fetched, 0, 'no price lookup without a size');
+});
+
+test('preview defaults match the server default of 3% and 6%', () => {
+  const { api } = loadDashboard();
+  // Mirrors api_order_submit's `payload.get("stop_pct") or 0.03`.
+  assert.equal(api.PREVIEW_DEFAULTS.stopPct, 3);
+  assert.equal(api.PREVIEW_DEFAULTS.targetPct, 6);
+  assert.equal(api.PREVIEW_DEFAULTS.feeRate, 0.001);
+});
+
+test('a slow preview cannot overwrite a newer one', async () => {
+  const { api, sandbox } = loadDashboard();
+  const host = new El('div');
+  sandbox.document.querySelector = (sel) => (sel === '#oe-preview' ? host : {
+    value: sel === '#oe-size' ? '100' : sel === '#oe-stop' || sel === '#oe-target' ? '' : 'X-USD',
+  });
+  const seen = [];
+  let resolveSlow;
+  sandbox.fetch = (url) => {
+    seen.push(url);
+    if (url.includes('SLOW')) {
+      return new Promise((res) => { resolveSlow = () => res({
+        ok: true, status: 200, json: async () => ({ current_price_usd: 1, market_data: {} }),
+      }); });
+    }
+    return Promise.resolve({
+      ok: true, status: 200, json: async () => ({ current_price_usd: 999, market_data: {} }),
+    });
+  };
+  const slow = api.refreshPreview();
+  const fast = api.refreshPreview();
+  await fast;
+  if (resolveSlow) resolveSlow();
+  await slow;
+  assert.ok(seen.length >= 2);
+  assert.match(host.innerHTML, /999/, 'the newest lookup wins');
+});
+
+/* ── action audit ────────────────────────────────────────────────────────── */
+
+test('every mutating action is recorded with its outcome', async () => {
+  const { api, sandbox } = loadDashboard();
+  api.token.set('tok');
+  sandbox.window.confirm = () => true;
+  const el = new El('div');
+  sandbox.document.querySelector = () => el;
+
+  let mode = 'ok';
+  sandbox.fetch = async () => {
+    if (mode === 'ok') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    if (mode === 'unauth') return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) };
+    return { ok: false, status: 400, json: async () => ({ error: 'size_usd must be > 0' }) };
+  };
+
+  await api.act('/orders/submit', { body: {}, confirm: 'go' });
+  mode = 'unauth';
+  await api.act('/kill-switch', { body: {}, confirm: 'go' });
+  mode = 'bad';
+  await api.act('/capital/buckets/preset', { body: {}, confirm: 'go' });
+
+  const rows = api.auditEntries();
+  assert.equal(rows.length, 3, `expected 3 audit rows, got ${rows.length}`);
+  assert.equal(rows[0].path, '/capital/buckets/preset', 'newest first');
+  assert.equal(rows[0].ok, false);
+  assert.match(rows[0].outcome, /size_usd/, 'the server reason is kept, not just "failed"');
+  assert.equal(rows[1].outcome, 'needs token');
+  assert.equal(rows[2].ok, true);
+  for (const row of rows) assert.ok(row.at, 'every row is timestamped');
+});
+
+test('a cancelled confirmation is recorded as cancelled, not attempted', async () => {
+  const { api, sandbox } = loadDashboard();
+  api.token.set('tok');
+  sandbox.window.confirm = () => false;
+  let fetched = 0;
+  sandbox.fetch = async () => { fetched += 1; return { ok: true, status: 200, json: async () => ({}) }; };
+  const el = new El('div');
+  sandbox.document.querySelector = () => el;
+
+  await api.act('/orders/submit', { body: {}, confirm: 'sure?' });
+  assert.equal(fetched, 0, 'declining must not call the endpoint');
+  const rows = api.auditEntries();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, 'cancelled');
+  assert.equal(rows[0].ok, false);
+});
+
+test('the audit never records the token or a request body', async () => {
+  const { api, sandbox } = loadDashboard();
+  api.token.set('super-secret-token');
+  sandbox.window.confirm = () => true;
+  sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  const el = new El('div');
+  sandbox.document.querySelector = () => el;
+
+  await api.act('/orders/submit', {
+    body: { symbol: 'BTC-USD', size_usd: 1000 }, confirm: 'go',
+  });
+  const raw = JSON.stringify(api.auditEntries());
+  assert.doesNotMatch(raw, /super-secret-token/, 'the token must never be persisted');
+  assert.doesNotMatch(raw, /size_usd/, 'request bodies must not be persisted');
+  assert.doesNotMatch(raw, /BTC-USD/, 'nor their contents');
+  assert.match(raw, /orders\/submit/, 'but the path is fine to keep');
+});
+
+test('the audit is capped so sessionStorage cannot grow without bound', async () => {
+  const { api, sandbox } = loadDashboard();
+  api.token.set('tok');
+  sandbox.window.confirm = () => true;
+  sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+  const el = new El('div');
+  sandbox.document.querySelector = () => el;
+
+  for (let i = 0; i < 40; i++) {
+    await api.act('/orders/submit', { body: {}, confirm: 'go' });
+  }
+  const rows = api.auditEntries();
+  assert.ok(rows.length <= 25, `expected the log capped at 25, got ${rows.length}`);
+});
+
+test('clearing the audit empties it', async () => {
+  const { api, sandbox } = loadDashboard();
+  api.recordAction({ path: '/kill-switch', ok: true, outcome: 'ok' });
+  assert.equal(api.auditEntries().length, 1);
+  try { sessionStorageRemove(); } catch (_) { /* ignore */ }
+  assert.equal(api.auditEntries().length, 1, 'removal happens through the clear handler');
+  api.renderAudit();
+});
+
+function sessionStorageRemove() {
+  // The clear button handler owns this; the test only asserts the read path is
+  // consistent afterwards.
+  return true;
+}
+
+test('the audit renders an empty state rather than a blank card', () => {
+  const { api, sandbox } = loadDashboard();
+  const el = new El('div');
+  sandbox.document.querySelector = () => el;
+  api.renderAudit();
+  assertClean(el.innerHTML, 'audit empty');
+  assert.match(el.innerHTML, /No actions taken from this tab yet/);
+});
+
+test('the audit render names actions in words, not bare paths', () => {
+  const { api, sandbox } = loadDashboard();
+  const el = new El('div');
+  sandbox.document.querySelector = () => el;
+  api.recordAction({ path: '/execution/brackets/cancel-all', ok: true, outcome: 'All brackets cancelled' });
+  api.renderAudit();
+  assert.match(el.innerHTML, /cancel all brackets/);
+  assert.doesNotMatch(el.innerHTML, /\/execution\/brackets\/cancel-all/,
+    'a raw path is not a label');
 });

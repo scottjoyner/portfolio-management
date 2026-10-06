@@ -351,6 +351,10 @@ try {
   // The watchlist does a live pair discovery taking ~26s on a cold cache, so it
   // may legitimately still be loading. It must say so rather than show bare bars.
   const SLOW = new Set(['watchlist']);
+  // Panels declared poll:false are not fetched until their view is opened --
+  // the chart is a Coinbase CLI call and is deliberately not polled. Asserting
+  // they left no skeleton would be asserting the opposite of the intent.
+  const ON_DEMAND = new Set(['candles']);
   for (const p of panels) {
     seen.add(p.id);
     // A panel on a hidden view legitimately reports height 0, so only assert
@@ -369,6 +373,16 @@ try {
         check(`panel ${p.id}: the wait is described honestly`,
           /half a minute|Loading/i.test(note.noteText), note.noteText);
       }
+      continue;
+    }
+    if (ON_DEMAND.has(p.id)) {
+      // poll:false means "not polled", not "never fetched" -- the nav traversal
+      // above opens its view, which fetches it. So the honest assertion is that
+      // it is neither blank nor stuck in an error, whatever state it is in. The
+      // dedicated chart section below proves it draws real geometry.
+      check(`panel ${p.id}: neither blank nor errored`,
+        (p.chars > 0 || p.skeletons > 0) && p.errs === 0,
+        JSON.stringify({ chars: p.chars, skeletons: p.skeletons, errs: p.errs }));
       continue;
     }
     check(`panel ${p.id}: no skeleton left after first poll`, p.skeletons === 0, `skeletons=${p.skeletons}`);
@@ -708,6 +722,150 @@ try {
   `);
   check('confirmations were declined, so nothing was written',
     wrote.length === 0, JSON.stringify(wrote));
+
+
+  console.log('\n== the order preview reflects a real ticket ==');
+  await cdp.eval(`location.hash = 'execute'; return 1`);
+  await sleep(900);
+  // Type a symbol and a size, then let the debounced preview settle. This is the
+  // path an operator takes before committing, so it is checked in a real browser:
+  // the debounce, the input wiring and the arithmetic all have to hold together.
+  const preview = await cdp.eval(`
+    const set = (sel, value) => {
+      const el = document.querySelector(sel);
+      el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return el.value;
+    };
+    set('#oe-symbol', 'BTC-USD');
+    set('#oe-size', '1000');
+    set('#oe-stop', '');
+    set('#oe-target', '');
+    return { symbol: document.querySelector('#oe-symbol').value };
+  `);
+  void preview;
+  await sleep(6000); // debounce plus the price lookup
+
+  const shown = await cdp.eval(`
+    const host = document.querySelector('#oe-preview');
+    return {
+      present: !!host,
+      text: host ? host.textContent.replace(/\\s+/g, ' ').trim() : '',
+      html: host ? host.innerHTML : '',
+      errored: host ? !!host.querySelector('.panel-error') : false,
+    };
+  `);
+  check('the preview renders for a complete ticket', shown.present === true);
+  check('the preview produced content', shown.text.length > 0, shown.text.slice(0, 160));
+  // The four numbers an operator needs to judge the order.
+  for (const label of ['Indicative entry', 'Stop', 'Target', 'Reward : risk']) {
+    check(`preview shows ${label}`, shown.text.includes(label), shown.text.slice(0, 200));
+  }
+  check('the preview does not claim to be authoritative',
+    /Indicative|re-fetches/i.test(shown.text), shown.text.slice(-160));
+  if (shown.errored) {
+    // A price lookup can legitimately fail in this environment; the requirement
+    // is that it says so rather than showing a stale or invented number.
+    check('a failed preview explains itself instead of showing a number',
+      /No price for|Cannot price|unreachable/i.test(shown.text), shown.text.slice(0, 200));
+  } else {
+    check('a successful preview is not an error state', shown.errored === false);
+  }
+
+  // Assert the outcome the operator sees rather than the network entry behind
+  // it: performance.getEntriesByType is per-document and the harness reloads the
+  // page for the theme and keyboard checks, which makes it an unreliable witness
+  // for anything that happened after them.
+  const priced = await cdp.eval(`
+    const host = document.querySelector('#oe-preview');
+    const cells = [...host.querySelectorAll('td.num')].map(td => td.textContent.trim());
+    return { cells };
+  `);
+  check('the preview shows real numbers, not placeholders',
+    priced.cells.length >= 5 && priced.cells.every((c) => /[\d]/.test(c) && c !== '--'),
+    JSON.stringify(priced.cells));
+
+  console.log('\n== flipping the side re-derives the bracket ==');
+  const flipped = await cdp.eval(`
+    const before = document.querySelector('#oe-preview').textContent.replace(/\\s+/g,' ').trim();
+    const sell = [...document.querySelectorAll('.side-toggle button')]
+      .find(b => b.dataset.side === 'SELL');
+    sell.click();
+    return { before };
+  `);
+  await sleep(4000);
+  const after = await cdp.eval(`
+    return document.querySelector('#oe-preview').textContent.replace(/\\s+/g,' ').trim();
+  `);
+  check('switching BUY -> SELL changes the preview',
+    after !== flipped.before, `before=${flipped.before.slice(0, 80)} after=${after.slice(0, 80)}`);
+  // Put it back so the later checks are not looking at a SELL ticket.
+  await cdp.eval(`
+    [...document.querySelectorAll('.side-toggle button')].find(b => b.dataset.side === 'BUY').click();
+    return 1;
+  `);
+
+  console.log('\n== closing a position lands a SELL in the ticket ==');
+  await cdp.eval(`location.hash = 'overview'; return 1`);
+  await sleep(900);
+  const closeFlow = await cdp.eval(`
+    const btn = document.querySelector('[data-panel="positions"] [data-prefill]');
+    if (!btn) return { present: false };
+    const d = btn.dataset;
+    btn.click();
+    return {
+      present: true, symbol: d.prefill, side: d.prefillSide, size: d.prefillSize,
+      ticketSymbol: document.querySelector('#oe-symbol').value,
+      ticketSize: document.querySelector('#oe-size').value,
+      sidePressed: [...document.querySelectorAll('.side-toggle button')]
+        .filter(b => b.getAttribute('aria-pressed') === 'true').map(b => b.dataset.side),
+      onExecute: document.querySelector('#view-execute').getBoundingClientRect().height > 0,
+    };
+  `);
+  if (closeFlow.present) {
+    check('closing a position preloads its symbol',
+      closeFlow.ticketSymbol === closeFlow.symbol, JSON.stringify(closeFlow));
+    check('closing a position preloads a SELL, not a BUY',
+      closeFlow.sidePressed.includes('SELL'), JSON.stringify(closeFlow.sidePressed));
+    check('closing a position preloads the position notional',
+      closeFlow.ticketSize !== '' && Number(closeFlow.ticketSize) > 0, JSON.stringify(closeFlow));
+    check('closing a position lands on the execute view', closeFlow.onExecute === true);
+  } else {
+    check('no close control without a position to close', true);
+  }
+
+  console.log('\n== the action audit is present and starts empty ==');
+  const audit = await cdp.eval(`
+    const host = document.querySelector('#oe-audit');
+    return {
+      present: !!host,
+      text: host ? host.textContent.replace(/\\s+/g,' ').trim() : '',
+      clearable: !!document.querySelector('#audit-clear'),
+      session: sessionStorage.getItem('pm.action.audit'),
+    };
+  `);
+  check('the audit renders', audit.present === true);
+  // Not "starts empty" -- the guarded-action checks above deliberately declined
+  // two confirmations, and those belong in the log. What must hold is that it is
+  // never a blank card: with entries it shows them, without them it states why.
+  const hasRows = audit.text.includes('operator action') || audit.text.includes('capital preset');
+  check('the audit is never a blank card',
+    hasRows || /No actions taken from this tab yet/.test(audit.text),
+    audit.text.slice(0, 120));
+  check('it can be cleared', audit.clearable === true);
+  // Earlier in this run the guarded-action checks clicked Run and Apply with
+  // window.confirm stubbed to decline. Those must appear as declined, and nothing
+  // may appear as having succeeded: browsing alone must never write an audit row.
+  const rows = audit.session ? JSON.parse(audit.session) : [];
+  check('declined confirmations are audited as cancelled, not attempted',
+    rows.length > 0 && rows.every((r) => r.ok === false),
+    JSON.stringify(rows.map((r) => [r.path, r.ok, r.outcome])));
+  check('nothing that requires a token was actually executed',
+    rows.every((r) => r.outcome === 'cancelled'),
+    JSON.stringify(rows.map((r) => r.outcome)));
+  check('the audit names the actions in words',
+    audit.text.includes('operator action') && audit.text.includes('capital preset'),
+    audit.text.slice(0, 160));
 
   console.log('\n== charts are real SVG, not empty shells ==');
   // The chart lives in the analyse view now. Navigating anywhere else leaves it
