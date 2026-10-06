@@ -28,7 +28,8 @@ const source = readFileSync('trading_system/ui/dashboard.js', 'utf8');
 const js = `${source}
 ;globalThis.__exports = {
   panels, panel, request, setCount, token, money, num, pct, ago, ageFrom, esc,
-  signedClass, API, state, refreshHeader, refreshPanel, GRANULARITY_LABELS,
+  signedClass, API, state, refreshHeader, refreshPanel, act, toast,
+  GRANULARITY_LABELS, VIEWS,
 };`;
 
 /* ── minimal DOM ──────────────────────────────────────────────────────────
@@ -82,6 +83,9 @@ class El {
   showModal() {}
   close() {}
   contains() { return false; }
+  appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
+  removeChild(child) { this.children = this.children.filter((c) => c !== child); }
+  remove() { if (this.parentNode) this.parentNode.removeChild(this); }
 }
 
 function makeDocument(elements = {}) {
@@ -96,6 +100,7 @@ function makeDocument(elements = {}) {
       return elements[id] || new El();
     },
     querySelectorAll() { return []; },
+    createElement(tag) { return new El(tag); },
   };
   return doc;
 }
@@ -333,6 +338,130 @@ const FIX = {
       { t: 1789966800, o: 81200.0, h: 82000.0, l: 81100.0, c: 81900.0, v: 210.4 },
     ],
   },
+};
+
+
+// Fixtures for the execution / bot / analysis panels, using the field names read
+// off live responses (2026-10-05). Same discipline as the rest of this file: the
+// renderer is exercised with populated data, because a renderer that throws on
+// populated data is invisible while every endpoint returns an empty list.
+const FIX2 = {
+  executionStatus: {
+    pending_approvals: [],
+    pending_count: 2,
+    recent_trade_count: 2,
+    recent_trades: [
+      { type: 'manual', side: 'BUY', currency: 'BTC', symbol: 'BTC-USD',
+        size_usd: 250.0, fee: 0.25, pnl_usd: 0.0, reason: 'manual BUY BTC-USD',
+        timestamp: '2026-10-05T14:00:00Z' },
+      { type: 'bracket', side: 'SELL', currency: 'ETH', symbol: 'ETH-USD',
+        size_usd: 100.0, fee: 0.1, pnl_usd: -12.5, reason: 'take profit',
+        timestamp: '2026-10-05T13:00:00Z' },
+    ],
+    usdc_reserve_usd: 4157.5, raw_cash_buy_power_usd: 0.0,
+    deployable_buy_power_usd: 0.0, portfolio_value_usd: 8315.0,
+    usdc_balance_usd: 4157.5, hard_cap_usd: 500.0,
+    risk_capital_in_play_usd: 250.0, remaining_hard_cap_usd: 250.0,
+  },
+  tradePlans: {
+    plans: [
+      { opp_type: 'TLH', currency: 'DOGE', side: 'SELL', size_usd: 100,
+        reason: 'loss harvesting', priority: 0.8, product_id: '',
+        expected_fee: 0.1, preview_passed: false, executed: false,
+        order_id: '', entry_price_est: 0.51, stop_loss_pct: 0.0,
+        take_profit_pct: 0.0, holding_period_hours: 72.0,
+        expected_return_pct: 0.0, risk_pct: 1.2,
+        meta: { trade_style: 'tax_loss' }, trade_style: 'tax_loss' },
+      { opp_type: 'STRATEGY_SIGNAL', currency: 'BTC', side: 'BUY', size_usd: 400,
+        reason: 'golden cross', priority: 1.4, product_id: 'BTC-USD',
+        expected_fee: 0.4, preview_passed: true, executed: false,
+        order_id: '', entry_price_est: 85500.0, stop_loss_pct: 3.0,
+        take_profit_pct: 6.0, holding_period_hours: 168.0,
+        expected_return_pct: 6.0, risk_pct: 3.0,
+        meta: { trade_style: 'breakout' }, trade_style: 'breakout' },
+    ],
+    total: 2, updated_at: '2026-10-05T14:05:00Z', source: 'optimizer',
+  },
+  paperTrades: {
+    trades: [
+      { side: 'BUY', symbol: 'SOL-USD', size_usd: 75.0, fee: 0.08, pnl_usd: 3.1,
+        reason: 'momentum', timestamp: '2026-10-05T12:00:00Z' },
+    ],
+    total: 1,
+    settlement_summary: { closed: 12, open: 2, realised_pnl: 88.4 },
+  },
+  actions: {
+    actions: [
+      { id: 'refresh_market_data', label: 'Refresh market data',
+        description: 'Request the collector/daemon to refresh cached market snapshots.',
+        risk: 'safe' },
+      { id: 'rebalance_dry_run', label: 'Rebalance dry-run',
+        description: 'Queue a rebalance proposal without live execution.',
+        risk: 'guarded' },
+    ],
+    queue: [
+      { id: 'act-1', action: 'rebalance_dry_run', status: 'queued',
+        note: 'from the UI', created_at: '2026-10-05T14:10:00Z' },
+    ],
+    queue_path: '/tmp/queue.json', backend: 'rust',
+  },
+  strategies: {
+    total_strategies: 3,
+    active_strategies: [
+      { name: 'BTCVolatilityStacking', strategy_id: 'btcvolatilitystacking',
+        status: 'active', sharpe_ratio: 1.42, win_rate_pct: 58.3, total_trades: 120 },
+      { name: 'FundingRateContrarian', strategy_id: 'fundingratecontrarian',
+        status: 'development', sharpe_ratio: 0.31, win_rate_pct: 44.0, total_trades: 12 },
+    ],
+  },
+  rebalance: {
+    available: true, active_preset: 'core',
+    current_drift: 0.073, recommendation: 'trim growth',
+    presets: [
+      { name: 'core', label: 'Core', payload: { buckets: [] } },
+      { name: 'fee_tier', label: 'Fee Tier Generator', payload: { buckets: [] } },
+    ],
+  },
+  stairstep: {
+    available: true,
+    symbols: [{ symbol: 'BTC-USD', steps: 4, filled: 2, enabled: true }],
+  },
+  diversification: {
+    strategies: [
+      { name: 'kalman_mr', label: 'Kalman Filter Mean Reversion',
+        source: 'OHLCV (price only)', group: 'momentum_adv',
+        asset_class: 'growth/speculative', type: 'rust',
+        description: 'Adaptive mean reversion via 1D Kalman filter',
+        active: false, total_signals: 3, latest_signal: 'BUY' },
+      { name: 'funding_rate', label: 'Funding Rate Contrarian',
+        source: 'Binance', group: 'derivatives', asset_class: 'growth',
+        type: 'python', description: 'Fade crowded funding', active: true,
+        total_signals: 0, latest_signal: null },
+    ],
+    total_strategies: 2, active_strategies: 1, total_signals: 3,
+    source_groups: ['momentum_adv', 'derivatives'],
+  },
+  performance: {
+    summary_metrics: {
+      total_trades: 42, total_volume_usd: 18400, total_fees_usd: 18.4,
+      total_return_pct: 6.2, annualized_return_pct: 22.5, sharpe_ratio: 1.31,
+      max_drawdown_pct: -8.4, buy_trades: 25, sell_trades: 17,
+    },
+    recent_trades: [],
+  },
+  venues: {
+    kalshi: { configured: true, balance_usd: 250.5, portfolio_value_usd: 260.0,
+      positions: [], error: null },
+    polymarket: { configured: false, balance_usd: null, positions: [],
+      note: 'no API keys configured' },
+    ts: 1789900000,
+  },
+  arbSettlement: {
+    settled_now: { settled: 2, expired: 1, still_open: 3, realized_pnl: 14.2, total_trades: 6 },
+    summary: { total_trades: 40, by_status: { open: 3 }, realized_pnl: 210.5,
+      open_expected_pnl: 22.0, diverged_pairs: 0 },
+  },
+  orderflow: {},
 };
 
 /* ── tests ──────────────────────────────────────────────────────────────── */
@@ -718,6 +847,71 @@ test('request() treats an accepted non-2xx code as a real answer', async () => {
   assert.equal(wrongCode.ok, false, '500 must not be accepted by a [503] opt-in');
 });
 
+test('act() confirms with the message, not the native function', async () => {
+  // Regression guard for a bug that made every confirmation dialog in the UI
+  // display the source of window.confirm instead of the consequence it was
+  // warning about. Nothing went wrong by accident -- the dialog still blocked --
+  // but the prompt said nothing at all, which is the whole point of a prompt
+  // before an irreversible action.
+  const { api, sandbox } = loadDashboard();
+  const seen = [];
+  let sent = null;
+  sandbox.window.confirm = (msg) => { seen.push(String(msg)); return false; };
+  sandbox.fetch = async (url) => {
+    sent = { url, body: null };
+    return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) };
+  };
+
+  await api.act('/orders/submit', {
+    confirm: 'Approve this order? It will be released on the next optimizer tick.',
+    body: { symbol: 'BTC-USD' },
+  });
+
+  assert.equal(seen.length, 1, 'exactly one confirmation');
+  assert.equal(seen[0], 'Approve this order? It will be released on the next optimizer tick.',
+    'the dialog must carry the consequence, not a function reference');
+  assert.doesNotMatch(seen[0], /=>/, 'the dialog text must not be source code');
+  assert.equal(sent, null, 'declining must not issue the request');
+});
+
+test('act() sends the body it was given', async () => {
+  const { api, sandbox } = loadDashboard();
+  const sent = [];
+  // act() is auth:true, and it refuses without a token before it ever reaches
+  // the network -- which is the fail-closed behaviour, not a bug to route around.
+  api.token.set('a-token-for-this-test');
+  sandbox.window.confirm = () => true;
+  sandbox.fetch = async (url, opts) => {
+    sent.push({ url, method: opts.method, body: opts.body ? JSON.parse(opts.body) : undefined });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  await api.act('/kill-switch', { body: { enabled: true }, confirm: 'Change it?' });
+  await api.act('/execution/brackets/cancel', { body: { bracket_id: 'abc' }, confirm: 'Cancel?' });
+
+  // A successful action also triggers a refresh, so the stub sees the panel
+  // traffic too. Filter to the two calls this test made.
+  const acted = sent.filter((r) => r.url === '/kill-switch' || r.url === '/execution/brackets/cancel');
+  assert.equal(acted.length, 2, `expected 2 action calls, saw ${acted.length}`);
+  assert.deepEqual(acted[0].body, { enabled: true });
+  assert.deepEqual(acted[1].body, { bracket_id: 'abc' });
+  assert.ok(acted.every((r) => r.method === 'POST'));
+  // Refreshing after acting is deliberate: the operator should see the effect
+  // without reaching for the refresh button.
+  assert.ok(sent.length > 2, 'a successful action should trigger a refresh');
+});
+
+test('act() without a confirm option does not prompt', async () => {
+  const { api, sandbox } = loadDashboard();
+  api.token.set('a-token-for-this-test');
+  let prompted = false;
+  sandbox.window.confirm = () => { prompted = true; return false; };
+  sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) });
+
+  await api.act('/orders/submit', {});
+  assert.equal(prompted, false, 'an action with no message must not open an empty dialog');
+});
+
 test('a renderer that throws is contained, not fatal to the page', () => {
   const loaded = loadDashboard();
   const panels = panelsFrom(loaded);
@@ -885,4 +1079,239 @@ test('the token is read from sessionStorage and cleared by set("")', () => {
   api.token.set('');
   assert.equal(api.token.present(), false);
   assert.ok(session instanceof Map);
+});
+
+test('buying power separates deployable from raw cash and the cap', () => {
+  const html = render('buy-power', FIX2.executionStatus);
+  assertClean(html, 'buy-power');
+  tableIsWellFormed(html, 'buy-power');
+  // The whole point of the panel: deployable is not raw cash, and the reserve
+  // floor is why. All three must be visible or an operator sizes against the
+  // wrong number.
+  assert.match(html, /Deployable/);
+  assert.match(html, /Raw cash/);
+  assert.match(html, /Reserve floor/);
+  assert.match(html, /\$4,157\.50/, 'reserve floor keeps its cents');
+  assert.match(html, /\$500\.00/, 'hard cap');
+  // Whitespace-insensitive: the renderer's template wraps these across lines,
+  // and the assertion is about the meaning, not the formatting.
+  assert.match(html.replace(/\s+/g, ' '), /2 orders awaiting approval/,
+    'pending capital is called out, not just counted');
+});
+
+test('recent trades render side, size, fee and signed pnl', () => {
+  const html = render('recent-trades', FIX2.executionStatus);
+  assertClean(html, 'recent-trades');
+  tableIsWellFormed(html, 'recent-trades');
+  assert.match(html, /BTC-USD/);
+  assert.match(html, /ETH-USD/);
+  assert.match(html, /BUY/);
+  assert.match(html, /SELL/);
+  // A flat P&L has no sign: money() only prefixes '+' on a positive value.
+  assert.match(html, /\$0\.00/, 'a flat pnl still renders rather than showing --');
+  assert.match(html, /-\$12\.50/, 'a losing trade keeps its sign');
+  assert.match(html, /\$250\.00/);
+});
+
+test('trade plans show whether the optimizer preview cleared them', () => {
+  const html = render('trade-plans', FIX2.tradePlans);
+  assertClean(html, 'trade-plans');
+  tableIsWellFormed(html, 'trade-plans');
+  assert.equal((html.match(/<tr\b/g) || []).length, 3, 'header plus two plans');
+  // preview_passed is the field that says whether a plan survived the cost
+  // preview; it must be visible, not buried in a payload.
+  assert.match(html, /not cleared/);
+  assert.match(html, /passed/);
+  assert.match(html, /TLH/);
+  assert.match(html, /STRATEGY_SIGNAL/);
+  // The bridge from analysis into execution.
+  assert.match(html, /data-prefill="BTC-USD"/,
+    'a cleared plan must offer a one-click route into the order ticket');
+  assert.match(html, /Plans are proposals, not orders/);
+});
+
+test('trade plans degrade when the optimizer has not run', () => {
+  const html = render('trade-plans', { plans: [], total: 0, updated_at: '', source: '' });
+  assertClean(html, 'trade-plans empty');
+  assert.match(html, /No trade plans/);
+});
+
+test('paper trade ledger renders its settlement summary', () => {
+  const html = render('paper-trades', FIX2.paperTrades);
+  assertClean(html, 'paper-trades');
+  tableIsWellFormed(html, 'paper-trades');
+  assert.match(html, /SOL-USD/);
+  assert.match(html, /closed/);
+  assert.match(html, /realised_pnl/);
+  assert.match(html, /\+\$3\.10/);
+});
+
+test('operator actions carry their own risk and are gated', () => {
+  const html = render('actions', FIX2.actions);
+  assertClean(html, 'actions');
+  tableIsWellFormed(html, 'actions');
+  assert.match(html, /Refresh market data/);
+  assert.match(html, /safe/);
+  assert.match(html, /guarded/);
+  // The two risk levels must be visually distinct, or "guarded" means nothing.
+  assert.match(html, /pill positive">safe/);
+  assert.match(html, /pill warn">guarded/);
+  // Running one moves the system, so the control is token-gated and carries its
+  // risk level for the confirmation to quote.
+  assert.match(html, /data-run-action="refresh_market_data"/);
+  assert.match(html, /data-run-action="rebalance_dry_run"/);
+  assert.match(html, /data-needs-token/);
+  assert.match(html, /data-risk="guarded"/);
+  assert.match(html.replace(/\s+/g, ' '), /backend <strong>rust<\/strong>/);
+});
+
+test('the action queue is shown so a request is not a black hole', () => {
+  const html = render('actions', FIX2.actions);
+  assertClean(html, 'actions queue');
+  assert.match(html, /Queue/);
+  assert.match(html, /rebalance_dry_run/);
+  assert.match(html, /queued/);
+});
+
+test('strategies render the fields /strategies actually returns', () => {
+  const html = render('strategies', FIX2.strategies);
+  assertClean(html, 'strategies');
+  tableIsWellFormed(html, 'strategies');
+  assert.match(html, /BTCVolatilityStacking/);
+  assert.match(html, /FundingRateContrarian/);
+  assert.match(html, /1\.42/, 'sharpe_ratio');
+  assert.match(html, /58\.3%/, 'win_rate_pct is already a percentage');
+  assert.match(html, /120/);
+  assert.match(html, /development/);
+  // No endpoint toggles a strategy, so no control may imply one exists.
+  assert.doesNotMatch(html, /data-disable-strategy|data-enable-strategy/);
+});
+
+test('rebalance shows drift and gates preset application', () => {
+  const html = render('rebalance', FIX2.rebalance);
+  assertClean(html, 'rebalance');
+  tableIsWellFormed(html, 'rebalance');
+  assert.match(html, /core/);
+  assert.match(html, /Fee Tier Generator/);
+  assert.match(html, /7\.30%/, 'drift as a percentage');
+  assert.match(html, /trim growth/, 'the recommendation is the actionable part');
+  // Rewriting allocation is guarded: gated, and not offered for the active preset.
+  assert.match(html, /data-bucket-preset="fee_tier"/);
+  assert.match(html, /data-needs-token/);
+  assert.doesNotMatch(html, /data-bucket-preset="core"/,
+    'the already-active preset must not offer to re-apply itself');
+  assert.match(html.replace(/\s+/g, ' '), /rewrites the capital allocation/i);
+});
+
+test('stairstep handles available, empty and unavailable', () => {
+  const html = render('stairstep', FIX2.stairstep);
+  assertClean(html, 'stairstep');
+  tableIsWellFormed(html, 'stairstep');
+  assert.match(html, /BTC-USD/);
+  assert.match(html, /paused|active/);
+
+  assert.match(render('stairstep', { available: false }),
+    /not available/);
+  assert.match(render('stairstep', { available: true, symbols: [] }),
+    /No stair-step ladders/);
+});
+
+test('diversification surfaces the independence group, not just a name', () => {
+  const html = render('diversification', FIX2.diversification);
+  assertClean(html, 'diversification');
+  tableIsWellFormed(html, 'diversification');
+  // The group is what ConfidenceMatrix weights by, so it is the column that
+  // matters when asking whether signals are actually independent.
+  assert.match(html, /momentum_adv/);
+  assert.match(html, /derivatives/);
+  assert.match(html, /Kalman Filter Mean Reversion/);
+  assert.match(html, /growth\/speculative/);
+  assert.match(html, /1 of 2 strategies/, 'coverage is stated up front');
+});
+
+test('performance renders the summary metrics', () => {
+  const html = render('performance', FIX2.performance);
+  assertClean(html, 'performance');
+  tableIsWellFormed(html, 'performance');
+  assert.match(html, /Total trades/);
+  assert.match(html, /42/);
+  assert.match(html, /1\.31/, 'sharpe');
+  assert.match(html, /-8\.40%/, 'max drawdown keeps its sign');
+  assert.match(html, /25 \/ 17/, 'buy/sell split');
+  assert.match(html, /\$18\.40/, 'fees');
+});
+
+test('venue balances distinguish configured from not configured', () => {
+  const html = render('venues', FIX2.venues);
+  assertClean(html, 'venues');
+  tableIsWellFormed(html, 'venues');
+  assert.match(html, /Kalshi/);
+  assert.match(html, /Polymarket/);
+  assert.match(html, /\$250\.50/);
+  assert.match(html, /not configured/);
+  // A null balance must read as unknown, not as zero.
+  assert.match(html, /--/);
+  assert.match(html, /no API keys configured/);
+});
+
+test('arbitrage settlement raises diverged pairs loudly', () => {
+  const clean = render('arb-settlement', FIX2.arbSettlement);
+  assertClean(clean, 'arb-settlement');
+  tableIsWellFormed(clean, 'arb-settlement');
+  assert.match(clean, /Settled this pass/);
+  assert.doesNotMatch(clean, /diverged between venues/);
+
+  // A diverged pair is a real discrepancy between venues, not a rounding
+  // artefact, so it gets a banner rather than a table cell.
+  const diverged = render('arb-settlement', {
+    ...FIX2.arbSettlement,
+    summary: { ...FIX2.arbSettlement.summary, diverged_pairs: 2 },
+  });
+  assertClean(diverged, 'arb-settlement diverged');
+  assert.match(diverged, /2 pairs diverged/);
+  assert.match(diverged, /not a rounding difference/);
+});
+
+test('orderflow says it is unpopulated rather than showing an empty table', () => {
+  const html = render('orderflow', FIX2.orderflow);
+  assertClean(html, 'orderflow empty');
+  assert.match(html, /No order-flow signals recorded yet/);
+  assert.match(html, /Populated by the market daemon/);
+
+  const populated = render('orderflow', {
+    btc_cvd: { signal: 'BUY', value: 0.62, bias: 0.62 },
+    eth_imbalance: -0.31,
+  });
+  assertClean(populated, 'orderflow populated');
+  assert.match(populated, /btc_cvd/);
+  assert.match(populated, /BUY/);
+  assert.match(populated, /eth_imbalance/);
+});
+
+test('every new panel survives a null payload', () => {
+  const ids = ['buy-power', 'recent-trades', 'trade-plans', 'paper-trades', 'actions',
+    'strategies', 'rebalance', 'stairstep', 'diversification', 'performance',
+    'venues', 'arb-settlement', 'orderflow'];
+  for (const id of ids) {
+    assertClean(render(id, {}), `${id} empty object`);
+    assertClean(render(id, []), `${id} empty array`);
+  }
+});
+
+test('new panels escape hostile content too', () => {
+  const payload = '<img src=x onerror=alert(1)>';
+  const cases = [
+    ['trade-plans', { plans: [{ opp_type: payload, currency: payload, side: 'BUY',
+      size_usd: 1, entry_price_est: 1, stop_loss_pct: 1, take_profit_pct: 1,
+      holding_period_hours: 1, preview_passed: true, product_id: payload }], total: 1 }],
+    ['actions', { actions: [{ id: payload, label: payload, description: payload, risk: payload }], queue: [] }],
+    ['strategies', { total_strategies: 1, active_strategies: [{ name: payload, status: 'active', sharpe_ratio: 1, win_rate_pct: 1, total_trades: 1 }] }],
+    ['diversification', { strategies: [{ name: payload, label: payload, group: payload, asset_class: payload, description: payload, total_signals: 1 }], source_groups: [payload] }],
+    ['venues', { kalshi: { configured: true, balance_usd: 1, positions: [], error: payload } }],
+  ];
+  for (const [id, data] of cases) {
+    const html = render(id, data);
+    assert.doesNotMatch(html, /<img src=x/, `${id} injected a raw tag`);
+    assert.match(html, /&lt;img/, `${id} should escape the payload`);
+  }
 });
