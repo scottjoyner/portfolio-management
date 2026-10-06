@@ -250,7 +250,8 @@ const FIX = {
         created_at: '2026-10-05T10:00:00+00:00' },
       { id: 'def456abc123', token: 'def456abc123', strategy_id: 'tlh',
         instrument: 'DOGE-USD', quantity_usd: 100.0, expected_fee: 0.1,
-        risk_score: 0.5, status: 'approved', auto_approved: true,
+        risk_score: 0.5, status: 'approved', auto_approved: false,
+        resolved_at: '2026-10-05T09:30:00Z', resolved_by: 'dashboard',
         created_at: '2026-10-05T09:00:00+00:00' },
     ],
     summary: { pending_count: 1, approved_count: 1, rejected_count: 0 },
@@ -533,8 +534,12 @@ test('approvals splits pending from settled and only offers action on pending', 
   const html = render('approvals', FIX.approvals);
   assertClean(html, 'approvals');
   tableIsWellFormed(html, 'approvals');
-  assert.match(html, /pending/);
-  assert.match(html, /auto/);
+  assert.match(html, /awaiting approval/);
+  // Provenance, not an inferred "auto": a human approval must be attributable.
+  assert.match(html, /by dashboard/, 'the panel must say who resolved it');
+  assert.match(html, /09:30:00/, 'and when');
+  assert.doesNotMatch(html, />auto</,
+    'a human approval must never be labelled automatic');
   // Exactly one approve button: the already-approved row must not offer one.
   const approves = html.match(/data-approve="/g) || [];
   const denies = html.match(/data-deny="/g) || [];
