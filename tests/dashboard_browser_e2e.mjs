@@ -37,13 +37,32 @@ function check(name, ok, detail = '') {
 
 const SCRATCH = '/tmp/opencode/dash/browser';
 
-/* Seed the scratch data dir so the approvals panel renders real pending rows.
- * APPROVALS_PATH honours TRADING_DATA_DIR, so this stays out of the repo's live
- * state. Without it the panel is legitimately empty and the token-gating check
- * below has no Approve/Deny buttons to inspect. */
+/* Seed the scratch data dir so panels render real data instead of falling
+ * through to the exchange.
+ *
+ * Two reasons, and the second is why this was worth doing properly:
+ *
+ * 1. pending_approvals.json gives the approvals panel rows to render, so the
+ *    token-gating checks have Approve/Deny buttons to inspect.
+ *
+ * 2. operator-state.json stops /accounts and /positions falling through to a
+ *    *live Coinbase CLI call*. Both endpoints do `if not accounts: <call the
+ *    exchange>`, so with no operator state the browser suite was quietly
+ *    depending on a network round-trip to a real account -- which is why the
+ *    accounts panel intermittently still held its loading skeleton at the point
+ *    the suite asserted on it. A test that reaches the exchange is slow,
+ *    non-deterministic, and one API hiccup away from a false failure.
+ *
+ *    Seeding also means those panels can be asserted as *populated* rather than
+ *    merely not-broken, which is a stronger claim than the suite made before.
+ *
+ * APPROVALS_PATH and OPERATOR_STATE_PATH both honour TRADING_DATA_DIR, so this
+ * stays out of the repo's live state.
+ */
 function seedState() {
   mkdirSync(SCRATCH, { recursive: true });
   const iso = new Date(Date.now() - 120000).toISOString();
+
   writeFileSync(`${SCRATCH}/pending_approvals.json`, JSON.stringify({
     e2e0000token0001: {
       type: 'manual_order', side: 'BUY', currency: 'BTC', size_usd: 250,
@@ -56,6 +75,40 @@ function seedState() {
       expected_fee: 0.1, product_id: 'ETH-USD', reason: 'already settled',
       priority: 0.5, status: 'approved', auto_approved: true, created_at: iso,
     },
+  }, null, 2));
+
+  // Shapes taken from api_positions / api_accounts: positions use `quantity`,
+  // `averagePrice`, `markPrice`; marks come from marketDataSnapshots[].bid.
+  writeFileSync(`${SCRATCH}/operator-state.json`, JSON.stringify({
+    accounts: [
+      {
+        id: 'main', name: 'main', display_name: 'main',
+        cash: 4157.5, nav: 8315.0, current_balance_usd: 4157.5,
+        buyingPower: 4000.0, status: 'active', provider: 'coinbase', mode: 'paper',
+      },
+      {
+        id: 'challenge', name: 'challenge', display_name: 'challenge',
+        cash: 100.0, nav: 100.0, current_balance_usd: 100.0,
+        buyingPower: 0.0, status: 'active', provider: 'coinbase', mode: 'paper',
+      },
+    ],
+    positions: [
+      {
+        symbol: 'BTC-USD', quantity: 0.05, averagePrice: 81000.0,
+        markPrice: 85545.5, unrealizedPnl: 227.27,
+        status: 'open', venue: 'coinbase',
+      },
+      {
+        symbol: 'ETH-USD', quantity: 1.5, averagePrice: 2000.0,
+        markPrice: 1900.0, unrealizedPnl: -150.0,
+        status: 'open', venue: 'coinbase',
+      },
+    ],
+    marketDataSnapshots: [
+      { symbol: 'BTC-USD', bid: 85545.5, spreadBps: 2.4, liquidityScore: 92 },
+      { symbol: 'ETH-USD', bid: 1900.0, spreadBps: 3.1, liquidityScore: 88 },
+    ],
+    instruments: [],
   }, null, 2));
 }
 
@@ -389,6 +442,55 @@ try {
     check(`panel ${p.id}: produced content`, p.chars > 0 || p.tables > 0, `chars=${p.chars}`);
   }
   check('every registered panel appeared in the DOM', seen.size >= 15, `${seen.size} distinct`);
+
+  console.log('\n== seeded panels are populated, not merely unbroken ==');
+  // The scratch dir is seeded, so /accounts and /positions answer from
+  // operator-state.json instead of falling through to a live Coinbase call. That
+  // makes the suite hermetic *and* lets it claim something stronger than "did not
+  // error": the rows are actually there, with the values the seed put in.
+  await cdp.eval(`location.hash = 'execute'; return 1`);
+  await sleep(1200);
+  const seeded = await cdp.eval(`
+    const text = (sel) => {
+      const el = document.querySelector(sel);
+      return el ? el.textContent.replace(/\\s+/g, ' ').trim() : '';
+    };
+    return {
+      positions: text('#view-execute [data-panel="positions"]'),
+      brackets: text('#view-execute [data-panel="brackets"]'),
+      buyingPower: text('#view-execute [data-panel="buy-power"]'),
+    };
+  `);
+  check('positions panel shows the seeded instruments',
+    seeded.positions.includes('BTC-USD') && seeded.positions.includes('ETH-USD'),
+    seeded.positions.slice(0, 160));
+  check('positions panel formats the seeded mark price as currency',
+    /\$85,545\.50/.test(seeded.positions), seeded.positions.slice(0, 200));
+  check('positions panel keeps the seeded loss negative',
+    seeded.positions.includes('-$150.00'), seeded.positions.slice(0, 200));
+  // Buying power is derived from the *snapshot store*, not from the accounts in
+  // operator-state.json, so the seeded figures do not reach it -- the reserve is
+  // computed as a fraction of the last portfolio snapshot. Assert the shape and
+  // that it is currency-formatted rather than inventing an expected number.
+  check('buying power panel shows the full ladder of figures',
+    ['Deployable', 'Raw cash', 'Reserve floor', 'Portfolio value', 'Hard cap']
+      .every((k) => seeded.buyingPower.includes(k)),
+    seeded.buyingPower.slice(0, 200));
+  check('buying power figures are currency-formatted',
+    /\$[\d,]+\.\d{2}/.test(seeded.buyingPower), seeded.buyingPower.slice(0, 200));
+
+  await cdp.eval(`location.hash = 'bot'; return 1`);
+  await sleep(1000);
+  const accountsText = await cdp.eval(`
+    const el = document.querySelector('#view-bot [data-panel="accounts"]');
+    return el ? el.textContent.replace(/\\s+/g, ' ').trim() : '';
+  `);
+  check('accounts panel shows the seeded accounts rather than calling the exchange',
+    accountsText.includes('main') && accountsText.includes('challenge'),
+    accountsText.slice(0, 160));
+  check('accounts panel renders the flat record shape',
+    accountsText.includes('4,157.50') && accountsText.includes('paper'),
+    accountsText.slice(0, 200));
 
   console.log('\n== no panel reported an unexpected error ==');
   // /capital/buckets is classified mutating server-side, so before unlock it
