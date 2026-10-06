@@ -60,6 +60,19 @@ def _python() -> str:
     return str(venv) if venv.exists() else sys.executable
 
 
+# Which data directory these tests hold harmless. Resolved once, and used by both
+# the fixture and the assertions -- an earlier version let the two disagree, so
+# the "after" snapshot was taken from the worktree while the "before" came from
+# the deployment, and every worktree file was reported as newly created.
+#
+# Running from a git worktree makes REPO_ROOT a directory whose data/ holds only
+# git-tracked files, missing every untracked operator file worth protecting
+# (trading_kill_switch, pending_approvals.json, optimizer_brackets.json are all
+# gitignored). Fingerprinting that proves nothing about the deployment, so
+# DEPLOYMENT_ROOT names it explicitly.
+WATCHED_DATA_ROOT = Path(os.environ.get("DEPLOYMENT_ROOT", REPO_ROOT)) / "data"
+
+
 def _fingerprint(root: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
@@ -121,8 +134,25 @@ def sandbox():
 
 @pytest.fixture(scope="session")
 def real_data_fingerprint():
-    """Hashes of the operator's data dir, taken before anything runs."""
-    return _fingerprint(REPO_ROOT / "data")
+    """Hashes of the operator's data dir, taken before anything runs.
+
+    Which directory that is depends on where the tests run, and getting it wrong
+    makes the assertion worthless rather than merely imprecise. Run from a git
+    worktree and ``REPO_ROOT`` is that worktree, whose ``data/`` holds only
+    git-tracked files -- an order of magnitude smaller than a deployment's, and
+    missing every file this test exists to protect: trading_kill_switch,
+    pending_approvals.json and optimizer_brackets.json are all untracked and
+    gitignored, so a worktree does not have them at all.
+
+    Fingerprinting that proves nothing about the deployment. So the target is
+    explicit -- DEPLOYMENT_ROOT when set, otherwise this checkout -- and the
+    fixture prints which one it used. Read the reported path before believing
+    the result.
+    """
+    root = Path(os.environ.get("DEPLOYMENT_ROOT", REPO_ROOT)) / "data"
+    assert root.exists(), f"nothing to fingerprint at {root}"
+    print(f"\n[data-dir guard] fingerprinting {root} ({len(_fingerprint(root))} files)")
+    return _fingerprint(root)
 
 
 class Api:
@@ -433,7 +463,7 @@ def test_nothing_touched_the_operators_data_directory(real_data_fingerprint, liv
     cancel. If any of them resolved against the operator's checkout, this fails.
     """
     assert live["proc"].poll() is None, "the sandbox server died mid-run"
-    after = _fingerprint(REPO_ROOT / "data")
+    after = _fingerprint(WATCHED_DATA_ROOT)
     added = sorted(set(after) - set(real_data_fingerprint))
     removed = sorted(set(real_data_fingerprint) - set(after))
     changed = sorted(
@@ -470,3 +500,12 @@ def test_a_submitted_approval_is_only_in_the_sandbox(live, authed, real_data_fin
     real_file = REPO_ROOT / "data" / "pending_approvals.json"
     assert not real_file.exists(), "an approval leaked into the operator's data dir"
     assert "data/pending_approvals.json" not in real_data_fingerprint
+
+
+@pytest.fixture(scope="module")
+def real_data_fingerprint():
+    """Hashes of the watched data dir, taken before anything runs."""
+    assert WATCHED_DATA_ROOT.exists(), f"nothing to fingerprint at {WATCHED_DATA_ROOT}"
+    print(f"\n[data-dir guard] watching {WATCHED_DATA_ROOT} "
+          f"({len(_fingerprint(WATCHED_DATA_ROOT))} files)")
+    return _fingerprint(WATCHED_DATA_ROOT)
