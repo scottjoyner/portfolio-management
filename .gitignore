@@ -215,3 +215,11 @@ data/incident-*/
 # documents the incident; the JSON holds a *fabricated* book (a BTC-USD core
 # holding with trades 0) that must never be mistaken for operator state.
 data/quarantine_test_artifacts_*/
+
+# Derived candle exports for the sentiment decision harness. Regenerate with
+#   python scripts/export_clean_candles.py --symbol BTC-USD --granularity 3600 \
+#     --out data/sentiment_harness/candles/BTC-USD-1h.jsonl
+# These are cleaned views of data/feed_cache, not source data. Recorded sentiment
+# readings under data/sentiment_harness/sentiment/ ARE tracked -- they cannot be
+# regenerated, since re-reading Grok would cost money and may not reproduce.
+data/sentiment_harness/candles/
