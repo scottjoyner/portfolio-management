@@ -319,6 +319,86 @@ test('a provider response missing required fields is refused end to end', async 
   assert.ok(!result.sentiment);
 });
 
+// ── local routing: the free path ────────────────────────────────────────────
+// The real IntelligenceProviderRegistry has no execute(); it exposes routeLocal(),
+// which picks a node by health and queue depth. An earlier version of readSentiment
+// accepted only execute(), so it could not drive the registry it was written for --
+// every test used a duck-typed stand-in and nothing caught it.
+
+function routedRegistry({ execute, routeErrors = null, calls = [] } = {}) {
+  return {
+    calls,
+    async routeLocal(request) {
+      calls.push({ via: 'routeLocal', model: request.model, maxCompletionTokens: request.maxCompletionTokens });
+      if (routeErrors) return { errors: routeErrors, nodes: [] };
+      return {
+        provider: {
+          async execute(inner) {
+            calls.push({ via: 'provider.execute', maxCompletionTokens: inner.maxCompletionTokens });
+            return execute(inner);
+          },
+        },
+        route: { nodeId: 'local-1', estimatedCostUsd: 0 },
+      };
+    },
+  };
+}
+
+const VALID_COMPLETION = {
+  choices: [{ message: { content: '{"score":0.2,"confidence":0.6,"horizonMinutes":60,"rationale":"ok"}' } }],
+  usage: { cost: 0 },
+};
+
+test('a local route is used without any remote fallback', async () => {
+  const calls = [];
+  const result = await readSentiment({
+    registry: routedRegistry({ execute: async () => VALID_COMPLETION, calls }),
+    symbol: 'BTC-USD', horizonMinutes: 60, observations: [],
+  });
+  assert.equal(result.sentiment.score, 0.2);
+  assert.equal(result.costUsd, 0);
+  assert.equal(result.route.nodeId, 'local-1');
+  assert.deepEqual(calls.map(c => c.via), ['routeLocal', 'provider.execute']);
+});
+
+test('an unavailable local node fails closed instead of reaching for a paid provider', async () => {
+  // The whole point of local-first: if the free node is busy, the read must fail
+  // rather than quietly become an OpenRouter call that costs money and is only
+  // meant to happen behind REMOTE_LLM_EXECUTION_ENABLED.
+  const result = await readSentiment({
+    registry: { async routeLocal() { return { errors: ['no_healthy_local_model_route'], nodes: [] }; } },
+    symbol: 'BTC-USD', horizonMinutes: 60, observations: [],
+  });
+  assert.deepEqual(result.errors, ['no_healthy_local_model_route']);
+  assert.ok(!result.sentiment);
+});
+
+test('reasoning models get enough token budget to emit an answer', async () => {
+  const calls = [];
+  await readSentiment({
+    registry: routedRegistry({ execute: async () => VALID_COMPLETION, calls }),
+    symbol: 'BTC-USD', horizonMinutes: 60, observations: [],
+  });
+  const request = calls.find(c => c.via === 'provider.execute');
+  // Verified live against ornith-1.5-35b: 400 max_tokens returned HTTP 200 with
+  // empty content because reasoning_content consumed the entire budget.
+  assert.ok(request.maxCompletionTokens >= 1500, `token budget too small: ${request.maxCompletionTokens}`);
+});
+
+test('the token budget is overridable', async () => {
+  const calls = [];
+  await readSentiment({
+    registry: routedRegistry({ execute: async () => VALID_COMPLETION, calls }),
+    symbol: 'BTC-USD', horizonMinutes: 60, observations: [],
+    env: { SENTIMENT_MAX_TOKENS: '4096' },
+  });
+  assert.equal(calls.find(c => c.via === 'provider.execute').maxCompletionTokens, 4096);
+});
+
+test('a registry exposing neither shape is rejected', async () => {
+  assert.deepEqual((await readSentiment({ registry: {}, symbol: 'X', horizonMinutes: 60 })).errors, ['sentiment_registry_required']);
+});
+
 test('a read requires a registry and a positive horizon', async () => {
   assert.deepEqual((await readSentiment({ symbol: 'BTC-USD', horizonMinutes: 60 })).errors, ['sentiment_registry_required']);
   assert.deepEqual(

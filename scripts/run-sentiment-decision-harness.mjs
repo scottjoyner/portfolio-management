@@ -117,6 +117,11 @@ function runArm(candles, sentimentSeries, options) {
   const { lookbackBars, horizonBars, granularityMinutes, maxTiltSigma } = options;
   const state = createInitialOperatorState();
   const outcomes = { [BASELINE_VERSION]: [], [SENTIMENT_AUGMENTED_VERSION]: [] };
+  // Paired per window. Comparing a mean over every window against a mean over
+  // only the windows that happened to have a reading is not a comparison -- the
+  // two arms would differ by sample composition, not by sentiment. The controls
+  // hid this because they populate every window.
+  const paired = [];
   const byRegime = {};
   let skippedNoSentiment = 0;
   let skippedNoOutcome = 0;
@@ -147,6 +152,7 @@ function runArm(candles, sentimentSeries, options) {
     }
 
     const actualPrice = candles[index + horizonBars].close;
+    const windowOutcomes = {};
     for (const forecast of [baseline, augmented].filter(Boolean)) {
       const recorded = recordForecastOutcome(state, { forecastId: forecast.id, actualPrice }, asOf);
       const outcome = recorded.forecastOutcome;
@@ -156,11 +162,15 @@ function runArm(candles, sentimentSeries, options) {
       }
       outcomes[forecast.modelVersion] ||= [];
       outcomes[forecast.modelVersion].push(outcome);
+      windowOutcomes[forecast.modelVersion] = outcome;
       byRegime[outcome.regime] ||= { [BASELINE_VERSION]: [], [SENTIMENT_AUGMENTED_VERSION]: [] };
       byRegime[outcome.regime][forecast.modelVersion]?.push(outcome);
     }
+    const base = windowOutcomes[BASELINE_VERSION];
+    const aug = windowOutcomes[SENTIMENT_AUGMENTED_VERSION];
+    if (base && aug) paired.push({ baseline: base, augmented: aug });
   }
-  return { outcomes, byRegime, skippedNoSentiment, skippedNoOutcome };
+  return { outcomes, paired, byRegime, skippedNoSentiment, skippedNoOutcome };
 }
 
 function delta(base, augmented, key, lowerIsBetter) {
@@ -170,12 +180,35 @@ function delta(base, augmented, key, lowerIsBetter) {
   return { raw, improved };
 }
 
+// Restrict both arms to the windows where both exist, so the headline numbers
+// describe the same windows in each column.
+function summarizePaired(paired) {
+  return {
+    baseline: summarize(paired.map(p => p.baseline)),
+    augmented: summarize(paired.map(p => p.augmented)),
+    pairs: paired.length,
+  };
+}
+
 export function runHarness({ candles, sentimentSeries, options = {} }) {
   const base = runArm(candles, sentimentSeries, options);
+  const paired = summarizePaired(base.paired);
   const baseSummary = summarize(base.outcomes[BASELINE_VERSION] || []);
   const augSummary = summarize(base.outcomes[SENTIMENT_AUGMENTED_VERSION] || []);
   return {
     coinFlip: coinFlipReference(),
+    // The comparable pair: identical windows on both sides.
+    paired,
+    pairedComparison: {
+      brier: {
+        raw: (paired.augmented.brierScore ?? 0) - (paired.baseline.brierScore ?? 0),
+        improved: paired.augmented.brierScore != null && paired.augmented.brierScore < paired.baseline.brierScore,
+      },
+      directionalAccuracy: {
+        raw: (paired.augmented.directionalAccuracy ?? 0) - (paired.baseline.directionalAccuracy ?? 0),
+        improved: paired.augmented.directionalAccuracy != null && paired.augmented.directionalAccuracy > paired.baseline.directionalAccuracy,
+      },
+    },
     baseline: baseSummary,
     augmented: augSummary,
     comparison: {
@@ -297,8 +330,10 @@ function main() {
   }
   console.log(`\n  real sentiment readings matched: ${series.size} of ${candles.length - options.lookbackBars - options.horizonBars} windows`);
   const real = runHarness({ candles, sentimentSeries: series, options });
-  describe('real Grok sentiment', real);
-  console.log('\n  by regime:');
+  describe('real recorded sentiment', real);
+  describe('paired (identical windows, the actual verdict)', { baseline: real.paired.baseline, augmented: real.paired.augmented, comparison: real.pairedComparison, coinFlip: real.coinFlip });
+  console.log(`\n  paired windows: ${real.paired.pairs}`);
+  console.log('\n  by regime (unpaired regime means; read the paired block for the verdict):');
   for (const [regime, arms] of Object.entries(real.byRegime)) {
     if (arms.baseline.samples < 5) continue;
     console.log(`    ${regime.padEnd(24)} n=${String(arms.baseline.samples).padStart(4)}  Brier ${arms.baseline.brierScore.toFixed(6)} -> ${arms.augmented.brierScore?.toFixed(6)}  dir ${pct(arms.baseline.directionalAccuracy)} -> ${pct(arms.augmented.directionalAccuracy)}`);
