@@ -227,3 +227,4 @@ data/sentiment_harness/candles/
 # Backtest scorecards are regenerable research artifacts and accumulate quickly.
 # The replay that writes them is scripts/run-decision-classifier-replay.mjs.
 scripts/experiments/decision_classifier_replay/
+scripts/experiments/signal_existence_audit/
