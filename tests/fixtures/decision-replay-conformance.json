@@ -1,0 +1,2848 @@
+{
+  "source": "scripts.alpha_validation.generate_walk_forward_splits+stable_hash",
+  "folds": [
+    {
+      "n": 1000,
+      "trainSize": 200,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 200,
+          "embargo_start": 200,
+          "embargo_end": 200,
+          "test_start": 200,
+          "test_end": 400
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 400,
+          "embargo_start": 400,
+          "embargo_end": 400,
+          "test_start": 400,
+          "test_end": 600
+        },
+        {
+          "train_start": 0,
+          "train_end": 600,
+          "purge_start": 600,
+          "purge_end": 600,
+          "embargo_start": 600,
+          "embargo_end": 600,
+          "test_start": 600,
+          "test_end": 800
+        },
+        {
+          "train_start": 0,
+          "train_end": 800,
+          "purge_start": 800,
+          "purge_end": 800,
+          "embargo_start": 800,
+          "embargo_end": 800,
+          "test_start": 800,
+          "test_end": 1000
+        }
+      ]
+    },
+    {
+      "n": 1000,
+      "trainSize": 400,
+      "testSize": 481,
+      "purgeSize": 1,
+      "embargoSize": 1,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 401,
+          "embargo_start": 401,
+          "embargo_end": 402,
+          "test_start": 402,
+          "test_end": 883
+        }
+      ]
+    },
+    {
+      "n": 1000,
+      "trainSize": 100,
+      "testSize": 50,
+      "purgeSize": 5,
+      "embargoSize": 5,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 100,
+          "purge_start": 100,
+          "purge_end": 105,
+          "embargo_start": 105,
+          "embargo_end": 110,
+          "test_start": 110,
+          "test_end": 160
+        },
+        {
+          "train_start": 0,
+          "train_end": 150,
+          "purge_start": 150,
+          "purge_end": 155,
+          "embargo_start": 155,
+          "embargo_end": 160,
+          "test_start": 160,
+          "test_end": 210
+        },
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 205,
+          "embargo_start": 205,
+          "embargo_end": 210,
+          "test_start": 210,
+          "test_end": 260
+        },
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 255,
+          "embargo_start": 255,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 310
+        },
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 305,
+          "embargo_start": 305,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 360
+        },
+        {
+          "train_start": 0,
+          "train_end": 350,
+          "purge_start": 350,
+          "purge_end": 355,
+          "embargo_start": 355,
+          "embargo_end": 360,
+          "test_start": 360,
+          "test_end": 410
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 405,
+          "embargo_start": 405,
+          "embargo_end": 410,
+          "test_start": 410,
+          "test_end": 460
+        },
+        {
+          "train_start": 0,
+          "train_end": 450,
+          "purge_start": 450,
+          "purge_end": 455,
+          "embargo_start": 455,
+          "embargo_end": 460,
+          "test_start": 460,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 505,
+          "embargo_start": 505,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 560
+        },
+        {
+          "train_start": 0,
+          "train_end": 550,
+          "purge_start": 550,
+          "purge_end": 555,
+          "embargo_start": 555,
+          "embargo_end": 560,
+          "test_start": 560,
+          "test_end": 610
+        },
+        {
+          "train_start": 0,
+          "train_end": 600,
+          "purge_start": 600,
+          "purge_end": 605,
+          "embargo_start": 605,
+          "embargo_end": 610,
+          "test_start": 610,
+          "test_end": 660
+        },
+        {
+          "train_start": 0,
+          "train_end": 650,
+          "purge_start": 650,
+          "purge_end": 655,
+          "embargo_start": 655,
+          "embargo_end": 660,
+          "test_start": 660,
+          "test_end": 710
+        },
+        {
+          "train_start": 0,
+          "train_end": 700,
+          "purge_start": 700,
+          "purge_end": 705,
+          "embargo_start": 705,
+          "embargo_end": 710,
+          "test_start": 710,
+          "test_end": 760
+        },
+        {
+          "train_start": 0,
+          "train_end": 750,
+          "purge_start": 750,
+          "purge_end": 755,
+          "embargo_start": 755,
+          "embargo_end": 760,
+          "test_start": 760,
+          "test_end": 810
+        },
+        {
+          "train_start": 0,
+          "train_end": 800,
+          "purge_start": 800,
+          "purge_end": 805,
+          "embargo_start": 805,
+          "embargo_end": 810,
+          "test_start": 810,
+          "test_end": 860
+        },
+        {
+          "train_start": 0,
+          "train_end": 850,
+          "purge_start": 850,
+          "purge_end": 855,
+          "embargo_start": 855,
+          "embargo_end": 860,
+          "test_start": 860,
+          "test_end": 910
+        },
+        {
+          "train_start": 0,
+          "train_end": 900,
+          "purge_start": 900,
+          "purge_end": 905,
+          "embargo_start": 905,
+          "embargo_end": 910,
+          "test_start": 910,
+          "test_end": 960
+        }
+      ]
+    },
+    {
+      "n": 1000,
+      "trainSize": 250,
+      "testSize": 250,
+      "purgeSize": 10,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 260,
+          "embargo_start": 260,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 510,
+          "embargo_start": 510,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 760
+        }
+      ]
+    },
+    {
+      "n": 1000,
+      "trainSize": 300,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 10,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 300,
+          "embargo_start": 300,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 500,
+          "embargo_start": 500,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 710
+        },
+        {
+          "train_start": 0,
+          "train_end": 700,
+          "purge_start": 700,
+          "purge_end": 700,
+          "embargo_start": 700,
+          "embargo_end": 710,
+          "test_start": 710,
+          "test_end": 910
+        }
+      ]
+    },
+    {
+      "n": 2326,
+      "trainSize": 200,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 200,
+          "embargo_start": 200,
+          "embargo_end": 200,
+          "test_start": 200,
+          "test_end": 400
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 400,
+          "embargo_start": 400,
+          "embargo_end": 400,
+          "test_start": 400,
+          "test_end": 600
+        },
+        {
+          "train_start": 0,
+          "train_end": 600,
+          "purge_start": 600,
+          "purge_end": 600,
+          "embargo_start": 600,
+          "embargo_end": 600,
+          "test_start": 600,
+          "test_end": 800
+        },
+        {
+          "train_start": 0,
+          "train_end": 800,
+          "purge_start": 800,
+          "purge_end": 800,
+          "embargo_start": 800,
+          "embargo_end": 800,
+          "test_start": 800,
+          "test_end": 1000
+        },
+        {
+          "train_start": 0,
+          "train_end": 1000,
+          "purge_start": 1000,
+          "purge_end": 1000,
+          "embargo_start": 1000,
+          "embargo_end": 1000,
+          "test_start": 1000,
+          "test_end": 1200
+        },
+        {
+          "train_start": 0,
+          "train_end": 1200,
+          "purge_start": 1200,
+          "purge_end": 1200,
+          "embargo_start": 1200,
+          "embargo_end": 1200,
+          "test_start": 1200,
+          "test_end": 1400
+        },
+        {
+          "train_start": 0,
+          "train_end": 1400,
+          "purge_start": 1400,
+          "purge_end": 1400,
+          "embargo_start": 1400,
+          "embargo_end": 1400,
+          "test_start": 1400,
+          "test_end": 1600
+        },
+        {
+          "train_start": 0,
+          "train_end": 1600,
+          "purge_start": 1600,
+          "purge_end": 1600,
+          "embargo_start": 1600,
+          "embargo_end": 1600,
+          "test_start": 1600,
+          "test_end": 1800
+        },
+        {
+          "train_start": 0,
+          "train_end": 1800,
+          "purge_start": 1800,
+          "purge_end": 1800,
+          "embargo_start": 1800,
+          "embargo_end": 1800,
+          "test_start": 1800,
+          "test_end": 2000
+        },
+        {
+          "train_start": 0,
+          "train_end": 2000,
+          "purge_start": 2000,
+          "purge_end": 2000,
+          "embargo_start": 2000,
+          "embargo_end": 2000,
+          "test_start": 2000,
+          "test_end": 2200
+        }
+      ]
+    },
+    {
+      "n": 2326,
+      "trainSize": 400,
+      "testSize": 481,
+      "purgeSize": 1,
+      "embargoSize": 1,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 401,
+          "embargo_start": 401,
+          "embargo_end": 402,
+          "test_start": 402,
+          "test_end": 883
+        },
+        {
+          "train_start": 0,
+          "train_end": 881,
+          "purge_start": 881,
+          "purge_end": 882,
+          "embargo_start": 882,
+          "embargo_end": 883,
+          "test_start": 883,
+          "test_end": 1364
+        },
+        {
+          "train_start": 0,
+          "train_end": 1362,
+          "purge_start": 1362,
+          "purge_end": 1363,
+          "embargo_start": 1363,
+          "embargo_end": 1364,
+          "test_start": 1364,
+          "test_end": 1845
+        },
+        {
+          "train_start": 0,
+          "train_end": 1843,
+          "purge_start": 1843,
+          "purge_end": 1844,
+          "embargo_start": 1844,
+          "embargo_end": 1845,
+          "test_start": 1845,
+          "test_end": 2326
+        }
+      ]
+    },
+    {
+      "n": 2326,
+      "trainSize": 100,
+      "testSize": 50,
+      "purgeSize": 5,
+      "embargoSize": 5,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 100,
+          "purge_start": 100,
+          "purge_end": 105,
+          "embargo_start": 105,
+          "embargo_end": 110,
+          "test_start": 110,
+          "test_end": 160
+        },
+        {
+          "train_start": 0,
+          "train_end": 150,
+          "purge_start": 150,
+          "purge_end": 155,
+          "embargo_start": 155,
+          "embargo_end": 160,
+          "test_start": 160,
+          "test_end": 210
+        },
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 205,
+          "embargo_start": 205,
+          "embargo_end": 210,
+          "test_start": 210,
+          "test_end": 260
+        },
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 255,
+          "embargo_start": 255,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 310
+        },
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 305,
+          "embargo_start": 305,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 360
+        },
+        {
+          "train_start": 0,
+          "train_end": 350,
+          "purge_start": 350,
+          "purge_end": 355,
+          "embargo_start": 355,
+          "embargo_end": 360,
+          "test_start": 360,
+          "test_end": 410
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 405,
+          "embargo_start": 405,
+          "embargo_end": 410,
+          "test_start": 410,
+          "test_end": 460
+        },
+        {
+          "train_start": 0,
+          "train_end": 450,
+          "purge_start": 450,
+          "purge_end": 455,
+          "embargo_start": 455,
+          "embargo_end": 460,
+          "test_start": 460,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 505,
+          "embargo_start": 505,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 560
+        },
+        {
+          "train_start": 0,
+          "train_end": 550,
+          "purge_start": 550,
+          "purge_end": 555,
+          "embargo_start": 555,
+          "embargo_end": 560,
+          "test_start": 560,
+          "test_end": 610
+        },
+        {
+          "train_start": 0,
+          "train_end": 600,
+          "purge_start": 600,
+          "purge_end": 605,
+          "embargo_start": 605,
+          "embargo_end": 610,
+          "test_start": 610,
+          "test_end": 660
+        },
+        {
+          "train_start": 0,
+          "train_end": 650,
+          "purge_start": 650,
+          "purge_end": 655,
+          "embargo_start": 655,
+          "embargo_end": 660,
+          "test_start": 660,
+          "test_end": 710
+        },
+        {
+          "train_start": 0,
+          "train_end": 700,
+          "purge_start": 700,
+          "purge_end": 705,
+          "embargo_start": 705,
+          "embargo_end": 710,
+          "test_start": 710,
+          "test_end": 760
+        },
+        {
+          "train_start": 0,
+          "train_end": 750,
+          "purge_start": 750,
+          "purge_end": 755,
+          "embargo_start": 755,
+          "embargo_end": 760,
+          "test_start": 760,
+          "test_end": 810
+        },
+        {
+          "train_start": 0,
+          "train_end": 800,
+          "purge_start": 800,
+          "purge_end": 805,
+          "embargo_start": 805,
+          "embargo_end": 810,
+          "test_start": 810,
+          "test_end": 860
+        },
+        {
+          "train_start": 0,
+          "train_end": 850,
+          "purge_start": 850,
+          "purge_end": 855,
+          "embargo_start": 855,
+          "embargo_end": 860,
+          "test_start": 860,
+          "test_end": 910
+        },
+        {
+          "train_start": 0,
+          "train_end": 900,
+          "purge_start": 900,
+          "purge_end": 905,
+          "embargo_start": 905,
+          "embargo_end": 910,
+          "test_start": 910,
+          "test_end": 960
+        },
+        {
+          "train_start": 0,
+          "train_end": 950,
+          "purge_start": 950,
+          "purge_end": 955,
+          "embargo_start": 955,
+          "embargo_end": 960,
+          "test_start": 960,
+          "test_end": 1010
+        },
+        {
+          "train_start": 0,
+          "train_end": 1000,
+          "purge_start": 1000,
+          "purge_end": 1005,
+          "embargo_start": 1005,
+          "embargo_end": 1010,
+          "test_start": 1010,
+          "test_end": 1060
+        },
+        {
+          "train_start": 0,
+          "train_end": 1050,
+          "purge_start": 1050,
+          "purge_end": 1055,
+          "embargo_start": 1055,
+          "embargo_end": 1060,
+          "test_start": 1060,
+          "test_end": 1110
+        },
+        {
+          "train_start": 0,
+          "train_end": 1100,
+          "purge_start": 1100,
+          "purge_end": 1105,
+          "embargo_start": 1105,
+          "embargo_end": 1110,
+          "test_start": 1110,
+          "test_end": 1160
+        },
+        {
+          "train_start": 0,
+          "train_end": 1150,
+          "purge_start": 1150,
+          "purge_end": 1155,
+          "embargo_start": 1155,
+          "embargo_end": 1160,
+          "test_start": 1160,
+          "test_end": 1210
+        },
+        {
+          "train_start": 0,
+          "train_end": 1200,
+          "purge_start": 1200,
+          "purge_end": 1205,
+          "embargo_start": 1205,
+          "embargo_end": 1210,
+          "test_start": 1210,
+          "test_end": 1260
+        },
+        {
+          "train_start": 0,
+          "train_end": 1250,
+          "purge_start": 1250,
+          "purge_end": 1255,
+          "embargo_start": 1255,
+          "embargo_end": 1260,
+          "test_start": 1260,
+          "test_end": 1310
+        },
+        {
+          "train_start": 0,
+          "train_end": 1300,
+          "purge_start": 1300,
+          "purge_end": 1305,
+          "embargo_start": 1305,
+          "embargo_end": 1310,
+          "test_start": 1310,
+          "test_end": 1360
+        },
+        {
+          "train_start": 0,
+          "train_end": 1350,
+          "purge_start": 1350,
+          "purge_end": 1355,
+          "embargo_start": 1355,
+          "embargo_end": 1360,
+          "test_start": 1360,
+          "test_end": 1410
+        },
+        {
+          "train_start": 0,
+          "train_end": 1400,
+          "purge_start": 1400,
+          "purge_end": 1405,
+          "embargo_start": 1405,
+          "embargo_end": 1410,
+          "test_start": 1410,
+          "test_end": 1460
+        },
+        {
+          "train_start": 0,
+          "train_end": 1450,
+          "purge_start": 1450,
+          "purge_end": 1455,
+          "embargo_start": 1455,
+          "embargo_end": 1460,
+          "test_start": 1460,
+          "test_end": 1510
+        },
+        {
+          "train_start": 0,
+          "train_end": 1500,
+          "purge_start": 1500,
+          "purge_end": 1505,
+          "embargo_start": 1505,
+          "embargo_end": 1510,
+          "test_start": 1510,
+          "test_end": 1560
+        },
+        {
+          "train_start": 0,
+          "train_end": 1550,
+          "purge_start": 1550,
+          "purge_end": 1555,
+          "embargo_start": 1555,
+          "embargo_end": 1560,
+          "test_start": 1560,
+          "test_end": 1610
+        },
+        {
+          "train_start": 0,
+          "train_end": 1600,
+          "purge_start": 1600,
+          "purge_end": 1605,
+          "embargo_start": 1605,
+          "embargo_end": 1610,
+          "test_start": 1610,
+          "test_end": 1660
+        },
+        {
+          "train_start": 0,
+          "train_end": 1650,
+          "purge_start": 1650,
+          "purge_end": 1655,
+          "embargo_start": 1655,
+          "embargo_end": 1660,
+          "test_start": 1660,
+          "test_end": 1710
+        },
+        {
+          "train_start": 0,
+          "train_end": 1700,
+          "purge_start": 1700,
+          "purge_end": 1705,
+          "embargo_start": 1705,
+          "embargo_end": 1710,
+          "test_start": 1710,
+          "test_end": 1760
+        },
+        {
+          "train_start": 0,
+          "train_end": 1750,
+          "purge_start": 1750,
+          "purge_end": 1755,
+          "embargo_start": 1755,
+          "embargo_end": 1760,
+          "test_start": 1760,
+          "test_end": 1810
+        },
+        {
+          "train_start": 0,
+          "train_end": 1800,
+          "purge_start": 1800,
+          "purge_end": 1805,
+          "embargo_start": 1805,
+          "embargo_end": 1810,
+          "test_start": 1810,
+          "test_end": 1860
+        },
+        {
+          "train_start": 0,
+          "train_end": 1850,
+          "purge_start": 1850,
+          "purge_end": 1855,
+          "embargo_start": 1855,
+          "embargo_end": 1860,
+          "test_start": 1860,
+          "test_end": 1910
+        },
+        {
+          "train_start": 0,
+          "train_end": 1900,
+          "purge_start": 1900,
+          "purge_end": 1905,
+          "embargo_start": 1905,
+          "embargo_end": 1910,
+          "test_start": 1910,
+          "test_end": 1960
+        },
+        {
+          "train_start": 0,
+          "train_end": 1950,
+          "purge_start": 1950,
+          "purge_end": 1955,
+          "embargo_start": 1955,
+          "embargo_end": 1960,
+          "test_start": 1960,
+          "test_end": 2010
+        },
+        {
+          "train_start": 0,
+          "train_end": 2000,
+          "purge_start": 2000,
+          "purge_end": 2005,
+          "embargo_start": 2005,
+          "embargo_end": 2010,
+          "test_start": 2010,
+          "test_end": 2060
+        },
+        {
+          "train_start": 0,
+          "train_end": 2050,
+          "purge_start": 2050,
+          "purge_end": 2055,
+          "embargo_start": 2055,
+          "embargo_end": 2060,
+          "test_start": 2060,
+          "test_end": 2110
+        },
+        {
+          "train_start": 0,
+          "train_end": 2100,
+          "purge_start": 2100,
+          "purge_end": 2105,
+          "embargo_start": 2105,
+          "embargo_end": 2110,
+          "test_start": 2110,
+          "test_end": 2160
+        },
+        {
+          "train_start": 0,
+          "train_end": 2150,
+          "purge_start": 2150,
+          "purge_end": 2155,
+          "embargo_start": 2155,
+          "embargo_end": 2160,
+          "test_start": 2160,
+          "test_end": 2210
+        },
+        {
+          "train_start": 0,
+          "train_end": 2200,
+          "purge_start": 2200,
+          "purge_end": 2205,
+          "embargo_start": 2205,
+          "embargo_end": 2210,
+          "test_start": 2210,
+          "test_end": 2260
+        },
+        {
+          "train_start": 0,
+          "train_end": 2250,
+          "purge_start": 2250,
+          "purge_end": 2255,
+          "embargo_start": 2255,
+          "embargo_end": 2260,
+          "test_start": 2260,
+          "test_end": 2310
+        }
+      ]
+    },
+    {
+      "n": 2326,
+      "trainSize": 250,
+      "testSize": 250,
+      "purgeSize": 10,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 260,
+          "embargo_start": 260,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 510,
+          "embargo_start": 510,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 760
+        },
+        {
+          "train_start": 0,
+          "train_end": 750,
+          "purge_start": 750,
+          "purge_end": 760,
+          "embargo_start": 760,
+          "embargo_end": 760,
+          "test_start": 760,
+          "test_end": 1010
+        },
+        {
+          "train_start": 0,
+          "train_end": 1000,
+          "purge_start": 1000,
+          "purge_end": 1010,
+          "embargo_start": 1010,
+          "embargo_end": 1010,
+          "test_start": 1010,
+          "test_end": 1260
+        },
+        {
+          "train_start": 0,
+          "train_end": 1250,
+          "purge_start": 1250,
+          "purge_end": 1260,
+          "embargo_start": 1260,
+          "embargo_end": 1260,
+          "test_start": 1260,
+          "test_end": 1510
+        },
+        {
+          "train_start": 0,
+          "train_end": 1500,
+          "purge_start": 1500,
+          "purge_end": 1510,
+          "embargo_start": 1510,
+          "embargo_end": 1510,
+          "test_start": 1510,
+          "test_end": 1760
+        },
+        {
+          "train_start": 0,
+          "train_end": 1750,
+          "purge_start": 1750,
+          "purge_end": 1760,
+          "embargo_start": 1760,
+          "embargo_end": 1760,
+          "test_start": 1760,
+          "test_end": 2010
+        },
+        {
+          "train_start": 0,
+          "train_end": 2000,
+          "purge_start": 2000,
+          "purge_end": 2010,
+          "embargo_start": 2010,
+          "embargo_end": 2010,
+          "test_start": 2010,
+          "test_end": 2260
+        }
+      ]
+    },
+    {
+      "n": 2326,
+      "trainSize": 300,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 10,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 300,
+          "embargo_start": 300,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 500,
+          "embargo_start": 500,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 710
+        },
+        {
+          "train_start": 0,
+          "train_end": 700,
+          "purge_start": 700,
+          "purge_end": 700,
+          "embargo_start": 700,
+          "embargo_end": 710,
+          "test_start": 710,
+          "test_end": 910
+        },
+        {
+          "train_start": 0,
+          "train_end": 900,
+          "purge_start": 900,
+          "purge_end": 900,
+          "embargo_start": 900,
+          "embargo_end": 910,
+          "test_start": 910,
+          "test_end": 1110
+        },
+        {
+          "train_start": 0,
+          "train_end": 1100,
+          "purge_start": 1100,
+          "purge_end": 1100,
+          "embargo_start": 1100,
+          "embargo_end": 1110,
+          "test_start": 1110,
+          "test_end": 1310
+        },
+        {
+          "train_start": 0,
+          "train_end": 1300,
+          "purge_start": 1300,
+          "purge_end": 1300,
+          "embargo_start": 1300,
+          "embargo_end": 1310,
+          "test_start": 1310,
+          "test_end": 1510
+        },
+        {
+          "train_start": 0,
+          "train_end": 1500,
+          "purge_start": 1500,
+          "purge_end": 1500,
+          "embargo_start": 1500,
+          "embargo_end": 1510,
+          "test_start": 1510,
+          "test_end": 1710
+        },
+        {
+          "train_start": 0,
+          "train_end": 1700,
+          "purge_start": 1700,
+          "purge_end": 1700,
+          "embargo_start": 1700,
+          "embargo_end": 1710,
+          "test_start": 1710,
+          "test_end": 1910
+        },
+        {
+          "train_start": 0,
+          "train_end": 1900,
+          "purge_start": 1900,
+          "purge_end": 1900,
+          "embargo_start": 1900,
+          "embargo_end": 1910,
+          "test_start": 1910,
+          "test_end": 2110
+        },
+        {
+          "train_start": 0,
+          "train_end": 2100,
+          "purge_start": 2100,
+          "purge_end": 2100,
+          "embargo_start": 2100,
+          "embargo_end": 2110,
+          "test_start": 2110,
+          "test_end": 2310
+        }
+      ]
+    },
+    {
+      "n": 500,
+      "trainSize": 200,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 200,
+          "embargo_start": 200,
+          "embargo_end": 200,
+          "test_start": 200,
+          "test_end": 400
+        }
+      ]
+    },
+    {
+      "n": 500,
+      "trainSize": 400,
+      "testSize": 481,
+      "purgeSize": 1,
+      "embargoSize": 1,
+      "folds": []
+    },
+    {
+      "n": 500,
+      "trainSize": 100,
+      "testSize": 50,
+      "purgeSize": 5,
+      "embargoSize": 5,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 100,
+          "purge_start": 100,
+          "purge_end": 105,
+          "embargo_start": 105,
+          "embargo_end": 110,
+          "test_start": 110,
+          "test_end": 160
+        },
+        {
+          "train_start": 0,
+          "train_end": 150,
+          "purge_start": 150,
+          "purge_end": 155,
+          "embargo_start": 155,
+          "embargo_end": 160,
+          "test_start": 160,
+          "test_end": 210
+        },
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 205,
+          "embargo_start": 205,
+          "embargo_end": 210,
+          "test_start": 210,
+          "test_end": 260
+        },
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 255,
+          "embargo_start": 255,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 310
+        },
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 305,
+          "embargo_start": 305,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 360
+        },
+        {
+          "train_start": 0,
+          "train_end": 350,
+          "purge_start": 350,
+          "purge_end": 355,
+          "embargo_start": 355,
+          "embargo_end": 360,
+          "test_start": 360,
+          "test_end": 410
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 405,
+          "embargo_start": 405,
+          "embargo_end": 410,
+          "test_start": 410,
+          "test_end": 460
+        }
+      ]
+    },
+    {
+      "n": 500,
+      "trainSize": 250,
+      "testSize": 250,
+      "purgeSize": 10,
+      "embargoSize": 0,
+      "folds": []
+    },
+    {
+      "n": 500,
+      "trainSize": 300,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 10,
+      "folds": []
+    },
+    {
+      "n": 99,
+      "trainSize": 200,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 0,
+      "folds": []
+    },
+    {
+      "n": 99,
+      "trainSize": 400,
+      "testSize": 481,
+      "purgeSize": 1,
+      "embargoSize": 1,
+      "folds": []
+    },
+    {
+      "n": 99,
+      "trainSize": 100,
+      "testSize": 50,
+      "purgeSize": 5,
+      "embargoSize": 5,
+      "folds": []
+    },
+    {
+      "n": 99,
+      "trainSize": 250,
+      "testSize": 250,
+      "purgeSize": 10,
+      "embargoSize": 0,
+      "folds": []
+    },
+    {
+      "n": 99,
+      "trainSize": 300,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 10,
+      "folds": []
+    },
+    {
+      "n": 4321,
+      "trainSize": 200,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 200,
+          "embargo_start": 200,
+          "embargo_end": 200,
+          "test_start": 200,
+          "test_end": 400
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 400,
+          "embargo_start": 400,
+          "embargo_end": 400,
+          "test_start": 400,
+          "test_end": 600
+        },
+        {
+          "train_start": 0,
+          "train_end": 600,
+          "purge_start": 600,
+          "purge_end": 600,
+          "embargo_start": 600,
+          "embargo_end": 600,
+          "test_start": 600,
+          "test_end": 800
+        },
+        {
+          "train_start": 0,
+          "train_end": 800,
+          "purge_start": 800,
+          "purge_end": 800,
+          "embargo_start": 800,
+          "embargo_end": 800,
+          "test_start": 800,
+          "test_end": 1000
+        },
+        {
+          "train_start": 0,
+          "train_end": 1000,
+          "purge_start": 1000,
+          "purge_end": 1000,
+          "embargo_start": 1000,
+          "embargo_end": 1000,
+          "test_start": 1000,
+          "test_end": 1200
+        },
+        {
+          "train_start": 0,
+          "train_end": 1200,
+          "purge_start": 1200,
+          "purge_end": 1200,
+          "embargo_start": 1200,
+          "embargo_end": 1200,
+          "test_start": 1200,
+          "test_end": 1400
+        },
+        {
+          "train_start": 0,
+          "train_end": 1400,
+          "purge_start": 1400,
+          "purge_end": 1400,
+          "embargo_start": 1400,
+          "embargo_end": 1400,
+          "test_start": 1400,
+          "test_end": 1600
+        },
+        {
+          "train_start": 0,
+          "train_end": 1600,
+          "purge_start": 1600,
+          "purge_end": 1600,
+          "embargo_start": 1600,
+          "embargo_end": 1600,
+          "test_start": 1600,
+          "test_end": 1800
+        },
+        {
+          "train_start": 0,
+          "train_end": 1800,
+          "purge_start": 1800,
+          "purge_end": 1800,
+          "embargo_start": 1800,
+          "embargo_end": 1800,
+          "test_start": 1800,
+          "test_end": 2000
+        },
+        {
+          "train_start": 0,
+          "train_end": 2000,
+          "purge_start": 2000,
+          "purge_end": 2000,
+          "embargo_start": 2000,
+          "embargo_end": 2000,
+          "test_start": 2000,
+          "test_end": 2200
+        },
+        {
+          "train_start": 0,
+          "train_end": 2200,
+          "purge_start": 2200,
+          "purge_end": 2200,
+          "embargo_start": 2200,
+          "embargo_end": 2200,
+          "test_start": 2200,
+          "test_end": 2400
+        },
+        {
+          "train_start": 0,
+          "train_end": 2400,
+          "purge_start": 2400,
+          "purge_end": 2400,
+          "embargo_start": 2400,
+          "embargo_end": 2400,
+          "test_start": 2400,
+          "test_end": 2600
+        },
+        {
+          "train_start": 0,
+          "train_end": 2600,
+          "purge_start": 2600,
+          "purge_end": 2600,
+          "embargo_start": 2600,
+          "embargo_end": 2600,
+          "test_start": 2600,
+          "test_end": 2800
+        },
+        {
+          "train_start": 0,
+          "train_end": 2800,
+          "purge_start": 2800,
+          "purge_end": 2800,
+          "embargo_start": 2800,
+          "embargo_end": 2800,
+          "test_start": 2800,
+          "test_end": 3000
+        },
+        {
+          "train_start": 0,
+          "train_end": 3000,
+          "purge_start": 3000,
+          "purge_end": 3000,
+          "embargo_start": 3000,
+          "embargo_end": 3000,
+          "test_start": 3000,
+          "test_end": 3200
+        },
+        {
+          "train_start": 0,
+          "train_end": 3200,
+          "purge_start": 3200,
+          "purge_end": 3200,
+          "embargo_start": 3200,
+          "embargo_end": 3200,
+          "test_start": 3200,
+          "test_end": 3400
+        },
+        {
+          "train_start": 0,
+          "train_end": 3400,
+          "purge_start": 3400,
+          "purge_end": 3400,
+          "embargo_start": 3400,
+          "embargo_end": 3400,
+          "test_start": 3400,
+          "test_end": 3600
+        },
+        {
+          "train_start": 0,
+          "train_end": 3600,
+          "purge_start": 3600,
+          "purge_end": 3600,
+          "embargo_start": 3600,
+          "embargo_end": 3600,
+          "test_start": 3600,
+          "test_end": 3800
+        },
+        {
+          "train_start": 0,
+          "train_end": 3800,
+          "purge_start": 3800,
+          "purge_end": 3800,
+          "embargo_start": 3800,
+          "embargo_end": 3800,
+          "test_start": 3800,
+          "test_end": 4000
+        },
+        {
+          "train_start": 0,
+          "train_end": 4000,
+          "purge_start": 4000,
+          "purge_end": 4000,
+          "embargo_start": 4000,
+          "embargo_end": 4000,
+          "test_start": 4000,
+          "test_end": 4200
+        }
+      ]
+    },
+    {
+      "n": 4321,
+      "trainSize": 400,
+      "testSize": 481,
+      "purgeSize": 1,
+      "embargoSize": 1,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 401,
+          "embargo_start": 401,
+          "embargo_end": 402,
+          "test_start": 402,
+          "test_end": 883
+        },
+        {
+          "train_start": 0,
+          "train_end": 881,
+          "purge_start": 881,
+          "purge_end": 882,
+          "embargo_start": 882,
+          "embargo_end": 883,
+          "test_start": 883,
+          "test_end": 1364
+        },
+        {
+          "train_start": 0,
+          "train_end": 1362,
+          "purge_start": 1362,
+          "purge_end": 1363,
+          "embargo_start": 1363,
+          "embargo_end": 1364,
+          "test_start": 1364,
+          "test_end": 1845
+        },
+        {
+          "train_start": 0,
+          "train_end": 1843,
+          "purge_start": 1843,
+          "purge_end": 1844,
+          "embargo_start": 1844,
+          "embargo_end": 1845,
+          "test_start": 1845,
+          "test_end": 2326
+        },
+        {
+          "train_start": 0,
+          "train_end": 2324,
+          "purge_start": 2324,
+          "purge_end": 2325,
+          "embargo_start": 2325,
+          "embargo_end": 2326,
+          "test_start": 2326,
+          "test_end": 2807
+        },
+        {
+          "train_start": 0,
+          "train_end": 2805,
+          "purge_start": 2805,
+          "purge_end": 2806,
+          "embargo_start": 2806,
+          "embargo_end": 2807,
+          "test_start": 2807,
+          "test_end": 3288
+        },
+        {
+          "train_start": 0,
+          "train_end": 3286,
+          "purge_start": 3286,
+          "purge_end": 3287,
+          "embargo_start": 3287,
+          "embargo_end": 3288,
+          "test_start": 3288,
+          "test_end": 3769
+        },
+        {
+          "train_start": 0,
+          "train_end": 3767,
+          "purge_start": 3767,
+          "purge_end": 3768,
+          "embargo_start": 3768,
+          "embargo_end": 3769,
+          "test_start": 3769,
+          "test_end": 4250
+        }
+      ]
+    },
+    {
+      "n": 4321,
+      "trainSize": 100,
+      "testSize": 50,
+      "purgeSize": 5,
+      "embargoSize": 5,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 100,
+          "purge_start": 100,
+          "purge_end": 105,
+          "embargo_start": 105,
+          "embargo_end": 110,
+          "test_start": 110,
+          "test_end": 160
+        },
+        {
+          "train_start": 0,
+          "train_end": 150,
+          "purge_start": 150,
+          "purge_end": 155,
+          "embargo_start": 155,
+          "embargo_end": 160,
+          "test_start": 160,
+          "test_end": 210
+        },
+        {
+          "train_start": 0,
+          "train_end": 200,
+          "purge_start": 200,
+          "purge_end": 205,
+          "embargo_start": 205,
+          "embargo_end": 210,
+          "test_start": 210,
+          "test_end": 260
+        },
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 255,
+          "embargo_start": 255,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 310
+        },
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 305,
+          "embargo_start": 305,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 360
+        },
+        {
+          "train_start": 0,
+          "train_end": 350,
+          "purge_start": 350,
+          "purge_end": 355,
+          "embargo_start": 355,
+          "embargo_end": 360,
+          "test_start": 360,
+          "test_end": 410
+        },
+        {
+          "train_start": 0,
+          "train_end": 400,
+          "purge_start": 400,
+          "purge_end": 405,
+          "embargo_start": 405,
+          "embargo_end": 410,
+          "test_start": 410,
+          "test_end": 460
+        },
+        {
+          "train_start": 0,
+          "train_end": 450,
+          "purge_start": 450,
+          "purge_end": 455,
+          "embargo_start": 455,
+          "embargo_end": 460,
+          "test_start": 460,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 505,
+          "embargo_start": 505,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 560
+        },
+        {
+          "train_start": 0,
+          "train_end": 550,
+          "purge_start": 550,
+          "purge_end": 555,
+          "embargo_start": 555,
+          "embargo_end": 560,
+          "test_start": 560,
+          "test_end": 610
+        },
+        {
+          "train_start": 0,
+          "train_end": 600,
+          "purge_start": 600,
+          "purge_end": 605,
+          "embargo_start": 605,
+          "embargo_end": 610,
+          "test_start": 610,
+          "test_end": 660
+        },
+        {
+          "train_start": 0,
+          "train_end": 650,
+          "purge_start": 650,
+          "purge_end": 655,
+          "embargo_start": 655,
+          "embargo_end": 660,
+          "test_start": 660,
+          "test_end": 710
+        },
+        {
+          "train_start": 0,
+          "train_end": 700,
+          "purge_start": 700,
+          "purge_end": 705,
+          "embargo_start": 705,
+          "embargo_end": 710,
+          "test_start": 710,
+          "test_end": 760
+        },
+        {
+          "train_start": 0,
+          "train_end": 750,
+          "purge_start": 750,
+          "purge_end": 755,
+          "embargo_start": 755,
+          "embargo_end": 760,
+          "test_start": 760,
+          "test_end": 810
+        },
+        {
+          "train_start": 0,
+          "train_end": 800,
+          "purge_start": 800,
+          "purge_end": 805,
+          "embargo_start": 805,
+          "embargo_end": 810,
+          "test_start": 810,
+          "test_end": 860
+        },
+        {
+          "train_start": 0,
+          "train_end": 850,
+          "purge_start": 850,
+          "purge_end": 855,
+          "embargo_start": 855,
+          "embargo_end": 860,
+          "test_start": 860,
+          "test_end": 910
+        },
+        {
+          "train_start": 0,
+          "train_end": 900,
+          "purge_start": 900,
+          "purge_end": 905,
+          "embargo_start": 905,
+          "embargo_end": 910,
+          "test_start": 910,
+          "test_end": 960
+        },
+        {
+          "train_start": 0,
+          "train_end": 950,
+          "purge_start": 950,
+          "purge_end": 955,
+          "embargo_start": 955,
+          "embargo_end": 960,
+          "test_start": 960,
+          "test_end": 1010
+        },
+        {
+          "train_start": 0,
+          "train_end": 1000,
+          "purge_start": 1000,
+          "purge_end": 1005,
+          "embargo_start": 1005,
+          "embargo_end": 1010,
+          "test_start": 1010,
+          "test_end": 1060
+        },
+        {
+          "train_start": 0,
+          "train_end": 1050,
+          "purge_start": 1050,
+          "purge_end": 1055,
+          "embargo_start": 1055,
+          "embargo_end": 1060,
+          "test_start": 1060,
+          "test_end": 1110
+        },
+        {
+          "train_start": 0,
+          "train_end": 1100,
+          "purge_start": 1100,
+          "purge_end": 1105,
+          "embargo_start": 1105,
+          "embargo_end": 1110,
+          "test_start": 1110,
+          "test_end": 1160
+        },
+        {
+          "train_start": 0,
+          "train_end": 1150,
+          "purge_start": 1150,
+          "purge_end": 1155,
+          "embargo_start": 1155,
+          "embargo_end": 1160,
+          "test_start": 1160,
+          "test_end": 1210
+        },
+        {
+          "train_start": 0,
+          "train_end": 1200,
+          "purge_start": 1200,
+          "purge_end": 1205,
+          "embargo_start": 1205,
+          "embargo_end": 1210,
+          "test_start": 1210,
+          "test_end": 1260
+        },
+        {
+          "train_start": 0,
+          "train_end": 1250,
+          "purge_start": 1250,
+          "purge_end": 1255,
+          "embargo_start": 1255,
+          "embargo_end": 1260,
+          "test_start": 1260,
+          "test_end": 1310
+        },
+        {
+          "train_start": 0,
+          "train_end": 1300,
+          "purge_start": 1300,
+          "purge_end": 1305,
+          "embargo_start": 1305,
+          "embargo_end": 1310,
+          "test_start": 1310,
+          "test_end": 1360
+        },
+        {
+          "train_start": 0,
+          "train_end": 1350,
+          "purge_start": 1350,
+          "purge_end": 1355,
+          "embargo_start": 1355,
+          "embargo_end": 1360,
+          "test_start": 1360,
+          "test_end": 1410
+        },
+        {
+          "train_start": 0,
+          "train_end": 1400,
+          "purge_start": 1400,
+          "purge_end": 1405,
+          "embargo_start": 1405,
+          "embargo_end": 1410,
+          "test_start": 1410,
+          "test_end": 1460
+        },
+        {
+          "train_start": 0,
+          "train_end": 1450,
+          "purge_start": 1450,
+          "purge_end": 1455,
+          "embargo_start": 1455,
+          "embargo_end": 1460,
+          "test_start": 1460,
+          "test_end": 1510
+        },
+        {
+          "train_start": 0,
+          "train_end": 1500,
+          "purge_start": 1500,
+          "purge_end": 1505,
+          "embargo_start": 1505,
+          "embargo_end": 1510,
+          "test_start": 1510,
+          "test_end": 1560
+        },
+        {
+          "train_start": 0,
+          "train_end": 1550,
+          "purge_start": 1550,
+          "purge_end": 1555,
+          "embargo_start": 1555,
+          "embargo_end": 1560,
+          "test_start": 1560,
+          "test_end": 1610
+        },
+        {
+          "train_start": 0,
+          "train_end": 1600,
+          "purge_start": 1600,
+          "purge_end": 1605,
+          "embargo_start": 1605,
+          "embargo_end": 1610,
+          "test_start": 1610,
+          "test_end": 1660
+        },
+        {
+          "train_start": 0,
+          "train_end": 1650,
+          "purge_start": 1650,
+          "purge_end": 1655,
+          "embargo_start": 1655,
+          "embargo_end": 1660,
+          "test_start": 1660,
+          "test_end": 1710
+        },
+        {
+          "train_start": 0,
+          "train_end": 1700,
+          "purge_start": 1700,
+          "purge_end": 1705,
+          "embargo_start": 1705,
+          "embargo_end": 1710,
+          "test_start": 1710,
+          "test_end": 1760
+        },
+        {
+          "train_start": 0,
+          "train_end": 1750,
+          "purge_start": 1750,
+          "purge_end": 1755,
+          "embargo_start": 1755,
+          "embargo_end": 1760,
+          "test_start": 1760,
+          "test_end": 1810
+        },
+        {
+          "train_start": 0,
+          "train_end": 1800,
+          "purge_start": 1800,
+          "purge_end": 1805,
+          "embargo_start": 1805,
+          "embargo_end": 1810,
+          "test_start": 1810,
+          "test_end": 1860
+        },
+        {
+          "train_start": 0,
+          "train_end": 1850,
+          "purge_start": 1850,
+          "purge_end": 1855,
+          "embargo_start": 1855,
+          "embargo_end": 1860,
+          "test_start": 1860,
+          "test_end": 1910
+        },
+        {
+          "train_start": 0,
+          "train_end": 1900,
+          "purge_start": 1900,
+          "purge_end": 1905,
+          "embargo_start": 1905,
+          "embargo_end": 1910,
+          "test_start": 1910,
+          "test_end": 1960
+        },
+        {
+          "train_start": 0,
+          "train_end": 1950,
+          "purge_start": 1950,
+          "purge_end": 1955,
+          "embargo_start": 1955,
+          "embargo_end": 1960,
+          "test_start": 1960,
+          "test_end": 2010
+        },
+        {
+          "train_start": 0,
+          "train_end": 2000,
+          "purge_start": 2000,
+          "purge_end": 2005,
+          "embargo_start": 2005,
+          "embargo_end": 2010,
+          "test_start": 2010,
+          "test_end": 2060
+        },
+        {
+          "train_start": 0,
+          "train_end": 2050,
+          "purge_start": 2050,
+          "purge_end": 2055,
+          "embargo_start": 2055,
+          "embargo_end": 2060,
+          "test_start": 2060,
+          "test_end": 2110
+        },
+        {
+          "train_start": 0,
+          "train_end": 2100,
+          "purge_start": 2100,
+          "purge_end": 2105,
+          "embargo_start": 2105,
+          "embargo_end": 2110,
+          "test_start": 2110,
+          "test_end": 2160
+        },
+        {
+          "train_start": 0,
+          "train_end": 2150,
+          "purge_start": 2150,
+          "purge_end": 2155,
+          "embargo_start": 2155,
+          "embargo_end": 2160,
+          "test_start": 2160,
+          "test_end": 2210
+        },
+        {
+          "train_start": 0,
+          "train_end": 2200,
+          "purge_start": 2200,
+          "purge_end": 2205,
+          "embargo_start": 2205,
+          "embargo_end": 2210,
+          "test_start": 2210,
+          "test_end": 2260
+        },
+        {
+          "train_start": 0,
+          "train_end": 2250,
+          "purge_start": 2250,
+          "purge_end": 2255,
+          "embargo_start": 2255,
+          "embargo_end": 2260,
+          "test_start": 2260,
+          "test_end": 2310
+        },
+        {
+          "train_start": 0,
+          "train_end": 2300,
+          "purge_start": 2300,
+          "purge_end": 2305,
+          "embargo_start": 2305,
+          "embargo_end": 2310,
+          "test_start": 2310,
+          "test_end": 2360
+        },
+        {
+          "train_start": 0,
+          "train_end": 2350,
+          "purge_start": 2350,
+          "purge_end": 2355,
+          "embargo_start": 2355,
+          "embargo_end": 2360,
+          "test_start": 2360,
+          "test_end": 2410
+        },
+        {
+          "train_start": 0,
+          "train_end": 2400,
+          "purge_start": 2400,
+          "purge_end": 2405,
+          "embargo_start": 2405,
+          "embargo_end": 2410,
+          "test_start": 2410,
+          "test_end": 2460
+        },
+        {
+          "train_start": 0,
+          "train_end": 2450,
+          "purge_start": 2450,
+          "purge_end": 2455,
+          "embargo_start": 2455,
+          "embargo_end": 2460,
+          "test_start": 2460,
+          "test_end": 2510
+        },
+        {
+          "train_start": 0,
+          "train_end": 2500,
+          "purge_start": 2500,
+          "purge_end": 2505,
+          "embargo_start": 2505,
+          "embargo_end": 2510,
+          "test_start": 2510,
+          "test_end": 2560
+        },
+        {
+          "train_start": 0,
+          "train_end": 2550,
+          "purge_start": 2550,
+          "purge_end": 2555,
+          "embargo_start": 2555,
+          "embargo_end": 2560,
+          "test_start": 2560,
+          "test_end": 2610
+        },
+        {
+          "train_start": 0,
+          "train_end": 2600,
+          "purge_start": 2600,
+          "purge_end": 2605,
+          "embargo_start": 2605,
+          "embargo_end": 2610,
+          "test_start": 2610,
+          "test_end": 2660
+        },
+        {
+          "train_start": 0,
+          "train_end": 2650,
+          "purge_start": 2650,
+          "purge_end": 2655,
+          "embargo_start": 2655,
+          "embargo_end": 2660,
+          "test_start": 2660,
+          "test_end": 2710
+        },
+        {
+          "train_start": 0,
+          "train_end": 2700,
+          "purge_start": 2700,
+          "purge_end": 2705,
+          "embargo_start": 2705,
+          "embargo_end": 2710,
+          "test_start": 2710,
+          "test_end": 2760
+        },
+        {
+          "train_start": 0,
+          "train_end": 2750,
+          "purge_start": 2750,
+          "purge_end": 2755,
+          "embargo_start": 2755,
+          "embargo_end": 2760,
+          "test_start": 2760,
+          "test_end": 2810
+        },
+        {
+          "train_start": 0,
+          "train_end": 2800,
+          "purge_start": 2800,
+          "purge_end": 2805,
+          "embargo_start": 2805,
+          "embargo_end": 2810,
+          "test_start": 2810,
+          "test_end": 2860
+        },
+        {
+          "train_start": 0,
+          "train_end": 2850,
+          "purge_start": 2850,
+          "purge_end": 2855,
+          "embargo_start": 2855,
+          "embargo_end": 2860,
+          "test_start": 2860,
+          "test_end": 2910
+        },
+        {
+          "train_start": 0,
+          "train_end": 2900,
+          "purge_start": 2900,
+          "purge_end": 2905,
+          "embargo_start": 2905,
+          "embargo_end": 2910,
+          "test_start": 2910,
+          "test_end": 2960
+        },
+        {
+          "train_start": 0,
+          "train_end": 2950,
+          "purge_start": 2950,
+          "purge_end": 2955,
+          "embargo_start": 2955,
+          "embargo_end": 2960,
+          "test_start": 2960,
+          "test_end": 3010
+        },
+        {
+          "train_start": 0,
+          "train_end": 3000,
+          "purge_start": 3000,
+          "purge_end": 3005,
+          "embargo_start": 3005,
+          "embargo_end": 3010,
+          "test_start": 3010,
+          "test_end": 3060
+        },
+        {
+          "train_start": 0,
+          "train_end": 3050,
+          "purge_start": 3050,
+          "purge_end": 3055,
+          "embargo_start": 3055,
+          "embargo_end": 3060,
+          "test_start": 3060,
+          "test_end": 3110
+        },
+        {
+          "train_start": 0,
+          "train_end": 3100,
+          "purge_start": 3100,
+          "purge_end": 3105,
+          "embargo_start": 3105,
+          "embargo_end": 3110,
+          "test_start": 3110,
+          "test_end": 3160
+        },
+        {
+          "train_start": 0,
+          "train_end": 3150,
+          "purge_start": 3150,
+          "purge_end": 3155,
+          "embargo_start": 3155,
+          "embargo_end": 3160,
+          "test_start": 3160,
+          "test_end": 3210
+        },
+        {
+          "train_start": 0,
+          "train_end": 3200,
+          "purge_start": 3200,
+          "purge_end": 3205,
+          "embargo_start": 3205,
+          "embargo_end": 3210,
+          "test_start": 3210,
+          "test_end": 3260
+        },
+        {
+          "train_start": 0,
+          "train_end": 3250,
+          "purge_start": 3250,
+          "purge_end": 3255,
+          "embargo_start": 3255,
+          "embargo_end": 3260,
+          "test_start": 3260,
+          "test_end": 3310
+        },
+        {
+          "train_start": 0,
+          "train_end": 3300,
+          "purge_start": 3300,
+          "purge_end": 3305,
+          "embargo_start": 3305,
+          "embargo_end": 3310,
+          "test_start": 3310,
+          "test_end": 3360
+        },
+        {
+          "train_start": 0,
+          "train_end": 3350,
+          "purge_start": 3350,
+          "purge_end": 3355,
+          "embargo_start": 3355,
+          "embargo_end": 3360,
+          "test_start": 3360,
+          "test_end": 3410
+        },
+        {
+          "train_start": 0,
+          "train_end": 3400,
+          "purge_start": 3400,
+          "purge_end": 3405,
+          "embargo_start": 3405,
+          "embargo_end": 3410,
+          "test_start": 3410,
+          "test_end": 3460
+        },
+        {
+          "train_start": 0,
+          "train_end": 3450,
+          "purge_start": 3450,
+          "purge_end": 3455,
+          "embargo_start": 3455,
+          "embargo_end": 3460,
+          "test_start": 3460,
+          "test_end": 3510
+        },
+        {
+          "train_start": 0,
+          "train_end": 3500,
+          "purge_start": 3500,
+          "purge_end": 3505,
+          "embargo_start": 3505,
+          "embargo_end": 3510,
+          "test_start": 3510,
+          "test_end": 3560
+        },
+        {
+          "train_start": 0,
+          "train_end": 3550,
+          "purge_start": 3550,
+          "purge_end": 3555,
+          "embargo_start": 3555,
+          "embargo_end": 3560,
+          "test_start": 3560,
+          "test_end": 3610
+        },
+        {
+          "train_start": 0,
+          "train_end": 3600,
+          "purge_start": 3600,
+          "purge_end": 3605,
+          "embargo_start": 3605,
+          "embargo_end": 3610,
+          "test_start": 3610,
+          "test_end": 3660
+        },
+        {
+          "train_start": 0,
+          "train_end": 3650,
+          "purge_start": 3650,
+          "purge_end": 3655,
+          "embargo_start": 3655,
+          "embargo_end": 3660,
+          "test_start": 3660,
+          "test_end": 3710
+        },
+        {
+          "train_start": 0,
+          "train_end": 3700,
+          "purge_start": 3700,
+          "purge_end": 3705,
+          "embargo_start": 3705,
+          "embargo_end": 3710,
+          "test_start": 3710,
+          "test_end": 3760
+        },
+        {
+          "train_start": 0,
+          "train_end": 3750,
+          "purge_start": 3750,
+          "purge_end": 3755,
+          "embargo_start": 3755,
+          "embargo_end": 3760,
+          "test_start": 3760,
+          "test_end": 3810
+        },
+        {
+          "train_start": 0,
+          "train_end": 3800,
+          "purge_start": 3800,
+          "purge_end": 3805,
+          "embargo_start": 3805,
+          "embargo_end": 3810,
+          "test_start": 3810,
+          "test_end": 3860
+        },
+        {
+          "train_start": 0,
+          "train_end": 3850,
+          "purge_start": 3850,
+          "purge_end": 3855,
+          "embargo_start": 3855,
+          "embargo_end": 3860,
+          "test_start": 3860,
+          "test_end": 3910
+        },
+        {
+          "train_start": 0,
+          "train_end": 3900,
+          "purge_start": 3900,
+          "purge_end": 3905,
+          "embargo_start": 3905,
+          "embargo_end": 3910,
+          "test_start": 3910,
+          "test_end": 3960
+        },
+        {
+          "train_start": 0,
+          "train_end": 3950,
+          "purge_start": 3950,
+          "purge_end": 3955,
+          "embargo_start": 3955,
+          "embargo_end": 3960,
+          "test_start": 3960,
+          "test_end": 4010
+        },
+        {
+          "train_start": 0,
+          "train_end": 4000,
+          "purge_start": 4000,
+          "purge_end": 4005,
+          "embargo_start": 4005,
+          "embargo_end": 4010,
+          "test_start": 4010,
+          "test_end": 4060
+        },
+        {
+          "train_start": 0,
+          "train_end": 4050,
+          "purge_start": 4050,
+          "purge_end": 4055,
+          "embargo_start": 4055,
+          "embargo_end": 4060,
+          "test_start": 4060,
+          "test_end": 4110
+        },
+        {
+          "train_start": 0,
+          "train_end": 4100,
+          "purge_start": 4100,
+          "purge_end": 4105,
+          "embargo_start": 4105,
+          "embargo_end": 4110,
+          "test_start": 4110,
+          "test_end": 4160
+        },
+        {
+          "train_start": 0,
+          "train_end": 4150,
+          "purge_start": 4150,
+          "purge_end": 4155,
+          "embargo_start": 4155,
+          "embargo_end": 4160,
+          "test_start": 4160,
+          "test_end": 4210
+        },
+        {
+          "train_start": 0,
+          "train_end": 4200,
+          "purge_start": 4200,
+          "purge_end": 4205,
+          "embargo_start": 4205,
+          "embargo_end": 4210,
+          "test_start": 4210,
+          "test_end": 4260
+        },
+        {
+          "train_start": 0,
+          "train_end": 4250,
+          "purge_start": 4250,
+          "purge_end": 4255,
+          "embargo_start": 4255,
+          "embargo_end": 4260,
+          "test_start": 4260,
+          "test_end": 4310
+        }
+      ]
+    },
+    {
+      "n": 4321,
+      "trainSize": 250,
+      "testSize": 250,
+      "purgeSize": 10,
+      "embargoSize": 0,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 250,
+          "purge_start": 250,
+          "purge_end": 260,
+          "embargo_start": 260,
+          "embargo_end": 260,
+          "test_start": 260,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 510,
+          "embargo_start": 510,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 760
+        },
+        {
+          "train_start": 0,
+          "train_end": 750,
+          "purge_start": 750,
+          "purge_end": 760,
+          "embargo_start": 760,
+          "embargo_end": 760,
+          "test_start": 760,
+          "test_end": 1010
+        },
+        {
+          "train_start": 0,
+          "train_end": 1000,
+          "purge_start": 1000,
+          "purge_end": 1010,
+          "embargo_start": 1010,
+          "embargo_end": 1010,
+          "test_start": 1010,
+          "test_end": 1260
+        },
+        {
+          "train_start": 0,
+          "train_end": 1250,
+          "purge_start": 1250,
+          "purge_end": 1260,
+          "embargo_start": 1260,
+          "embargo_end": 1260,
+          "test_start": 1260,
+          "test_end": 1510
+        },
+        {
+          "train_start": 0,
+          "train_end": 1500,
+          "purge_start": 1500,
+          "purge_end": 1510,
+          "embargo_start": 1510,
+          "embargo_end": 1510,
+          "test_start": 1510,
+          "test_end": 1760
+        },
+        {
+          "train_start": 0,
+          "train_end": 1750,
+          "purge_start": 1750,
+          "purge_end": 1760,
+          "embargo_start": 1760,
+          "embargo_end": 1760,
+          "test_start": 1760,
+          "test_end": 2010
+        },
+        {
+          "train_start": 0,
+          "train_end": 2000,
+          "purge_start": 2000,
+          "purge_end": 2010,
+          "embargo_start": 2010,
+          "embargo_end": 2010,
+          "test_start": 2010,
+          "test_end": 2260
+        },
+        {
+          "train_start": 0,
+          "train_end": 2250,
+          "purge_start": 2250,
+          "purge_end": 2260,
+          "embargo_start": 2260,
+          "embargo_end": 2260,
+          "test_start": 2260,
+          "test_end": 2510
+        },
+        {
+          "train_start": 0,
+          "train_end": 2500,
+          "purge_start": 2500,
+          "purge_end": 2510,
+          "embargo_start": 2510,
+          "embargo_end": 2510,
+          "test_start": 2510,
+          "test_end": 2760
+        },
+        {
+          "train_start": 0,
+          "train_end": 2750,
+          "purge_start": 2750,
+          "purge_end": 2760,
+          "embargo_start": 2760,
+          "embargo_end": 2760,
+          "test_start": 2760,
+          "test_end": 3010
+        },
+        {
+          "train_start": 0,
+          "train_end": 3000,
+          "purge_start": 3000,
+          "purge_end": 3010,
+          "embargo_start": 3010,
+          "embargo_end": 3010,
+          "test_start": 3010,
+          "test_end": 3260
+        },
+        {
+          "train_start": 0,
+          "train_end": 3250,
+          "purge_start": 3250,
+          "purge_end": 3260,
+          "embargo_start": 3260,
+          "embargo_end": 3260,
+          "test_start": 3260,
+          "test_end": 3510
+        },
+        {
+          "train_start": 0,
+          "train_end": 3500,
+          "purge_start": 3500,
+          "purge_end": 3510,
+          "embargo_start": 3510,
+          "embargo_end": 3510,
+          "test_start": 3510,
+          "test_end": 3760
+        },
+        {
+          "train_start": 0,
+          "train_end": 3750,
+          "purge_start": 3750,
+          "purge_end": 3760,
+          "embargo_start": 3760,
+          "embargo_end": 3760,
+          "test_start": 3760,
+          "test_end": 4010
+        },
+        {
+          "train_start": 0,
+          "train_end": 4000,
+          "purge_start": 4000,
+          "purge_end": 4010,
+          "embargo_start": 4010,
+          "embargo_end": 4010,
+          "test_start": 4010,
+          "test_end": 4260
+        }
+      ]
+    },
+    {
+      "n": 4321,
+      "trainSize": 300,
+      "testSize": 200,
+      "purgeSize": 0,
+      "embargoSize": 10,
+      "folds": [
+        {
+          "train_start": 0,
+          "train_end": 300,
+          "purge_start": 300,
+          "purge_end": 300,
+          "embargo_start": 300,
+          "embargo_end": 310,
+          "test_start": 310,
+          "test_end": 510
+        },
+        {
+          "train_start": 0,
+          "train_end": 500,
+          "purge_start": 500,
+          "purge_end": 500,
+          "embargo_start": 500,
+          "embargo_end": 510,
+          "test_start": 510,
+          "test_end": 710
+        },
+        {
+          "train_start": 0,
+          "train_end": 700,
+          "purge_start": 700,
+          "purge_end": 700,
+          "embargo_start": 700,
+          "embargo_end": 710,
+          "test_start": 710,
+          "test_end": 910
+        },
+        {
+          "train_start": 0,
+          "train_end": 900,
+          "purge_start": 900,
+          "purge_end": 900,
+          "embargo_start": 900,
+          "embargo_end": 910,
+          "test_start": 910,
+          "test_end": 1110
+        },
+        {
+          "train_start": 0,
+          "train_end": 1100,
+          "purge_start": 1100,
+          "purge_end": 1100,
+          "embargo_start": 1100,
+          "embargo_end": 1110,
+          "test_start": 1110,
+          "test_end": 1310
+        },
+        {
+          "train_start": 0,
+          "train_end": 1300,
+          "purge_start": 1300,
+          "purge_end": 1300,
+          "embargo_start": 1300,
+          "embargo_end": 1310,
+          "test_start": 1310,
+          "test_end": 1510
+        },
+        {
+          "train_start": 0,
+          "train_end": 1500,
+          "purge_start": 1500,
+          "purge_end": 1500,
+          "embargo_start": 1500,
+          "embargo_end": 1510,
+          "test_start": 1510,
+          "test_end": 1710
+        },
+        {
+          "train_start": 0,
+          "train_end": 1700,
+          "purge_start": 1700,
+          "purge_end": 1700,
+          "embargo_start": 1700,
+          "embargo_end": 1710,
+          "test_start": 1710,
+          "test_end": 1910
+        },
+        {
+          "train_start": 0,
+          "train_end": 1900,
+          "purge_start": 1900,
+          "purge_end": 1900,
+          "embargo_start": 1900,
+          "embargo_end": 1910,
+          "test_start": 1910,
+          "test_end": 2110
+        },
+        {
+          "train_start": 0,
+          "train_end": 2100,
+          "purge_start": 2100,
+          "purge_end": 2100,
+          "embargo_start": 2100,
+          "embargo_end": 2110,
+          "test_start": 2110,
+          "test_end": 2310
+        },
+        {
+          "train_start": 0,
+          "train_end": 2300,
+          "purge_start": 2300,
+          "purge_end": 2300,
+          "embargo_start": 2300,
+          "embargo_end": 2310,
+          "test_start": 2310,
+          "test_end": 2510
+        },
+        {
+          "train_start": 0,
+          "train_end": 2500,
+          "purge_start": 2500,
+          "purge_end": 2500,
+          "embargo_start": 2500,
+          "embargo_end": 2510,
+          "test_start": 2510,
+          "test_end": 2710
+        },
+        {
+          "train_start": 0,
+          "train_end": 2700,
+          "purge_start": 2700,
+          "purge_end": 2700,
+          "embargo_start": 2700,
+          "embargo_end": 2710,
+          "test_start": 2710,
+          "test_end": 2910
+        },
+        {
+          "train_start": 0,
+          "train_end": 2900,
+          "purge_start": 2900,
+          "purge_end": 2900,
+          "embargo_start": 2900,
+          "embargo_end": 2910,
+          "test_start": 2910,
+          "test_end": 3110
+        },
+        {
+          "train_start": 0,
+          "train_end": 3100,
+          "purge_start": 3100,
+          "purge_end": 3100,
+          "embargo_start": 3100,
+          "embargo_end": 3110,
+          "test_start": 3110,
+          "test_end": 3310
+        },
+        {
+          "train_start": 0,
+          "train_end": 3300,
+          "purge_start": 3300,
+          "purge_end": 3300,
+          "embargo_start": 3300,
+          "embargo_end": 3310,
+          "test_start": 3310,
+          "test_end": 3510
+        },
+        {
+          "train_start": 0,
+          "train_end": 3500,
+          "purge_start": 3500,
+          "purge_end": 3500,
+          "embargo_start": 3500,
+          "embargo_end": 3510,
+          "test_start": 3510,
+          "test_end": 3710
+        },
+        {
+          "train_start": 0,
+          "train_end": 3700,
+          "purge_start": 3700,
+          "purge_end": 3700,
+          "embargo_start": 3700,
+          "embargo_end": 3710,
+          "test_start": 3710,
+          "test_end": 3910
+        },
+        {
+          "train_start": 0,
+          "train_end": 3900,
+          "purge_start": 3900,
+          "purge_end": 3900,
+          "embargo_start": 3900,
+          "embargo_end": 3910,
+          "test_start": 3910,
+          "test_end": 4110
+        },
+        {
+          "train_start": 0,
+          "train_end": 4100,
+          "purge_start": 4100,
+          "purge_end": 4100,
+          "embargo_start": 4100,
+          "embargo_end": 4110,
+          "test_start": 4110,
+          "test_end": 4310
+        }
+      ]
+    }
+  ],
+  "hash_payloads": [
+    {
+      "kind": "coinbase_candles",
+      "symbol": "BTC-USD",
+      "granularity": 3600,
+      "row_count": 2326,
+      "start_ts": 1782957600,
+      "end_ts": 1791327600,
+      "rows_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "dataset_id": "coinbase_candles:BTC-USD:3600:1782957600:1791327600:2326"
+    },
+    {
+      "b": 2,
+      "a": 1,
+      "c": [
+        3,
+        2,
+        1
+      ],
+      "d": {
+        "z": true,
+        "y": null
+      }
+    },
+    {
+      "t": 0,
+      "u": "",
+      "v": -17,
+      "w": 12345678901234
+    }
+  ],
+  "hashes": [
+    "fa917a3ab162720066787ca170b3610efa483cd227d705c0a728b65235f604ed",
+    "791676287ad5b966e45cc07196a154ad063af2f21c6faa098546efbd8a1c111f",
+    "cc62e2cfc78fbcb8b3d05c3e9cb395b74bc3060ea0c61b581965286c4b093878"
+  ]
+}

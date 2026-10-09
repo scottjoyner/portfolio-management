@@ -223,3 +223,7 @@ data/quarantine_test_artifacts_*/
 # readings under data/sentiment_harness/sentiment/ ARE tracked -- they cannot be
 # regenerated, since re-reading Grok would cost money and may not reproduce.
 data/sentiment_harness/candles/
+
+# Backtest scorecards are regenerable research artifacts and accumulate quickly.
+# The replay that writes them is scripts/run-decision-classifier-replay.mjs.
+scripts/experiments/decision_classifier_replay/
